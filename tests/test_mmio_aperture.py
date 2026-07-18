@@ -341,6 +341,15 @@ class HardwarePollTests(unittest.TestCase):
             uc.mem_read_calls, uc.reg_read_calls,
         ))
 
+    def test_trace_hook_is_reused_across_run_chunks(self) -> None:
+        emulator, uc, _service_calls = self._poll_harness()
+
+        emulator.run(25_000)
+        emulator.run(25_000)
+
+        self.assertEqual(uc.hook_add_calls, 1)
+        self.assertEqual(uc.hook_del_calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

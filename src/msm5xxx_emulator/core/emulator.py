@@ -3198,6 +3198,10 @@ class GenericMSMEmulator:
         for address in config.arm_memory_copy_addresses:
             self.uc.hook_add(UC_HOOK_CODE, self._fast_arm_memory_copy,
                              begin=address, end=address)
+        # GUI execution uses small run() chunks.  Keep this observer for the
+        # session instead of repeatedly creating and deleting a Unicorn block
+        # hook; long Windows sessions otherwise churn the backend hook list.
+        self._trace_hook = self.uc.hook_add(UC_HOOK_BLOCK, self._trace)
 
     def _normalise_nand(self, payload: bytes, expected: int, label: str) -> bytearray:
         """Accept current raw-page files plus legacy data-only/smaller saves."""
@@ -7022,7 +7026,10 @@ class GenericMSMEmulator:
             raise host_backend_fault
         if steps < 0 or fast_boot_probe <= 0:
             raise ValueError("steps must be non-negative and probe size positive")
-        trace = self.uc.hook_add(UC_HOOK_BLOCK, self._trace)
+        # Compatibility for focused harnesses built with __new__().  Normal
+        # sessions install the trace hook once during construction.
+        if getattr(self, "_trace_hook", None) is None:
+            self._trace_hook = self.uc.hook_add(UC_HOOK_BLOCK, self._trace)
         if self.instructions:
             next_pc = self.uc.reg_read(UC_ARM_REG_PC)
             if self.uc.reg_read(UC_ARM_REG_CPSR) & 0x20:
@@ -7109,7 +7116,6 @@ class GenericMSMEmulator:
                     self.fault = error_detail
         finally:
             if getattr(self, "_host_backend_fault", None) is None:
-                self.uc.hook_del(trace)
                 self._restore_flash_once(self.uc, 0, 0, None)
         if (self.config.framebuffer_address is not None
                 and self.config.framebuffer_flush_address is None
