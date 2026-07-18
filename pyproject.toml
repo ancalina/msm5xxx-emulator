@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msm5xxx-emulator"
+version = "0.1.0a0"
+description = "Experimental Unicorn-based Qualcomm MSM5xxx feature-phone emulator"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Ancalina"}]
+license = {text = "GPL-2.0-or-later"}
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+]
+dependencies = [
+    "unicorn==2.1.4",
+    "Pillow>=10,<13",
+]
+
+[project.scripts]
+msm5xxx-emulator = "msm5xxx_emulator.cli:main"
+msm5xxx-gui = "msm5xxx_emulator.gui.app:main"
+msm5xxx-boot-probe = "msm5xxx_emulator.probe.boot:main"
+msm5xxx-condition-report = "msm5xxx_emulator.tools.condition_report:main"
+msm5xxx-corpus-verify = "msm5xxx_emulator.tools.corpus_verify:main"
+msm5xxx-verify = "msm5xxx_emulator.tools.verify:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

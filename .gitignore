@@ -1,0 +1,33 @@
+# Python/build
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Runtime and user data
+logs/
+state/
+*.log
+diagnostic-*.json
+repro-*/
+frame-*.png
+*.flash.json
+*.flash.json.*
+*.efs-*.json
+*.nand.bin
+
+# Proprietary or local inputs/artifacts
+firmwares/
+evidence/
+userslogs/
+history/
+boot-probe/
+reports/
+*.bin
+*.dump
+*.img
+*.sf2
+*.idb
+*.i64
