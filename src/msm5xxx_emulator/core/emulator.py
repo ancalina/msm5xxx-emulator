@@ -274,6 +274,9 @@ ARM_MEMORY_COPY_TAIL = bytes.fromhex(
 )
 ARM_MEMORY_COPY_TAIL_OFFSET = 0xF8
 DMD_DOWNLOAD_SIGNATURE = bytes.fromhex("f0b5002701250024354901200870")
+DMD_DOWNLOAD_510X_SIGNATURE = bytes.fromhex(
+    "f0b539480027006801250024002800d060e0"
+)
 PRIMARY_FLASH_PROBE_SIGNATURE = bytes.fromhex(
     "16481749006b096840004018aa221101411881b04a81552215239b01c3189a82"
     "90224a81018800ab198041885980f02101800c480ce000abff3121311a888b88"
@@ -2048,6 +2051,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     crc16_address = runtime_signature("crc16_address", CRC16_SIGNATURE)
     dmd_download_address = runtime_signature("dmd_download_address",
                                              DMD_DOWNLOAD_SIGNATURE)
+    if dmd_download_address is None:
+        dmd_download_address = runtime_signature(
+            "dmd_download_address", DMD_DOWNLOAD_510X_SIGNATURE
+        )
     primary_flash_probe_address = runtime_signature(
         "primary_flash_probe_address", PRIMARY_FLASH_PROBE_SIGNATURE
     )
@@ -6717,29 +6724,51 @@ class GenericMSMEmulator:
                            user_data: object) -> None:
         """Complete the DSP download only for the proven Qualcomm routine."""
         try:
-            signature = bytes(uc.mem_read(address, len(DMD_DOWNLOAD_SIGNATURE)))
-            flag, control, _, dmd = struct.unpack(
-                "<4I", uc.mem_read(address + 0xE0, 16)
-            )
-            file_load = struct.unpack("<H", uc.mem_read(address + 0xD4, 2))[0]
-            if file_load == 0x4906:  # LDR r1, [pc, #24]
-                filename = struct.unpack("<I", uc.mem_read(address + 0xF0, 4))[0]
-            elif file_load == 0xA106:  # ADR r1, #24; inline filename follows
-                filename = address + 0xF0
+            clear_dmd = False
+            dmd_ready = None
+            if (bytes(uc.mem_read(address, len(DMD_DOWNLOAD_SIGNATURE)))
+                    == DMD_DOWNLOAD_SIGNATURE):
+                flag, control, _, dmd = struct.unpack(
+                    "<4I", uc.mem_read(address + 0xE0, 16)
+                )
+                file_load = struct.unpack("<H", uc.mem_read(address + 0xD4, 2))[0]
+                if file_load == 0x4906:  # LDR r1, [pc, #24]
+                    filename = struct.unpack("<I", uc.mem_read(address + 0xF0, 4))[0]
+                elif file_load == 0xA106:  # ADR r1, #24; inline filename follows
+                    filename = address + 0xF0
+                else:
+                    return
+                completion = flag
+                clear_dmd = True
+            elif (bytes(uc.mem_read(address, len(DMD_DOWNLOAD_510X_SIGNATURE)))
+                    == DMD_DOWNLOAD_510X_SIGNATURE):
+                guard = struct.unpack("<I", uc.mem_read(address + 0xE8, 4))[0]
+                completion = struct.unpack("<I", uc.mem_read(address + 0xEC, 4))[0]
+                control = struct.unpack("<I", uc.mem_read(address + 0xF0, 4))[0]
+                dmd = struct.unpack("<I", uc.mem_read(address + 0xF8, 4))[0]
+                filename = struct.unpack("<I", uc.mem_read(address + 0xFC, 4))[0]
+                if struct.unpack("<I", uc.mem_read(guard, 4))[0] != 0:
+                    return
+                dmd_ready = guard
             else:
                 return
             source_name = bytes(uc.mem_read(filename, 12))
         except (UcError, struct.error):
             return
         ram_end = self.config.ram_base + self.config.ram_size
-        if (signature != DMD_DOWNLOAD_SIGNATURE
-                or control != 0x03000050 or dmd != 0x030007E0
-                or not self.config.ram_base <= flag < ram_end
+        if (control != 0x03000050 or dmd != 0x030007E0
+                or not self.config.ram_base <= completion < ram_end
                 or not source_name.startswith(b"dmddown_")):
             return
-        uc.mem_write(flag, b"\x02")
+        if dmd_ready is not None:
+            uc.mem_write(dmd_ready, b"\x02")
+        uc.mem_write(completion, b"\x02")
         uc.mem_write(control + 0x0C, b"\x01")
-        uc.mem_write(dmd + 8, b"\0\0\0\0\0\0")
+        if clear_dmd:
+            uc.mem_write(dmd + 8, b"\0\0\0\0\0\0")
+        else:
+            uc.mem_write(dmd + 8, b"\0")
+            uc.mem_write(dmd + 12, b"\0")
         uc.reg_write(UC_ARM_REG_R0, 1)
         self.fast_dmd_downloads += 1
         self._return_to_lr(uc, address, size, user_data)

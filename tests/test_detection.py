@@ -8,8 +8,13 @@ import struct
 import tempfile
 import unittest
 
+from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
+from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
+                               UC_ARM_REG_R0)
+
 from msm5xxx import (
     BUSY_DELAY_SIGNATURE,
+    DMD_DOWNLOAD_510X_SIGNATURE,
     EEPROM_24LCXX_READ_SIGNATURE,
     EEPROM_24LCXX_WRITE_PREFIX,
     EEPROM_24LCXX_X430_INIT_SIGNATURE,
@@ -27,6 +32,7 @@ from msm5xxx import (
     detect,
     detect_chipset,
     detect_model,
+    GenericMSMEmulator,
     find_24lcxx_driver,
     find_fujitsu_x16_bulk_write,
     find_rex_5ms_irq_arm,
@@ -100,6 +106,81 @@ class DetectionTests(unittest.TestCase):
             busy_delay_addresses(bytes(image), 0x10000000, 0x20000000),
             [0x10000010, 0x10000050, 0x20000000],
         )
+
+    def test_510x_dmd_signature_is_unique_and_completes_only_its_contract(self) -> None:
+        image = bytearray(b"\xff" * 0x400)
+        image[0x100:0x100 + len(DMD_DOWNLOAD_510X_SIGNATURE)] = (
+            DMD_DOWNLOAD_510X_SIGNATURE
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "dmd-510x.bin"
+            firmware.write_bytes(image)
+            self.assertEqual(detect(firmware).dmd_download_address, 0x100)
+            image[0x200:0x200 + len(DMD_DOWNLOAD_510X_SIGNATURE)] = (
+                DMD_DOWNLOAD_510X_SIGNATURE
+            )
+            firmware.write_bytes(image)
+            self.assertIsNone(detect(firmware).dmd_download_address)
+
+        entry, guard, completion, control, dmd, filename = (
+            0x1000, 0x01002004, 0x01001D10, 0x03000050, 0x030007E0, 0x1800
+        )
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0x1000, 0x1000)
+        uc.mem_map(0x01000000, 0x10000)
+        uc.mem_map(0x03000000, 0x1000)
+        uc.mem_write(entry, DMD_DOWNLOAD_510X_SIGNATURE)
+        uc.mem_write(entry + 0xE8, struct.pack("<I", guard))
+        uc.mem_write(entry + 0xEC, struct.pack("<I", completion))
+        uc.mem_write(entry + 0xF0, struct.pack("<I", control))
+        uc.mem_write(entry + 0xF8, struct.pack("<I", dmd))
+        uc.mem_write(entry + 0xFC, struct.pack("<I", filename))
+        uc.mem_write(filename, b"dmddown_510x.c\0")
+        uc.mem_write(dmd + 8, b"\xff" * 8)
+        uc.reg_write(UC_ARM_REG_LR, 0x1801)
+        uc.reg_write(UC_ARM_REG_CPSR, 0)
+
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = type("Config", (), {
+            "ram_base": 0x01000000, "ram_size": 0x10000,
+        })()
+        emulator.fast_dmd_downloads = 0
+
+        uc.reg_write(UC_ARM_REG_PC, 0x1050)
+        uc.mem_write(entry + 0xF0, struct.pack("<I", control + 4))
+        emulator._dmd_download_fast(uc, entry, 2, None)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x1050)
+        self.assertEqual(bytes(uc.mem_read(completion, 1)), b"\0")
+        self.assertEqual(emulator.fast_dmd_downloads, 0)
+
+        uc.mem_write(entry + 0xF0, struct.pack("<I", control))
+        uc.mem_write(filename, b"not-dmd-file\0")
+        emulator._dmd_download_fast(uc, entry, 2, None)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x1050)
+        self.assertEqual(bytes(uc.mem_read(completion, 1)), b"\0")
+        self.assertEqual(emulator.fast_dmd_downloads, 0)
+
+        uc.mem_write(filename, b"dmddown_510x.c\0")
+        uc.mem_write(guard, struct.pack("<I", 1))
+        emulator._dmd_download_fast(uc, entry, 2, None)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x1050)
+        self.assertEqual(bytes(uc.mem_read(completion, 1)), b"\0")
+        self.assertEqual(emulator.fast_dmd_downloads, 0)
+
+        uc.mem_write(guard, b"\0" * 4)
+        emulator._dmd_download_fast(uc, entry, 2, None)
+
+        self.assertEqual(bytes(uc.mem_read(guard, 4)), b"\x02\0\0\0")
+        self.assertEqual(bytes(uc.mem_read(completion, 1)), b"\x02")
+        self.assertEqual(bytes(uc.mem_read(control + 0xC, 1)), b"\x01")
+        self.assertEqual(bytes(uc.mem_read(dmd + 8, 1)), b"\0")
+        self.assertEqual(bytes(uc.mem_read(dmd + 9, 3)), b"\xff" * 3)
+        self.assertEqual(bytes(uc.mem_read(dmd + 12, 1)), b"\0")
+        self.assertEqual(bytes(uc.mem_read(dmd + 13, 3)), b"\xff" * 3)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 1)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x1800)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_CPSR) & 0x20, 0x20)
+        self.assertEqual(emulator.fast_dmd_downloads, 1)
 
     def test_24lcxx_driver_requires_unique_read_write_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x800)
