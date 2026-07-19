@@ -9,6 +9,7 @@ from pathlib import Path
 import queue
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -26,6 +27,8 @@ from ..core.emulator import (BUILD_CODENAME, DEFAULT_STATE_ROOT,
 from ..state_io import atomic_write_text, exclusive_path_lock
 from ..diagnostics.runtime_log import (current_session_log, install_runtime_logging,
                                        record_diagnostic, record_exception)
+from ..update import (UpdateError, UpdateInfo, application_root, check_for_update,
+                      prepare_update, remember_update, updated_gui_command)
 
 
 LOGGER = logging.getLogger("gui")
@@ -480,6 +483,8 @@ class Window:
         self.commands: queue.SimpleQueue[tuple[object, ...]] = queue.SimpleQueue()
         self.states: queue.SimpleQueue[tuple[int, dict[str, object]]] = queue.SimpleQueue()
         self.save_errors: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self.update_results: queue.SimpleQueue[tuple[str, object]] = queue.SimpleQueue()
+        self.update_download_active = False
         self.held: dict[int, set[str]] = {}
         self.keyboard_bits: dict[str, int] = {}
         self.keyboard_sources: set[str] = set()
@@ -492,6 +497,7 @@ class Window:
         self._bind_keyboard()
         self._restart()
         self.root.after(50, self._refresh)
+        self.root.after(750, self._check_for_update)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _configure_style(self) -> None:
@@ -643,6 +649,56 @@ class Window:
         self.emulator = None
         self.status.set("재부팅 중")
         self._start_when_stopped(generation)
+
+    def _check_for_update(self) -> None:
+        """Check GitHub outside Tk; ``_refresh`` owns all UI actions."""
+        def check() -> None:
+            try:
+                update = check_for_update(application_root(), STATE_ROOT)
+            except UpdateError as error:
+                LOGGER.info("update check skipped error=%s", error)
+                return
+            if update is not None:
+                self.update_results.put(("available", update))
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def _offer_update(self, update: UpdateInfo) -> None:
+        if self.closing or self.update_download_active:
+            return
+        try:
+            remember_update(STATE_ROOT, update.revision)
+        except (OSError, UpdateError) as error:
+            LOGGER.info("update prompt state not saved error=%s", error)
+        if not messagebox.askyesno(
+                "업데이트",
+                f"GitHub 최신 commit {update.revision[:12]}를 찾았습니다.\n"
+                "내려받아 새 창으로 실행할까요?",
+                parent=self.root):
+            return
+        self.update_download_active = True
+        self.status.set("업데이트 내려받는 중")
+
+        def download() -> None:
+            try:
+                self.update_results.put(("ready", prepare_update(update, STATE_ROOT)))
+            except (OSError, UpdateError) as error:
+                self.update_results.put(("error", error))
+
+        threading.Thread(target=download, daemon=True).start()
+
+    def _launch_update(self, root: Path) -> None:
+        try:
+            command = updated_gui_command(root, self.firmware)
+        except UpdateError as error:
+            self.status.set(f"업데이트 준비 실패: {error}")
+            self.update_download_active = False
+            return
+        self._close()
+        try:
+            subprocess.Popen(command, cwd=root)
+        except OSError as error:
+            LOGGER.error("updated GUI launch failed error=%s", error)
 
     def _start_when_stopped(self, generation: int) -> None:
         if self.closing or generation != self.generation:
@@ -841,6 +897,19 @@ class Window:
 
     def _refresh(self) -> None:
         self._show_save_errors()
+        while True:
+            try:
+                kind, value = self.update_results.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "available" and isinstance(value, UpdateInfo):
+                self._offer_update(value)
+            elif kind == "ready" and isinstance(value, Path):
+                self._launch_update(value)
+                return
+            elif kind == "error" and isinstance(value, (OSError, UpdateError)):
+                self.status.set(f"업데이트 실패: {value}")
+                self.update_download_active = False
         latest: dict[str, object] = {}
         while True:
             try:

@@ -22,6 +22,15 @@ Firmware original is read-only. Persistent NOR/EEPROM/NAND state defaults to
 Diagnostic JSON uses additive `schema: 1`; `runtime.sources` contains path-free
 SHA-256 identities for CLI, GUI, boot probe, and runtime logger modules.
 
+### Updates
+
+The GUI checks GitHub `main` in the background. When it sees a commit not yet
+seen by this install, it asks before downloading it. Accepting downloads a
+separate copy into `~/.msm5xxx-emulator/updates/` and restarts the GUI from that
+copy; it never overwrites the original extracted folder or firmware. Declining
+suppresses that commit only; a later commit prompts again. Failed/offline checks
+are silent and do not affect emulation.
+
 ### Attach a separate NAND dump
 
 A NAND dump is data, not boot firmware. Run its matching NOR dump and attach NAND
