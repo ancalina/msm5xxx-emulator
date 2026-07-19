@@ -20,6 +20,14 @@ First launcher run may create `.venv` and install `unicorn` and `Pillow`.
 Firmware original is read-only. Persistent NOR/EEPROM/NAND state defaults to
 `~/.msm5xxx-emulator/`; set `MSM5XXX_STATE_DIR` and `MSM5XXX_LOG_DIR` to move it.
 
+## How to Contribute
+
+### Submit a Test Log
+
+1. Run the emulator with your firmware.
+2. Compress the generated `logs/` directory as `logs.zip` and submit it through
+   [the test log form](YOUR_GOOGLE_FORM_URL).
+
 ## Package
 
 ```sh
