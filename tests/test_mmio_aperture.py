@@ -58,6 +58,40 @@ class LCDMMIOApertureTests(unittest.TestCase):
         )
 
 
+class OpenBusReadTests(unittest.TestCase):
+    def _emulator(self, dynamic_pages: set[int]) -> GenericMSMEmulator:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.secondary_flash = None
+        emulator.secondary_base = None
+        emulator.config = SimpleNamespace(secondary_flash_size=0)
+        emulator.dynamic_pages = dynamic_pages
+        return emulator
+
+    def test_dynamic_page_read_preserves_prior_guest_data(self) -> None:
+        uc = Mock()
+        emulator = self._emulator({0x01098000})
+
+        emulator._open_bus_read(uc, 0, 0x01098BF0, 4, 0, None)
+
+        uc.mem_write.assert_not_called()
+
+    def test_untouched_open_bus_page_reads_as_ff(self) -> None:
+        uc = Mock()
+        emulator = self._emulator(set())
+
+        emulator._open_bus_read(uc, 0, 0x01098BF0, 4, 0, None)
+
+        uc.mem_write.assert_called_once_with(0x01098BF0, b"\xff" * 4)
+
+    def test_cross_page_read_keeps_dynamic_prefix(self) -> None:
+        uc = Mock()
+        emulator = self._emulator({0x01098000})
+
+        emulator._open_bus_read(uc, 0, 0x01098FFE, 4, 0, None)
+
+        uc.mem_write.assert_called_once_with(0x01099000, b"\xff" * 2)
+
+
 class HardwarePollTests(unittest.TestCase):
     def _infer(self, code: bytes, initial: int = 0xFFFF,
                size: int = 2) -> tuple[int, int, bool] | None:

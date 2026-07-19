@@ -26,6 +26,12 @@ _NATIVE_FILE = None
 
 _PATH_KEYS = frozenset({"argv", "cwd", "path", "paths", "session"})
 _ABSOLUTE_PATH_TOKEN = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|/)[^\s'\"<>]+")
+_SOURCE_FILES = (
+    ("msm5xxx.py", Path("core/emulator.py")),
+    ("gui.py", Path("gui/app.py")),
+    ("boot_probe.py", Path("probe/boot.py")),
+    ("runtime_log.py", Path("diagnostics/runtime_log.py")),
+)
 
 
 def _package_version(name: str) -> str:
@@ -36,12 +42,24 @@ def _package_version(name: str) -> str:
 
 
 def _source_identity() -> dict[str, str]:
-    source = Path(__file__).resolve().parents[1] / "core" / "emulator.py"
+    source = Path(__file__).resolve().parents[1] / _SOURCE_FILES[0][1]
     try:
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
     except OSError:
         digest = "unavailable"
     return {"file": "msm5xxx.py", "sha256": digest}
+
+
+def _source_identities() -> dict[str, str]:
+    """Hash log-producing entry-point modules without exposing their paths."""
+    root = Path(__file__).resolve().parents[1]
+    hashes: dict[str, str] = {}
+    for name, relative_path in _SOURCE_FILES:
+        try:
+            hashes[name] = hashlib.sha256((root / relative_path).read_bytes()).hexdigest()
+        except OSError:
+            hashes[name] = "unavailable"
+    return hashes
 
 
 @lru_cache(maxsize=1)
@@ -54,6 +72,7 @@ def _runtime_metadata() -> dict[str, object]:
             "Pillow": _package_version("Pillow"),
         },
         "source": _source_identity(),
+        "sources": _source_identities(),
     }
 
 
@@ -213,6 +232,7 @@ def record_diagnostic(kind: str, payload: dict[str, object]) -> Path | None:
             f"diagnostic-{safe_kind}-{_stamp()}-{os.getpid()}-{threading.get_ident()}.json"
         )
         document = {
+            "schema": 1,
             "kind": safe_kind,
             "runtime": _runtime_metadata(),
             "payload": _safe_diagnostic(payload),

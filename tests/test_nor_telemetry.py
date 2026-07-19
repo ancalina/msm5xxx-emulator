@@ -61,6 +61,81 @@ class NORTelemetryTests(unittest.TestCase):
             self.assertEqual(telemetry["erase_bytes"], 0x10000)
             self.assertEqual(telemetry["last_erase_address"], 0)
 
+    def test_direct_intel_id_probe_is_observed_without_changing_nor(self) -> None:
+        base = 0x00400000
+        with tempfile.TemporaryDirectory() as directory:
+            flash = NORFlash(bytes.fromhex("34127856") + b"\xff" * 0xFFC,
+                             Path(directory) / "flash.json")
+            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator.config = SimpleNamespace(board_revision_register=None)
+            emulator.flash = flash
+            emulator._flash_restore = {}
+            emulator._parallel_nor_direct_probe = None
+            emulator.primary_parallel_nor_direct_id_probes = []
+            emulator._detect_primary_flash_ids = lambda: None
+            uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+            uc.mem_map(base, 0x1000)
+            uc.mem_write(base, bytes(flash.data))
+            uc.reg_write(UC_ARM_REG_PC, 0x1234)
+
+            emulator._flash_write(uc, 0, base, 2, 0x90, (base, flash))
+            emulator._flash_read(uc, 0, base, 2, 0, (base, flash))
+            emulator._flash_read(uc, 0, base + 2, 2, 0, (base, flash))
+            uc.reg_write(UC_ARM_REG_PC, 0x5678)
+            emulator._flash_write(uc, 0, base, 2, 0xFF, (base, flash))
+
+            self.assertEqual(emulator.primary_parallel_nor_direct_id_probes, [{
+                "start_pc": 0x1234, "base": base,
+                "raw_id_word_0": 0x1234, "raw_id_word_2": 0x5678,
+                "reset_pc": 0x5678,
+            }])
+            self.assertEqual(bytes(flash.data[:4]), bytes.fromhex("34127856"))
+
+    def test_incomplete_direct_intel_probe_is_not_retained(self) -> None:
+        base = 0x00400000
+        with tempfile.TemporaryDirectory() as directory:
+            flash = NORFlash(b"\xff" * 0x1000, Path(directory) / "flash.json")
+            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator.config = SimpleNamespace(board_revision_register=None)
+            emulator.flash = flash
+            emulator._flash_restore = {}
+            emulator._parallel_nor_direct_probe = None
+            emulator.primary_parallel_nor_direct_id_probes = []
+            uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+            uc.mem_map(base, 0x1000)
+            uc.mem_write(base, bytes(flash.data))
+
+            emulator._flash_write(uc, 0, base, 2, 0x90, (base, flash))
+            emulator._flash_read(uc, 0, base + 4, 2, 0, (base, flash))
+            emulator._flash_write(uc, 0, base, 2, 0xFF, (base, flash))
+
+            self.assertIsNone(emulator._parallel_nor_direct_probe)
+            self.assertEqual(emulator.primary_parallel_nor_direct_id_probes, [])
+
+    def test_amd_autoselect_is_not_a_direct_intel_probe(self) -> None:
+        base = 0x00400000
+        with tempfile.TemporaryDirectory() as directory:
+            flash = NORFlash(b"\xff" * 0x1000, Path(directory) / "flash.json")
+            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator.config = SimpleNamespace(board_revision_register=None)
+            emulator.flash = flash
+            emulator._flash_restore = {}
+            emulator._parallel_nor_direct_probe = None
+            emulator.primary_parallel_nor_direct_id_probes = []
+            emulator._detect_primary_flash_ids = lambda: (0x0001, 0x227E)
+            uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+            uc.mem_map(base, 0x1000)
+            uc.mem_write(base, bytes(flash.data))
+
+            emulator._flash_write(uc, 0, base + 0xAAA, 2, 0xAA, (base, flash))
+            emulator._flash_write(uc, 0, base + 0x554, 2, 0x55, (base, flash))
+            emulator._flash_write(uc, 0, base + 0xAAA, 2, 0x90, (base, flash))
+            emulator._flash_read(uc, 0, base, 2, 0, (base, flash))
+            emulator._flash_read(uc, 0, base + 2, 2, 0, (base, flash))
+            emulator._flash_write(uc, 0, base, 2, 0xFF, (base, flash))
+
+            self.assertEqual(emulator.primary_parallel_nor_direct_id_probes, [])
+
     def test_fujitsu_bulk_hle_normalizes_absolute_secondary_address(self) -> None:
         body = bytes.fromhex(
             "f0b5141c051c0f1c400803d2780801d2600802d3184919481ae00120c0050cf7"

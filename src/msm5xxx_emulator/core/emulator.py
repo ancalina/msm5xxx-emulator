@@ -3053,6 +3053,12 @@ class GenericMSMEmulator:
             self.uc.hook_add(UC_HOOK_CODE, self._input_entry_observed,
                              begin=self.input_profile[1], end=self.input_profile[1])
         self._flash_restore: dict[int, bytes] = {}
+        # T720 and Motorola MSM510x firmware directly issue Intel's ID
+        # sequence (0x90, halfword reads at +0/+2, then 0xFF).  The mapped
+        # bytes are not proof of the physical device, so observe completed
+        # probes only; never alter NOR responses from this telemetry.
+        self._parallel_nor_direct_probe: dict[str, int] | None = None
+        self.primary_parallel_nor_direct_id_probes: list[dict[str, int]] = []
         self.audio_player = ApproximateSmafPlayer() if ApproximateSmafPlayer is not None else None
         self.audio_play_requests = 0
         self.audio_last_size = 0
@@ -3595,7 +3601,19 @@ class GenericMSMEmulator:
                 and self.secondary_base <= address
                 and address + size <= self.secondary_base + self.config.secondary_flash_size):
             return
-        uc.mem_write(address, b"\xff" * size)
+        # A prior unmapped data access may have established writable RAM in a
+        # nominal open-bus gap.  The broad read hook still covers that page;
+        # preserve guest data instead of turning every later read into 0xFF.
+        # Split accesses at page boundaries so a cross-page read cannot turn
+        # the dynamic half into open-bus data either.
+        end = address + size
+        current = address
+        while current < end:
+            page = current & -PAGE
+            next_page = min(end, page + PAGE)
+            if page not in self.dynamic_pages:
+                uc.mem_write(current, b"\xff" * (next_page - current))
+            current = next_page
 
     @staticmethod
     def _stable_mmio_read(uc: Uc, access: int, address: int, size: int,
@@ -5946,6 +5964,7 @@ class GenericMSMEmulator:
                 and max(address, board) < min(address + size, board + 4)):
             return
         base, flash = user_data
+        self._observe_parallel_nor_direct_write(uc, address, size, value, flash)
         relative = address - base
         replacement = flash.write(relative, size, value)
         if replacement is None:
@@ -5969,7 +5988,57 @@ class GenericMSMEmulator:
         if flash is self.flash and flash.phase == "autoselect" and flash.ids is None:
             flash.ids = self._detect_primary_flash_ids()
         relative = address - base
-        uc.mem_write(address, flash.read(relative, size))
+        data = flash.read(relative, size)
+        self._observe_parallel_nor_direct_read(address, size, data, flash)
+        uc.mem_write(address, data)
+
+    def _observe_parallel_nor_direct_write(self, uc: Uc, address: int,
+                                           size: int, value: int,
+                                           flash: NORFlash) -> None:
+        """Record, but do not emulate, a complete direct Intel NOR ID probe."""
+        if flash is not self.flash:
+            return
+        pending = self._parallel_nor_direct_probe
+        if size != 2:
+            self._parallel_nor_direct_probe = None
+            return
+        command = value & 0xFFFF
+        if (flash.phase == "idle" and command == 0x90
+                and address & 0xFFF == 0):
+            self._parallel_nor_direct_probe = {
+                "start_pc": uc.reg_read(UC_ARM_REG_PC),
+                "base": address,
+            }
+            return
+        if (pending is None or address != pending["base"] or command != 0xFF
+                or "raw_id_word_0" not in pending
+                or "raw_id_word_2" not in pending):
+            self._parallel_nor_direct_probe = None
+            return
+        if len(self.primary_parallel_nor_direct_id_probes) < 16:
+            self.primary_parallel_nor_direct_id_probes.append({
+                **pending,
+                "reset_pc": uc.reg_read(UC_ARM_REG_PC),
+            })
+        self._parallel_nor_direct_probe = None
+
+    def _observe_parallel_nor_direct_read(self, address: int, size: int,
+                                          data: bytes, flash: NORFlash) -> None:
+        if flash is not self.flash or size != 2:
+            if flash is self.flash:
+                self._parallel_nor_direct_probe = None
+            return
+        pending = self._parallel_nor_direct_probe
+        if pending is None:
+            return
+        if address == pending["base"] and "raw_id_word_0" not in pending:
+            pending["raw_id_word_0"] = int.from_bytes(data, "little")
+        elif (address == pending["base"] + 2
+              and "raw_id_word_0" in pending
+              and "raw_id_word_2" not in pending):
+            pending["raw_id_word_2"] = int.from_bytes(data, "little")
+        else:
+            self._parallel_nor_direct_probe = None
 
     def _ensure_eeprom(self, uc: Uc) -> bool:
         """Load the proven 24LCxx capacity and its persistent byte image."""
@@ -7238,6 +7307,9 @@ class GenericMSMEmulator:
                                    "device": self.flash.ids[1]}
                                   if self.flash.ids is not None else None),
             "primary_flash_telemetry": self.flash.telemetry(),
+            "primary_parallel_nor_direct_id_probes": list(
+                getattr(self, "primary_parallel_nor_direct_id_probes", ())
+            ),
             "ram_seed_size": self.ram_seed_size,
             "fault": self.fault,
             "fault_context": fault_context,

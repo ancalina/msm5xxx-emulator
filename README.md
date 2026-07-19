@@ -19,6 +19,8 @@ run_windows.bat C:\path\to\firmware.bin
 First launcher run may create `.venv` and install `unicorn` and `Pillow`.
 Firmware original is read-only. Persistent NOR/EEPROM/NAND state defaults to
 `~/.msm5xxx-emulator/`; set `MSM5XXX_STATE_DIR` and `MSM5XXX_LOG_DIR` to move it.
+Diagnostic JSON uses additive `schema: 1`; `runtime.sources` contains path-free
+SHA-256 identities for CLI, GUI, boot probe, and runtime logger modules.
 
 ### Attach a separate NAND dump
 
@@ -43,6 +45,10 @@ are stored separately. Do not guess different geometry—submit its log and size
 1. Run the emulator with your firmware.
 2. Compress the generated `logs/` directory as `logs.zip` and submit it through
    [the test log form](https://forms.gle/8ThEtrJgZceiAE3HA).
+
+CLI JSON records a completed direct primary-NOR `0x90`, `+0/+2`, `0xFF` ID
+probe without changing mapped NOR data. Captured words are dump bytes, not
+claimed physical IDs.
 
 ## Package
 

@@ -60,11 +60,15 @@ class NativeFaultLoggingPolicyTests(unittest.TestCase):
             self.assertIsNotNone(path)
             assert path is not None
             document = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(document["schema"], 1)
             self.assertEqual(document["kind"], "host-backend-fault")
             self.assertEqual(document["runtime"]["packages"], {
                 "unicorn": "unicorn-version", "Pillow": "Pillow-version",
             })
             self.assertEqual(document["runtime"]["source"]["file"], "msm5xxx.py")
+            self.assertEqual(set(document["runtime"]["sources"]), {
+                "msm5xxx.py", "gui.py", "boot_probe.py", "runtime_log.py",
+            })
             self.assertEqual(document["payload"]["firmware"]["basename"], "firmware.bin")
             self.assertNotIn("firmware_path", document["payload"])
             self.assertNotIn("cwd", document["payload"])
@@ -74,6 +78,8 @@ class NativeFaultLoggingPolicyTests(unittest.TestCase):
     def test_runtime_metadata_is_cached_after_first_lookup(self) -> None:
         with (mock.patch.object(runtime_log, "_source_identity",
                                 return_value={"file": "msm5xxx.py", "sha256": "a"}),
+              mock.patch.object(runtime_log, "_source_identities",
+                                return_value={"msm5xxx.py": "a"}),
               mock.patch.object(runtime_log.metadata, "version",
                                 side_effect=lambda name: f"{name}-version") as version):
             first = runtime_log._runtime_metadata()
