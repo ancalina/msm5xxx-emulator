@@ -3056,6 +3056,10 @@ class GenericMSMEmulator:
         self._lcd_mmio_extended_mapped = False
         self.held_keys: set[int] = set()
         self.key_baselines: dict[int, int] = {}
+        self.key_press_read_epochs: dict[int, int] = {}
+        self.key_read_epoch = 0
+        self.key_register_reads = 0
+        self.key_register_read_pcs: Counter[int] = Counter()
         self.input_profile = detect_input_profile(self.image, config.load_address)
         self.input_error = ""
         self.input_events = 0
@@ -3612,6 +3616,7 @@ class GenericMSMEmulator:
                 pc = uc.reg_read(UC_ARM_REG_LR) & ~1
         except UcError:
             pass
+        self._record_key_register_read(address, size, pc)
         self._board_adc_reader_data_read(uc, address, size)
         self._refresh_board_status_input(uc, address, size)
         status = getattr(self.config, "rex_irq_status_address", None)
@@ -3624,6 +3629,17 @@ class GenericMSMEmulator:
             uc.mem_write(address, ((current | set_mask) & ~clear_mask).to_bytes(size, "little"))
         self.mmio_reads[(pc, address, size)] += 1
         self.mmio_read_totals[(pc, address, size)] += 1
+
+    def _record_key_register_read(self, address: int, size: int, pc: int) -> None:
+        """Record a firmware read of the configured candidate key register."""
+        key_register = getattr(self.config, "key_register", None)
+        if (key_register is None
+                or max(address, key_register) >= min(address + size, key_register + 4)):
+            return
+        self.key_register_reads = getattr(self, "key_register_reads", 0) + 1
+        self.key_read_epoch = getattr(self, "key_read_epoch", 0) + 1
+        self.key_register_read_pcs = getattr(self, "key_register_read_pcs", Counter())
+        self.key_register_read_pcs[pc] += 1
 
     def _open_bus_read(self, uc: Uc, access: int, address: int, size: int,
                        value: int, user_data: object) -> None:
@@ -7137,11 +7153,13 @@ class GenericMSMEmulator:
         if pressed:
             self.held_keys.add(bit)
             self.key_baselines[bit] = value & mask
+            self.key_press_read_epochs[bit] = self.key_read_epoch
             active = not self.config.key_active_low
             value = value | mask if active else value & ~mask
         else:
             self.held_keys.remove(bit)
             baseline = self.key_baselines.pop(bit)
+            self.key_press_read_epochs.pop(bit, None)
             value = value & ~mask | baseline
         self.uc.mem_write(self.config.key_register, struct.pack("<I", value))
         LOGGER.info("key bit=%d pressed=%s register=0x%08X value=0x%08X",
@@ -7151,7 +7169,9 @@ class GenericMSMEmulator:
                               user_data: object) -> None:
         """Record firmware-side keypad producer consumption without injection."""
         self.input_events += 1
-        if self.held_keys:
+        if any(self.key_read_epoch > self.key_press_read_epochs.get(bit,
+                                                                      self.key_read_epoch)
+               for bit in self.held_keys):
             self.firmware_key_events += 1
             self.input_error = ""
 
@@ -7460,6 +7480,16 @@ class GenericMSMEmulator:
             "input_error": self.input_error,
             "input_events": self.input_events,
             "firmware_key_events": self.firmware_key_events,
+            "input_register_reads": getattr(self, "key_register_reads", 0),
+            "input_register_read_pcs": [
+                {"pc": f"0x{pc:08X}", "reads": reads}
+                for pc, reads in getattr(self, "key_register_read_pcs", Counter()).most_common(16)
+            ],
+            "input_transport": (
+                "candidate-register+consumer" if self.firmware_key_events else
+                "candidate-register-observed" if getattr(self, "key_register_reads", 0) else
+                "candidate-register-unobserved"
+            ),
             "audio_play_address": (f"0x{self.config.audio_play_address:08X}"
                                    if self.config.audio_play_address is not None else None),
             "audio_discovered_address": (f"0x{self.audio_discovered_address:08X}"
