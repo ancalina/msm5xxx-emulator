@@ -337,6 +337,23 @@ class LCDGeometryTests(unittest.TestCase):
         write(legacy, 0x21, 0x2006)
         self.assertEqual(legacy._lcd_gram_cursor, [0, 6])
 
+    def test_parallel_subwindow_beats_stale_gram_cursor(self) -> None:
+        emulator = self._routing_emulator(width=6, height=4)
+        emulator._lcd_protocol = "parallel-2"
+        emulator._lcd_x, emulator._lcd_y = [1, 2], [0, 1]
+        emulator._lcd_gram_addressed = True
+        emulator._lcd_gram_cursor = [5, 3]
+
+        emulator._lcd_begin_command(0x22)
+        for pixel in (0xF800, 0x07E0, 0x001F, 0xFFFF):
+            emulator._lcd_feed_parallel_data(0x02800002, 2, pixel)
+
+        self.assertEqual(emulator.display_frame[3:6], bytes((255, 0, 0)))
+        self.assertEqual(emulator.display_frame[6:9], bytes((0, 255, 0)))
+        self.assertEqual(emulator.display_frame[21:24], bytes((0, 0, 255)))
+        self.assertEqual(emulator.display_frame[24:27], b"\xff" * 3)
+        self.assertEqual(emulator.display_frame[-3:], b"\0\0\0")
+
     def test_028_direct_probe_replays_parallel_page_near_miss(self) -> None:
         emulator = self._routing_emulator()
         emulator._lcd_protocol = "parallel-2"

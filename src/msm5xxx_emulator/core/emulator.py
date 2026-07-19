@@ -4815,13 +4815,23 @@ class GenericMSMEmulator:
         self._lcd_recent_commands.append(self._lcd_command & 0xFF)
         self._lcd_args.clear()
         self._lcd_data_byte_latch.clear()
+        spans = tuple(
+            end - start + 1 if end >= start else ((end - start) & 0xFF) + 1
+            for start, end in (self._lcd_x, self._lcd_y)
+        )
+        gram_cursor_stream = (
+            self._lcd_protocol == "parallel-2"
+            and self._lcd_command == 0x22
+            and self._lcd_gram_addressed
+            and (self._lcd_packed_21_state != 0
+                 or spans == (self.config.width, self.config.height))
+        )
         if (self._lcd_command in LCD_MEMORY_WRITE_COMMANDS
-                and not (self._lcd_protocol == "parallel-2"
-                         and self._lcd_command == 0x22
-                         and self._lcd_gram_addressed)):
+                and not gram_cursor_stream):
+            if self._lcd_command == 0x22:
+                self._lcd_gram_addressed = False
             self._lcd_start_direct_frame()
-        elif (self._lcd_protocol == "parallel-2" and self._lcd_command == 0x22
-              and self._lcd_gram_addressed):
+        elif gram_cursor_stream:
             self._lcd_promote_gram_geometry()
 
     def _lcd_feed_data(self, address: int, size: int, value: int) -> None:
