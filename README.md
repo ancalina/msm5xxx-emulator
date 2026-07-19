@@ -50,6 +50,10 @@ CLI JSON records a completed direct primary-NOR `0x90`, `+0/+2`, `0xFF` ID
 probe without changing mapped NOR data. Captured words are dump bytes, not
 claimed physical IDs.
 
+Terminal diagnostics retain the latest 16 unmapped accesses with PC, address,
+size, value, and outcome. This records device evidence; it does not infer a
+device response or map unknown hardware.
+
 ## Package
 
 ```sh

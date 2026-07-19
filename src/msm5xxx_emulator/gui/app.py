@@ -212,6 +212,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
         },
         "control_sink": state.get("control_sink"),
         "last_unmapped": _mapping(state, "last_unmapped"),
+        "unmapped_accesses": state.get("unmapped_accesses", []),
         "fault": state.get("fault"),
         "fault_context": _mapping(state, "fault_context"),
     }
@@ -449,7 +450,7 @@ def _compact_telemetry(payload: dict[str, object]) -> dict[str, object]:
             "generation", "firmware", "model", "chipset", "dump_status",
             "instructions", "pc", "lr", "cpsr", "phase", "event", "frame",
             "lcd", "rex", "nor", "eeprom", "nand", "control_sink",
-            "last_unmapped", "fault",
+            "last_unmapped", "unmapped_accesses", "fault",
         ) if name in payload
     }
 

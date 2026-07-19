@@ -18,6 +18,7 @@ class LCDMMIOApertureTests(unittest.TestCase):
     def _emulator(self) -> GenericMSMEmulator:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.last_unmapped = None
+        emulator.unmapped_accesses = deque(maxlen=2)
         emulator._chunk_unmapped = None
         emulator._lcd_mmio_extended_mapped = False
         emulator.dynamic_pages = set()
@@ -56,6 +57,24 @@ class LCDMMIOApertureTests(unittest.TestCase):
             emulator._unmapped_fault_detail(),
             "; unmapped write address=0x80000000 size=4 value=0xDEADBEEF",
         )
+
+    def test_unmapped_history_is_bounded_and_records_terminal_pc(self) -> None:
+        emulator = self._emulator()
+        uc = SimpleNamespace(reg_read=lambda _register: 0x12345678)
+
+        for address in (0x80000000, 0x80001000, 0x80002000):
+            self.assertFalse(emulator._unmapped(
+                uc, UC_MEM_WRITE_UNMAPPED, address, 2, 0x300, None
+            ))
+
+        self.assertEqual(list(emulator.unmapped_accesses), [
+            {"access": UC_MEM_WRITE_UNMAPPED, "address": 0x80001000,
+             "size": 2, "value": 0x300, "pc": 0x12345678,
+             "outcome": "fault-high-address"},
+            {"access": UC_MEM_WRITE_UNMAPPED, "address": 0x80002000,
+             "size": 2, "value": 0x300, "pc": 0x12345678,
+             "outcome": "fault-high-address"},
+        ])
 
 
 class OpenBusReadTests(unittest.TestCase):

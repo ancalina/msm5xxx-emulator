@@ -47,6 +47,7 @@ MAX_RAM_SIZE = 0x08000000
 MAX_NAND_DATA_SIZE = 0x08000000
 MAX_NAND_BACKING_SIZE = 0x10000000
 MAX_DYNAMIC_PAGES = 2048
+UNMAPPED_ACCESS_HISTORY_LIMIT = 16
 LCD_MMIO_PRIMARY_START = 0x02000000
 LCD_MMIO_PRIMARY_COMMAND_SIZE = PAGE
 LCD_MMIO_PRIMARY_END = 0x02800000
@@ -3040,8 +3041,11 @@ class GenericMSMEmulator:
         self._lcd_index = 0
         self._lcd_indexed_dirty = False
         self.dynamic_pages: set[int] = set()
-        self.last_unmapped: dict[str, int] | None = None
-        self._chunk_unmapped: dict[str, int] | None = None
+        self.last_unmapped: dict[str, int | str] | None = None
+        self.unmapped_accesses: deque[dict[str, int | str]] = deque(
+            maxlen=UNMAPPED_ACCESS_HISTORY_LIMIT
+        )
+        self._chunk_unmapped: dict[str, int | str] | None = None
         self._lcd_mmio_extended_mapped = False
         self.held_keys: set[int] = set()
         self.key_baselines: dict[int, int] = {}
@@ -3378,14 +3382,21 @@ class GenericMSMEmulator:
 
     def _unmapped(self, uc: Uc, access: int, address: int, size: int,
                   value: int, user_data: object) -> bool:
-        event = {
+        event: dict[str, int | str] = {
             "access": access, "address": address, "size": size, "value": value,
         }
+        pc = uc.reg_read(UC_ARM_REG_PC)
+        if isinstance(pc, int):
+            event["pc"] = pc & 0xFFFFFFFF
         self.last_unmapped = event
         if access == UC_MEM_FETCH_UNMAPPED:
+            event["outcome"] = "fault-fetch"
+            self.unmapped_accesses.append(event)
             self._chunk_unmapped = event
             return False
         if self._attach_lazy_secondary_nor(uc, access, address, size, value):
+            event["outcome"] = "lazy-secondary-nor"
+            self.unmapped_accesses.append(event)
             return True
         # Later MSM5500 boards use addresses throughout the primary LCD
         # controller aperture, not just its command page. It is already a
@@ -3405,20 +3416,28 @@ class GenericMSMEmulator:
                         UC_PROT_READ | UC_PROT_WRITE,
                     )
                 except UcError:
+                    event["outcome"] = "fault-lcd-map"
+                    self.unmapped_accesses.append(event)
                     self._chunk_unmapped = event
                     return False
                 self._lcd_mmio_extended_mapped = True
                 LOGGER.info("lazy-mapped LCD MMIO aperture 0x%08X..0x%08X",
                             LCD_MMIO_PRIMARY_START + LCD_MMIO_PRIMARY_COMMAND_SIZE,
                             LCD_MMIO_PRIMARY_END)
+            event["outcome"] = "lazy-lcd-mmio"
+            self.unmapped_accesses.append(event)
             return True
         if address >= 0x80000000:
+            event["outcome"] = "fault-high-address"
+            self.unmapped_accesses.append(event)
             self._chunk_unmapped = event
             return False
         page = address & -PAGE
         if page not in self.dynamic_pages and len(self.dynamic_pages) >= MAX_DYNAMIC_PAGES:
             self.fault = (f"dynamic data mapping limit ({MAX_DYNAMIC_PAGES * PAGE // 0x100000} MiB) "
                           f"at 0x{address:08X}")
+            event["outcome"] = "fault-dynamic-limit"
+            self.unmapped_accesses.append(event)
             self._chunk_unmapped = event
             return False
         try:
@@ -3427,8 +3446,12 @@ class GenericMSMEmulator:
             uc.mem_map(page, PAGE, UC_PROT_READ | UC_PROT_WRITE)
             self.dynamic_pages.add(page)
         except UcError:
+            event["outcome"] = "fault-page-map"
+            self.unmapped_accesses.append(event)
             self._chunk_unmapped = event
             return False
+        event["outcome"] = "dynamic-rw-page"
+        self.unmapped_accesses.append(event)
         return True
 
     def _unmapped_fault_detail(self) -> str:
@@ -7101,6 +7124,7 @@ class GenericMSMEmulator:
                  or getattr(self, "mmio_reads", None))
         hottest = max(reads.items(), key=lambda item: item[1]) if reads else None
         last_unmapped = getattr(self, "last_unmapped", None)
+        unmapped_accesses = getattr(self, "unmapped_accesses", ())
         safe_unmapped = None
         if last_unmapped is not None:
             safe_unmapped = {
@@ -7109,6 +7133,15 @@ class GenericMSMEmulator:
                 "size": last_unmapped.get("size"),
                 "value": f"0x{last_unmapped['value']:X}",
             }
+        safe_unmapped_accesses = [
+            {
+                **event,
+                "address": f"0x{event['address']:08X}",
+                "value": f"0x{event['value']:X}",
+                **({"pc": f"0x{event['pc']:08X}"} if "pc" in event else {}),
+            }
+            for event in unmapped_accesses
+        ]
         secondary = getattr(self, "secondary_flash", None)
         return {
             "firmware": identity,
@@ -7150,6 +7183,7 @@ class GenericMSMEmulator:
             },
             "dynamic_pages": len(self.dynamic_pages),
             "last_unmapped": safe_unmapped,
+            "unmapped_accesses": safe_unmapped_accesses,
             "hottest_mmio_read": (
                 {"pc": f"0x{hottest[0][0]:08X}",
                  "address": f"0x{hottest[0][1]:08X}",
@@ -7319,6 +7353,11 @@ class GenericMSMEmulator:
             "last_unmapped": ({**self.last_unmapped,
                                "address_hex": f"0x{self.last_unmapped['address']:08X}"}
                               if self.last_unmapped is not None else None),
+            "unmapped_accesses": [
+                {**event, "address_hex": f"0x{event['address']:08X}",
+                 **({"pc_hex": f"0x{event['pc']:08X}"} if "pc" in event else {})}
+                for event in getattr(self, "unmapped_accesses", ())
+            ],
             "lcd_writes": self.lcd_writes,
             "lcd_protocol": self._lcd_protocol,
             "lcd_frame_protocol": self._lcd_frame_protocol,
