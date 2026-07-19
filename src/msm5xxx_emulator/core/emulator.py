@@ -636,6 +636,16 @@ def find_all(image: bytes, signature: bytes) -> list[int]:
     return found
 
 
+def busy_delay_addresses(image: bytes, load_address: int,
+                         configured_address: int | None) -> list[int]:
+    """Return all exact primary-ROM busy-delay entries, including overrides."""
+    addresses = {load_address + offset
+                 for offset in find_all(image, BUSY_DELAY_SIGNATURE)}
+    if configured_address is not None:
+        addresses.add(configured_address)
+    return sorted(addresses)
+
+
 def find_ma2_silent_boot_wait(image: bytes) -> int | None:
     """Find the uniquely cross-checked MA2 status-wait entry."""
     if b"Ma2main.c\0" not in image or b"Ma2lib.c\0" not in image:
@@ -3168,10 +3178,11 @@ class GenericMSMEmulator:
             self.uc.hook_add(UC_HOOK_CODE, self._return_if_thumb_signature,
                              begin=config.delay_address, end=config.delay_address,
                              user_data=DELAY_SIGNATURE)
-        if config.busy_delay_address is not None:
+        for address in busy_delay_addresses(self.original_image,
+                                            config.load_address,
+                                            config.busy_delay_address):
             self.uc.hook_add(UC_HOOK_CODE, self._return_if_thumb_signature,
-                             begin=config.busy_delay_address,
-                             end=config.busy_delay_address,
+                             begin=address, end=address,
                              user_data=BUSY_DELAY_SIGNATURE)
         if config.rex_idle_address is not None:
             self.uc.hook_add(UC_HOOK_CODE, self._rex_tick,

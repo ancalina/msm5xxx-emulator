@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from msm5xxx import (
+    BUSY_DELAY_SIGNATURE,
     EEPROM_24LCXX_READ_SIGNATURE,
     EEPROM_24LCXX_WRITE_PREFIX,
     EEPROM_24LCXX_X430_INIT_SIGNATURE,
@@ -21,6 +22,7 @@ from msm5xxx import (
     EEPROM_24LCXX_X7700_READ_PREFIX,
     EEPROM_24LCXX_X7700_WRITE_PREFIX,
     arm_vector_score,
+    busy_delay_addresses,
     chipset_confidence,
     detect,
     detect_chipset,
@@ -84,6 +86,20 @@ class DetectionTests(unittest.TestCase):
             firmware = Path(directory) / "literal-vectors.bin"
             firmware.write_bytes(raw)
             self.assertEqual(detect(firmware).image_kind, "firmware")
+
+    def test_busy_delay_addresses_keep_exact_duplicate_functions(self) -> None:
+        image = bytearray(b"\xff" * 0x80)
+        image[0x10:0x10 + len(BUSY_DELAY_SIGNATURE)] = BUSY_DELAY_SIGNATURE
+        image[0x50:0x50 + len(BUSY_DELAY_SIGNATURE)] = BUSY_DELAY_SIGNATURE
+
+        self.assertEqual(
+            busy_delay_addresses(bytes(image), 0x10000000, None),
+            [0x10000010, 0x10000050],
+        )
+        self.assertEqual(
+            busy_delay_addresses(bytes(image), 0x10000000, 0x20000000),
+            [0x10000010, 0x10000050, 0x20000000],
+        )
 
     def test_24lcxx_driver_requires_unique_read_write_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x800)
