@@ -104,12 +104,11 @@ class EEPROMTests(unittest.TestCase):
             self.assertTrue(warm.eeprom_loaded_from_state)
             self.assertEqual(warm.eeprom_reads, 1)
 
-    def test_out_of_range_returns_firmware_bad_parameter(self) -> None:
+    def test_capacity_boundary_succeeds_and_overflow_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            emulator, uc, write, _read, ram = self._emulator(
-                Path(directory) / "eeprom.bin"
-            )
-            uc.mem_write(ram + 0x200, b"\x00")
+            state = Path(directory) / "eeprom.bin"
+            emulator, uc, write, _read, ram = self._emulator(state)
+            uc.mem_write(ram + 0x200, b"\x5a\x00")
             uc.reg_write(UC_ARM_REG_R0, ram + 0x200)
             uc.reg_write(UC_ARM_REG_R1, 0x7FFF)
             uc.reg_write(UC_ARM_REG_R2, 1)
@@ -117,8 +116,49 @@ class EEPROMTests(unittest.TestCase):
 
             emulator._eeprom_write_fast(uc, write, 2, None)
 
+            self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 0)
+            self.assertEqual(emulator.eeprom_data[-1], 0x5A)
+            self.assertEqual(emulator.eeprom_writes, 1)
+            emulator._save_eeprom()
+            self.assertEqual(state.read_bytes()[-1], 0x5A)
+
+            uc.reg_write(UC_ARM_REG_R0, ram + 0x200)
+            uc.reg_write(UC_ARM_REG_R1, 0x7FFF)
+            uc.reg_write(UC_ARM_REG_R2, 2)
+            uc.reg_write(UC_ARM_REG_LR, 0x1501)
+            emulator._eeprom_write_fast(uc, write, 2, None)
+
             self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 6)
-            self.assertEqual(emulator.eeprom_writes, 0)
+            self.assertEqual(emulator.eeprom_writes, 1)
+
+    def test_independent_sessions_merge_persistent_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "eeprom.bin"
+            first, first_uc, first_write, _read, first_ram = self._emulator(state)
+            second, second_uc, second_write, _read, second_ram = self._emulator(state)
+            for emulator, uc, write, ram, offset, payload in (
+                    (first, first_uc, first_write, first_ram, 0x20, b"one"),
+                    (second, second_uc, second_write, second_ram, 0x30, b"two")):
+                source = ram + 0x200
+                uc.mem_write(source, payload)
+                uc.reg_write(UC_ARM_REG_R0, source)
+                uc.reg_write(UC_ARM_REG_R1, offset)
+                uc.reg_write(UC_ARM_REG_R2, len(payload))
+                uc.reg_write(UC_ARM_REG_LR, 0x1501)
+                emulator._eeprom_write_fast(uc, write, 2, None)
+
+            first._save_eeprom()
+            second._save_eeprom()
+
+            warm, warm_uc, _write, read, ram = self._emulator(state)
+            destination = ram + 0x300
+            warm_uc.reg_write(UC_ARM_REG_R0, destination)
+            warm_uc.reg_write(UC_ARM_REG_R1, 0x20)
+            warm_uc.reg_write(UC_ARM_REG_R2, 0x13)
+            warm_uc.reg_write(UC_ARM_REG_LR, 0x1501)
+            warm._eeprom_read_fast(warm_uc, read, 2, None)
+            self.assertEqual(bytes(warm_uc.mem_read(destination, 0x13)),
+                             b"one" + b"\xff" * 13 + b"two")
 
     def test_zero_length_succeeds_without_touching_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

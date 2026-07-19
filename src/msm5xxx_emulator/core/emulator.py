@@ -6193,9 +6193,8 @@ class GenericMSMEmulator:
             return
         if not self._hle_destination_is_ram(destination, length):
             return
-        valid = (0 < length < self.eeprom_capacity
-                 and 0 <= offset < self.eeprom_capacity
-                 and offset + length < self.eeprom_capacity)
+        valid = (0 < length <= self.eeprom_capacity
+                 and 0 <= offset <= self.eeprom_capacity - length)
         try:
             if not valid:
                 raise ValueError
@@ -6244,9 +6243,8 @@ class GenericMSMEmulator:
             return
         if not self._hle_source_is_safe(source, length):
             return
-        valid = (0 < length < self.eeprom_capacity
-                 and 0 <= offset < self.eeprom_capacity
-                 and offset + length < self.eeprom_capacity)
+        valid = (0 < length <= self.eeprom_capacity
+                 and 0 <= offset <= self.eeprom_capacity - length)
         try:
             if not valid:
                 raise ValueError

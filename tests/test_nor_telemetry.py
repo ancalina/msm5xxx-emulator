@@ -61,6 +61,22 @@ class NORTelemetryTests(unittest.TestCase):
             self.assertEqual(telemetry["erase_bytes"], 0x10000)
             self.assertEqual(telemetry["last_erase_address"], 0)
 
+    def test_independent_secondary_nor_sessions_merge_persistent_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "secondary.json"
+            original = b"\xff" * 0x1000
+            first = NORFlash(original, state)
+            second = NORFlash(original, state)
+            self.assertEqual(first.program(0x20, b"\xaa"), b"\xaa")
+            self.assertEqual(second.program(0x30, b"\x55"), b"\x55")
+
+            first.save()
+            second.save()
+
+            warm = NORFlash(original, state)
+            self.assertEqual(bytes(warm.data[0x20:0x21]), b"\xaa")
+            self.assertEqual(bytes(warm.data[0x30:0x31]), b"\x55")
+
     def test_direct_intel_id_probe_is_observed_without_changing_nor(self) -> None:
         base = 0x00400000
         with tempfile.TemporaryDirectory() as directory:
