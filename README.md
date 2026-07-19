@@ -1,8 +1,7 @@
 # MSM5xxx Emulator
 
 Unicorn-based Qualcomm MSM5000/MSM5100/MSM5500 feature-phone firmware emulator.
-Experimental project. Bring your own legally obtained firmware dump; this tree
-contains no firmware, user state, logs, screenshots, or audio asset.
+Experimental project. This tree contains no firmware, user state, logs, screenshots, or audio asset.
 
 ## Run
 
