@@ -2910,6 +2910,13 @@ class GenericMSMEmulator:
         # and one exact 96x64 RGB565 payload have both been observed.
         self._lcd_byte_rgb565_commands = bytearray()
         self._lcd_byte_rgb565_payload: bytearray | None = None
+        # LG-LX5350 uses a byte-wide four-register window followed by
+        # big-endian RGB565 bytes through +0x10/+0x11.  Keep it separate from
+        # command/data transports until header and whole rectangle agree.
+        self._lcd_window_rgb565_header: list[int] = []
+        self._lcd_window_rgb565_window: tuple[int, int, int, int] | None = None
+        self._lcd_window_rgb565_pixels: list[int] = []
+        self._lcd_window_rgb565_high: int | None = None
         # One selector/data board uses packed register/argument words.  Its
         # mode register selects either paired RGB666 or one-word RGB565.
         self._lcd_selector_registers: dict[int, int] = {}
@@ -4414,6 +4421,59 @@ class GenericMSMEmulator:
             return
         self._lcd_byte_rgb565_reset()
 
+    def _lcd_window_rgb565_reset(self) -> None:
+        self._lcd_window_rgb565_header.clear()
+        self._lcd_window_rgb565_window = None
+        self._lcd_window_rgb565_pixels.clear()
+        self._lcd_window_rgb565_high = None
+
+    def _lcd_window_rgb565_write(self, address: int, size: int, value: int) -> bool:
+        """Decode a complete byte-window RGB565 rectangle at 0x02000010/+11."""
+        byte = value & 0xFF
+        window = self._lcd_window_rgb565_window
+        if window is not None:
+            if size == 1 and address == 0x02000010:
+                self._lcd_window_rgb565_high = byte
+                return True
+            if (size == 1 and address == 0x02000011
+                    and self._lcd_window_rgb565_high is not None):
+                self._lcd_window_rgb565_pixels.append(
+                    self._lcd_window_rgb565_high << 8 | byte
+                )
+                self._lcd_window_rgb565_high = None
+                x0, y0, x1, y1 = window
+                expected = (x1 - x0 + 1) * (y1 - y0 + 1)
+                if len(self._lcd_window_rgb565_pixels) < expected:
+                    return True
+                if any(self._lcd_window_rgb565_pixels):
+                    width = x1 - x0 + 1
+                    for index, pixel in enumerate(self._lcd_window_rgb565_pixels):
+                        x, y = x0 + index % width, y0 + index // width
+                        self._pixel(y * self.config.width + x, pixel)
+                    self._lcd_protocol = "window-byte-rgb565"
+                    self._publish_frame()
+                self._lcd_window_rgb565_reset()
+                return True
+            self._lcd_window_rgb565_reset()
+        header = self._lcd_window_rgb565_header
+        expected_address = 0x0200001A + len(header)
+        if size == 1 and address == expected_address:
+            header.append(byte)
+            if len(header) < 4:
+                return True
+            x0, y0, x1, y1 = header
+            pixels = (x1 - x0 + 1) * (y1 - y0 + 1)
+            if (x0 <= x1 < self.config.width and y0 <= y1 < self.config.height
+                    and pixels >= 0x2000):
+                self._lcd_window_rgb565_window = (x0, y0, x1, y1)
+                header.clear()
+                return True
+            self._lcd_window_rgb565_reset()
+            return False
+        if header:
+            self._lcd_window_rgb565_reset()
+        return False
+
     def _lcd_selector_reset(self) -> None:
         self._lcd_selector_words.clear()
         self._lcd_selector_expected = 0
@@ -5095,6 +5155,8 @@ class GenericMSMEmulator:
         if self._lcd_028_direct_probe_write(address, size, value & 0xFFFF):
             return
         self._lcd_byte_rgb565_interrupt(address, size)
+        if self._lcd_window_rgb565_write(address, size, value):
+            return
         if address == 0x020000FA:
             self._lg_pixels.append(value & ((1 << (size * 8)) - 1))
             count = self.config.width * self.config.height * 2

@@ -53,6 +53,10 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_selector_expected = 0
         emulator._lcd_selector_window = None
         emulator._lcd_selector_format = None
+        emulator._lcd_window_rgb565_header = []
+        emulator._lcd_window_rgb565_window = None
+        emulator._lcd_window_rgb565_pixels = []
+        emulator._lcd_window_rgb565_high = None
         emulator._lcd_bgr444_command = None
         emulator._lcd_bgr444_axis_state = 0
         emulator._lcd_bgr444_cursor = [0, 0]
@@ -185,6 +189,19 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.display_frame[offset:offset + 6],
                          bytes((255, 0, 0, 0, 255, 0)))
         self.assertEqual(emulator._lcd_frame_protocol, "selector-rgb565")
+
+    def test_byte_window_rgb565_requires_exact_large_rectangle(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        for address, value in zip(range(0x0200001A, 0x0200001E), (0, 0, 127, 63)):
+            emulator._lcd_write(None, 0, address, 1, value, None)
+        for index in range(128 * 64):
+            pixel = 0xF800 if index == 0 else 0x07E0
+            emulator._lcd_write(None, 0, 0x02000010, 1, pixel >> 8, None)
+            emulator._lcd_write(None, 0, 0x02000011, 1, pixel & 0xFF, None)
+
+        self.assertEqual(emulator._lcd_protocol, "window-byte-rgb565")
+        self.assertEqual(emulator._lcd_frame_protocol, "window-byte-rgb565")
+        self.assertEqual(emulator.display_frame[:6], bytes((255, 0, 0, 0, 255, 0)))
 
     def test_cursor_bgr444_sequence_updates_exact_horizontal_run(self) -> None:
         emulator = self._blank_emulator(visible=False, width=128, height=160)
