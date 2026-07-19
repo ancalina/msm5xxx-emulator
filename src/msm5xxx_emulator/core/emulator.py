@@ -437,12 +437,31 @@ def arm_vector_score(image: bytes, offset: int = 0) -> int:
     words = struct.unpack_from("<8I", image, offset)
     score = 0
     for index, word in enumerate(words):
-        if word & 0x0E000000 != 0x0A000000 or word >> 28 == 0xF:
+        if word >> 28 == 0xF:
             continue
-        displacement = (word & 0x00FFFFFF) << 2
-        if displacement & 0x02000000:
-            displacement -= 0x04000000
-        target = (offset + index * 4 + 8 + displacement) & 0xFFFFFFFF
+        if word & 0x0E000000 == 0x0A000000:
+            displacement = (word & 0x00FFFFFF) << 2
+            if displacement & 0x02000000:
+                displacement -= 0x04000000
+            target = (offset + index * 4 + 8 + displacement) & 0xFFFFFFFF
+            if target < len(image) or 0x01000000 <= target < 0x04000000:
+                score += 1
+            continue
+        # Qualcomm reset tables can use `ldr pc, [pc, #literal]` for every
+        # exception except reset.  Count only a literal that resolves to a
+        # plausible ROM/RAM vector target, never an arbitrary data word.
+        if (((word >> 26) & 3) != 1 or word & (1 << 25)
+                or not word & (1 << 24) or word & ((1 << 22) | (1 << 21))
+                or not word & (1 << 20) or ((word >> 16) & 15) != 15
+                or ((word >> 12) & 15) != 15):
+            continue
+        displacement = word & 0xFFF
+        if not word & (1 << 23):
+            displacement = -displacement
+        literal = offset + index * 4 + 8 + displacement
+        if not 0 <= literal <= len(image) - 4:
+            continue
+        target = struct.unpack_from("<I", image, literal)[0]
         if target < len(image) or 0x01000000 <= target < 0x04000000:
             score += 1
     return score

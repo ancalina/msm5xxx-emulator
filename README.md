@@ -20,6 +20,22 @@ First launcher run may create `.venv` and install `unicorn` and `Pillow`.
 Firmware original is read-only. Persistent NOR/EEPROM/NAND state defaults to
 `~/.msm5xxx-emulator/`; set `MSM5XXX_STATE_DIR` and `MSM5XXX_LOG_DIR` to move it.
 
+### Attach a separate NAND dump
+
+A NAND dump is data, not boot firmware. Run its matching NOR dump and attach NAND
+separately. For a RIFF-style raw dump with 16 MiB main data plus 16 spare bytes per
+512-byte page:
+
+```sh
+python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
+  --nand-data-size 0x1000000 --nand-page-size 512 --nand-spare-size 16 \
+  --nand-pages-per-block 32 --nand-bus-width 2
+```
+
+That interleaved main+spare layout is `0x1080000` bytes
+(`32768 × (512 + 16)`). The input dump stays read-only; persistent NAND changes
+are stored separately. Do not guess different geometry—submit its log and size.
+
 ## Help Improve the Emulator
 
 ### Submit a Test Log

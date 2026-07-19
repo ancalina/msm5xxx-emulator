@@ -20,6 +20,7 @@ from msm5xxx import (
     EEPROM_24LCXX_X7700_INIT_SIGNATURE,
     EEPROM_24LCXX_X7700_READ_PREFIX,
     EEPROM_24LCXX_X7700_WRITE_PREFIX,
+    arm_vector_score,
     chipset_confidence,
     detect,
     detect_chipset,
@@ -65,6 +66,24 @@ class DetectionTests(unittest.TestCase):
         telemetry = json.dumps(config.diagnostic_config(), sort_keys=True)
         self.assertNotIn(str(firmware.parent), telemetry)
         self.assertNotIn(str(Path(config.flash_state).parent), telemetry)
+
+    def test_literal_arm_vector_table_is_executable_firmware(self) -> None:
+        raw = bytearray(b"\xff" * 0x100)
+        struct.pack_into("<I", raw, 0, 0xEA000000)  # reset: b 0x8
+        for index in (1, 2, 3, 4, 6, 7):
+            struct.pack_into("<I", raw, index * 4, 0xE59FF020)
+            struct.pack_into("<I", raw, index * 4 + 8 + 0x20,
+                             0x80 + index * 4)
+        self.assertEqual(arm_vector_score(bytes(raw)), 7)
+        invalid = bytearray(raw)
+        for index in (1, 2, 3, 4, 6, 7):
+            struct.pack_into("<I", invalid, index * 4 + 8 + 0x20,
+                             0xFFFFFFFF)
+        self.assertEqual(arm_vector_score(bytes(invalid)), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "literal-vectors.bin"
+            firmware.write_bytes(raw)
+            self.assertEqual(detect(firmware).image_kind, "firmware")
 
     def test_24lcxx_driver_requires_unique_read_write_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x800)
