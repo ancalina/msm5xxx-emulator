@@ -3547,27 +3547,36 @@ class GenericMSMEmulator:
         )
 
     def _trace(self, uc: Uc, address: int, size: int, user_data: object) -> None:
-        self._restore_flash_once(uc, address, size, user_data)
-        if self._rex_irq_boundary(uc, address):
+        if self._flash_restore:
+            self._restore_flash_once(uc, address, size, user_data)
+        if self._rex_irq_pending[0] and self._rex_irq_boundary(uc, address):
             return
         self.tail.append(address)
         self.hot[address] += 1
+        count = self.hot[address]
         if address == self.config.load_address + self.config.entry:
             self.reset_entries += 1
-        if self.config.audio_play_address is None and self.audio_discovered_address is None:
+        if (getattr(self, "audio_player", None) is not None
+                and self.config.audio_play_address is None
+                and self.audio_discovered_address is None):
             self._probe_audio_call(uc, address)
         in_primary = (self.config.load_address <= address
                       < self.config.load_address + len(self.image))
-        try:
-            stream = bytes(uc.mem_read(address, min(max(size, 4), 16)))
-            zero_stream = not any(stream)
-        except UcError:
+        if in_primary and address < self.primary_rom_end:
             stream = b""
             zero_stream = False
-        missing_overlay = next((
-            item for item in self.config.missing_overlays
-            if item.target <= address < item.target + item.size
-        ), None)
+            missing_overlay = None
+        else:
+            try:
+                stream = bytes(uc.mem_read(address, min(max(size, 4), 16)))
+                zero_stream = not any(stream)
+            except UcError:
+                stream = b""
+                zero_stream = False
+            missing_overlay = next((
+                item for item in self.config.missing_overlays
+                if item.target <= address < item.target + item.size
+            ), None)
         if (missing_overlay is not None and stream
                 and stream[0] in (0, 0xFF)
                 and all(byte == stream[0] for byte in stream)):
@@ -3612,8 +3621,9 @@ class GenericMSMEmulator:
                 uc.emu_stop()
         else:
             self.zero_fetches = 0
-        if self.fault is None and self._try_hot_thumb_memory_loop(uc, address):
-            self.hot_loop_hle_used = True
+        if self.fault is None and count >= 64 and not count & 0x3F:
+            if self._try_hot_thumb_memory_loop(uc, address):
+                self.hot_loop_hle_used = True
 
     def _read(self, uc: Uc, access: int, address: int, size: int,
               value: int, user_data: object) -> None:
@@ -4077,11 +4087,9 @@ class GenericMSMEmulator:
         if not 0 <= index < self.config.width * self.config.height:
             return
         offset = index * 3
-        self.framebuffer[offset:offset + 3] = bytes((
-            (value >> 8 & 0xF8) | (value >> 13),
-            (value >> 3 & 0xFC) | (value >> 9 & 3),
-            (value << 3 & 0xF8) | (value >> 2 & 7),
-        ))
+        self.framebuffer[offset] = (value >> 8 & 0xF8) | (value >> 13)
+        self.framebuffer[offset + 1] = (value >> 3 & 0xFC) | (value >> 9 & 3)
+        self.framebuffer[offset + 2] = (value << 3 & 0xF8) | (value >> 2 & 7)
 
     def _publish_frame(self, *, firmware_originated: bool = True) -> None:
         """Atomically expose only a complete scanout to the GUI thread."""
@@ -4122,9 +4130,10 @@ class GenericMSMEmulator:
 
     def _set_display_geometry(self, width: int, height: int, *, force: bool = False) -> None:
         """Adopt a controller-proven panel geometry before its first visible frame."""
+        if (width, height) == (self.config.width, self.config.height):
+            return
         visible = any(self.framebuffer)
-        if ((width, height) == (self.config.width, self.config.height)
-                or (visible and not force)
+        if ((visible and not force)
                 or not (64 <= width <= 320 and 64 <= height <= 320)):
             return
         with self._display_lock:

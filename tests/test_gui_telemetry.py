@@ -1,6 +1,7 @@
 """Pure GUI diagnostic telemetry regressions; no Tk or firmware required."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -11,12 +12,33 @@ from unittest import mock
 from PIL import Image
 
 from gui import (TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_SCREENSHOT_CADENCE,
+                 _frame_metrics,
                  create_repro_bundle, finish_repro_bundle,
+                 frame_repaint_needed,
                  hydrate_host_checkpoint, runtime_telemetry, save_telemetry_frame,
                  telemetry_artifact_due, telemetry_transition)
 
 
 class GuiTelemetryTests(unittest.TestCase):
+    def test_frame_repaint_cache_requires_frame_emulator_or_geometry_change(self) -> None:
+        emulator = object()
+        frame = b"rgb"
+        cache = (emulator, frame, 1, 1, 100, 100)
+        self.assertFalse(frame_repaint_needed(cache, emulator, frame, 1, 1, 100, 100))
+        self.assertTrue(frame_repaint_needed(cache, object(), frame, 1, 1, 100, 100))
+        self.assertTrue(frame_repaint_needed(cache, emulator, bytes(bytearray(frame)),
+                                             1, 1, 100, 100))
+        self.assertTrue(frame_repaint_needed(cache, emulator, frame, 1, 1, 101, 100))
+
+    def test_frame_metrics_reuses_identical_immutable_frame(self) -> None:
+        frame = b"\0\0\0\xff\0\0"
+        self.assertEqual(_frame_metrics(frame, frame, "cached", 4), ("cached", 4))
+
+        changed = bytes(bytearray(frame))
+        frame_hash, nonblack = _frame_metrics(changed, frame, "cached", 4)
+        self.assertEqual(frame_hash, hashlib.sha256(changed).hexdigest())
+        self.assertEqual(nonblack, 1)
+
     def _state(self, **changes: object) -> dict[str, object]:
         state: dict[str, object] = {
             "fault": None,

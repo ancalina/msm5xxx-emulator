@@ -44,6 +44,17 @@ GUI_ZERO_DISABLE_FIELDS = DISABLEABLE_ADDRESS_FIELDS | {
 TELEMETRY_INSTRUCTION_CADENCE = 1_000_000
 TELEMETRY_SCREENSHOT_CADENCE = 5_000_000
 TELEMETRY_SCREENSHOT_CAP = 32
+
+
+def frame_repaint_needed(
+        cache: tuple[object, bytes, int, int, int, int] | None,
+        emulator: object, frame: bytes, frame_width: int, frame_height: int,
+        canvas_width: int, canvas_height: int) -> bool:
+    """Avoid rebuilding Pillow/Tk objects for an immutable displayed frame."""
+    return (cache is None or cache[0] is not emulator or cache[1] is not frame
+            or cache[2:] != (frame_width, frame_height, canvas_width, canvas_height))
+
+
 KEYS = {
     "메뉴": 0, "▲": 1, "취소": 2, "통화": 3, "◀": 4,
     "OK": 5, "▶": 6, "종료": 7, "볼륨-": 8, "▼": 9,
@@ -197,6 +208,14 @@ def firmware_telemetry(config: object) -> dict[str, object]:
         "bytes": config.file_size,  # type: ignore[attr-defined]
         "sha256": digest,
     }
+
+
+def _frame_metrics(frame: bytes, previous_frame: bytes, previous_hash: str,
+                   previous_nonblack: int) -> tuple[str, int]:
+    """Reuse metrics for the immutable frame returned between publishes."""
+    if frame is previous_frame:
+        return previous_hash, previous_nonblack
+    return hashlib.sha256(frame).hexdigest(), visible_pixels(frame)
 
 
 def _counter(state: dict[str, object], name: str) -> int:
@@ -597,6 +616,7 @@ class Window:
         self.keyboard_sources: set[str] = set()
         self.pending_key_releases: dict[str, str] = {}
         self.photo: ImageTk.PhotoImage | None = None
+        self._render_cache: tuple[object, bytes, int, int, int, int] | None = None
         self.status = tk.StringVar(value=self._text("ready"))
         self.model = tk.StringVar(value=self._text("detecting"))
         self._configure_style()
@@ -778,6 +798,7 @@ class Window:
         self.commands = queue.SimpleQueue()
         self.held.clear()
         self.emulator = None
+        self._render_cache = None
         self.status.set(self._text("restarting"))
         self._start_when_stopped(generation)
 
@@ -880,6 +901,8 @@ class Window:
             _width, _height, initial_frame = emulator.display_snapshot()
             reset_hash = hashlib.sha256(initial_frame).hexdigest()
             previous_frame_hash = reset_hash
+            previous_frame = initial_frame
+            previous_nonblack = visible_pixels(initial_frame)
             saw_splash = False
             last_phase: str | None = None
             last_event: str | None = None
@@ -901,8 +924,9 @@ class Window:
                                     framebuffer_format, generation)
                 state = emulator.run(25_000)
                 frame_width, frame_height, frame = emulator.display_snapshot()
-                frame_hash = hashlib.sha256(frame).hexdigest()
-                nonblack = visible_pixels(frame)
+                frame_hash, nonblack = _frame_metrics(
+                    frame, previous_frame, previous_frame_hash, previous_nonblack
+                )
                 phase, event, saw_splash, telemetry_due = telemetry_transition(
                     state, nonblack, frame_hash, reset_hash, previous_frame_hash,
                     saw_splash, last_phase, last_event, last_telemetry_instructions,
@@ -944,6 +968,8 @@ class Window:
                     last_phase, last_event = phase, event
                     last_telemetry_instructions = instructions
                 previous_frame_hash = frame_hash
+                previous_frame = frame
+                previous_nonblack = nonblack
                 now = time.monotonic()
                 if state["fault"] or now - last_publish >= 0.1:
                     self.states.put((generation, state))
@@ -1064,14 +1090,23 @@ class Window:
         emulator = self.emulator
         if emulator is not None:
             frame_width, frame_height, frame = emulator.display_snapshot()
-            image = Image.frombytes("RGB", (frame_width, frame_height), frame)
             width = max(1, self.screen.winfo_width())
             height = max(1, self.screen.winfo_height())
-            scale = min(width / image.width, height / image.height)
-            size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
-            self.photo = ImageTk.PhotoImage(image.resize(size, Image.Resampling.NEAREST))
-            self.screen.delete("all")
-            self.screen.create_image(width // 2, height // 2, image=self.photo)
+            if frame_repaint_needed(
+                    self._render_cache, emulator, frame, frame_width, frame_height,
+                    width, height):
+                image = Image.frombytes("RGB", (frame_width, frame_height), frame)
+                scale = min(width / image.width, height / image.height)
+                size = (max(1, int(image.width * scale)),
+                        max(1, int(image.height * scale)))
+                self.photo = ImageTk.PhotoImage(
+                    image.resize(size, Image.Resampling.NEAREST)
+                )
+                self.screen.delete("all")
+                self.screen.create_image(width // 2, height // 2, image=self.photo)
+                self._render_cache = (
+                    emulator, frame, frame_width, frame_height, width, height
+                )
         self.root.after(100, self._refresh)
 
     def _show_save_errors(self) -> None:

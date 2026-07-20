@@ -5,7 +5,7 @@ from collections import Counter, deque
 import struct
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from unicorn import (
     Uc, UC_ARCH_ARM, UC_HOOK_BLOCK, UC_HOOK_CODE, UC_HOOK_MEM_READ,
@@ -36,6 +36,53 @@ from msm5xxx import GenericMSMEmulator
 
 
 class RexIdleObservationTests(unittest.TestCase):
+    def test_trace_skips_work_until_observer_preconditions_are_met(self) -> None:
+        def harness(audio_player: object | None) -> GenericMSMEmulator:
+            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator.config = SimpleNamespace(
+                load_address=0, entry=0x100, audio_play_address=None,
+                missing_overlays=(), runtime_overlays=(),
+            )
+            emulator._flash_restore = {}
+            emulator._restore_flash_once = Mock()
+            emulator._rex_irq_pending = [0, 0]
+            emulator._rex_irq_boundary = Mock(return_value=False)
+            emulator.tail = deque(maxlen=64)
+            emulator.hot = Counter()
+            emulator.reset_entries = 0
+            emulator.audio_player = audio_player
+            emulator.audio_discovered_address = None
+            emulator.image = b"\x01" * 0x100
+            emulator.primary_rom_end = len(emulator.image)
+            emulator.zero_fetches = 0
+            emulator.fault = None
+            emulator.hot_loop_hle_used = False
+            emulator._try_hot_thumb_memory_loop = Mock(return_value=False)
+            emulator._probe_audio_call = Mock()
+            return emulator
+
+        uc = Mock()
+        disabled = harness(None)
+        for _ in range(63):
+            disabled._trace(uc, 0x10, 4, None)
+        disabled._probe_audio_call.assert_not_called()
+        disabled._restore_flash_once.assert_not_called()
+        disabled._rex_irq_boundary.assert_not_called()
+        disabled._try_hot_thumb_memory_loop.assert_not_called()
+        uc.mem_read.assert_not_called()
+
+        disabled._trace(uc, 0x10, 4, None)
+        disabled._try_hot_thumb_memory_loop.assert_called_once_with(uc, 0x10)
+        disabled._flash_restore[0] = b"x"
+        disabled._rex_irq_pending[0] = 1
+        disabled._trace(uc, 0x10, 4, None)
+        disabled._restore_flash_once.assert_called_once_with(uc, 0x10, 4, None)
+        disabled._rex_irq_boundary.assert_called_once_with(uc, 0x10)
+
+        enabled = harness(object())
+        enabled._trace(uc, 0x10, 4, None)
+        enabled._probe_audio_call.assert_called_once_with(uc, 0x10)
+
     def test_idle_only_signature_observes_without_changing_cpu(self) -> None:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(rex_tick_address=None, rex_tick_ms=1000)
@@ -279,6 +326,7 @@ class RexIdleObservationTests(unittest.TestCase):
         emulator.fault = None
         emulator.hot_loop_hle_used = False
         emulator._try_hot_thumb_memory_loop = lambda *args: False
+        emulator._flash_restore = {}
 
         uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
         uc.mem_map(0, 0x6000)

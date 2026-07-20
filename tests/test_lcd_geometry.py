@@ -10,6 +10,26 @@ from msm5xxx import GenericMSMEmulator, detect_lcd_width_hint
 
 
 class LCDGeometryTests(unittest.TestCase):
+    def test_same_geometry_returns_before_scanning_framebuffer(self) -> None:
+        class UnscannableFramebuffer:
+            def __iter__(self):
+                raise AssertionError("same geometry must not scan framebuffer")
+
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(width=128, height=160)
+        emulator.framebuffer = UnscannableFramebuffer()
+        emulator._set_display_geometry(128, 160)
+
+    def test_pixel_writes_exact_rgb565_channels_without_touching_neighbours(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(width=2, height=1)
+        emulator.framebuffer = bytearray(b"\xaa" * 6)
+
+        emulator._pixel(1, 0xF81F)
+        self.assertEqual(emulator.framebuffer, b"\xaa\xaa\xaa\xff\x00\xff")
+        emulator._pixel(2, 0)
+        self.assertEqual(emulator.framebuffer, b"\xaa\xaa\xaa\xff\x00\xff")
+
     def test_full_zero_based_gram_window_proves_128_by_160(self) -> None:
         self.assertEqual(
             GenericMSMEmulator._lcd_full_window_geometry([0, 127], [0, 159]),
