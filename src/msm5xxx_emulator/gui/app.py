@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import locale
 import logging
+import os
 from pathlib import Path
 import queue
 import shutil
@@ -58,6 +60,108 @@ LAYOUT = (
     ("7", 7, 1), ("8", 7, 2), ("9", 7, 3),
     ("*", 8, 1), ("0", 8, 2), ("#", 8, 3),
 )
+
+UI_LANGUAGE_CHOICES = ("auto", "ko", "en")
+UI_TEXT = {
+    "ko": {
+        "window_title": "MSM5000 / MSM5100 / MSM5500 에뮬레이터",
+        "ready": "준비", "detecting": "자동 탐지 중", "settings": "설정",
+        "capture": "캡처", "restarting": "재부팅 중", "boot_settings": "부팅 설정",
+        "ui_language": "UI 언어", "choose_file": "파일 선택…",
+        "choose_firmware": "펌웨어 파일 선택", "apply": "적용 (필요 시 재부팅)",
+        "save_failed": "저장 실패", "settings_error": "설정 오류",
+        "settings_save_error": "설정 저장 오류",
+    },
+    "en": {
+        "window_title": "MSM5000 / MSM5100 / MSM5500 Emulator",
+        "ready": "Ready", "detecting": "Detecting automatically", "settings": "Settings",
+        "capture": "Capture", "restarting": "Restarting", "boot_settings": "Boot Settings",
+        "ui_language": "UI Language", "choose_file": "Choose File…",
+        "choose_firmware": "Choose Firmware", "apply": "Apply (restart if needed)",
+        "save_failed": "Save Failed", "settings_error": "Settings Error",
+        "settings_save_error": "Settings Save Error",
+    },
+}
+KEY_TEXT = {
+    "ko": {},
+    "en": {"메뉴": "Menu", "취소": "Cancel", "통화": "Call", "종료": "End",
+           "볼륨-": "Vol-", "볼륨+": "Vol+"},
+}
+SETTINGS_ENGLISH = {
+    "기본": "Basic", "메모리": "Memory", "화면 버퍼": "Display Buffer",
+    "하드웨어": "Hardware", "함수": "Functions", "부팅 HLE": "Boot HLE",
+    "저장": "Storage", "펌웨어": "Firmware", "모델": "Model", "칩셋": "Chipset",
+    "화면 너비": "Screen Width", "화면 높이": "Screen Height",
+    "Board revision 이름": "Board Revision Name", "이미지 오프셋": "Image Offset",
+    "로드 주소": "Load Address", "Flash 크기": "Flash Size", "RAM 시작 주소": "RAM Base",
+    "RAM 크기": "RAM Size", "RAM image 오프셋": "RAM Image Offset",
+    "RAM image 크기 (0=끔)": "RAM Image Size (0=off)", "진입점 오프셋": "Entry Offset",
+    "Framebuffer 주소 (빈 값=끔)": "Framebuffer Address (empty=off)",
+    "Row flush 함수": "Row Flush Function", "Rect flush 함수": "Rect Flush Function",
+    "Board revision 레지스터": "Board Revision Register", "Board revision 값": "Board Revision Value",
+    "키 레지스터": "Key Register", "키 active-low": "Key Active-Low",
+    "Audio play 함수": "Audio Play Function", "Fast boot 함수": "Fast Boot Function",
+    "Delay 함수": "Delay Function", "Busy delay 함수": "Busy Delay Function",
+    "CRC16 함수": "CRC16 Function", "NAND bad-block 함수": "NAND Bad-Block Function",
+    "NAND read 함수": "NAND Read Function", "NAND write 함수": "NAND Write Function",
+    "REX idle 함수": "REX Idle Function", "REX tick 함수": "REX Tick Function",
+    "REX tick 밀리초": "REX Tick Milliseconds", "Board ADC 함수": "Board ADC Function",
+    "Board ADC 값": "Board ADC Value", "Flash ID 함수": "Flash ID Function",
+    "Flash ID 값": "Flash ID Value", "DMD download 함수": "DMD Download Function",
+    "NOR probe 함수": "NOR Probe Function", "보조 NOR 주소 (0=끔)": "Secondary NOR Address (0=off)",
+    "보조 NOR 크기": "Secondary NOR Size", "보조 NOR image": "Secondary NOR Image",
+    "보조 NOR state": "Secondary NOR State", "보조 NOR read 함수": "Secondary NOR Read Function",
+    "보조 NOR write 함수": "Secondary NOR Write Function",
+    "Legacy EFS page read 함수": "Legacy EFS Page Read Function", "NAND 사용": "Enable NAND",
+    "NAND data 크기": "NAND Data Size", "NAND page 크기": "NAND Page Size",
+    "NAND spare 크기": "NAND Spare Size", "NAND block당 pages": "NAND Pages per Block",
+}
+
+
+def normalize_ui_language(value: object) -> str:
+    return value if isinstance(value, str) and value in UI_LANGUAGE_CHOICES else "auto"
+
+
+def system_ui_language(locale_name: str | None = None) -> str:
+    if locale_name is None:
+        locale_name = os.environ.get("LC_ALL") or next(
+            (os.environ[name] for name in ("LC_MESSAGES", "LANGUAGE", "LANG")
+             if os.environ.get(name)), None
+        )
+    if locale_name is None:
+        try:
+            locale_name = locale.getlocale(locale.LC_MESSAGES)[0] or locale.getlocale()[0]
+        except ValueError:
+            locale_name = None
+    normalized = (locale_name or "").lower()
+    return "ko" if normalized.startswith("ko") or "korean" in normalized else "en"
+
+
+def resolve_ui_language(preference: object, locale_name: str | None = None) -> str:
+    preference = normalize_ui_language(preference)
+    return system_ui_language(locale_name) if preference == "auto" else preference
+
+
+def runtime_status_text(latest: dict[str, object], ui_language: str) -> str:
+    english = ui_language == "en"
+    parts = [
+        f"{'Run' if english else '실행'} {latest['instructions']:,}",
+        f"PC {latest.get('pc', '?')}",
+        f"LCD {int(latest.get('lcd_writes', 0)):,}",
+        f"frame {latest.get('frame_sequence', 0)}",
+    ]
+    audio_requests = int(latest.get("audio_play_requests", 0))
+    audio_backend = str(latest.get("audio_backend", ""))
+    if audio_requests:
+        parts.append(f"{'Audio' if english else '오디오'} {audio_requests}")
+    elif audio_backend in ("disabled", "render-only"):
+        parts.append("Audio unavailable" if english else "오디오 재생기 없음")
+    if latest.get("audio_error"):
+        parts.append(f"{'Audio error' if english else '오디오 오류'}: {latest['audio_error']}")
+    if latest.get("input_error"):
+        parts.append(f"{'Input error' if english else '입력 오류'}: {latest['input_error']}")
+    return "\n".join(parts)
+
 def merge_settings_overrides(current: dict[str, object], edited: set[str],
                              parsed: dict[str, object],
                              firmware_changed: bool) -> dict[str, object]:
@@ -216,6 +320,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
         "control_sink": state.get("control_sink"),
         "last_unmapped": _mapping(state, "last_unmapped"),
         "unmapped_accesses": state.get("unmapped_accesses", []),
+        "dynamic_page_first_accesses": state.get("dynamic_page_first_accesses", []),
         "fault": state.get("fault"),
         "fault_context": _mapping(state, "fault_context"),
     }
@@ -453,7 +558,8 @@ def _compact_telemetry(payload: dict[str, object]) -> dict[str, object]:
             "generation", "firmware", "model", "chipset", "dump_status",
             "instructions", "pc", "lr", "cpsr", "phase", "event", "frame",
             "lcd", "rex", "nor", "eeprom", "nand", "control_sink",
-            "last_unmapped", "unmapped_accesses", "fault",
+            "last_unmapped", "unmapped_accesses", "dynamic_page_first_accesses",
+            "fault",
         ) if name in payload
     }
 
@@ -471,9 +577,10 @@ class Window:
     def __init__(self, root: tk.Tk, firmware: Path) -> None:
         LOGGER.info("window create firmware=%s build=%s", firmware.name, BUILD_CODENAME)
         self.root = root
-        self.root.title("MSM5000 / MSM5100 / MSM5500 Emulator")
         self.root.minsize(360, 640)
         self.firmware = firmware
+        self.ui_language_preference = self._load_ui_language()
+        self.ui_language = resolve_ui_language(self.ui_language_preference)
         self.overrides = self._load_config()
         self.emulator: GenericMSMEmulator | None = None
         self.worker: threading.Thread | None = None
@@ -490,8 +597,8 @@ class Window:
         self.keyboard_sources: set[str] = set()
         self.pending_key_releases: dict[str, str] = {}
         self.photo: ImageTk.PhotoImage | None = None
-        self.status = tk.StringVar(value="준비")
-        self.model = tk.StringVar(value="자동 탐지 중")
+        self.status = tk.StringVar(value=self._text("ready"))
+        self.model = tk.StringVar(value=self._text("detecting"))
         self._configure_style()
         self._build()
         self._bind_keyboard()
@@ -499,6 +606,22 @@ class Window:
         self.root.after(50, self._refresh)
         self.root.after(750, self._check_for_update)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _text(self, key: str) -> str:
+        return UI_TEXT[self.ui_language][key]
+
+    def _key_text(self, key: str) -> str:
+        return KEY_TEXT[self.ui_language].get(key, key)
+
+    def _settings_text(self, text: str) -> str:
+        return SETTINGS_ENGLISH.get(text, text) if self.ui_language == "en" else text
+
+    def _apply_ui_language(self) -> None:
+        self.root.title(self._text("window_title"))
+        for key, button in self.key_buttons.items():
+            button.configure(text=self._key_text(key))
+        self.settings_button.configure(text=self._text("settings"))
+        self.capture_button.configure(text=self._text("capture"))
 
     def _configure_style(self) -> None:
         style = ttk.Style(self.root)
@@ -522,9 +645,12 @@ class Window:
 
         controls = ttk.Frame(outer, style="Phone.TFrame")
         controls.pack()
+        self.key_buttons: dict[str, ttk.Button] = {}
         for label, row, column in LAYOUT:
-            button = ttk.Button(controls, text=label, style="Phone.TButton", takefocus=False)
+            button = ttk.Button(controls, text=self._key_text(label),
+                                style="Phone.TButton", takefocus=False)
             button.grid(row=row, column=column, padx=2, pady=1)
+            self.key_buttons[label] = button
             bit = KEYS[label]
             button.bind("<ButtonPress-1>",
                         lambda _event, b=bit: self._key(b, True, f"mouse:{b}"))
@@ -533,10 +659,14 @@ class Window:
 
         tools = ttk.Frame(outer, style="Phone.TFrame")
         tools.pack(pady=(2, 4))
-        ttk.Button(tools, text="설정", command=self._settings,
-                   style="Tool.Phone.TButton").grid(row=0, column=0, padx=2)
-        ttk.Button(tools, text="PNG 저장", command=self._save_png,
-                   style="Tool.Phone.TButton").grid(row=0, column=1, padx=2)
+        self.settings_button = ttk.Button(tools, text=self._text("settings"),
+                                          command=self._settings,
+                                          style="Tool.Phone.TButton")
+        self.settings_button.grid(row=0, column=0, padx=2)
+        self.capture_button = ttk.Button(tools, text=self._text("capture"),
+                                         command=self._save_png,
+                                         style="Tool.Phone.TButton")
+        self.capture_button.grid(row=0, column=1, padx=2)
 
         ttk.Separator(outer).pack(fill="x", pady=(4, 3))
         self.model_label = ttk.Label(outer, textvariable=self.model, anchor="w",
@@ -552,6 +682,7 @@ class Window:
             self.status_label.configure(wraplength=length)
 
         outer.bind("<Configure>", wrap_status)
+        self._apply_ui_language()
 
     def _bind_keyboard(self) -> None:
         self.keyboard_mapping = {
@@ -647,7 +778,7 @@ class Window:
         self.commands = queue.SimpleQueue()
         self.held.clear()
         self.emulator = None
-        self.status.set("재부팅 중")
+        self.status.set(self._text("restarting"))
         self._start_when_stopped(generation)
 
     def _check_for_update(self) -> None:
@@ -922,26 +1053,14 @@ class Window:
             if "model" in latest:
                 self.model.set(str(latest["model"]))
             if "instructions" in latest:
-                parts = [f"실행 {latest['instructions']:,}",
-                         f"PC {latest.get('pc', '?')}",
-                         f"LCD {int(latest.get('lcd_writes', 0)):,}",
-                         f"frame {latest.get('frame_sequence', 0)}"]
-                audio_requests = int(latest.get("audio_play_requests", 0))
-                audio_backend = str(latest.get("audio_backend", ""))
-                if audio_requests:
-                    parts.append(f"오디오 {audio_requests}")
-                elif audio_backend in ("disabled", "render-only"):
-                    parts.append("오디오 재생기 없음")
-                text = " · ".join(parts)
-                if latest.get("audio_error"):
-                    text += f"\n오디오 오류: {latest['audio_error']}"
-                if latest.get("input_error"):
-                    text += f"\n입력 오류: {latest['input_error']}"
-                self.status.set(text)
+                self.status.set(runtime_status_text(latest, self.ui_language))
             if latest.get("fault"):
-                self.status.set(f"중지: {latest['fault']}")
+                self.status.set(f"{'Stopped' if self.ui_language == 'en' else '중지'}: {latest['fault']}")
             if latest.get("host_backend_fault"):
-                self.status.set(f"호스트 backend 중지: {latest['host_backend_fault']}")
+                self.status.set(
+                    f"{'Host backend stopped' if self.ui_language == 'en' else '호스트 backend 중지'}: "
+                    f"{latest['host_backend_fault']}"
+                )
         emulator = self.emulator
         if emulator is not None:
             frame_width, frame_height, frame = emulator.display_snapshot()
@@ -965,12 +1084,12 @@ class Window:
         if not errors:
             return
         detail = "\n".join(dict.fromkeys(errors))
-        self.status.set(f"저장 실패: {detail}")
-        messagebox.showerror("저장 실패", detail, parent=self.root)
+        self.status.set(f"{self._text('save_failed')}: {detail}")
+        messagebox.showerror(self._text("save_failed"), detail, parent=self.root)
 
     def _settings(self) -> None:
         dialog = tk.Toplevel(self.root)
-        dialog.title("부팅 설정")
+        dialog.title(self._text("boot_settings"))
         dialog.transient(self.root)
         detected = self.emulator.config if self.emulator is not None else detect(self.firmware)
 
@@ -1097,6 +1216,17 @@ class Window:
                     ("nand_pages_per_block", "NAND block당 pages"),
                     ("nand_bus_width", "NAND bus bytes"))),
         )
+        language_labels = {
+            "auto": "자동 (시스템)" if self.ui_language == "ko" else "Auto (System)",
+            "ko": "한국어", "en": "English",
+        }
+        language_choice = tk.StringVar(value=language_labels[self.ui_language_preference])
+        language_frame = ttk.Frame(dialog, padding=(10, 10, 10, 0))
+        language_frame.pack(fill="x")
+        ttk.Label(language_frame, text=self._text("ui_language")).pack(side="left")
+        ttk.Combobox(language_frame, textvariable=language_choice,
+                     values=tuple(language_labels.values()), state="readonly",
+                     width=20).pack(side="right")
         notebook = ttk.Notebook(dialog)
         notebook.pack(fill="both", expand=True, padx=10, pady=(10, 4))
         entries: dict[str, ttk.Entry | ttk.Combobox] = {}
@@ -1108,7 +1238,7 @@ class Window:
                            else self.firmware.parent)
             chosen = filedialog.askopenfilename(
                 parent=dialog,
-                title="펌웨어 파일 선택",
+                title=self._text("choose_firmware"),
                 initialdir=str(initial_dir),
                 filetypes=(
                     ("Firmware images", "*.bin *.dump *.img *.mbn"),
@@ -1125,9 +1255,10 @@ class Window:
         for title, fields in sections:
             page = ttk.Frame(notebook, padding=10)
             page.columnconfigure(1, weight=1)
-            notebook.add(page, text=title)
+            notebook.add(page, text=self._settings_text(title))
             for row, (name, label) in enumerate(fields):
-                ttk.Label(page, text=label).grid(row=row, column=0, sticky="w", pady=2)
+                ttk.Label(page, text=self._settings_text(label)).grid(
+                    row=row, column=0, sticky="w", pady=2)
                 if name in boolean_fields:
                     widget = ttk.Combobox(page, values=("true", "false"),
                                           state="readonly", width=40)
@@ -1151,7 +1282,7 @@ class Window:
                 widget.grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=2)
                 entries[name] = widget
                 if name == "firmware":
-                    ttk.Button(page, text="파일 선택…", command=choose_firmware).grid(
+                    ttk.Button(page, text=self._text("choose_file"), command=choose_firmware).grid(
                         row=row, column=2, sticky="e", padx=(8, 0), pady=2)
 
         def integer(name: str) -> int:
@@ -1171,6 +1302,10 @@ class Window:
 
         def apply() -> None:
             try:
+                ui_language = next((name for name, label in language_labels.items()
+                                    if label == language_choice.get()), None)
+                if ui_language is None:
+                    raise ValueError("UI language selection is invalid")
                 firmware = Path(entries["firmware"].get()).expanduser().resolve()
                 if not firmware.is_file():
                     raise ValueError("펌웨어 파일 없음")
@@ -1395,7 +1530,7 @@ class Window:
                         and not Path(overrides["nand_image"]).is_file()):
                     raise ValueError("NAND raw image 파일 없음")
             except (OSError, ValueError) as error:
-                messagebox.showerror("설정 오류", str(error), parent=dialog)
+                messagebox.showerror(self._text("settings_error"), str(error), parent=dialog)
                 return
             live_framebuffer_format = can_apply_live_framebuffer_format(
                 edited, firmware_changed, framebuffer_address,
@@ -1404,25 +1539,41 @@ class Window:
                 and not self.stop.is_set(),
             ) and self.emulator is not None
             old_firmware, old_overrides = self.firmware, self.overrides
+            old_ui_preference, old_ui_language = (
+                self.ui_language_preference, self.ui_language
+            )
             self.firmware, self.overrides = firmware, minimal
+            self.ui_language_preference = ui_language
+            self.ui_language = resolve_ui_language(ui_language)
             LOGGER.info("settings applied firmware=%s override_keys=%s",
                         firmware.name, sorted(minimal))
             try:
                 self._save_config()
             except OSError as error:
                 self.firmware, self.overrides = old_firmware, old_overrides
-                messagebox.showerror("설정 저장 오류", str(error), parent=dialog)
+                self.ui_language_preference, self.ui_language = (
+                    old_ui_preference, old_ui_language
+                )
+                messagebox.showerror(self._text("settings_save_error"), str(error), parent=dialog)
                 return
             dialog.destroy()
+            language_changed = self.ui_language != old_ui_language
+            language_preference_changed = self.ui_language_preference != old_ui_preference
+            if language_changed:
+                self._apply_ui_language()
+            if language_preference_changed and not edited and not firmware_changed:
+                return
             if live_framebuffer_format:
                 self.commands.put(("framebuffer-format", overrides["framebuffer_format"]))
-                self.status.set("Framebuffer 색상맵 적용 중")
+                self.status.set("Applying framebuffer colour map"
+                                if self.ui_language == "en"
+                                else "Framebuffer 색상맵 적용 중")
             else:
                 self._restart()
 
         footer = ttk.Frame(dialog, padding=(10, 4, 10, 10))
         footer.pack(fill="x")
-        ttk.Button(footer, text="적용 (필요 시 재부팅)", command=apply).pack(side="right")
+        ttk.Button(footer, text=self._text("apply"), command=apply).pack(side="right")
 
     def _save_png(self) -> None:
         emulator = self.emulator
@@ -1433,6 +1584,13 @@ class Window:
         if path:
             width, height, frame = emulator.display_snapshot()
             Image.frombytes("RGB", (width, height), frame).save(path)
+
+    def _load_ui_language(self) -> str:
+        try:
+            data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
+            return normalize_ui_language(data.get("ui_language"))
+        except (AttributeError, OSError, ValueError):
+            return "auto"
 
     def _load_config(self) -> dict[str, object]:
         try:
@@ -1466,7 +1624,8 @@ class Window:
             profiles[str(self.firmware.resolve())] = self.overrides
             atomic_write_text(
                 path,
-                json.dumps({"profiles": profiles}, ensure_ascii=False, indent=2) + "\n",
+                json.dumps({"ui_language": self.ui_language_preference, "profiles": profiles},
+                           ensure_ascii=False, indent=2) + "\n",
             )
             LOGGER.info("GUI profile saved firmware=%s override_keys=%s",
                         self.firmware.name, sorted(self.overrides))

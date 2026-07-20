@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
-from unicorn import (Uc, UC_ARCH_ARM, UC_MEM_WRITE_UNMAPPED, UC_MODE_ARM,
+from unicorn import (Uc, UC_ARCH_ARM, UC_MEM_READ_UNMAPPED, UC_MEM_WRITE_UNMAPPED, UC_MODE_ARM,
                      UC_PROT_READ, UC_PROT_WRITE)
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC
 
@@ -22,6 +22,7 @@ class LCDMMIOApertureTests(unittest.TestCase):
         emulator._chunk_unmapped = None
         emulator._lcd_mmio_extended_mapped = False
         emulator.dynamic_pages = set()
+        emulator.dynamic_page_first_accesses = deque(maxlen=16)
         emulator.fault = None
         emulator._attach_lazy_secondary_nor = lambda *args: False
         return emulator
@@ -75,6 +76,22 @@ class LCDMMIOApertureTests(unittest.TestCase):
              "size": 2, "value": 0x300, "pc": 0x12345678,
              "outcome": "fault-high-address"},
         ])
+
+    def test_dynamic_page_records_read_or_write_first_access(self) -> None:
+        emulator = self._emulator()
+        uc = Mock()
+        uc.reg_read.return_value = 0x12345678
+
+        self.assertTrue(emulator._unmapped(
+            uc, UC_MEM_READ_UNMAPPED, 0x01001234, 2, 0, None
+        ))
+
+        self.assertEqual(list(emulator.dynamic_page_first_accesses), [{
+            "access": UC_MEM_READ_UNMAPPED, "address": 0x01001234,
+            "size": 2, "value": 0, "pc": 0x12345678,
+            "outcome": "dynamic-rw-page", "page": 0x01001000,
+            "first_access": "read",
+        }])
 
 
 class OpenBusReadTests(unittest.TestCase):

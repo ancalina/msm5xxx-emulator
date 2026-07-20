@@ -3048,6 +3048,9 @@ class GenericMSMEmulator:
         self._lcd_index = 0
         self._lcd_indexed_dirty = False
         self.dynamic_pages: set[int] = set()
+        self.dynamic_page_first_accesses: deque[dict[str, int | str]] = deque(
+            maxlen=UNMAPPED_ACCESS_HISTORY_LIMIT
+        )
         self.last_unmapped: dict[str, int | str] | None = None
         self.unmapped_accesses: deque[dict[str, int | str]] = deque(
             maxlen=UNMAPPED_ACCESS_HISTORY_LIMIT
@@ -3440,7 +3443,8 @@ class GenericMSMEmulator:
             self._chunk_unmapped = event
             return False
         page = address & -PAGE
-        if page not in self.dynamic_pages and len(self.dynamic_pages) >= MAX_DYNAMIC_PAGES:
+        first_dynamic_page = page not in self.dynamic_pages
+        if first_dynamic_page and len(self.dynamic_pages) >= MAX_DYNAMIC_PAGES:
             self.fault = (f"dynamic data mapping limit ({MAX_DYNAMIC_PAGES * PAGE // 0x100000} MiB) "
                           f"at 0x{address:08X}")
             event["outcome"] = "fault-dynamic-limit"
@@ -3458,6 +3462,13 @@ class GenericMSMEmulator:
             self._chunk_unmapped = event
             return False
         event["outcome"] = "dynamic-rw-page"
+        if first_dynamic_page:
+            first_access = dict(event)
+            first_access["page"] = page
+            first_access["first_access"] = (
+                "read" if access == UC_MEM_READ_UNMAPPED else "write"
+            )
+            self.dynamic_page_first_accesses.append(first_access)
         self.unmapped_accesses.append(event)
         return True
 
@@ -7185,6 +7196,7 @@ class GenericMSMEmulator:
         hottest = max(reads.items(), key=lambda item: item[1]) if reads else None
         last_unmapped = getattr(self, "last_unmapped", None)
         unmapped_accesses = getattr(self, "unmapped_accesses", ())
+        dynamic_page_first_accesses = getattr(self, "dynamic_page_first_accesses", ())
         safe_unmapped = None
         if last_unmapped is not None:
             safe_unmapped = {
@@ -7201,6 +7213,14 @@ class GenericMSMEmulator:
                 **({"pc": f"0x{event['pc']:08X}"} if "pc" in event else {}),
             }
             for event in unmapped_accesses
+        ]
+        safe_dynamic_page_first_accesses = [
+            {**event,
+             "address": f"0x{event['address']:08X}",
+             "page": f"0x{event['page']:08X}",
+             "value": f"0x{event['value']:X}",
+             **({"pc": f"0x{event['pc']:08X}"} if "pc" in event else {})}
+            for event in dynamic_page_first_accesses
         ]
         secondary = getattr(self, "secondary_flash", None)
         return {
@@ -7244,6 +7264,7 @@ class GenericMSMEmulator:
             "dynamic_pages": len(self.dynamic_pages),
             "last_unmapped": safe_unmapped,
             "unmapped_accesses": safe_unmapped_accesses,
+            "dynamic_page_first_accesses": safe_dynamic_page_first_accesses,
             "hottest_mmio_read": (
                 {"pc": f"0x{hottest[0][0]:08X}",
                  "address": f"0x{hottest[0][1]:08X}",
@@ -7417,6 +7438,12 @@ class GenericMSMEmulator:
                 {**event, "address_hex": f"0x{event['address']:08X}",
                  **({"pc_hex": f"0x{event['pc']:08X}"} if "pc" in event else {})}
                 for event in getattr(self, "unmapped_accesses", ())
+            ],
+            "dynamic_page_first_accesses": [
+                {**event, "address_hex": f"0x{event['address']:08X}",
+                 "page_hex": f"0x{event['page']:08X}",
+                 **({"pc_hex": f"0x{event['pc']:08X}"} if "pc" in event else {})}
+                for event in getattr(self, "dynamic_page_first_accesses", ())
             ],
             "lcd_writes": self.lcd_writes,
             "lcd_protocol": self._lcd_protocol,

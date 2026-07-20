@@ -55,6 +55,8 @@ are stored separately. Do not guess different geometry—submit its log and size
 2. Compress the generated `logs/` directory as `logs.zip` and submit it through
    [the test log form](https://forms.gle/8ThEtrJgZceiAE3HA).
 
+...or find Ancalina somewhere and send the archive directly.
+
 CLI JSON records a completed direct primary-NOR `0x90`, `+0/+2`, `0xFF` ID
 probe without changing mapped NOR data. Captured words are dump bytes, not
 claimed physical IDs.
