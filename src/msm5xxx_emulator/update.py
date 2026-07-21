@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -19,6 +20,7 @@ from .state_io import atomic_write_text, exclusive_path_lock
 REPOSITORY = "ancalina/msm5xxx-emulator"
 BRANCH = "main"
 REVISION_FILE = ".msm5xxx-update-revision"
+MANIFEST_FILE = ".msm5xxx-update-manifest.json"
 STATE_FILE = "update.json"
 MAX_METADATA_BYTES = 64 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -35,6 +37,15 @@ class UpdateInfo:
     revision: str
 
 
+@dataclass(frozen=True)
+class InstallationStatus:
+    modified: tuple[str, ...]
+
+    @property
+    def clean(self) -> bool:
+        return not self.modified
+
+
 def application_root() -> Path:
     """Return the distribution root containing ``gui.py``."""
     return Path(__file__).resolve().parents[2]
@@ -47,6 +58,47 @@ def local_revision(root: Path) -> str | None:
     except OSError:
         return None
     return revision if _SHA.fullmatch(revision) else None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _manifest(root: Path) -> dict[str, str]:
+    try:
+        payload = json.loads((root / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise UpdateError("installation has no valid update manifest") from error
+    files = payload.get("files") if isinstance(payload, dict) else None
+    if not isinstance(files, dict) or not files:
+        raise UpdateError("installation update manifest is empty")
+    result: dict[str, str] = {}
+    for name, digest in files.items():
+        path = PurePosixPath(name) if isinstance(name, str) else PurePosixPath("/")
+        if (path.is_absolute() or not path.parts or ".." in path.parts
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+            raise UpdateError("installation update manifest has an unsafe entry")
+        result[path.as_posix()] = digest
+    return result
+
+
+def installation_status(root: Path) -> InstallationStatus:
+    """Compare only distributed runtime files; user data stays outside manifest."""
+    modified = []
+    for name, expected in _manifest(root).items():
+        path = root / name
+        try:
+            actual = _file_sha256(path)
+        except OSError:
+            actual = ""
+        if actual != expected:
+            modified.append(name)
+    return InstallationStatus(tuple(modified))
 
 
 def _state_path(state_root: Path) -> Path:
@@ -145,6 +197,9 @@ def _extract_update_archive(archive: Path, destination: Path, revision: str) -> 
         if not ((source / "gui.py").is_file() and (source / "_compat.py").is_file()
                 and (source / "src" / "msm5xxx_emulator" / "gui" / "app.py").is_file()):
             raise UpdateError("GitHub update archive is not an emulator distribution")
+        status = installation_status(source)
+        if not status.clean:
+            raise UpdateError("GitHub update archive failed file verification")
         (source / REVISION_FILE).write_text(revision + "\n", encoding="ascii")
         return source
     except Exception:
@@ -178,9 +233,75 @@ def prepare_update(info: UpdateInfo, state_root: Path) -> Path:
     return target
 
 
-def updated_gui_command(root: Path, firmware: Path) -> list[str]:
-    """Build a shell-free command for the downloaded GUI copy."""
-    gui = root / "gui.py"
-    if local_revision(root) is None or not gui.is_file():
+def apply_prepared_update(prepared: Path, target: Path, state_root: Path,
+                          revision: str, discard_modified: bool) -> None:
+    """Replace manifest-owned files with rollback; preserve every other path."""
+    if local_revision(prepared) != revision or not installation_status(prepared).clean:
         raise UpdateError("prepared update is incomplete")
-    return [os.fsdecode(os.path.abspath(sys.executable)), str(gui), str(firmware)]
+    try:
+        current = installation_status(target)
+    except UpdateError:
+        current = InstallationStatus((MANIFEST_FILE,))
+    if not current.clean and not discard_modified:
+        raise UpdateError("local source files changed")
+    try:
+        old_files = _manifest(target)
+    except UpdateError:
+        old_files = {}
+    new_files = _manifest(prepared)
+    backup = state_root / "updates" / "backups" / revision
+    with exclusive_path_lock(target / MANIFEST_FILE):
+        if backup.exists():
+            shutil.rmtree(backup)
+        backup.mkdir(parents=True)
+        touched = sorted(set(old_files) | set(new_files) | {MANIFEST_FILE, REVISION_FILE})
+        existing = [name for name in touched if (target / name).is_file()]
+        try:
+            for name in existing:
+                destination = backup / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target / name, destination)
+            for name in sorted(new_files):
+                destination = target / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary = destination.with_name(f".{destination.name}.update")
+                old_mode = destination.stat().st_mode if destination.exists() else None
+                shutil.copy2(prepared / name, temporary)
+                if old_mode is not None:
+                    temporary.chmod(old_mode)
+                os.replace(temporary, destination)
+            for name in sorted(set(old_files) - set(new_files)):
+                (target / name).unlink(missing_ok=True)
+            shutil.copy2(prepared / MANIFEST_FILE, target / MANIFEST_FILE)
+            atomic_write_text(target / REVISION_FILE, revision + "\n")
+        except OSError as error:
+            for name in touched:
+                saved = backup / name
+                destination = target / name
+                if saved.is_file():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(saved, destination)
+                elif destination.exists():
+                    destination.unlink()
+            raise UpdateError(f"update failed and was rolled back: {error}") from error
+
+
+_APPLY_CODE = """\
+import pathlib, subprocess, sys
+root, prepared, state, firmware, revision, discard = sys.argv[1:]
+sys.path.insert(0, str(pathlib.Path(root) / 'src'))
+from msm5xxx_emulator.update import apply_prepared_update
+apply_prepared_update(pathlib.Path(prepared), pathlib.Path(root), pathlib.Path(state), revision, discard == '1')
+subprocess.Popen([sys.executable, str(pathlib.Path(root) / 'gui.py'), firmware], cwd=root)
+"""
+
+
+def inplace_update_command(prepared: Path, root: Path, state_root: Path,
+                           firmware: Path, info: UpdateInfo,
+                           discard_modified: bool) -> list[str]:
+    """Build shell-free helper command that runs after GUI shutdown."""
+    return [
+        os.fsdecode(os.path.abspath(sys.executable)), "-c", _APPLY_CODE,
+        str(root), str(prepared), str(state_root), str(firmware), info.revision,
+        "1" if discard_modified else "0",
+    ]

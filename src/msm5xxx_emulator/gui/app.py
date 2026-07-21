@@ -30,7 +30,8 @@ from ..state_io import atomic_write_text, exclusive_path_lock
 from ..diagnostics.runtime_log import (current_session_log, install_runtime_logging,
                                        record_diagnostic, record_exception)
 from ..update import (UpdateError, UpdateInfo, application_root, check_for_update,
-                      prepare_update, remember_update, updated_gui_command)
+                      inplace_update_command, installation_status, prepare_update,
+                      remember_update)
 
 
 LOGGER = logging.getLogger("gui")
@@ -769,13 +770,14 @@ class Window:
         style.configure("Phone.TFrame", background="#242424")
         style.configure("Phone.TLabel", background="#242424", foreground="#eeeeee")
         style.configure("Device.Phone.TLabel", background="#242424",
-                        foreground="#ffffff", font=("TkDefaultFont", 10, "bold"))
+                        foreground="#ffffff", font=("TkDefaultFont", 9, "bold"),
+                        padding=0)
         style.configure("Detail.Phone.TLabel", background="#242424",
-                        foreground="#aeb7c2")
+                        foreground="#aeb7c2", font=("TkDefaultFont", 8), padding=0)
         style.configure("MetricName.Phone.TLabel", background="#242424",
-                        foreground="#8fa1b5", font=("TkDefaultFont", 8))
+                        foreground="#8fa1b5", font=("TkDefaultFont", 8), padding=0)
         style.configure("MetricValue.Phone.TLabel", background="#242424",
-                        foreground="#e8edf2", font="TkFixedFont")
+                        foreground="#e8edf2", font=("TkFixedFont", 8), padding=0)
         style.configure("Phone.TButton", padding=(4, 1), width=6, anchor="center")
         style.configure("Tool.Phone.TButton", padding=(4, 1), width=10)
         self.root.configure(background="#1b1b1b")
@@ -813,7 +815,7 @@ class Window:
                                          style="Tool.Phone.TButton")
         self.capture_button.grid(row=0, column=1, padx=2)
 
-        ttk.Separator(outer).pack(fill="x", pady=(4, 3))
+        ttk.Separator(outer).pack(fill="x", pady=(3, 1))
         self.model_label = ttk.Label(outer, textvariable=self.model, anchor="w",
                                      justify="left", wraplength=330,
                                      style="Device.Phone.TLabel")
@@ -822,9 +824,9 @@ class Window:
             outer, textvariable=self.device_details, anchor="w", justify="left",
             wraplength=330, style="Detail.Phone.TLabel",
         )
-        self.device_details_label.pack(fill="x", pady=(0, 2))
+        self.device_details_label.pack(fill="x")
         metrics = ttk.Frame(outer, style="Phone.TFrame")
-        metrics.pack(fill="x", pady=(2, 1))
+        metrics.pack(fill="x")
         for column in range(2):
             metrics.columnconfigure(column, weight=1, uniform="metric")
         for index, key in enumerate(("run", "pc", "lcd", "frame")):
@@ -1019,26 +1021,42 @@ class Window:
             remember_update(STATE_ROOT, update.revision)
         except (OSError, UpdateError) as error:
             LOGGER.info("update prompt state not saved error=%s", error)
-        if not messagebox.askyesno(
-                "업데이트",
-                f"GitHub 최신 commit {update.revision[:12]}를 찾았습니다.\n"
-                "내려받아 새 창으로 실행할까요?",
-                parent=self.root):
+        try:
+            modified = not installation_status(application_root()).clean
+        except UpdateError:
+            modified = True
+        if modified:
+            prompt = (
+                f"GitHub 최신 commit {update.revision[:12]}를 찾았습니다.\n\n"
+                "로컬 source 수정이 있습니다. 로컬 편집을 폐기하고 업데이트할까요?\n"
+                "firmware, logs, EEPROM/NOR state는 보존됩니다."
+            )
+        else:
+            prompt = (
+                f"GitHub 최신 commit {update.revision[:12]}를 찾았습니다.\n\n"
+                "현재 설치 파일을 최신 버전으로 업데이트할까요?"
+            )
+        if not messagebox.askyesno("업데이트", prompt, parent=self.root):
             return
         self.update_download_active = True
         self.status.set("업데이트 내려받는 중")
 
         def download() -> None:
             try:
-                self.update_results.put(("ready", prepare_update(update, STATE_ROOT)))
+                prepared = prepare_update(update, STATE_ROOT)
+                self.update_results.put(("ready", (prepared, update, modified)))
             except (OSError, UpdateError) as error:
                 self.update_results.put(("error", error))
 
         threading.Thread(target=download, daemon=True).start()
 
-    def _launch_update(self, root: Path) -> None:
+    def _launch_update(self, prepared: Path, update: UpdateInfo,
+                       discard_modified: bool) -> None:
         try:
-            command = updated_gui_command(root, self.firmware)
+            root = application_root()
+            command = inplace_update_command(
+                prepared, root, STATE_ROOT, self.firmware, update, discard_modified
+            )
         except UpdateError as error:
             self.status.set(f"업데이트 준비 실패: {error}")
             self.update_download_active = False
@@ -1266,8 +1284,10 @@ class Window:
                 break
             if kind == "available" and isinstance(value, UpdateInfo):
                 self._offer_update(value)
-            elif kind == "ready" and isinstance(value, Path):
-                self._launch_update(value)
+            elif (kind == "ready" and isinstance(value, tuple)
+                  and len(value) == 3 and isinstance(value[0], Path)
+                  and isinstance(value[1], UpdateInfo)):
+                self._launch_update(value[0], value[1], bool(value[2]))
                 return
             elif kind == "error" and isinstance(value, (OSError, UpdateError)):
                 self.status.set(f"업데이트 실패: {value}")
