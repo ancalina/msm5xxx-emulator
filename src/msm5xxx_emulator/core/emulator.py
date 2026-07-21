@@ -66,8 +66,14 @@ DEFAULT_STATE_ROOT = Path(os.environ.get(
     "MSM5XXX_STATE_DIR", Path.home() / ".msm5xxx-emulator"
 )).expanduser()
 MODEL_RE = re.compile(
-    rb"(?:SCH-[A-Z]\d{3,4}|SPH-[A-Z]\d{3,4}|LG-[A-Z]{2}\d{3,4}|SCP-?\d{3,4})",
-    re.I,
+    rb"(?:"
+    rb"(?:SCH|SPH)-[A-Z]\d{3,4}|"
+    rb"LG-[A-Z]{1,3}\d{3,4}|"
+    rb"SCP-?\d{3,4}|"
+    rb"IM-\d{4}|(?:PG|PH|PT)-[A-Z]\d{3,4}[A-Z]?|"
+    rb"C-\d{3,4}|CX-\d{3,4}[A-Z]?|"
+    rb"KTFT-[A-Z]\d{3,4}"
+    rb")(?![A-Z0-9])",
 )
 LCD_PIXEL_RE = re.compile(rb"m\.LCD_PIXEL\x00{1,4}(\d{3})(\d{3})\x00")
 KNOWN_SCREENS = {
@@ -388,23 +394,85 @@ STABLE_MSM_MMIO = (
 )
 
 
-def detect_model(image: bytes, path: Path) -> str:
-    """Combine dump name and embedded compatibility/model strings.
+def _canonical_model(token: bytes | str) -> str:
+    if isinstance(token, bytes):
+        token = token.decode("ascii")
+    value = re.sub(r"[_ ]+", "-", token.upper()).rstrip("/")
+    return re.sub(r"^SCP(?=\d)", "SCP-", value)
 
-    Prototype and upgrade images often retain an older model name in a shared
-    module.  A handset-looking token in the supplied filename therefore wins
-    when the image is clearly from the same manufacturer.
-    """
-    embedded = [item.decode("ascii").upper() for item in MODEL_RE.findall(image)]
+
+def _embedded_model_scores(image: bytes) -> dict[str, int]:
+    """Score coherent product records, not inherited model-name literals."""
+    upper = image.upper()
+    occurrences: dict[str, list[int]] = {}
+    for match in MODEL_RE.finditer(upper):
+        candidate = _canonical_model(match.group())
+        occurrences.setdefault(candidate, []).append(match.start())
+
+    scores: dict[str, int] = {}
+    for candidate, offsets in occurrences.items():
+        score = 0
+        regions = {offset // 0x1000 for offset in offsets}
+        if len(regions) >= 2:
+            score += 2
+        context_score = 0
+        company_bound = False
+        for offset in offsets:
+            near = upper[max(0, offset - 64):offset + 96]
+            wide = upper[max(0, offset - 512):offset + 512]
+            if b"S/W VER" in near:
+                context_score = max(context_score, 4)
+            if b"MODEL =" in near:
+                context_score = max(context_score, 4)
+            if b"COMPATIBLE;" in wide and b"CELLPHONE" in wide:
+                context_score = max(context_score, 3)
+            if any(marker in near for marker in (
+                    b"CORPORATION", b"INCORPORATED", b"CO. LTD",
+                    b"ELECTRONICS")):
+                company_bound = True
+        if company_bound:
+            context_score = context_score + 2 if context_score else 6
+        score += context_score
+        if len(offsets) == 1 and any(marker in upper[
+                max(0, offsets[0] - 1024):offsets[0] + 1024
+        ] for marker in (b"+CIS707", b"NO CARRIER", b"NO DIALTONE")):
+            score -= 4
+        scores[candidate] = score
+    return scores
+
+
+def _verified_embedded_model(
+        image: bytes, scores: dict[str, int] | None = None) -> str | None:
+    ranked = sorted(
+        (scores if scores is not None else _embedded_model_scores(image)).items(),
+        key=lambda item: (-item[1], item[0]),
+    )
+    if not ranked or ranked[0][1] < 6:
+        return None
+    runner_up = ranked[1][1] if len(ranked) > 1 else -1
+    return ranked[0][0] if ranked[0][1] - runner_up >= 3 else None
+
+
+def detect_model(image: bytes, path: Path,
+                 scores: dict[str, int] | None = None) -> str:
+    """Prefer a coherent firmware identity record; use filename only as fallback."""
     stem = path.stem.upper()
     normalised_stem = re.sub(r"[_ ]+", "-", stem)
     full_name = re.search(
-        r"(?:(?:SCH|SPH|KTFT)-[A-Z]\d{3,4}|LG-[A-Z]{2}\d{3,4}|SCP-?\d{3,4})",
+        r"(?:(?:SCH|SPH|KTFT)-[A-Z]\d{3,4}|LG-[A-Z]{1,3}\d{3,4}|"
+        r"SCP-?\d{3,4}|IM-\d{4}|(?:PG|PH|PT)-[A-Z]\d{3,4}[A-Z]?|"
+        r"C-\d{3,4}|CX-\d{3,4}[A-Z]?)",
         normalised_stem,
     )
-    if full_name:
-        token = full_name.group(0)
-        return re.sub(r"^SCP(?=\d)", "SCP-", token)
+    filename_model = _canonical_model(full_name.group(0)) if full_name else None
+    scores = scores if scores is not None else _embedded_model_scores(image)
+    verified = _verified_embedded_model(image, scores)
+    if verified is not None and filename_model in (None, verified):
+        return verified
+
+    if filename_model:
+        return filename_model
+    embedded = list(scores)
     explicit = re.search(
         r"(?<![A-Z0-9])(?:SCH[-_ ]?)?([A-Z]\d{3})(?:\b|_)", stem
     )
@@ -412,9 +480,6 @@ def detect_model(image: bytes, path: Path) -> str:
         token = explicit.group(1)
         if any(item.startswith("SCH-") for item in embedded) or not embedded:
             return f"SCH-{token}"
-    if embedded:
-        counts = Counter(embedded)
-        return max(counts, key=lambda item: (counts[item], embedded.index(item)))
     return path.stem
 
 
@@ -1933,6 +1998,7 @@ class FirmwareConfig:
     overlays: list[CopyLayout]
     missing_overlays: list[CopyLayout]
     runtime_overlays: list[CopyLayout]
+    verified_model: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)
@@ -2104,8 +2170,14 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     requested_load_address = 0 if requested_load_address is None else requested_load_address
     if not 0 <= requested_load_address < ADDRESS_SPACE:
         raise ValueError("load address outside 32-bit address space")
-    model = detect_model(image, path)
-    chipset = detect_chipset(image, model)
+    model_scores = _embedded_model_scores(image)
+    model = detect_model(image, path, model_scores)
+    verified_model = _verified_embedded_model(image, model_scores)
+    if verified_model != model:
+        verified_model = None
+    override_model = (getattr(overrides, "model", None) if overrides else None)
+    hardware_model = override_model or verified_model
+    chipset = detect_chipset(image, hardware_model or "")
     confidence = chipset_confidence(image, chipset)
     vector_score = arm_vector_score(image)
     image_kind = "firmware" if vector_score >= 2 else "data/non-bootable"
@@ -2162,7 +2234,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             "Thumb byte-status mask/branch/debounce shape detected board-status input"
         )
-    width, height = KNOWN_SCREENS.get(model, (176, 220))
+    width, height = KNOWN_SCREENS.get(hardware_model or "", (176, 220))
     revision_match = re.search(rb"(?:HW|BOARD)[ _-]?REV(?:ISION)?[^\x00\r\n]{0,24}", image, re.I)
     revision = revision_match.group().decode("ascii", "replace") if revision_match else "auto/unknown"
     auto_relative: set[str] = set()
@@ -2423,10 +2495,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         framebuffer_format=framebuffer_format,
         framebuffer_flush_address=framebuffer_flush_address,
         framebuffer_rect_flush_address=framebuffer_rect_flush_address,
-        board_revision_register=(0x00DFFFDC if model == "SCH-E470"
+        board_revision_register=(0x00DFFFDC if hardware_model == "SCH-E470"
                                  else MSM_REVISION_REGISTER
                                  if needs_msm_revision else None),
-        board_revision_value=(0x1D if model == "SCH-E470"
+        board_revision_value=(0x1D if hardware_model == "SCH-E470"
                               else MSM_REVISION_RAW_F022
                               if needs_msm_revision else None),
         board_status_input=board_status_input,
@@ -2495,6 +2567,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         arm_memory_copy_addresses=arm_memory_copy_addresses,
         flash_state=default_flash_state,
         linker=linker, overlays=overlays, missing_overlays=[], runtime_overlays=[],
+        verified_model=hardware_model,
     )
     if overrides is not None:
         for key in ("model", "chipset", "width", "height",
@@ -4501,7 +4574,7 @@ class GenericMSMEmulator:
         """Use an addressed full GRAM window before cursor-wrapped pixels."""
         geometry = self._lcd_full_window_geometry(self._lcd_x, self._lcd_y)
         current = (self.config.width, self.config.height)
-        known = KNOWN_SCREENS.get(getattr(self.config, "model", ""))
+        known = KNOWN_SCREENS.get(getattr(self.config, "verified_model", ""))
         # GRAM dimensions can be larger than the glass.  They may replace the
         # generic 176x220 fallback (as on SC-7080), but never overwrite a
         # known model panel or a previously detected/manual non-default size.
@@ -4896,7 +4969,7 @@ class GenericMSMEmulator:
         x0, y0, x1, y1 = window
         geometry = self._lcd_full_window_geometry([x0, x1], [y0, y1])
         current = (self.config.width, self.config.height)
-        known = KNOWN_SCREENS.get(getattr(self.config, "model", ""))
+        known = KNOWN_SCREENS.get(getattr(self.config, "verified_model", ""))
         if (geometry is not None and (geometry == current
                                       or (known is None
                                           and current == (176, 220)))):

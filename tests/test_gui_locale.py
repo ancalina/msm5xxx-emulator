@@ -7,11 +7,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from gui import (Window, normalize_ui_language, resolve_ui_language,
-                 runtime_status_text, system_ui_language)
+from gui import (Window, display_model_name, normalize_ui_language,
+                 resolve_ui_language, runtime_status_text, system_ui_language)
 
 
 class GuiLocaleTests(unittest.TestCase):
+    def test_unverified_filename_is_not_presented_as_model_identity(self) -> None:
+        self.assertEqual(display_model_name(None, "ko"), "모델 미확인")
+        self.assertEqual(display_model_name(None, "en"), "Unknown model")
+        self.assertEqual(display_model_name("SCH-A650", "en"), "SCH-A650")
+
     def test_known_preferences_and_safe_default(self) -> None:
         self.assertEqual(normalize_ui_language("auto"), "auto")
         self.assertEqual(normalize_ui_language("ko"), "ko")

@@ -62,6 +62,19 @@ from msm5xxx import (
 
 
 class DetectionTests(unittest.TestCase):
+    def test_filename_model_is_not_verified_hardware_identity(self) -> None:
+        raw = bytearray(b"\xff" * 0x2000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SCH-E100.bin"
+            path.write_bytes(raw)
+            config = detect(path)
+
+        self.assertEqual(config.model, "SCH-E100")
+        self.assertIsNone(config.verified_model)
+        self.assertEqual((config.width, config.height), (176, 220))
+
     @staticmethod
     def _thumb_literal_position(image: bytes | bytearray,
                                 position: int) -> int:

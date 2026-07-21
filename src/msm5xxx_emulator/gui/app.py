@@ -77,7 +77,8 @@ UI_LANGUAGE_CHOICES = ("auto", "ko", "en")
 UI_TEXT = {
     "ko": {
         "window_title": "MSM5XXX Emulator",
-        "ready": "준비", "detecting": "자동 탐지 중", "settings": "설정",
+        "ready": "준비", "detecting": "자동 탐지 중", "unknown_model": "모델 미확인",
+        "settings": "설정",
         "capture": "캡처", "restarting": "재부팅 중", "boot_settings": "부팅 설정",
         "ui_language": "UI 언어", "choose_file": "파일 선택…",
         "choose_firmware": "펌웨어 파일 선택", "apply": "적용 (필요 시 재부팅)",
@@ -86,7 +87,8 @@ UI_TEXT = {
     },
     "en": {
         "window_title": "MSM5XXX Emulator",
-        "ready": "Ready", "detecting": "Detecting automatically", "settings": "Settings",
+        "ready": "Ready", "detecting": "Detecting automatically",
+        "unknown_model": "Unknown model", "settings": "Settings",
         "capture": "Capture", "restarting": "Restarting", "boot_settings": "Boot Settings",
         "ui_language": "UI Language", "choose_file": "Choose File…",
         "choose_firmware": "Choose Firmware", "apply": "Apply (restart if needed)",
@@ -94,6 +96,13 @@ UI_TEXT = {
         "settings_save_error": "Settings Save Error",
     },
 }
+
+
+def display_model_name(verified_model: str | None, language: str) -> str:
+    """Do not present a filename fallback as verified hardware identity."""
+    return verified_model or UI_TEXT[language]["unknown_model"]
+
+
 KEY_TEXT = {
     "ko": {},
     "en": {"메뉴": "Menu", "취소": "Cancel", "통화": "Call", "종료": "End",
@@ -333,6 +342,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
         "generation": generation,
         "firmware": firmware_telemetry(config),
         "model": config.model,  # type: ignore[attr-defined]
+        "verified_model": getattr(config, "verified_model", None),
         "chipset": config.chipset,  # type: ignore[attr-defined]
         "dump_status": config.dump_status,  # type: ignore[attr-defined]
         "instructions": _counter(state, "instructions"),
@@ -936,6 +946,7 @@ class Window:
                 "generation": generation,
                 "firmware": firmware_telemetry(config),
                 "model": config.model,
+                "verified_model": config.verified_model,
                 "chipset": config.chipset,
                 "chipset_confidence": config.chipset_confidence,
                 "screen": {"width": config.width, "height": config.height},
@@ -946,7 +957,8 @@ class Window:
             if generation == self.generation:
                 self.emulator = emulator
             self.states.put((generation, {
-                "model": f"{config.model} · {config.chipset}/{config.chipset_confidence} · "
+                "model": f"{display_model_name(config.verified_model, self.ui_language)} · "
+                         f"{config.chipset}/{config.chipset_confidence} · "
                          f"{config.width}×{config.height} · {config.dump_status}",
             }))
             last_publish = 0.0
