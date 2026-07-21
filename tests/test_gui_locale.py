@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -27,6 +28,15 @@ class GuiLocaleTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {}, clear=True), \
              mock.patch.object(gui.locale, "getlocale",
                                return_value=("Korean_Korea", "949")):
+            self.assertEqual(gui.system_ui_language(), "ko")
+
+    def test_windows_without_lc_messages_uses_lc_ctype(self) -> None:
+        windows_locale = types.SimpleNamespace(
+            LC_CTYPE=0,
+            getlocale=lambda category=0: ("Korean_Korea", "949"),
+        )
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch.object(gui, "locale", windows_locale):
             self.assertEqual(gui.system_ui_language(), "ko")
 
     def test_runtime_metrics_are_fixed_lines(self) -> None:

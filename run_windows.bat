@@ -67,10 +67,19 @@ goto bootstrap_ready
 
 :try_python
 where python >nul 2>nul
-if errorlevel 1 goto missing_python
+if errorlevel 1 goto try_python3
 python -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
-if errorlevel 1 goto missing_python
+if errorlevel 1 goto try_python3
 set "BOOTSTRAP_CMD=python"
+set "BOOTSTRAP_ARGS="
+goto bootstrap_ready
+
+:try_python3
+where python3 >nul 2>nul
+if errorlevel 1 goto missing_python
+python3 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+if errorlevel 1 goto missing_python
+set "BOOTSTRAP_CMD=python3"
 set "BOOTSTRAP_ARGS="
 
 :bootstrap_ready

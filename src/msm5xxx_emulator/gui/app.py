@@ -141,7 +141,8 @@ def system_ui_language(locale_name: str | None = None) -> str:
         )
     if locale_name is None:
         try:
-            locale_name = locale.getlocale(locale.LC_MESSAGES)[0] or locale.getlocale()[0]
+            category = getattr(locale, "LC_MESSAGES", locale.LC_CTYPE)
+            locale_name = locale.getlocale(category)[0] or locale.getlocale()[0]
         except ValueError:
             locale_name = None
     normalized = (locale_name or "").lower()
