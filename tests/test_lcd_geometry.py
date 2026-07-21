@@ -106,6 +106,11 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_page_qualified = False
         emulator._lcd_page_seen = set()
         emulator._lcd_page_ram = bytearray(16 * 256)
+        emulator._lcd_byte_020_row_probe = []
+        emulator._lcd_byte_020_row_events = []
+        emulator._lcd_byte_020_row_stage = ""
+        emulator._lcd_byte_020_row_y = -1
+        emulator._lcd_byte_020_row_words = []
         return emulator
 
     def _routing_emulator(self, *, width: int = 128,
@@ -222,6 +227,98 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator._lcd_protocol, "window-byte-rgb565")
         self.assertEqual(emulator._lcd_frame_protocol, "window-byte-rgb565")
         self.assertEqual(emulator.display_frame[:6], bytes((255, 0, 0, 0, 255, 0)))
+
+    @staticmethod
+    def _write_byte_row_packet(emulator: GenericMSMEmulator,
+                               command: int, word: int) -> None:
+        for address, value in ((0x02000000, 0), (0x02000000, command),
+                               (0x02000002, word >> 8),
+                               (0x02000002, word & 0xFF)):
+            emulator._lcd_write(None, 0, address, 1, value, None)
+
+    def test_byte_row_rgb565_requires_complete_128_word_row(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        self._write_byte_row_packet(emulator, 0x05, 0x14)
+        self._write_byte_row_packet(emulator, 0x10, 0)
+        self._write_byte_row_packet(emulator, 0x11, 3)
+        for x in range(128):
+            self._write_byte_row_packet(
+                emulator, 0x12, 0xF800 if x == 0 else 0x07E0
+            )
+
+        row = 3 * 128 * 3
+        self.assertEqual(emulator._lcd_protocol, "byte-row-rgb565")
+        self.assertEqual(emulator.display_frame[row:row + 6],
+                         bytes((255, 0, 0, 0, 255, 0)))
+
+    def test_byte_row_rgb565_127_words_do_not_change_frame(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        before = emulator.frame_sequence
+        self._write_byte_row_packet(emulator, 0x05, 0x14)
+        self._write_byte_row_packet(emulator, 0x10, 0)
+        self._write_byte_row_packet(emulator, 0x11, 3)
+        for _ in range(127):
+            self._write_byte_row_packet(emulator, 0x12, 0xF800)
+
+        self.assertEqual(emulator.frame_sequence, before)
+        self.assertNotEqual(emulator._lcd_protocol, "byte-row-rgb565")
+        self.assertFalse(any(emulator.framebuffer))
+
+    def test_byte_row_rgb565_requires_05_preamble(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        self._write_byte_row_packet(emulator, 0x10, 0)
+        self._write_byte_row_packet(emulator, 0x11, 3)
+        for _ in range(128):
+            self._write_byte_row_packet(emulator, 0x12, 0xF800)
+
+        self.assertNotEqual(emulator._lcd_protocol, "byte-row-rgb565")
+        self.assertFalse(any(emulator.framebuffer))
+
+    def test_byte_row_rgb565_interleaving_replays_and_resets(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        self._write_byte_row_packet(emulator, 0x05, 0x14)
+        self._write_byte_row_packet(emulator, 0x10, 0)
+        self._write_byte_row_packet(emulator, 0x11, 3)
+        for _ in range(7):
+            self._write_byte_row_packet(emulator, 0x12, 0xF800)
+        emulator._lcd_write(None, 0, 0x02000004, 1, 0, None)
+
+        self.assertFalse(any(emulator.framebuffer))
+        self._write_byte_row_packet(emulator, 0x05, 0x14)
+        self._write_byte_row_packet(emulator, 0x10, 0)
+        self._write_byte_row_packet(emulator, 0x11, 4)
+        for _ in range(128):
+            self._write_byte_row_packet(emulator, 0x12, 0x001F)
+        self.assertEqual(emulator.display_frame[4 * 128 * 3:4 * 128 * 3 + 3],
+                         bytes((0, 0, 255)))
+
+    def test_byte_row_rgb565_mismatch_replays_each_event_once(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        replayed = []
+        emulator._lcd_route_write = lambda *event: replayed.append(event[2:5])
+        handled = True
+        for address, value in ((0x02000000, 0), (0x02000000, 0x06),
+                               (0x02000002, 0), (0x02000002, 1)):
+            handled = emulator._lcd_byte_020_row_write(address, 1, value)
+
+        self.assertTrue(handled)
+        self.assertEqual(replayed, [
+            (0x02000000, 1, 0), (0x02000000, 1, 0x06),
+            (0x02000002, 1, 0), (0x02000002, 1, 1),
+        ])
+
+    def test_byte_row_rgb565_zero_row_clears_published_pixels(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        for pixel in (0xF800, 0):
+            self._write_byte_row_packet(emulator, 0x05, 0x14)
+            self._write_byte_row_packet(emulator, 0x10, 0)
+            self._write_byte_row_packet(emulator, 0x11, 3)
+            for _ in range(128):
+                self._write_byte_row_packet(emulator, 0x12, pixel)
+
+        row = 3 * 128 * 3
+        self.assertEqual(emulator.display_frame[row:row + 128 * 3],
+                         bytes(128 * 3))
 
     def test_cursor_bgr444_sequence_updates_exact_horizontal_run(self) -> None:
         emulator = self._blank_emulator(visible=False, width=128, height=160)

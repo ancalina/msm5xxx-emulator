@@ -75,7 +75,7 @@ LAYOUT = (
 UI_LANGUAGE_CHOICES = ("auto", "ko", "en")
 UI_TEXT = {
     "ko": {
-        "window_title": "MSM5000 / MSM5100 / MSM5500 에뮬레이터",
+        "window_title": "MSM5XXX Emulator",
         "ready": "준비", "detecting": "자동 탐지 중", "settings": "설정",
         "capture": "캡처", "restarting": "재부팅 중", "boot_settings": "부팅 설정",
         "ui_language": "UI 언어", "choose_file": "파일 선택…",
@@ -84,7 +84,7 @@ UI_TEXT = {
         "settings_save_error": "설정 저장 오류",
     },
     "en": {
-        "window_title": "MSM5000 / MSM5100 / MSM5500 Emulator",
+        "window_title": "MSM5XXX Emulator",
         "ready": "Ready", "detecting": "Detecting automatically", "settings": "Settings",
         "capture": "Capture", "restarting": "Restarting", "boot_settings": "Boot Settings",
         "ui_language": "UI Language", "choose_file": "Choose File…",
@@ -1302,7 +1302,7 @@ class Window:
                 elif name == "chipset":
                     widget = ttk.Combobox(
                         page,
-                        values=("MSM5000", "MSM5100", "MSM5500", "MSM5xxx"),
+                        values=("MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"),
                                           state="readonly", width=40)
                     widget.set(values[name])
                 elif name == "framebuffer_format":
@@ -1430,7 +1430,7 @@ class Window:
                 if not overrides["model"]:
                     raise ValueError("모델 이름이 비어 있음")
                 if overrides["chipset"] not in (
-                        "MSM5000", "MSM5100", "MSM5500", "MSM5xxx"):
+                        "MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"):
                     raise ValueError("지원하지 않는 칩셋")
                 if not 32 <= overrides["width"] <= 1024 or not 32 <= overrides["height"] <= 1024:
                     raise ValueError("화면 크기 범위: 32..1024")

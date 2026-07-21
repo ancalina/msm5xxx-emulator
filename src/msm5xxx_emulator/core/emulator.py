@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generic Qualcomm MSM5000/MSM5100/MSM5500 firmware bring-up runner."""
+"""Generic Qualcomm MSM5XXX firmware bring-up runner."""
 from __future__ import annotations
 
 import argparse
@@ -145,6 +145,18 @@ EEPROM_24LCXX_WRITE_PREFIX = bytes.fromhex(
 EEPROM_24LCXX_READ_SIGNATURE = bytes.fromhex(
     "f0b5151c01225203071cfa48914202db8378012b02d100240e1c05e001235b03"
     "c91ac4780e04360c0188914202d08078"
+)
+# Older ADS driver class proven across nine Samsung images.  This class uses
+# an inclusive 0x1FFF maximum (8 KiB), not the later 24LC256 descriptor.
+EEPROM_24LC64_CLASS_A_WRITE_PREFIX = bytes.fromhex(
+    "f7b5f9498cb0ca1d1932051c01230d9c5b039c4202db9078012802d100200d9c"
+    "05e0d0780d9cf14be3181c04240c0f8c"
+)
+EEPROM_24LC64_CLASS_A_READ_PREFIX = bytes.fromhex(
+    "f0b5151cf84a071cd01d193001235b03994202db8378012b02d100260c1c04e0"
+)
+EEPROM_24LC64_CLASS_A_SENTINEL = bytes.fromhex(
+    "0649aa200f396118c873f0bc08bc1847"
 )
 # Exact ADS variant observed at the X430/VE21 24LC256 transport entries.  The
 # short prefixes alone are never enough to enable HLE; find_24lcxx_driver()
@@ -400,8 +412,9 @@ def detect_chipset(image: bytes, model: str) -> str:
     if (b"clkrgm_5500.c" in lowered or b"boothw_5500.c" in lowered
             or b"dmddown_5500.c" in lowered):
         return "MSM5500"
-    if (b"clkrgm_5100.c" in lowered or b"boothw_510x.c" in lowered
-            or b"mclk_5105.c" in lowered):
+    if b"mclk_5105.c" in lowered:
+        return "MSM5105"
+    if b"clkrgm_5100.c" in lowered or b"boothw_510x.c" in lowered:
         return "MSM5100"
     if b"mclk_5000.c" in lowered:
         return "MSM5000"
@@ -415,8 +428,6 @@ def detect_chipset(image: bytes, model: str) -> str:
         return "MSM5100"
     if model == "SCH-X430" and b"MSM5000" in image.upper():
         return "MSM5000"
-    if re.fullmatch(r"SPH-X9\d{3}", model):
-        return "MSM5100"
     return "MSM5xxx"
 
 
@@ -424,7 +435,8 @@ def chipset_confidence(image: bytes, chipset: str) -> str:
     lowered = image.lower()
     markers = {
         "MSM5500": (b"clkrgm_5500.c", b"boothw_5500.c", b"dmddown_5500.c"),
-        "MSM5100": (b"clkrgm_5100.c", b"boothw_510x.c", b"mclk_5105.c"),
+        "MSM5105": (b"mclk_5105.c",),
+        "MSM5100": (b"clkrgm_5100.c", b"boothw_510x.c"),
         "MSM5000": (b"mclk_5000.c",),
         "MSM6050": (b"msm6050",),
     }
@@ -564,10 +576,13 @@ def default_state_paths(path: Path, image: bytes, flash_size: int,
                         nand_image: str | None = None,
                         nand_geometry: tuple[int, int, int, int, int] | None = None,
                         secondary_generated_efs: bool = False,
+                        secondary_seed: bytes | None = None,
                         ) -> tuple[str, str]:
     identity = hashlib.sha256(image[:flash_size]).hexdigest()[:16]
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem)[:48] or "firmware"
-    seed_identity = _file_identity(secondary_image)
+    seed_identity = (_file_identity(secondary_image)
+                     or (hashlib.sha256(secondary_seed).hexdigest()[:16]
+                         if secondary_seed is not None else ""))
     nand_identity = _file_identity(nand_image)
     suffix = ((f"-s{seed_identity}" if seed_identity else "")
               + ("-sefs" if secondary_generated_efs and not seed_identity else "")
@@ -705,6 +720,57 @@ def eeprom_24lcxx_write_at(image: bytes, position: int) -> bool:
             and image[position + 15:position + len(prefix)] == prefix[15:])
 
 
+def eeprom_24lc64_class_a_write_at(image: bytes, position: int) -> bool:
+    """Match both proven relocation variants of the old 8 KiB writer."""
+    return (position & 1 == 0
+            and 0 <= position <= len(image) - 48
+            and image[position:position + 2] == b"\xf7\xb5"
+            and image[position + 4:position + 6] == b"\x8c\xb0"
+            and image[position + 10:position + 22]
+            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[10:22]
+            and image[position + 23:position + 34]
+            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[23:34]
+            and image[position + 35:position + 46]
+            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[35:46]
+            and image[position + 47:position + 48]
+            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[47:48])
+
+
+def find_24lc64_class_a_driver(image: bytes) -> tuple[int, int, int] | None:
+    """Return the uniquely bound old 8 KiB read/write/max-literal class."""
+    if b"nv24lcxx.c\0" not in image.lower():
+        return None
+    writes = [position for position in find_all(image, b"\xf7\xb5")
+              if eeprom_24lc64_class_a_write_at(image, position)]
+    reads = find_all(image, EEPROM_24LC64_CLASS_A_READ_PREFIX)
+    if len(writes) != 1 or len(reads) != 1:
+        return None
+    write, read = writes[0], reads[0]
+    if read - write not in (0x764, 0x768, 0x784):
+        return None
+
+    bindings: list[int] = []
+    for delta in (0xAC8, 0xACC):
+        geometry = read + delta
+        if (geometry < 0x1A or geometry + 4 > len(image)
+                or struct.unpack_from("<I", image, geometry)[0] != 0x1FFF
+                or image[geometry - 0x1A:geometry - 0xA]
+                != EEPROM_24LC64_CLASS_A_SENTINEL):
+            continue
+        for call in range(geometry - 0x38, geometry - 0x27, 2):
+            if (call < 6 or call + 4 > len(image)
+                    or image[call - 6:call - 2] != b"\x00\x21\x20\x1c"
+                    or thumb_bl_target(image, call) != read):
+                continue
+            operation = struct.unpack_from("<H", image, call - 2)[0]
+            literal = (((call + 2) & ~3) + (operation & 0xFF) * 4)
+            if (operation & 0xF800 == 0x4800
+                    and operation >> 8 & 7 == 2
+                    and literal == geometry):
+                bindings.append(geometry)
+    return (read, write, bindings[0]) if len(bindings) == 1 else None
+
+
 def _eeprom_24lcxx_variant_geometry_at(image: bytes, position: int,
                                         ldr_offset: int, literal_offset: int,
                                         geometry: int) -> bool:
@@ -822,7 +888,8 @@ def find_24lcxx_driver(image: bytes) -> tuple[int, int, int] | None:
                         and struct.unpack_from("<I", image, read_literal)[0]
                         == geometry):
                     return reads[0], write, geometry
-    return (find_24lcxx_x430_driver(image)
+    return (find_24lc64_class_a_driver(image)
+            or find_24lcxx_x430_driver(image)
             or find_24lcxx_x270_driver(image)
             or find_24lcxx_x7700_driver(image))
 
@@ -848,6 +915,30 @@ def find_fujitsu_x16_bulk_write(image: bytes, secondary_base: int) -> int | None
         if fujitsu_x16_bulk_write_at(image, match.start(), secondary_base)
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def find_compound_fujitsu_layout(
+        image: bytes, load_address: int = 0) -> tuple[int, int] | None:
+    """Return primary/secondary sizes for a complete Fujitsu 4+2 MiB dump."""
+    secondary_size = 0x200000
+    found: list[tuple[int, int]] = []
+    for primary_size in (0x200000, 0x400000, 0x800000):
+        if len(image) != primary_size + secondary_size:
+            continue
+        primary = image[:primary_size]
+        secondary = image[primary_size:]
+        marker = secondary.find(b"\x0b$USER_DIRS\0")
+        storage = (not secondary.strip(b"\xff")
+                   or (marker >= 0 and marker & 0xFF == 0x1C
+                       and b"nvm/" in secondary))
+        if (arm_vector_score(primary) >= 2
+                and b"fs_fujitsu.c\0" in primary
+                and find_fujitsu_x16_bulk_write(
+                    primary, load_address + primary_size) is not None
+                and arm_vector_score(secondary) < 2
+                and storage):
+            found.append((primary_size, secondary_size))
+    return found[0] if len(found) == 1 else None
 
 
 def fujitsu_x16_flash_ids(image: bytes, writer_address: int | None,
@@ -1651,6 +1742,7 @@ class FirmwareConfig:
     secondary_flash_address: int | None
     secondary_flash_size: int
     secondary_flash_image: str | None
+    secondary_flash_image_offset: int | None
     secondary_flash_state: str
     secondary_flash_read_address: int | None
     secondary_flash_write_address: int | None
@@ -1906,6 +1998,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                          else 0x01800000)
     requested_flash_size = (getattr(overrides, "flash_size", None)
                             if overrides else None)
+    compound_fujitsu = (find_compound_fujitsu_layout(
+        image, requested_load_address
+    ) if requested_flash_size is None else None)
     required_flash_extent = referenced_flash_extent(
         image, requested_load_address
     )
@@ -1914,10 +2009,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                       if scan_ram_base > requested_load_address
                       else min(MAX_FLASH_SIZE,
                                ADDRESS_SPACE - requested_load_address))
-        scan_flash_size = normalised_flash_size(
-            max(len(image), required_flash_extent),
-            min(MAX_FLASH_SIZE, scan_limit),
-        )
+        scan_flash_size = (compound_fujitsu[0] if compound_fujitsu else
+                           normalised_flash_size(
+                               max(len(image), required_flash_extent),
+                               min(MAX_FLASH_SIZE, scan_limit),
+                           ))
     else:
         if requested_flash_size <= 0:
             raise ValueError("flash size must be positive")
@@ -2161,11 +2257,21 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                           if overrides else None)
     if requested_ram_base is not None:
         ram_base = requested_ram_base
-    flash_size = normalised_flash_size(
-        max(len(image), required_flash_extent), ram_base
+    flash_size = (compound_fujitsu[0] if compound_fujitsu else
+                  normalised_flash_size(
+                      max(len(image), required_flash_extent), ram_base
+                  ))
+    compound_secondary_size = compound_fujitsu[1] if compound_fujitsu else None
+    compound_secondary_offset = flash_size if compound_fujitsu else None
+    compound_secondary_seed = (
+        image[compound_secondary_offset:
+              compound_secondary_offset + compound_secondary_size]
+        if compound_secondary_offset is not None
+        and compound_secondary_size is not None else None
     )
     default_flash_state, default_secondary_state = default_state_paths(
-        path, image, flash_size, flash_size
+        path, image, flash_size, compound_secondary_size or flash_size,
+        secondary_seed=compound_secondary_seed,
     )
     config = FirmwareConfig(
         path=str(path), file_size=len(raw),
@@ -2187,8 +2293,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         board_status_input=board_status_input,
         image_offset=image_offset, load_address=0,
         flash_size=flash_size,
-        secondary_flash_address=None, secondary_flash_size=flash_size,
+        secondary_flash_address=(requested_load_address + flash_size
+                                 if compound_fujitsu else None),
+        secondary_flash_size=compound_secondary_size or flash_size,
         secondary_flash_image=None,
+        secondary_flash_image_offset=compound_secondary_offset,
         secondary_flash_state=default_secondary_state,
         secondary_flash_read_address=secondary_flash_read_address,
         secondary_flash_write_address=secondary_flash_write_address,
@@ -2197,8 +2306,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         eeprom_write_address=eeprom_write_address,
         eeprom_geometry_address=eeprom_geometry_address,
         ram_base=ram_base,
-        ram_size=0x00800000, ram_image_offset=flash_size,
-        ram_image_size=plausible_ram_seed_size(len(image), flash_size), entry=0,
+        ram_size=0x00800000,
+        ram_image_offset=(compound_secondary_offset + compound_secondary_size
+                          if compound_secondary_offset is not None
+                          and compound_secondary_size is not None else flash_size),
+        ram_image_size=0 if compound_fujitsu else plausible_ram_seed_size(
+            len(image), flash_size
+        ), entry=0,
         key_register=0x03000738, key_active_low=True,
         audio_play_address=audio_address,
         ma2_silent_boot_address=ma2_silent_boot_address,
@@ -2248,6 +2362,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                     "board_revision_register", "board_revision_value", "image_offset",
                     "load_address", "flash_size", "secondary_flash_address",
                     "secondary_flash_size", "secondary_flash_image",
+                    "secondary_flash_image_offset",
                     "secondary_flash_state", "secondary_flash_read_address",
                     "secondary_flash_write_address", "legacy_efs_page_read_address",
                     "eeprom_read_address", "eeprom_write_address",
@@ -2291,6 +2406,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 setattr(config, field, None)
         if getattr(overrides, "nand_enabled", None) is None and config.nand_image:
             config.nand_enabled = True
+        if (getattr(overrides, "secondary_flash_image", None) is not None
+                and getattr(overrides, "secondary_flash_image_offset", None) is None):
+            config.secondary_flash_image_offset = None
         if config.board_revision_value is None:
             try:
                 config.board_revision_value = int(config.board_revision, 0)
@@ -2311,17 +2429,26 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             limit = (config.ram_base - config.load_address
                      if config.ram_base > config.load_address
                      else min(MAX_FLASH_SIZE, ADDRESS_SPACE - config.load_address))
-            config.flash_size = normalised_flash_size(
-                max(len(image), required_flash_extent), limit
-            )
+            config.flash_size = (compound_fujitsu[0] if compound_fujitsu else
+                                 normalised_flash_size(
+                                     max(len(image), required_flash_extent), limit
+                                 ))
         if getattr(overrides, "secondary_flash_size", None) is None:
-            config.secondary_flash_size = config.flash_size
+            config.secondary_flash_size = (compound_fujitsu[1]
+                                           if compound_fujitsu
+                                           else config.flash_size)
         if getattr(overrides, "ram_image_offset", None) is None:
-            config.ram_image_offset = config.flash_size
+            config.ram_image_offset = (
+                config.secondary_flash_image_offset + config.secondary_flash_size
+                if config.secondary_flash_image_offset is not None
+                else config.flash_size
+            )
         if getattr(overrides, "ram_image_size", None) is None:
             config.ram_image_size = plausible_ram_seed_size(
                 len(image), config.ram_image_offset, config.ram_size
             )
+        if config.secondary_flash_address in (None, 0):
+            config.secondary_flash_image_offset = None
         if (getattr(overrides, "flash_id_value", None) is None
                 and config.flash_id_address is not None):
             config.flash_id_value = flash_id_for_size(config.flash_size)
@@ -2391,6 +2518,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                          if config.secondary_flash_address not in (None, 0)
                          else config.flash_size)
         config.flash_id_value = flash_id_for_size(detected_size)
+    internal_secondary_seed = None
+    if (config.secondary_flash_image_offset is not None
+            and not config.secondary_flash_image):
+        start = config.secondary_flash_image_offset
+        end = start + config.secondary_flash_size
+        if 0 <= start < end <= len(image):
+            internal_secondary_seed = image[start:end]
     state_flash, state_secondary = default_state_paths(
         path, image, config.flash_size, config.secondary_flash_size,
         config.secondary_flash_image, config.nand_image,
@@ -2399,7 +2533,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
          if config.nand_enabled else None),
         (config.secondary_flash_address not in (None, 0)
          and not config.secondary_flash_image
+         and config.secondary_flash_image_offset is None
          and b"\x0b$USER_DIRS\0" in image),
+        secondary_seed=internal_secondary_seed,
     )
     if overrides is None or getattr(overrides, "flash_state", None) is None:
         config.flash_state = state_flash
@@ -2428,6 +2564,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 "missing executable overlay source "
                 f"0x{overlay.source:X}..0x{overlay.source + overlay.size:X}"
             )
+    elif config.secondary_flash_image_offset is not None:
+        config.dump_status = "complete compound NOR image"
     elif trailer:
         if config.ram_image_size:
             config.dump_status = f"full NOR + 0x{trailer:X} RAM snapshot"
@@ -2488,7 +2626,7 @@ class GenericMSMEmulator:
             )
         if not 32 <= config.width <= 1024 or not 32 <= config.height <= 1024:
             raise ValueError("screen dimensions must be in 32..1024")
-        if config.chipset not in ("MSM5000", "MSM5100", "MSM5500", "MSM5xxx"):
+        if config.chipset not in ("MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"):
             raise ValueError(f"unsupported chipset: {config.chipset}")
         if not 0 <= config.load_address < ADDRESS_SPACE:
             raise ValueError("flash load address outside 32-bit address space")
@@ -2621,6 +2759,15 @@ class GenericMSMEmulator:
         if not 0 <= config.image_offset < len(raw):
             raise ValueError("image offset outside firmware")
         available = raw[config.image_offset:]
+        if config.secondary_flash_image_offset is not None:
+            start = config.secondary_flash_image_offset
+            end = start + config.secondary_flash_size
+            if secondary_base is None:
+                raise ValueError("internal secondary image has no secondary flash")
+            if config.secondary_flash_image:
+                raise ValueError("internal and external secondary images conflict")
+            if not 0 <= start < end <= len(available):
+                raise ValueError("internal secondary image range outside firmware")
         # Partial dumps are padded as erased NOR.  The inferred capacity is
         # independently bounded above, so a large omitted tail is safe here.
         if (config.ram_image_size < 0 or config.ram_image_offset < 0
@@ -2669,6 +2816,9 @@ class GenericMSMEmulator:
                 if len(seed) > config.secondary_flash_size:
                     raise ValueError("secondary flash image is larger than configured size")
                 seed += b"\xff" * (config.secondary_flash_size - len(seed))
+            elif config.secondary_flash_image_offset is not None:
+                start = config.secondary_flash_image_offset
+                seed = available[start:start + config.secondary_flash_size]
             elif b"\x0b$USER_DIRS\0" in available:
                 seed = qualcomm_efs_seed(
                     config.secondary_flash_size, config.chipset
@@ -3008,6 +3158,14 @@ class GenericMSMEmulator:
         # short grammar until it proves itself; all other traffic stays on
         # the existing parallel/page path.
         self._lcd_028_direct_probe: list[tuple[int, int, int]] = []
+        # Some byte-wide controllers send complete 128-pixel RGB565 rows as
+        # 0/base-command/+2-high/+2-low packets.  Hold only this exact
+        # grammar; a mismatch is replayed through the established decoders.
+        self._lcd_byte_020_row_probe: list[tuple[int, int, int]] = []
+        self._lcd_byte_020_row_events: list[tuple[int, int, int]] = []
+        self._lcd_byte_020_row_stage = ""
+        self._lcd_byte_020_row_y = -1
+        self._lcd_byte_020_row_words: list[int] = []
         # The E370-class +8/+C controller packs two RGB332 pixels into one
         # data word.  Keep it wholly separate from the ordinary 0x020/+4
         # command state: unrelated LCD traffic must not turn register 0x22
@@ -5165,10 +5323,95 @@ class GenericMSMEmulator:
             return
         self._lcd_feed_data(address, size, value)
 
+    def _lcd_byte_020_row_reset(self, *, replay: bool) -> None:
+        """Reject an incomplete byte-row candidate without swallowing traffic."""
+        events = tuple(self._lcd_byte_020_row_events)
+        self._lcd_byte_020_row_probe.clear()
+        self._lcd_byte_020_row_events.clear()
+        self._lcd_byte_020_row_stage = ""
+        self._lcd_byte_020_row_y = -1
+        self._lcd_byte_020_row_words.clear()
+        if replay:
+            for address, size, value in events:
+                self._lcd_route_write(None, 0, address, size, value, None)
+
+    def _lcd_byte_020_row_commit(self, command: int, word: int) -> bool:
+        """Consume one proven byte-row packet, or fail closed to legacy LCD paths."""
+        if command == 0x05 and word == 0x14 and self._lcd_byte_020_row_stage in ("", "ready"):
+            self._lcd_byte_020_row_stage = "x"
+            return True
+        if command == 0x10 and word == 0 and self._lcd_byte_020_row_stage == "x":
+            self._lcd_byte_020_row_stage = "y"
+            return True
+        if (command == 0x11 and self._lcd_byte_020_row_stage == "y"
+                and self.config.width >= 128 and 0 <= word < self.config.height):
+            self._lcd_byte_020_row_y = word
+            self._lcd_byte_020_row_stage = "data"
+            self._lcd_byte_020_row_words.clear()
+            return True
+        if command == 0x12 and self._lcd_byte_020_row_stage == "data":
+            words = self._lcd_byte_020_row_words
+            words.append(word)
+            if len(words) < 128:
+                return True
+            if len(words) == 128:
+                y, row = self._lcd_byte_020_row_y, tuple(words)
+                self._lcd_byte_020_row_events.clear()
+                self._lcd_byte_020_row_stage = "ready"
+                self._lcd_byte_020_row_y = -1
+                words.clear()
+                was_published = self._lcd_protocol == "byte-row-rgb565"
+                for x, pixel in enumerate(row):
+                    self._pixel(y * self.config.width + x, pixel)
+                if any(row) or was_published:
+                    self._lcd_protocol = "byte-row-rgb565"
+                    self._publish_frame()
+                return True
+        self._lcd_byte_020_row_reset(replay=True)
+        return True
+
+    def _lcd_byte_020_row_write(self, address: int, size: int, value: int) -> bool:
+        """Recognise exact 0x02000000/+2 byte-row RGB565 packets."""
+        event = (address, size, value)
+        probe = self._lcd_byte_020_row_probe
+        expected = ((0x02000000, 1), (0x02000000, 1),
+                    (0x02000002, 1), (0x02000002, 1))
+        if not probe:
+            if (address, size, value) != (0x02000000, 1, 0):
+                if self._lcd_byte_020_row_stage not in ("", "ready"):
+                    self._lcd_byte_020_row_events.append(event)
+                    self._lcd_byte_020_row_reset(replay=True)
+                    return True
+                return False
+            probe.append(event)
+            self._lcd_byte_020_row_events.append(event)
+            return True
+        wanted_address, wanted_size = expected[len(probe)]
+        if ((address, size) != (wanted_address, wanted_size)
+                or not 0 <= value <= 0xFF):
+            self._lcd_byte_020_row_events.append(event)
+            self._lcd_byte_020_row_reset(replay=True)
+            return True
+        probe.append(event)
+        self._lcd_byte_020_row_events.append(event)
+        if len(probe) < len(expected):
+            return True
+        _zero, command, high, low = probe
+        probe.clear()
+        return self._lcd_byte_020_row_commit(
+            command[2], high[2] << 8 | low[2]
+        )
+
     def _lcd_write(self, uc: Uc, access: int, address: int, size: int,
                    value: int, user_data: object) -> None:
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        if self._lcd_byte_020_row_write(address, size, value):
+            return
+        self._lcd_route_write(uc, access, address, size, value, user_data)
+
+    def _lcd_route_write(self, uc: Uc, access: int, address: int, size: int,
+                         value: int, user_data: object) -> None:
         self._lcd_lowbyte_page_event(address, size, value)
         # Match every LCD write while a direct-window candidate is held: an
         # intervening aperture access is a mismatch, not a later continuation.
@@ -6152,12 +6395,13 @@ class GenericMSMEmulator:
             return False
         try:
             descriptor = bytes(uc.mem_read(geometry, 4))
-            capacity = int.from_bytes(descriptor[:2], "little")
         except UcError:
             return False
-        # The currently proven driver configuration is a 24LC256.  Other
-        # descriptor layouts stay on the native GPIO path until evidenced.
-        if capacity != 0x8000 or descriptor[2:] != b"\x01\x00":
+        if descriptor == b"\xff\x1f\x00\x00":
+            capacity = 0x2000  # proven inclusive maximum from the old driver
+        elif descriptor == b"\x00\x80\x01\x00":
+            capacity = 0x8000
+        else:
             self.eeprom_error = f"unsupported 24LCxx descriptor {descriptor.hex()}"
             return False
         if self.eeprom_data:
@@ -6188,7 +6432,8 @@ class GenericMSMEmulator:
 
     def _eeprom_read_fast(self, uc: Uc, address: int, size: int,
                           user_data: object) -> None:
-        for signature in (EEPROM_24LCXX_X430_READ_PREFIX,
+        for signature in (EEPROM_24LC64_CLASS_A_READ_PREFIX,
+                          EEPROM_24LCXX_X430_READ_PREFIX,
                           EEPROM_24LCXX_X270_READ_PREFIX,
                           EEPROM_24LCXX_X7700_READ_PREFIX):
             if (self._original_runtime_bytes(address, len(signature))
@@ -6233,12 +6478,17 @@ class GenericMSMEmulator:
 
     def _eeprom_write_fast(self, uc: Uc, address: int, size: int,
                            user_data: object) -> None:
-        original = self._original_runtime_bytes(
-            address, len(EEPROM_24LCXX_WRITE_PREFIX)
-        )
-        if original is not None and eeprom_24lcxx_write_at(original, 0):
+        signature = None
+        original = self._original_runtime_bytes(address, 48)
+        if original is not None and eeprom_24lc64_class_a_write_at(original, 0):
             signature = original
         else:
+            original = self._original_runtime_bytes(
+                address, len(EEPROM_24LCXX_WRITE_PREFIX)
+            )
+        if original is not None and eeprom_24lcxx_write_at(original, 0):
+            signature = original
+        elif signature is None:
             signature = next(
                 (candidate for candidate in (
                     EEPROM_24LCXX_X430_WRITE_PREFIX,
@@ -7535,7 +7785,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--display-metrics", action="store_true",
                         help="include immutable frame geometry/visible-pixel metrics")
     result.add_argument("--model")
-    result.add_argument("--chipset", choices=("MSM5000", "MSM5100", "MSM5500", "MSM5xxx"))
+    result.add_argument("--chipset", choices=("MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"))
     result.add_argument("--width", type=integer)
     result.add_argument("--height", type=integer)
     result.add_argument("--framebuffer-address", type=integer)

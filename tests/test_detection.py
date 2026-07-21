@@ -7,6 +7,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
@@ -15,6 +16,9 @@ from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
 from msm5xxx import (
     BUSY_DELAY_SIGNATURE,
     DMD_DOWNLOAD_510X_SIGNATURE,
+    EEPROM_24LC64_CLASS_A_READ_PREFIX,
+    EEPROM_24LC64_CLASS_A_SENTINEL,
+    EEPROM_24LC64_CLASS_A_WRITE_PREFIX,
     EEPROM_24LCXX_READ_SIGNATURE,
     EEPROM_24LCXX_WRITE_PREFIX,
     EEPROM_24LCXX_X430_INIT_SIGNATURE,
@@ -34,6 +38,7 @@ from msm5xxx import (
     detect_model,
     GenericMSMEmulator,
     find_24lcxx_driver,
+    find_compound_fujitsu_layout,
     find_fujitsu_x16_bulk_write,
     find_rex_5ms_irq_arm,
     find_rex_5ms_irq_route,
@@ -60,7 +65,8 @@ class DetectionTests(unittest.TestCase):
         raw = bytearray(b"\xff" * 0x100)
         for offset in range(0, 32, 4):
             struct.pack_into("<I", raw, offset, 0xEA000000)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch(
+                "msm5xxx.DEFAULT_STATE_ROOT", Path(directory)):
             firmware = Path(directory) / "private" / "phone.bin"
             firmware.parent.mkdir()
             firmware.write_bytes(raw)
@@ -210,6 +216,47 @@ class DetectionTests(unittest.TestCase):
         )
         self.assertIsNone(find_24lcxx_driver(bytes(image)))
 
+    def test_24lc64_class_a_requires_bound_inclusive_max_consumer(self) -> None:
+        image = bytearray(b"\xff" * 0x1800)
+        write = 0x100
+        read = write + 0x768
+        geometry = read + 0xACC
+        call = geometry - 0x32
+        image[write:write + len(EEPROM_24LC64_CLASS_A_WRITE_PREFIX)] = (
+            EEPROM_24LC64_CLASS_A_WRITE_PREFIX
+        )
+        image[read:read + len(EEPROM_24LC64_CLASS_A_READ_PREFIX)] = (
+            EEPROM_24LC64_CLASS_A_READ_PREFIX
+        )
+        image[call - 6:call - 2] = b"\x00\x21\x20\x1c"
+        literal_base = (call + 2) & ~3
+        struct.pack_into("<H", image, call - 2,
+                         0x4A00 | ((geometry - literal_base) // 4))
+        displacement = read - call - 4
+        struct.pack_into(
+            "<2H", image, call,
+            0xF000 | (displacement >> 12 & 0x7FF),
+            0xF800 | (displacement >> 1 & 0x7FF),
+        )
+        image[geometry - 0x1A:geometry - 0xA] = (
+            EEPROM_24LC64_CLASS_A_SENTINEL
+        )
+        struct.pack_into("<I", image, geometry, 0x1FFF)
+        image[0x1700:0x170B] = b"nv24lcxx.c\0"
+
+        self.assertEqual(find_24lcxx_driver(bytes(image)),
+                         (read, write, geometry))
+
+        duplicate = bytearray(image)
+        duplicate[0x40:0x40 + len(EEPROM_24LC64_CLASS_A_READ_PREFIX)] = (
+            EEPROM_24LC64_CLASS_A_READ_PREFIX
+        )
+        self.assertIsNone(find_24lcxx_driver(bytes(duplicate)))
+
+        broken = bytearray(image)
+        struct.pack_into("<2H", broken, call, 0xF000, 0xF800)
+        self.assertIsNone(find_24lcxx_driver(bytes(broken)))
+
     def test_24lcxx_x430_variant_requires_unique_pair_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x1800)
         write = 0x40
@@ -330,8 +377,19 @@ class DetectionTests(unittest.TestCase):
 
         chipset = detect_chipset(image, "SCP-4700")
 
+        self.assertEqual(chipset, "MSM5105")
+        self.assertEqual(chipset_confidence(image, chipset), "high")
+
+    def test_generic_510x_bsp_remains_msm5100(self) -> None:
+        image = b"dec5000.c\0clkrgm_5100.c\0boothw_510x.c\0"
+        chipset = detect_chipset(image, "generic")
+
         self.assertEqual(chipset, "MSM5100")
         self.assertEqual(chipset_confidence(image, chipset), "high")
+
+    def test_model_name_alone_does_not_assign_chipset(self) -> None:
+        self.assertEqual(detect_chipset(b"generic firmware", "SPH-X9000"),
+                         "MSM5xxx")
 
     def test_scp_filename_normalizes_identity_without_assigning_hardware_profile(self) -> None:
         self.assertEqual(
@@ -371,6 +429,54 @@ class DetectionTests(unittest.TestCase):
             self.assertIsNone(
                 find_fujitsu_x16_bulk_write(image + body, secondary_base)
             )
+
+    def test_complete_compound_fujitsu_dump_splits_secondary_nor(self) -> None:
+        primary_size, secondary_size = 0x400000, 0x200000
+        writer = bytes.fromhex(
+            "f0b5141c051c0f1c400803d2780801d2600802d3184919481ae00120c0050cf7"
+            "a3fa174e301c1fe02e8895f0dffa154aa02151813e80002801d195f0e5fa0122"
+            "381c311cfff78afc002805d00a490e481ef7a6fe0120f0bd0120c005023c0235"
+            "02370cf781fa0648084967f713f8002cdad10020f0bd0000acca1b00dc050000"
+            "308f4001a00a4000ed050000c5030000"
+        )
+        image = bytearray(b"\xff" * (primary_size + secondary_size))
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", image, offset, 0xEA000000)
+        image[0x1000:0x1000 + len(writer)] = writer
+        image[0x2000:0x2000 + 13] = b"fs_fujitsu.c\0"
+        marker = primary_size + 0x1001C
+        image[marker:marker + 12] = b"\x0b$USER_DIRS\0"
+        image[primary_size + 0x10040:primary_size + 0x10044] = b"nvm/"
+
+        self.assertEqual(find_compound_fujitsu_layout(bytes(image)),
+                         (primary_size, secondary_size))
+        with tempfile.TemporaryDirectory() as directory, patch(
+                "msm5xxx.DEFAULT_STATE_ROOT", Path(directory)):
+            firmware = Path(directory) / "compound.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware)
+            self.assertEqual(config.flash_size, primary_size)
+            self.assertEqual(config.secondary_flash_address, primary_size)
+            self.assertEqual(config.secondary_flash_size, secondary_size)
+            self.assertEqual(config.secondary_flash_image_offset, primary_size)
+            self.assertEqual(config.ram_image_size, 0)
+            self.assertIn("complete compound NOR image", config.dump_status)
+            emulator = GenericMSMEmulator(config)
+            try:
+                self.assertEqual(bytes(emulator.flash.data),
+                                 bytes(image[:primary_size]))
+                self.assertIsNotNone(emulator.secondary_flash)
+                self.assertEqual(bytes(emulator.secondary_flash.data),
+                                 bytes(image[primary_size:]))
+                self.assertEqual(emulator.secondary_flash.ids, (0x0004, 0x005F))
+            finally:
+                emulator.close()
+
+        image[marker] = 0xFF
+        self.assertIsNone(find_compound_fujitsu_layout(bytes(image)))
+        image[marker] = 0x0B
+        image[0x3000:0x3000 + len(writer)] = writer
+        self.assertIsNone(find_compound_fujitsu_layout(bytes(image)))
 
     def test_rex_5ms_pair_requires_unique_sleep_wrapper_and_timer_shapes(self) -> None:
         sleep = bytes.fromhex(

@@ -10,7 +10,7 @@ set "STATUS="
 if not exist "%PRIMARY_PYTHON%" goto try_fallback_venv
 set "PYTHON_CMD=%PRIMARY_PYTHON%"
 set "PYTHON_ARGS="
-"%PYTHON_CMD%" %PYTHON_ARGS% -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+"%PYTHON_CMD%" %PYTHON_ARGS% -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 if not errorlevel 1 (
     set "PYTHON_KIND=primary"
     goto python_ready
@@ -20,7 +20,7 @@ if not errorlevel 1 (
 if not exist "%FALLBACK_PYTHON%" goto select_bootstrap
 set "PYTHON_CMD=%FALLBACK_PYTHON%"
 set "PYTHON_ARGS="
-"%PYTHON_CMD%" %PYTHON_ARGS% -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+"%PYTHON_CMD%" %PYTHON_ARGS% -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 if not errorlevel 1 (
     set "PYTHON_KIND=fallback"
     goto python_ready
@@ -29,37 +29,47 @@ if not errorlevel 1 (
 :select_bootstrap
 where py >nul 2>nul
 if errorlevel 1 goto try_python
-py -3.14 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+py -3.14 -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
+if errorlevel 103 goto select_bootstrap_313
 if not errorlevel 1 (
     set "BOOTSTRAP_CMD=py"
     set "BOOTSTRAP_ARGS=-3.14"
     goto bootstrap_ready
 )
-py -3.13 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+:select_bootstrap_313
+py -3.13 -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
+if errorlevel 103 goto select_bootstrap_312
 if not errorlevel 1 (
     set "BOOTSTRAP_CMD=py"
     set "BOOTSTRAP_ARGS=-3.13"
     goto bootstrap_ready
 )
-py -3.12 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+:select_bootstrap_312
+py -3.12 -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
+if errorlevel 103 goto select_bootstrap_311
 if not errorlevel 1 (
     set "BOOTSTRAP_CMD=py"
     set "BOOTSTRAP_ARGS=-3.12"
     goto bootstrap_ready
 )
-py -3.11 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+:select_bootstrap_311
+py -3.11 -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
+if errorlevel 103 goto select_bootstrap_310
 if not errorlevel 1 (
     set "BOOTSTRAP_CMD=py"
     set "BOOTSTRAP_ARGS=-3.11"
     goto bootstrap_ready
 )
-py -3.10 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+:select_bootstrap_310
+py -3.10 -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
+if errorlevel 103 goto select_bootstrap_3
 if not errorlevel 1 (
     set "BOOTSTRAP_CMD=py"
     set "BOOTSTRAP_ARGS=-3.10"
     goto bootstrap_ready
 )
-py -3 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+:select_bootstrap_3
+py -3 -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 if errorlevel 1 goto try_python
 set "BOOTSTRAP_CMD=py"
 set "BOOTSTRAP_ARGS=-3"
@@ -68,7 +78,7 @@ goto bootstrap_ready
 :try_python
 where python >nul 2>nul
 if errorlevel 1 goto try_python3
-python -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+python -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 if errorlevel 1 goto try_python3
 set "BOOTSTRAP_CMD=python"
 set "BOOTSTRAP_ARGS="
@@ -77,7 +87,7 @@ goto bootstrap_ready
 :try_python3
 where python3 >nul 2>nul
 if errorlevel 1 goto missing_python
-python3 -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))" >nul 2>nul
+python3 -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 if errorlevel 1 goto missing_python
 set "BOOTSTRAP_CMD=python3"
 set "BOOTSTRAP_ARGS="
@@ -88,7 +98,7 @@ set "PYTHON_ARGS=%BOOTSTRAP_ARGS%"
 set "PYTHON_KIND=bootstrap"
 
 :python_ready
-"%PYTHON_CMD%" %PYTHON_ARGS% -c "import sys; raise SystemExit(sys.version_info ^< (3, 10))"
+"%PYTHON_CMD%" %PYTHON_ARGS% -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 if errorlevel 1 (
     echo Python 3.10 or newer is required. Install a newer Python, then run this launcher again.
     goto failed
