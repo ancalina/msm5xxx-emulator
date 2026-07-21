@@ -11,7 +11,8 @@ import tempfile
 
 from PIL import Image
 
-from ..core.emulator import GenericMSMEmulator, detect
+from ..core.emulator import GenericMSMEmulator
+from ..detection.firmware import detect
 
 
 def integer(value: str) -> int:

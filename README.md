@@ -26,10 +26,11 @@ SHA-256 identities for CLI, GUI, boot probe, and runtime logger modules.
 
 The GUI checks GitHub `main` in the background. When it sees a commit not yet
 seen by this install, it asks before downloading it. Accepting downloads a
-separate copy into `~/.msm5xxx-emulator/updates/` and restarts the GUI from that
-copy; it never overwrites the original extracted folder or firmware. Declining
-suppresses that commit only; a later commit prompts again. Failed/offline checks
-are silent and do not affect emulation.
+verified copy into `~/.msm5xxx-emulator/updates/`, replaces only manifest-owned
+runtime files in the extracted folder, and restarts the GUI. Firmware and files
+outside the manifest remain untouched; replacing modified distributed source
+requires explicit confirmation. Declining suppresses that commit only; a later
+commit prompts again. Failed/offline checks are silent and do not affect emulation.
 
 ### Attach a separate NAND dump
 

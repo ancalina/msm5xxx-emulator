@@ -169,8 +169,8 @@ class RexIdleObservationTests(unittest.TestCase):
         for register, value in before.items():
             uc.reg_write(register, value)
 
-        with (patch("msm5xxx.rex_sleep_call_at", return_value=42),
-              patch("msm5xxx.rex_5ms_callback_at", return_value=0)):
+        with (patch("msm5xxx_emulator.soc.rex.rex_sleep_call_at", return_value=42),
+              patch("msm5xxx_emulator.soc.rex.rex_5ms_callback_at", return_value=0)):
             emulator._rex_tick(uc, 0x102E, 2, None)
             self.assertEqual(emulator.rex_idle_entries, 1)
         self.assertEqual(emulator.rex_ticks, 0)

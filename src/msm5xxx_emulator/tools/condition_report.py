@@ -7,7 +7,8 @@ from collections import Counter, defaultdict
 import json
 from pathlib import Path
 
-from ..core.emulator import detect, detect_input_profile
+from ..detection.firmware import detect
+from ..detection.input import detect_input_profile
 
 
 FIRMWARE_SUFFIXES = (".bin", ".rom", ".dump")

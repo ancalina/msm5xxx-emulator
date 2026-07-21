@@ -27,7 +27,7 @@ class GuiTelemetryTests(unittest.TestCase):
             getlocale=lambda category=0: ("Korean_Korea", "949"),
         )
         with mock.patch.dict("os.environ", {}, clear=True), \
-             mock.patch("gui.locale", windows_locale):
+             mock.patch("msm5xxx_emulator.gui.locale.locale", windows_locale):
             self.assertEqual(system_ui_language(), "ko")
 
     def test_frame_repaint_cache_requires_frame_emulator_or_geometry_change(self) -> None:
@@ -175,7 +175,8 @@ class GuiTelemetryTests(unittest.TestCase):
         second_frame = b"\xff\xff\xff"
         with tempfile.TemporaryDirectory() as directory:
             session = Path(directory) / "gui-20260717-unique.log"
-            with mock.patch("gui.current_session_log", return_value=session):
+            with mock.patch("msm5xxx_emulator.gui.repro.current_session_log",
+                            return_value=session):
                 first = save_telemetry_frame(
                     config, generation=1, instructions=1_000_000,
                     phase="early-boot", capture=1, width=1, height=1,
@@ -302,7 +303,8 @@ class GuiTelemetryTests(unittest.TestCase):
                 nand_image=b"seed", nand_state_path=nand,
             )
             session = Path(directory) / "logs" / "gui-session.log"
-            with mock.patch("gui.current_session_log", return_value=session):
+            with mock.patch("msm5xxx_emulator.gui.repro.current_session_log",
+                            return_value=session):
                 bundle = create_repro_bundle(config, emulator, {"width": 128}, 1)
                 self.assertIsNotNone(bundle)
                 assert bundle is not None

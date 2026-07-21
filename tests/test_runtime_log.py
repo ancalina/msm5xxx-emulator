@@ -68,6 +68,7 @@ class NativeFaultLoggingPolicyTests(unittest.TestCase):
             self.assertEqual(document["runtime"]["source"]["file"], "msm5xxx.py")
             self.assertEqual(set(document["runtime"]["sources"]), {
                 "msm5xxx.py", "gui.py", "boot_probe.py", "runtime_log.py",
+                "source-tree",
             })
             self.assertEqual(document["payload"]["firmware"]["basename"], "firmware.bin")
             self.assertNotIn("firmware_path", document["payload"])

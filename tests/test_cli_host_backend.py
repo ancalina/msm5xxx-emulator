@@ -15,6 +15,12 @@ from msm5xxx import GenericMSMEmulator, HostBackendFault
 
 
 class CLIHostBackendFaultTests(unittest.TestCase):
+    def test_legacy_module_uses_explicit_facade(self) -> None:
+        self.assertEqual(msm5xxx.__name__, "msm5xxx_emulator.legacy_api")
+        self.assertIn("GenericMSMEmulator", msm5xxx.__all__)
+        self.assertIn("detect", msm5xxx.__all__)
+        self.assertIn("main", msm5xxx.__all__)
+
     def _close_harness(self, host_fault: HostBackendFault | None) -> GenericMSMEmulator:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(model="close-harness")

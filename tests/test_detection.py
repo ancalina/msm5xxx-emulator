@@ -1,6 +1,7 @@
 """Detector regression tests for BSP and handset identity evidence."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -59,9 +60,29 @@ from msm5xxx import (
     thumb_literal_value,
     restore_sparse_nor_gap,
 )
+from msm5xxx_emulator.detection.boot import DELAY_SIGNATURE
 
 
 class DetectionTests(unittest.TestCase):
+    def test_overrides_rebase_and_disable_detected_address(self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", image, offset, 0xEA000000)
+        image[0x200:0x200 + len(DELAY_SIGNATURE)] = DELAY_SIGNATURE
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "override.bin"
+            firmware.write_bytes(image)
+            rebased = detect(
+                firmware, argparse.Namespace(load_address=0x10000000)
+            )
+            disabled = detect(
+                firmware,
+                argparse.Namespace(load_address=0x10000000, delay_address=0),
+            )
+
+        self.assertEqual(rebased.delay_address, 0x10000200)
+        self.assertIsNone(disabled.delay_address)
+
     def test_filename_model_is_not_verified_hardware_identity(self) -> None:
         raw = bytearray(b"\xff" * 0x2000)
         for offset in range(0, 32, 4):
@@ -108,7 +129,8 @@ class DetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "sdram-overlay-candidate.bin"
             firmware.write_bytes(raw)
-            with patch("msm5xxx.find_runtime_overlays", return_value=[candidate]):
+            with patch("msm5xxx_emulator.detection.firmware.find_runtime_overlays",
+                       return_value=[candidate]):
                 config = detect(firmware)
 
         self.assertIn(
@@ -140,7 +162,8 @@ class DetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "sdram-overlay-candidate.bin"
             firmware.write_bytes(raw)
-            with patch("msm5xxx.find_runtime_overlays", return_value=[candidate]):
+            with patch("msm5xxx_emulator.detection.firmware.find_runtime_overlays",
+                       return_value=[candidate]):
                 config = detect(firmware)
             with patch.object(condition_report, "detect", return_value=config):
                 record = condition_report.profile(firmware)
@@ -593,7 +616,8 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(find_compound_fujitsu_layout(bytes(image)),
                          (primary_size, secondary_size))
         with tempfile.TemporaryDirectory() as directory, patch(
-                "msm5xxx.DEFAULT_STATE_ROOT", Path(directory)):
+                "msm5xxx_emulator.detection.firmware.DEFAULT_STATE_ROOT",
+                Path(directory)):
             firmware = Path(directory) / "compound.bin"
             firmware.write_bytes(image)
             config = detect(firmware)

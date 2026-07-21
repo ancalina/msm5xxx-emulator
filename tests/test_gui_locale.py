@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,33 @@ from unittest import mock
 from gui import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
                  resolve_ui_language, runtime_status_text, settings_apply_mode,
                  system_ui_language)
+from msm5xxx import detect
+from msm5xxx_emulator.gui.settings import (parse_settings_values, settings_values,
+                                           validate_settings_values)
 
 
 class GuiLocaleTests(unittest.TestCase):
+    def test_settings_parse_and_validation_are_gui_independent(self) -> None:
+        image = bytearray(b"\xff" * 0x1000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", image, offset, 0xEA000000)
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "settings.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware)
+            raw = settings_values(firmware, config, {})
+            parsed = parse_settings_values(raw)
+            effective = {name: getattr(config, name) for name in parsed}
+
+            validate_settings_values(
+                firmware, config, effective, set(), raw["flash_state"]
+            )
+            effective["ram_size"] = 0x08000001
+            with self.assertRaisesRegex(ValueError, "RAM 크기 상한"):
+                validate_settings_values(
+                    firmware, config, effective, set(), raw["flash_state"]
+                )
+
     def test_korean_metric_labels_and_pc_expansion(self) -> None:
         self.assertEqual(METRIC_TEXT["ko"]["run"][0], "실행")
         self.assertIn("Program Counter", METRIC_TEXT["ko"]["pc"][1])
@@ -53,7 +78,8 @@ class GuiLocaleTests(unittest.TestCase):
 
     def test_auto_falls_back_to_platform_locale(self) -> None:
         with mock.patch.dict("os.environ", {}, clear=True), \
-             mock.patch("gui.locale.getlocale", return_value=("Korean_Korea", "949")):
+             mock.patch("msm5xxx_emulator.gui.locale.locale.getlocale",
+                        return_value=("Korean_Korea", "949")):
             self.assertEqual(system_ui_language(), "ko")
 
     def test_runtime_metrics_use_one_line_per_value(self) -> None:
@@ -72,7 +98,7 @@ class GuiLocaleTests(unittest.TestCase):
             window.firmware = Path(directory) / "X430.bin"
             window.overrides = {"width": 128}
             window.ui_language_preference = "en"
-            with mock.patch("gui.LAST_CONFIG", config_path):
+            with mock.patch("msm5xxx_emulator.gui.controls.LAST_CONFIG", config_path):
                 Window._save_config(window)
                 restored = Window.__new__(Window)
                 self.assertEqual(Window._load_ui_language(restored), "en")

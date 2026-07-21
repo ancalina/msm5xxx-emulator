@@ -1,5 +1,12 @@
-"""Persistent guest storage devices."""
+"""Persistent storage devices and firmware-facing hooks."""
 
-from .nor import NORFlash
+from .eeprom import EepromMixin
+from .nand import NandMixin
+from .nor import NORFlash, NorStorageMixin
 
-__all__ = ("NORFlash",)
+
+class StorageMixin(NorStorageMixin, EepromMixin, NandMixin):
+    """Complete storage-device behavior."""
+
+
+__all__ = ("NORFlash", "StorageMixin")

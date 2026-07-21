@@ -26,8 +26,9 @@ _NATIVE_FILE = None
 
 _PATH_KEYS = frozenset({"argv", "cwd", "path", "paths", "session"})
 _ABSOLUTE_PATH_TOKEN = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|/)[^\s'\"<>]+")
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 _SOURCE_FILES = (
-    ("msm5xxx.py", Path("core/emulator.py")),
+    ("msm5xxx.py", Path("cli.py")),
     ("gui.py", Path("gui/app.py")),
     ("boot_probe.py", Path("probe/boot.py")),
     ("runtime_log.py", Path("diagnostics/runtime_log.py")),
@@ -42,23 +43,40 @@ def _package_version(name: str) -> str:
 
 
 def _source_identity() -> dict[str, str]:
-    source = Path(__file__).resolve().parents[1] / _SOURCE_FILES[0][1]
+    name, relative_path = _SOURCE_FILES[0]
+    source = _SOURCE_ROOT / relative_path
     try:
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
     except OSError:
         digest = "unavailable"
-    return {"file": "msm5xxx.py", "sha256": digest}
+    return {"file": name, "sha256": digest}
+
+
+def _source_tree_identity() -> str:
+    """Hash every packaged runtime module after the monolith split."""
+    digest = hashlib.sha256()
+    try:
+        for path in sorted(_SOURCE_ROOT.rglob("*.py")):
+            digest.update(path.relative_to(_SOURCE_ROOT).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+    except OSError:
+        return "unavailable"
+    return digest.hexdigest()
 
 
 def _source_identities() -> dict[str, str]:
-    """Hash log-producing entry-point modules without exposing their paths."""
-    root = Path(__file__).resolve().parents[1]
+    """Hash entry points and complete modular source without exposing paths."""
     hashes: dict[str, str] = {}
     for name, relative_path in _SOURCE_FILES:
         try:
-            hashes[name] = hashlib.sha256((root / relative_path).read_bytes()).hexdigest()
+            hashes[name] = hashlib.sha256(
+                (_SOURCE_ROOT / relative_path).read_bytes()
+            ).hexdigest()
         except OSError:
             hashes[name] = "unavailable"
+    hashes["source-tree"] = _source_tree_identity()
     return hashes
 
 
