@@ -7,15 +7,28 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from gui import (Window, display_model_name, normalize_ui_language,
-                 resolve_ui_language, runtime_status_text, system_ui_language)
+from gui import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
+                 resolve_ui_language, runtime_status_text, settings_apply_mode,
+                 system_ui_language)
 
 
 class GuiLocaleTests(unittest.TestCase):
+    def test_korean_metric_labels_and_pc_expansion(self) -> None:
+        self.assertEqual(METRIC_TEXT["ko"]["run"][0], "실행")
+        self.assertIn("Program Counter", METRIC_TEXT["ko"]["pc"][1])
+
+    def test_apply_mode_separates_language_firmware_and_overrides(self) -> None:
+        self.assertEqual(settings_apply_mode(set(), False), "language")
+        self.assertEqual(settings_apply_mode(set(), True), "firmware")
+        self.assertEqual(settings_apply_mode({"width"}, True), "overrides")
+
     def test_unverified_filename_is_not_presented_as_model_identity(self) -> None:
-        self.assertEqual(display_model_name(None, "ko"), "모델 미확인")
-        self.assertEqual(display_model_name(None, "en"), "Unknown model")
-        self.assertEqual(display_model_name("SCH-A650", "en"), "SCH-A650")
+        self.assertEqual(display_model_name("SCH-E100", None, "ko"),
+                         "SCH-E100 (미확인)")
+        self.assertEqual(display_model_name("SCH-E100", None, "en"),
+                         "SCH-E100 (unverified)")
+        self.assertEqual(display_model_name("SCH-A650", "SCH-A650", "en"),
+                         "SCH-A650")
 
     def test_known_preferences_and_safe_default(self) -> None:
         self.assertEqual(normalize_ui_language("auto"), "auto")

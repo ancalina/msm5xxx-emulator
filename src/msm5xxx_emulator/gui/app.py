@@ -98,9 +98,28 @@ UI_TEXT = {
 }
 
 
-def display_model_name(verified_model: str | None, language: str) -> str:
-    """Do not present a filename fallback as verified hardware identity."""
-    return verified_model or UI_TEXT[language]["unknown_model"]
+def display_model_name(model: str, verified_model: str | None, language: str) -> str:
+    """Show detector candidate while marking unverified identity explicitly."""
+    if verified_model:
+        return verified_model
+    suffix = "미확인" if language == "ko" else "unverified"
+    return f"{model} ({suffix})"
+
+
+METRIC_TEXT = {
+    "ko": {
+        "run": ("실행", "지금까지 실행한 guest CPU 명령어 수"),
+        "pc": ("PC", "Program Counter: 다음에 실행할 guest 코드 주소"),
+        "lcd": ("LCD", "firmware가 LCD port에 기록한 누적 횟수"),
+        "frame": ("프레임", "완성된 화면으로 게시한 누적 횟수"),
+    },
+    "en": {
+        "run": ("Run", "Guest CPU instructions executed so far"),
+        "pc": ("PC", "Program Counter: guest code address to execute next"),
+        "lcd": ("LCD", "Firmware writes observed on LCD ports"),
+        "frame": ("Frame", "Completed display frames published"),
+    },
+}
 
 
 KEY_TEXT = {
@@ -184,6 +203,25 @@ def runtime_status_text(latest: dict[str, object], ui_language: str) -> str:
         parts.append(f"{'Input error' if english else '입력 오류'}: {latest['input_error']}")
     return "\n".join(parts)
 
+
+def runtime_notice_text(latest: dict[str, object], ui_language: str) -> str:
+    """Return only exceptional or optional runtime notices below metrics."""
+    english = ui_language == "en"
+    parts: list[str] = []
+    audio_requests = int(latest.get("audio_play_requests", 0))
+    audio_backend = str(latest.get("audio_backend", ""))
+    if audio_requests:
+        parts.append(f"{'Audio' if english else '오디오'} {audio_requests}")
+    elif audio_backend in ("disabled", "render-only"):
+        parts.append("Audio unavailable" if english else "오디오 재생기 없음")
+    if latest.get("audio_error"):
+        parts.append(f"{'Audio error' if english else '오디오 오류'}: "
+                     f"{latest['audio_error']}")
+    if latest.get("input_error"):
+        parts.append(f"{'Input error' if english else '입력 오류'}: "
+                     f"{latest['input_error']}")
+    return "\n".join(parts)
+
 def merge_settings_overrides(current: dict[str, object], edited: set[str],
                              parsed: dict[str, object],
                              firmware_changed: bool) -> dict[str, object]:
@@ -198,6 +236,13 @@ def merge_settings_overrides(current: dict[str, object], edited: set[str],
         else:
             merged[name] = value
     return merged
+
+
+def settings_apply_mode(edited: set[str], firmware_changed: bool) -> str:
+    """Keep harmless UI and clean-firmware changes out of override validation."""
+    if not edited:
+        return "firmware" if firmware_changed else "language"
+    return "overrides"
 
 
 def can_apply_live_framebuffer_format(edited: set[str], firmware_changed: bool,
@@ -681,6 +726,14 @@ class Window:
         self._render_cache: tuple[object, bytes, int, int, int, int] | None = None
         self.status = tk.StringVar(value=self._text("ready"))
         self.model = tk.StringVar(value=self._text("detecting"))
+        self.device_details = tk.StringVar(value="")
+        self.metric_values = {
+            "run": tk.StringVar(value="—"), "pc": tk.StringVar(value="—"),
+            "lcd": tk.StringVar(value="—"), "frame": tk.StringVar(value="—"),
+        }
+        self.metric_titles: dict[str, ttk.Label] = {}
+        self._tooltip_after: str | None = None
+        self._tooltip_window: tk.Toplevel | None = None
         self._configure_style()
         self._build()
         self._bind_keyboard()
@@ -704,6 +757,8 @@ class Window:
             button.configure(text=self._key_text(key))
         self.settings_button.configure(text=self._text("settings"))
         self.capture_button.configure(text=self._text("capture"))
+        for key, label in self.metric_titles.items():
+            label.configure(text=METRIC_TEXT[self.ui_language][key][0])
 
     def _configure_style(self) -> None:
         style = ttk.Style(self.root)
@@ -713,6 +768,14 @@ class Window:
             pass
         style.configure("Phone.TFrame", background="#242424")
         style.configure("Phone.TLabel", background="#242424", foreground="#eeeeee")
+        style.configure("Device.Phone.TLabel", background="#242424",
+                        foreground="#ffffff", font=("TkDefaultFont", 10, "bold"))
+        style.configure("Detail.Phone.TLabel", background="#242424",
+                        foreground="#aeb7c2")
+        style.configure("MetricName.Phone.TLabel", background="#242424",
+                        foreground="#8fa1b5", font=("TkDefaultFont", 8))
+        style.configure("MetricValue.Phone.TLabel", background="#242424",
+                        foreground="#e8edf2", font="TkFixedFont")
         style.configure("Phone.TButton", padding=(4, 1), width=6, anchor="center")
         style.configure("Tool.Phone.TButton", padding=(4, 1), width=10)
         self.root.configure(background="#1b1b1b")
@@ -752,19 +815,91 @@ class Window:
 
         ttk.Separator(outer).pack(fill="x", pady=(4, 3))
         self.model_label = ttk.Label(outer, textvariable=self.model, anchor="w",
-                                     justify="left", wraplength=330, style="Phone.TLabel")
+                                     justify="left", wraplength=330,
+                                     style="Device.Phone.TLabel")
         self.model_label.pack(fill="x")
+        self.device_details_label = ttk.Label(
+            outer, textvariable=self.device_details, anchor="w", justify="left",
+            wraplength=330, style="Detail.Phone.TLabel",
+        )
+        self.device_details_label.pack(fill="x", pady=(0, 2))
+        metrics = ttk.Frame(outer, style="Phone.TFrame")
+        metrics.pack(fill="x", pady=(2, 1))
+        for column in range(2):
+            metrics.columnconfigure(column, weight=1, uniform="metric")
+        for index, key in enumerate(("run", "pc", "lcd", "frame")):
+            cell = ttk.Frame(metrics, style="Phone.TFrame")
+            cell.grid(row=index // 2, column=index % 2, sticky="ew", padx=(0, 8))
+            title = ttk.Label(cell, text=METRIC_TEXT[self.ui_language][key][0],
+                              style="MetricName.Phone.TLabel")
+            title.pack(side="left")
+            value = ttk.Label(cell, textvariable=self.metric_values[key],
+                              style="MetricValue.Phone.TLabel")
+            value.pack(side="left", padx=(6, 0))
+            self.metric_titles[key] = title
+            self._bind_metric_tooltip(title, key)
+            self._bind_metric_tooltip(value, key)
         self.status_label = ttk.Label(outer, textvariable=self.status, anchor="w",
-                                      justify="left", wraplength=330, style="Phone.TLabel")
+                                      justify="left", wraplength=330,
+                                      style="Detail.Phone.TLabel")
         self.status_label.pack(fill="x")
+        self.status.trace_add("write", self._sync_status_visibility)
 
         def wrap_status(event: tk.Event) -> None:
             length = max(120, event.width - 24)
             self.model_label.configure(wraplength=length)
+            self.device_details_label.configure(wraplength=length)
             self.status_label.configure(wraplength=length)
 
         outer.bind("<Configure>", wrap_status)
         self._apply_ui_language()
+
+    def _sync_status_visibility(self, *_args: object) -> None:
+        if self.status.get():
+            if not self.status_label.winfo_manager():
+                self.status_label.pack(fill="x")
+        else:
+            self.status_label.pack_forget()
+
+    def _bind_metric_tooltip(self, widget: tk.Widget, key: str) -> None:
+        widget.bind("<Enter>", lambda _event: self._queue_metric_tooltip(widget, key))
+        widget.bind("<Leave>", lambda _event: self._hide_metric_tooltip())
+        widget.bind("<ButtonPress>", lambda _event: self._hide_metric_tooltip())
+
+    def _queue_metric_tooltip(self, widget: tk.Widget, key: str) -> None:
+        self._hide_metric_tooltip()
+        self._tooltip_after = self.root.after(
+            350, lambda: self._show_metric_tooltip(widget, key)
+        )
+
+    def _show_metric_tooltip(self, widget: tk.Widget, key: str) -> None:
+        self._tooltip_after = None
+        if not widget.winfo_exists():
+            return
+        title, explanation = METRIC_TEXT[self.ui_language][key]
+        window = tk.Toplevel(self.root)
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        tk.Label(
+            window, text=f"{title}\n{explanation}", justify="left", padx=9, pady=7,
+            background="#fffbd6", foreground="#202020", relief="solid", borderwidth=1,
+        ).pack()
+        window.update_idletasks()
+        pointer_x, pointer_y = self.root.winfo_pointerxy()
+        x = min(pointer_x + 14,
+                self.root.winfo_screenwidth() - window.winfo_reqwidth() - 4)
+        y = min(pointer_y + 18,
+                self.root.winfo_screenheight() - window.winfo_reqheight() - 4)
+        window.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self._tooltip_window = window
+
+    def _hide_metric_tooltip(self) -> None:
+        if self._tooltip_after is not None:
+            self.root.after_cancel(self._tooltip_after)
+            self._tooltip_after = None
+        if self._tooltip_window is not None:
+            self._tooltip_window.destroy()
+            self._tooltip_window = None
 
     def _bind_keyboard(self) -> None:
         self.keyboard_mapping = {
@@ -957,9 +1092,13 @@ class Window:
             if generation == self.generation:
                 self.emulator = emulator
             self.states.put((generation, {
-                "model": f"{display_model_name(config.verified_model, self.ui_language)} · "
-                         f"{config.chipset}/{config.chipset_confidence} · "
-                         f"{config.width}×{config.height} · {config.dump_status}",
+                "model": display_model_name(
+                    config.model, config.verified_model, self.ui_language
+                ),
+                "device_details": (
+                    f"{config.chipset} / {config.chipset_confidence}  ·  "
+                    f"{config.width}×{config.height}  ·  {config.dump_status}"
+                ),
             }))
             last_publish = 0.0
             _width, _height, initial_frame = emulator.display_snapshot()
@@ -1144,8 +1283,18 @@ class Window:
         if latest:
             if "model" in latest:
                 self.model.set(str(latest["model"]))
+            if "device_details" in latest:
+                self.device_details.set(str(latest["device_details"]))
             if "instructions" in latest:
-                self.status.set(runtime_status_text(latest, self.ui_language))
+                self.metric_values["run"].set(f"{int(latest['instructions']):,}")
+                self.metric_values["pc"].set(str(latest.get("pc", "?")))
+                self.metric_values["lcd"].set(
+                    f"{int(latest.get('lcd_writes', 0)):,}"
+                )
+                self.metric_values["frame"].set(
+                    str(latest.get("frame_sequence", 0))
+                )
+                self.status.set(runtime_notice_text(latest, self.ui_language))
             if latest.get("fault"):
                 self.status.set(f"{'Stopped' if self.ui_language == 'en' else '중지'}: {latest['fault']}")
             if latest.get("host_backend_fault"):
@@ -1410,6 +1559,57 @@ class Window:
                 firmware = Path(entries["firmware"].get()).expanduser().resolve()
                 if not firmware.is_file():
                     raise ValueError("펌웨어 파일 없음")
+                edited = {
+                    name for name, widget in entries.items()
+                    if name != "firmware"
+                    and widget.get().strip() != values[name].strip()
+                }
+                firmware_changed = firmware != self.firmware.resolve()
+                mode = settings_apply_mode(edited, firmware_changed)
+                if mode == "language":
+                    old_preference, old_language = (
+                        self.ui_language_preference, self.ui_language
+                    )
+                    self.ui_language_preference = ui_language
+                    self.ui_language = resolve_ui_language(ui_language)
+                    try:
+                        self._save_config()
+                    except OSError:
+                        self.ui_language_preference, self.ui_language = (
+                            old_preference, old_language
+                        )
+                        raise
+                    dialog.destroy()
+                    if self.ui_language != old_language:
+                        self._apply_ui_language()
+                    return
+                if mode == "firmware":
+                    old_firmware, old_overrides = self.firmware, self.overrides
+                    old_preference, old_language = (
+                        self.ui_language_preference, self.ui_language
+                    )
+                    self.firmware = firmware
+                    try:
+                        self.overrides = self._load_config()
+                        detect(firmware, argparse.Namespace(**self.overrides))
+                    except (OSError, ValueError):
+                        self.firmware, self.overrides = old_firmware, old_overrides
+                        raise
+                    self.ui_language_preference = ui_language
+                    self.ui_language = resolve_ui_language(ui_language)
+                    try:
+                        self._save_config()
+                    except OSError:
+                        self.firmware, self.overrides = old_firmware, old_overrides
+                        self.ui_language_preference, self.ui_language = (
+                            old_preference, old_language
+                        )
+                        raise
+                    dialog.destroy()
+                    if self.ui_language != old_language:
+                        self._apply_ui_language()
+                    self._restart()
+                    return
                 nand_image_text = entries["nand_image"].get().strip()
                 secondary_image_text = entries["secondary_flash_image"].get().strip()
                 secondary_state_text = entries["secondary_flash_state"].get().strip()
@@ -1481,12 +1681,6 @@ class Window:
                     "nand_pages_per_block": integer("nand_pages_per_block"),
                     "nand_bus_width": integer("nand_bus_width"),
                 }
-                edited = {
-                    name for name, widget in entries.items()
-                    if name != "firmware"
-                    and widget.get().strip() != values[name].strip()
-                }
-                firmware_changed = firmware != self.firmware.resolve()
                 minimal = merge_settings_overrides(
                     self.overrides, edited, overrides, firmware_changed
                 )
@@ -1515,12 +1709,14 @@ class Window:
                     if overrides["framebuffer_stride"] < overrides["width"] * 2:
                         raise ValueError("Framebuffer stride가 한 줄보다 작음")
                 file_size = firmware.stat().st_size
-                if not 0 <= overrides["image_offset"] < file_size:
+                if ("image_offset" in edited
+                        and not 0 <= overrides["image_offset"] < file_size):
                     raise ValueError("이미지 오프셋이 펌웨어 범위를 벗어남")
                 available = file_size - overrides["image_offset"]
-                if (overrides["flash_size"] <= 0
-                        or overrides["flash_size"] > MAX_FLASH_SIZE
-                        or overrides["flash_size"] - available > PAGE):
+                if (({"flash_size", "image_offset"} & edited)
+                        and (overrides["flash_size"] <= 0
+                             or overrides["flash_size"] > MAX_FLASH_SIZE
+                             or overrides["flash_size"] - available > PAGE)):
                     raise ValueError("Flash 크기가 펌웨어 범위를 벗어남")
                 if overrides["load_address"] + overrides["flash_size"] > 0x100000000:
                     raise ValueError("Flash 매핑이 32-bit 주소 공간을 벗어남")
@@ -1735,6 +1931,7 @@ class Window:
         if self.closing:
             return
         self.closing = True
+        self._hide_metric_tooltip()
         firmware = getattr(self, "firmware", None)
         firmware_name = firmware.name if isinstance(firmware, Path) else "unknown"
         LOGGER.info("window close begin firmware=%s", firmware_name)
