@@ -95,5 +95,3 @@ Copyright © 2026 Ancalina. Licensed under `GPL-2.0-or-later`.
 Unicorn is GPLv2-only. Any emulator distribution that includes or combines
 with Unicorn must use this project's GPLv2 option; do not combine it with
 GPLv3-only or AGPL code. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
-
-`README_ALPHA.md` records current alpha runtime scope.

@@ -36,7 +36,7 @@ from msm5xxx import GenericMSMEmulator
 
 
 class RexIdleObservationTests(unittest.TestCase):
-    def test_trace_skips_work_until_observer_preconditions_are_met(self) -> None:
+    def test_trace_skips_disabled_audio_probe_and_primary_rom_read(self) -> None:
         def harness(audio_player: object | None) -> GenericMSMEmulator:
             emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
             emulator.config = SimpleNamespace(
@@ -57,22 +57,26 @@ class RexIdleObservationTests(unittest.TestCase):
             emulator.zero_fetches = 0
             emulator.fault = None
             emulator.hot_loop_hle_used = False
+            emulator._try_hot_arm_memory_clear = Mock(return_value=False)
             emulator._try_hot_thumb_memory_loop = Mock(return_value=False)
             emulator._probe_audio_call = Mock()
             return emulator
 
         uc = Mock()
         disabled = harness(None)
-        for _ in range(63):
-            disabled._trace(uc, 0x10, 4, None)
+        disabled._trace(uc, 0x10, 4, None)
         disabled._probe_audio_call.assert_not_called()
         disabled._restore_flash_once.assert_not_called()
         disabled._rex_irq_boundary.assert_not_called()
         disabled._try_hot_thumb_memory_loop.assert_not_called()
         uc.mem_read.assert_not_called()
 
+        for _ in range(62):
+            disabled._trace(uc, 0x10, 4, None)
+        disabled._try_hot_thumb_memory_loop.assert_not_called()
         disabled._trace(uc, 0x10, 4, None)
         disabled._try_hot_thumb_memory_loop.assert_called_once_with(uc, 0x10)
+
         disabled._flash_restore[0] = b"x"
         disabled._rex_irq_pending[0] = 1
         disabled._trace(uc, 0x10, 4, None)
@@ -211,6 +215,29 @@ class RexIdleObservationTests(unittest.TestCase):
             struct.unpack("<2I", uc.mem_read(0x03000628, 8)),
             (0x11223344, 0x55667788),
         )
+
+    def test_irq_boundary_accepts_any_enabled_pending_route(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(
+            rex_irq_enable_address=0x03000628,
+            rex_irq_mask=0x0200,
+        )
+        emulator._rex_irq_pending = [0x0080, 0]
+        emulator.rex_irq_deliveries = 0
+        emulator._rex_irq_route_valid = Mock(return_value=True)
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0, 0x2000)
+        uc.mem_map(0x03000000, 0x1000)
+        uc.mem_write(0x03000628, struct.pack("<H", 0x0080))
+        uc.reg_write(UC_ARM_REG_CPSR, 0x92)
+        uc.reg_write(UC_ARM_REG_SP, 0x1900)
+        uc.reg_write(UC_ARM_REG_CPSR, 0x1F)
+        uc.reg_write(UC_ARM_REG_SP, 0x1800)
+
+        self.assertTrue(emulator._rex_irq_boundary(uc, 0x1200))
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x18)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_LR), 0x1204)
+        self.assertEqual(emulator.rex_irq_deliveries, 1)
 
     def test_5ms_controller_vector_irq_return_and_task_switch(self) -> None:
         def bl(source: int, target: int) -> bytes:

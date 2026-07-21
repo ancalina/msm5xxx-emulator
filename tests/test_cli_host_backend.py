@@ -11,10 +11,40 @@ import unittest
 from unittest import mock
 
 import msm5xxx
-from msm5xxx import HostBackendFault
+from msm5xxx import GenericMSMEmulator, HostBackendFault
 
 
 class CLIHostBackendFaultTests(unittest.TestCase):
+    def _close_harness(self, host_fault: HostBackendFault | None) -> GenericMSMEmulator:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(model="close-harness")
+        emulator.instructions = 1
+        emulator.fault = None
+        emulator._host_backend_fault = host_fault
+        emulator.audio_player = None
+        emulator.save_flash = mock.Mock()
+        emulator._save_eeprom = mock.Mock()
+        emulator._save_nand = mock.Mock()
+        return emulator
+
+    def test_close_keeps_durable_state_after_host_backend_fault(self) -> None:
+        emulator = self._close_harness(HostBackendFault(OSError("backend stopped"), {}))
+
+        emulator.close()
+
+        emulator.save_flash.assert_not_called()
+        emulator._save_eeprom.assert_not_called()
+        emulator._save_nand.assert_not_called()
+
+    def test_close_persists_durable_state_without_host_backend_fault(self) -> None:
+        emulator = self._close_harness(None)
+
+        emulator.close()
+
+        emulator.save_flash.assert_called_once_with()
+        emulator._save_eeprom.assert_called_once_with()
+        emulator._save_nand.assert_called_once_with()
+
     def test_host_error_text_drops_posix_and_windows_paths(self) -> None:
         fault = HostBackendFault(
             OSError(

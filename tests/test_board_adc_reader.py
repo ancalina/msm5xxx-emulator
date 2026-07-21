@@ -15,20 +15,21 @@ from msm5xxx import (BOARD_ADC_READER_DATA_ADDRESS,
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PRIVATE_FIRMWARES = (ROOT / "firmwares").is_dir()
 
 
 class BoardADCReaderTests(unittest.TestCase):
     readers = {
         "schx150.bin": 0x4050,
         "x350_VC22.bin": 0x4050,
+        "SCH-X350_UJ08_JTAG.bin": 0x4050,
         "SCH-X250.bin": 0x4050,
         "SCH-x127.bin": 0x10050,
         "SPH-X4500.bin": 0x10050,
     }
 
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_shared_reader_requires_complete_unique_grammar(self) -> None:
+        if not (ROOT / "firmwares").is_dir():
+            self.skipTest("private firmware corpus is not available")
         for name, expected in self.readers.items():
             image = (ROOT / "firmwares" / name).read_bytes()
             self.assertEqual(find_board_adc_reader(image), expected, name)
@@ -55,8 +56,9 @@ class BoardADCReaderTests(unittest.TestCase):
         image[duplicate:duplicate + 0x98] = image[reader:reader + 0x98]
         self.assertIsNone(find_board_adc_reader(image))
 
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_channel_two_only_changes_pristine_reader_low_byte(self) -> None:
+        if not (ROOT / "firmwares").is_dir():
+            self.skipTest("private firmware corpus is not available")
         image = (ROOT / "firmwares" / "SCH-X250.bin").read_bytes()
         source = self.readers["SCH-X250.bin"]
         reader = image[source:source + 0x98]

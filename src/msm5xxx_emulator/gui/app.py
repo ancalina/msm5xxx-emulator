@@ -44,6 +44,7 @@ GUI_ZERO_DISABLE_FIELDS = DISABLEABLE_ADDRESS_FIELDS | {
 TELEMETRY_INSTRUCTION_CADENCE = 1_000_000
 TELEMETRY_SCREENSHOT_CADENCE = 5_000_000
 TELEMETRY_SCREENSHOT_CAP = 32
+TELEMETRY_POLL_ESCAPE_CAP = 8
 
 
 def frame_repaint_needed(
@@ -224,9 +225,55 @@ def _counter(state: dict[str, object], name: str) -> int:
     return value if isinstance(value, int) else 0
 
 
+def _nonnegative_counter(state: dict[str, object], name: str) -> int:
+    value = state.get(name, 0)
+    return value if type(value) is int and value >= 0 else 0
+
+
 def _mapping(state: dict[str, object], name: str) -> dict[str, object]:
     value = state.get(name)
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _host_hle_telemetry(state: dict[str, object]) -> dict[str, object]:
+    """Return bounded, path-safe provenance for emulator-side accelerators."""
+    events: list[dict[str, object]] = []
+    total = 0
+    raw_events = state.get("poll_escapes")
+    if isinstance(raw_events, list):
+        for raw_event in raw_events:
+            if not isinstance(raw_event, dict):
+                continue
+            pc = raw_event.get("pc")
+            address = raw_event.get("address")
+            value = raw_event.get("value")
+            bit = raw_event.get("bit")
+            ready = raw_event.get("state")
+            if (type(pc) is not int or not 0 <= pc <= 0xFFFFFFFF
+                    or type(address) is not int or not 0 <= address <= 0xFFFFFFFF
+                    or type(value) is not int or not 0 <= value <= 0xFFFFFFFF
+                    or type(bit) is not int or not 0 <= bit < 32
+                    or type(ready) is not int or ready not in (0, 1)):
+                continue
+            total += 1
+            if len(events) < TELEMETRY_POLL_ESCAPE_CAP:
+                events.append({
+                    "pc": f"0x{pc:08X}", "address": f"0x{address:08X}",
+                    "value": f"0x{value:08X}", "bit": bit, "state": ready,
+                })
+    return {
+        "fast_boot_used": state.get("fast_boot_used") is True,
+        "fast_memory_clears": _nonnegative_counter(state, "fast_memory_clears"),
+        "fast_memory_copies": _nonnegative_counter(state, "fast_memory_copies"),
+        "fast_register_ramps": _nonnegative_counter(state, "fast_register_ramps"),
+        "fast_arm_memory_copies": _nonnegative_counter(state, "fast_arm_memory_copies"),
+        "hot_loop_hle_used": state.get("hot_loop_hle_used") is True,
+        "fast_crc16_calls": _nonnegative_counter(state, "fast_crc16_calls"),
+        "fast_dmd_downloads": _nonnegative_counter(state, "fast_dmd_downloads"),
+        "ma2_silent_boot_calls": _nonnegative_counter(state, "ma2_silent_boot_calls"),
+        "poll_escape_count": total,
+        "poll_escapes": events,
+    }
 
 
 def _phase_state(state: dict[str, object]) -> dict[str, object]:
@@ -315,6 +362,9 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
         },
         "nor": {
             "primary": _mapping(state, "primary_flash_telemetry"),
+            "primary_parallel_nor_direct_id_probes": state.get(
+                "primary_parallel_nor_direct_id_probes", []
+            ),
             "secondary_reads": _counter(state, "secondary_flash_reads"),
             "secondary_writes": _counter(state, "secondary_flash_writes"),
             "secondary_changed_pages": _counter(
@@ -337,6 +387,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
             "writes": _counter(state, "nand_writes"),
             "bad_block_probes": _counter(state, "nand_bad_block_probes"),
         },
+        "host_hle": _host_hle_telemetry(state),
         "control_sink": state.get("control_sink"),
         "last_unmapped": _mapping(state, "last_unmapped"),
         "unmapped_accesses": state.get("unmapped_accesses", []),
@@ -578,8 +629,8 @@ def _compact_telemetry(payload: dict[str, object]) -> dict[str, object]:
             "generation", "firmware", "model", "chipset", "dump_status",
             "instructions", "pc", "lr", "cpsr", "phase", "event", "frame",
             "lcd", "rex", "nor", "eeprom", "nand", "control_sink",
-            "last_unmapped", "unmapped_accesses", "dynamic_page_first_accesses",
-            "fault",
+            "host_hle", "last_unmapped", "unmapped_accesses",
+            "dynamic_page_first_accesses", "fault",
         ) if name in payload
     }
 
@@ -1046,7 +1097,9 @@ class Window:
                 except Exception as error:
                     record_exception(f"GUI save generation {generation}", error)
                     self.save_errors.put(str(error))
-                    self.states.put((generation, {"fault": f"저장 실패: {error}"}))
+                    self.states.put((generation, {
+                        "fault": f"{self._text('save_failed')}: {error}"
+                    }))
                 finally:
                     if repro_bundle is not None and config is not None:
                         finish_repro_bundle(
@@ -1385,7 +1438,7 @@ class Window:
                     "board_revision": entries["board_revision"].get().strip(),
                     "board_revision_register": optional_integer("board_revision_register"),
                     "board_revision_value": optional_integer("board_revision_value"),
-                    "key_register": integer("key_register"),
+                    "key_register": optional_integer("key_register"),
                     "key_active_low": boolean("key_active_low"),
                     "audio_play_address": optional_integer("audio_play_address"),
                     "fast_boot_address": optional_integer("fast_boot_address"),

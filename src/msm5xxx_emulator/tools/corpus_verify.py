@@ -60,8 +60,9 @@ def main() -> int:
             "file": str(path), "status": "detected", "config": config,
         }
         if (config["image_kind"] != "firmware"
-                or config["chipset"] not in ("MSM5000", "MSM5100", "MSM5500",
-                                              "MSM5xxx")
+                or config["chipset"] not in (
+                    "MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"
+                )
                 or args.steps == 0):
             result["status"] = "rejected" if args.steps else "detected"
             return result

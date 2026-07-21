@@ -1,8 +1,14 @@
 """Boot-probe phase classification regressions."""
 from __future__ import annotations
 
+from collections import Counter
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
+import boot_probe
 from boot_probe import boot_event, boot_phase, firmware_visible_frame
 
 
@@ -66,6 +72,62 @@ class BootProbePhaseTests(unittest.TestCase):
             10, "next", "seed", "splash", saw_splash,
         )
         self.assertEqual((event, saw_splash), ("post-splash-changing", True))
+
+    def test_probe_checkpoint_carries_reset_entries(self) -> None:
+        state = dict.fromkeys((
+            "instructions", "reset_entries", "frame_sequence",
+            "firmware_frame_sequence", "lcd_writes", "lcd_port_writes",
+            "fast_register_ramps", "rex_idle_entries", "rex_ticks",
+            "rex_elapsed_ms", "secondary_flash_reads",
+            "secondary_flash_writes", "secondary_flash_changed_pages",
+            "eeprom_capacity", "eeprom_reads", "eeprom_read_bytes",
+            "eeprom_writes", "eeprom_write_bytes", "eeprom_changed_bytes",
+            "eeprom_loaded_from_state", "nand_reads", "nand_writes",
+            "poll_escapes",
+        ), 0)
+        state.update({
+            "config": {}, "reset_entries": 2, "pc": "0x00000000",
+            "lr": "0x00000000", "registers": {}, "fault": None,
+            "fault_context": None, "lcd_protocol": None,
+            "lcd_frame_protocol": None, "primary_flash_ids": None,
+            "primary_flash_telemetry": {},
+            "primary_parallel_nor_direct_id_probes": [], "input_mode": None,
+            "input_events": [], "firmware_key_events": [],
+            "secondary_flash_telemetry": {}, "eeprom_error": None,
+            "nand_commands": [], "control_sink": None,
+            "last_unmapped": None, "tail": [],
+        })
+
+        class FakeEmulator:
+            def __init__(self, _config: object) -> None:
+                self.hot: Counter[int] = Counter()
+                self.mmio_reads: Counter[tuple[int, int, int]] = Counter()
+                self.mmio_read_totals: Counter[tuple[int, int, int]] = Counter()
+
+            def run(self, instructions: int) -> dict[str, object]:
+                return dict(state, instructions=instructions)
+
+            @staticmethod
+            def display_snapshot() -> tuple[int, int, bytes]:
+                return 1, 1, b"\0\0\0"
+
+            def close(self) -> None:
+                pass
+
+        config = SimpleNamespace(
+            model="test", chipset="MSM5000", chipset_confidence="test",
+            image_kind="firmware", dump_status="complete", image_offset=0,
+            load_address=0, flash_size=1, ram_base=0, ram_size=1,
+            rex_idle_address=None, rex_tick_address=None,
+            secondary_flash_address=None, detection_notes=[], width=1, height=1,
+        )
+        with TemporaryDirectory() as directory:
+            with mock.patch.object(boot_probe, "detect", return_value=config), \
+                 mock.patch.object(boot_probe, "GenericMSMEmulator", FakeEmulator):
+                report = boot_probe.probe(
+                    Path("test.bin"), [1], Path(directory) / "frames"
+                )
+        self.assertEqual(report["checkpoints"][0]["reset_entries"], 2)
 
 
 if __name__ == "__main__":

@@ -11,15 +11,25 @@ from unittest import mock
 
 from PIL import Image
 
-from gui import (TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_SCREENSHOT_CADENCE,
+from gui import (TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_POLL_ESCAPE_CAP,
+                 TELEMETRY_SCREENSHOT_CADENCE, _compact_telemetry,
                  _frame_metrics,
                  create_repro_bundle, finish_repro_bundle,
-                 frame_repaint_needed,
-                 hydrate_host_checkpoint, runtime_telemetry, save_telemetry_frame,
-                 telemetry_artifact_due, telemetry_transition)
+                 frame_repaint_needed, hydrate_host_checkpoint, runtime_telemetry,
+                 save_telemetry_frame,
+                 system_ui_language, telemetry_artifact_due, telemetry_transition)
 
 
 class GuiTelemetryTests(unittest.TestCase):
+    def test_windows_without_lc_messages_uses_lc_ctype(self) -> None:
+        windows_locale = SimpleNamespace(
+            LC_CTYPE=0,
+            getlocale=lambda category=0: ("Korean_Korea", "949"),
+        )
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch("gui.locale", windows_locale):
+            self.assertEqual(system_ui_language(), "ko")
+
     def test_frame_repaint_cache_requires_frame_emulator_or_geometry_change(self) -> None:
         emulator = object()
         frame = b"rgb"
@@ -29,15 +39,6 @@ class GuiTelemetryTests(unittest.TestCase):
         self.assertTrue(frame_repaint_needed(cache, emulator, bytes(bytearray(frame)),
                                              1, 1, 100, 100))
         self.assertTrue(frame_repaint_needed(cache, emulator, frame, 1, 1, 101, 100))
-
-    def test_frame_metrics_reuses_identical_immutable_frame(self) -> None:
-        frame = b"\0\0\0\xff\0\0"
-        self.assertEqual(_frame_metrics(frame, frame, "cached", 4), ("cached", 4))
-
-        changed = bytes(bytearray(frame))
-        frame_hash, nonblack = _frame_metrics(changed, frame, "cached", 4)
-        self.assertEqual(frame_hash, hashlib.sha256(changed).hexdigest())
-        self.assertEqual(nonblack, 1)
 
     def _state(self, **changes: object) -> dict[str, object]:
         state: dict[str, object] = {
@@ -62,6 +63,7 @@ class GuiTelemetryTests(unittest.TestCase):
             "lcd_frame_protocol": "none",
             "control_sink": None,
             "last_unmapped": None,
+            "dynamic_page_first_accesses": [],
             "eeprom_capacity": 0,
             "eeprom_reads": 0,
             "eeprom_read_bytes": 0,
@@ -77,6 +79,15 @@ class GuiTelemetryTests(unittest.TestCase):
         }
         state.update(changes)
         return state
+
+    def test_frame_metrics_reuses_identical_immutable_frame(self) -> None:
+        frame = b"\0\0\0\xff\0\0"
+        self.assertEqual(_frame_metrics(frame, frame, "cached", 4), ("cached", 4))
+
+        changed = bytes(bytearray(frame))
+        frame_hash, nonblack = _frame_metrics(changed, frame, "cached", 4)
+        self.assertEqual(frame_hash, hashlib.sha256(changed).hexdigest())
+        self.assertEqual(nonblack, 1)
 
     def test_cadence_waits_for_one_million_instructions_and_phase_change_emits(self) -> None:
         before = self._state(instructions=TELEMETRY_INSTRUCTION_CADENCE - 1)
@@ -143,6 +154,7 @@ class GuiTelemetryTests(unittest.TestCase):
             "basename": "SCH-X350.bin", "bytes": 128, "sha256": "a" * 64,
         })
         self.assertEqual(payload["eeprom"]["writes"], 2)
+        self.assertEqual(payload["nor"]["primary_parallel_nor_direct_id_probes"], [])
 
         host_state = self._state(registers={
             "pc": "0x11111111", "lr": "0x22222222", "cpsr": "0x00000013",
@@ -188,6 +200,78 @@ class GuiTelemetryTests(unittest.TestCase):
                 self.assertEqual(image.tobytes(), first_frame)
             with Image.open(second_path) as image:
                 self.assertEqual(image.tobytes(), second_frame)
+
+    def test_host_hle_provenance_is_bounded_and_kept_in_compact_log(self) -> None:
+        config = SimpleNamespace(
+            path="/private/dumps/SCH-X350.bin", file_size=128,
+            model="SCH-X350", chipset="MSM5000", dump_status="complete",
+            firmware_identity=lambda: {"sha256": "a" * 64},
+        )
+        events = [{
+            "pc": 0x1000 + index, "address": 0x03000780,
+            "value": 0xC4 + index, "bit": index % 4, "state": index % 2,
+        } for index in range(TELEMETRY_POLL_ESCAPE_CAP + 1)]
+        payload = runtime_telemetry(
+            config, self._state(
+                fast_boot_used=True, fast_memory_clears=1,
+                fast_memory_copies=2, fast_register_ramps=3,
+                fast_arm_memory_copies=4, hot_loop_hle_used=True,
+                fast_crc16_calls=5, fast_dmd_downloads=6,
+                ma2_silent_boot_calls=7, poll_escapes=events,
+            ), generation=1, phase="early-boot", event="early-boot",
+            width=1, height=1, frame=b"\x00\x00\x00", nonblack=0,
+        )
+        provenance = payload["host_hle"]
+        self.assertEqual(provenance["fast_arm_memory_copies"], 4)
+        self.assertTrue(provenance["fast_boot_used"])
+        self.assertTrue(provenance["hot_loop_hle_used"])
+        self.assertEqual(provenance["poll_escape_count"],
+                         TELEMETRY_POLL_ESCAPE_CAP + 1)
+        self.assertEqual(len(provenance["poll_escapes"]),
+                         TELEMETRY_POLL_ESCAPE_CAP)
+        self.assertEqual(provenance["poll_escapes"][0], {
+            "pc": "0x00001000", "address": "0x03000780",
+            "value": "0x000000C4", "bit": 0, "state": 0,
+        })
+        self.assertEqual(_compact_telemetry(payload)["host_hle"], provenance)
+
+    def test_host_hle_provenance_rejects_malformed_state(self) -> None:
+        config = SimpleNamespace(
+            path="/private/dumps/SCH-X350.bin", file_size=128,
+            model="SCH-X350", chipset="MSM5000", dump_status="complete",
+            firmware_identity=lambda: {"sha256": "a" * 64},
+        )
+        payload = runtime_telemetry(
+            config, self._state(
+                fast_boot_used="yes", fast_memory_copies="2",
+                hot_loop_hle_used=1, fast_dmd_downloads=-1,
+                poll_escapes=[
+                    {"pc": "bad", "address": 0, "value": 0,
+                     "bit": 0, "state": 0},
+                    {"pc": 0, "address": -1, "value": 0,
+                     "bit": 0, "state": 0},
+                    {"pc": 0, "address": 0, "value": 0,
+                     "bit": 32, "state": 0},
+                    {"pc": 0, "address": 0, "value": 0,
+                     "bit": 0, "state": 2},
+                    "not-an-event",
+                ],
+            ), generation=1, phase="early-boot", event="early-boot",
+            width=1, height=1, frame=b"\x00\x00\x00", nonblack=0,
+        )
+        self.assertEqual(payload["host_hle"], {
+            "fast_boot_used": False,
+            "fast_memory_clears": 0,
+            "fast_memory_copies": 0,
+            "fast_register_ramps": 0,
+            "fast_arm_memory_copies": 0,
+            "hot_loop_hle_used": False,
+            "fast_crc16_calls": 0,
+            "fast_dmd_downloads": 0,
+            "ma2_silent_boot_calls": 0,
+            "poll_escape_count": 0,
+            "poll_escapes": [],
+        })
 
     def test_terminal_repro_copies_actual_nor_eeprom_not_nand_or_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

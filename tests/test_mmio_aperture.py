@@ -8,10 +8,14 @@ from unittest.mock import Mock
 
 from unicorn import (Uc, UC_ARCH_ARM, UC_MEM_READ_UNMAPPED, UC_MEM_WRITE_UNMAPPED, UC_MODE_ARM,
                      UC_PROT_READ, UC_PROT_WRITE)
-from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC
+from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
+                               UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2)
 
-from msm5xxx import (GenericMSMEmulator, HostBackendFault, LCD_MMIO_PRIMARY_COMMAND_SIZE,
-                     LCD_MMIO_PRIMARY_END, LCD_MMIO_PRIMARY_START)
+from msm5xxx import (ARM_MEMORY_CLEAR_CHUNK_SIGNATURE,
+                     BUSY_DELAY_REGISTER_SIGNATURE, GenericMSMEmulator,
+                     HostBackendFault, LCD_MMIO_PRIMARY_COMMAND_SIZE,
+                     LCD_MMIO_PRIMARY_END, LCD_MMIO_PRIMARY_START,
+                     OPTIONAL_RAM_PROBE_SIGNATURE)
 
 
 class LCDMMIOApertureTests(unittest.TestCase):
@@ -129,6 +133,82 @@ class OpenBusReadTests(unittest.TestCase):
 
 
 class HardwarePollTests(unittest.TestCase):
+    def test_absent_optional_ram_probe_returns_native_failure_state(self) -> None:
+        code = 0x1000
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0, 0x3000)
+        uc.mem_write(code, OPTIONAL_RAM_PROBE_SIGNATURE)
+        uc.reg_write(UC_ARM_REG_CPSR, 0x30000020)
+        uc.reg_write(UC_ARM_REG_LR, 0x1801)
+        uc.reg_write(UC_ARM_REG_R0, 1)
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(
+            load_address=0, flash_size=0x3000, overlays=[], linker=None,
+        )
+        emulator.original_image = bytes(uc.mem_read(0, 0x3000))
+
+        emulator._absent_optional_ram_probe(uc, code, 2, None)
+
+        self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 0)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x1800)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_CPSR) & 0xF0000020,
+                         0x70000020)
+
+    def test_busy_delay_variant_preserves_native_result_and_flags(self) -> None:
+        code = 0x1000
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0, 0x3000)
+        uc.mem_write(code, BUSY_DELAY_REGISTER_SIGNATURE)
+        uc.reg_write(UC_ARM_REG_CPSR, 0x90000020)
+        uc.reg_write(UC_ARM_REG_LR, 0x1801)
+        uc.reg_write(UC_ARM_REG_R0, 7)
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(
+            load_address=0, flash_size=0x3000, overlays=[], linker=None,
+        )
+        emulator.original_image = bytes(uc.mem_read(0, 0x3000))
+
+        emulator._return_busy_delay(
+            uc, code, 2, BUSY_DELAY_REGISTER_SIGNATURE
+        )
+
+        self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 0)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x1800)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_CPSR) & 0xF0000020,
+                         0x60000020)
+
+    def test_arm_clear_hle_stops_at_native_watchdog_boundary(self) -> None:
+        code, ram = 0x1000, 0x01000000
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0, 0x3000)
+        uc.mem_map(ram, 0x100000)
+        uc.mem_write(code, ARM_MEMORY_CLEAR_CHUNK_SIGNATURE)
+        destination, end = ram + 0x1000, ram + 0x6E290
+        stop = end - 0x60000
+        uc.mem_write(destination, b"\xa5" * (end - destination))
+        uc.reg_write(UC_ARM_REG_CPSR, 0)
+        uc.reg_write(UC_ARM_REG_PC, code)
+        uc.reg_write(UC_ARM_REG_R0, destination)
+        uc.reg_write(UC_ARM_REG_R1, end)
+        uc.reg_write(UC_ARM_REG_R2, 0)
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(
+            load_address=0, flash_size=0x3000, ram_base=ram,
+            ram_size=0x100000, overlays=[], linker=None,
+        )
+        emulator.original_image = bytes(uc.mem_read(0, 0x3000))
+        emulator.fast_memory_clears = 0
+
+        self.assertTrue(emulator._try_hot_arm_memory_clear(uc, code))
+        self.assertEqual(uc.reg_read(UC_ARM_REG_R0), stop)
+        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), code)
+        self.assertEqual(bytes(uc.mem_read(destination, stop - destination)),
+                         b"\0" * (stop - destination))
+        self.assertEqual(bytes(uc.mem_read(stop, 4)), b"\xa5" * 4)
+        self.assertEqual(emulator.fast_memory_clears, 1)
+        uc.mem_write(code, b"\0")
+        self.assertFalse(emulator._try_hot_arm_memory_clear(uc, code))
+
     def _infer(self, code: bytes, initial: int = 0xFFFF,
                size: int = 2) -> tuple[int, int, bool] | None:
         pc, address = 0x1000, 0x03000780

@@ -9,12 +9,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import condition_report
+
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
                                UC_ARM_REG_R0)
 
 from msm5xxx import (
     BUSY_DELAY_SIGNATURE,
+    BUSY_DELAY_REGISTER_SIGNATURE,
+    OPTIONAL_RAM_CALLER_PATTERN,
+    OPTIONAL_RAM_PROBE_SIGNATURE,
+    CopyLayout,
     DMD_DOWNLOAD_510X_SIGNATURE,
     EEPROM_24LC64_CLASS_A_READ_PREFIX,
     EEPROM_24LC64_CLASS_A_SENTINEL,
@@ -30,9 +36,10 @@ from msm5xxx import (
     EEPROM_24LCXX_X7700_INIT_SIGNATURE,
     EEPROM_24LCXX_X7700_READ_PREFIX,
     EEPROM_24LCXX_X7700_WRITE_PREFIX,
-    arm_vector_score,
-    busy_delay_addresses,
     chipset_confidence,
+    arm_vector_score,
+    absent_optional_ram_probe_addresses,
+    busy_delay_addresses,
     detect,
     detect_chipset,
     detect_model,
@@ -40,6 +47,8 @@ from msm5xxx import (
     find_24lcxx_driver,
     find_compound_fujitsu_layout,
     find_fujitsu_x16_bulk_write,
+    find_arm_vector_offset,
+    find_missing_overlays,
     find_rex_5ms_irq_arm,
     find_rex_5ms_irq_route,
     find_rex_5ms_sleep_timer,
@@ -48,10 +57,8 @@ from msm5xxx import (
     trampm5_consumer_at,
     thumb_bl_target,
     thumb_literal_value,
+    restore_sparse_nor_gap,
 )
-
-
-PRIVATE_FIRMWARES = (Path(__file__).resolve().parent.parent / "firmwares").is_dir()
 
 
 class DetectionTests(unittest.TestCase):
@@ -65,8 +72,7 @@ class DetectionTests(unittest.TestCase):
         raw = bytearray(b"\xff" * 0x100)
         for offset in range(0, 32, 4):
             struct.pack_into("<I", raw, offset, 0xEA000000)
-        with tempfile.TemporaryDirectory() as directory, patch(
-                "msm5xxx.DEFAULT_STATE_ROOT", Path(directory)):
+        with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "private" / "phone.bin"
             firmware.parent.mkdir()
             firmware.write_bytes(raw)
@@ -80,6 +86,67 @@ class DetectionTests(unittest.TestCase):
         telemetry = json.dumps(config.diagnostic_config(), sort_keys=True)
         self.assertNotIn(str(firmware.parent), telemetry)
         self.assertNotIn(str(Path(config.flash_state).parent), telemetry)
+
+    def test_runtime_overlay_note_requires_runtime_provenance(self) -> None:
+        raw = bytearray(b"\xff" * 0x100)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        candidate = CopyLayout(0x40, 0x01010000, 0x03800000, 0x100)
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "sdram-overlay-candidate.bin"
+            firmware.write_bytes(raw)
+            with patch("msm5xxx.find_runtime_overlays", return_value=[candidate]):
+                config = detect(firmware)
+
+        self.assertIn(
+            "1 internal-RAM overlay candidate(s) use SDRAM source; runtime "
+            "provenance required before partition-load inference",
+            config.detection_notes,
+        )
+
+    def test_partial_nor_reports_only_missing_executable_overlay(self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        expected = CopyLayout(0x100, 0x780000, 0x03800000, 0x18000)
+        struct.pack_into(
+            "<3I", image, expected.table_offset,
+            expected.source, expected.target, expected.size,
+        )
+
+        self.assertEqual(find_missing_overlays(bytes(image), 0x800000),
+                         [expected])
+        self.assertEqual(find_missing_overlays(bytes(image), 0x700000), [])
+
+        struct.pack_into("<I", image, expected.table_offset + 4, 0x01000000)
+        self.assertEqual(find_missing_overlays(bytes(image), 0x800000), [])
+
+    def test_condition_report_calls_sdram_source_an_inspection(self) -> None:
+        raw = bytearray(b"\xff" * 0x100)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        candidate = CopyLayout(0x40, 0x01010000, 0x03800000, 0x100)
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "sdram-overlay-candidate.bin"
+            firmware.write_bytes(raw)
+            with patch("msm5xxx.find_runtime_overlays", return_value=[candidate]):
+                config = detect(firmware)
+            with patch.object(condition_report, "detect", return_value=config):
+                record = condition_report.profile(firmware)
+
+        self.assertIn("inspect-runtime-overlay-sdram-source",
+                      record["requirements"])
+        self.assertNotIn("load-runtime-overlay-from-sdram-nand",
+                         record["requirements"])
+
+    def test_condition_report_directory_skips_archives(self) -> None:
+        raw = bytearray(b"\xff" * 0x100)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            firmware = root / "phone.bin"
+            firmware.write_bytes(raw)
+            (root / "firmwares.7z").write_bytes(b"7z\xbc\xaf\x27\x1c")
+            self.assertEqual(condition_report.paths(root), [firmware])
 
     def test_literal_arm_vector_table_is_executable_firmware(self) -> None:
         raw = bytearray(b"\xff" * 0x100)
@@ -99,19 +166,80 @@ class DetectionTests(unittest.TestCase):
             firmware.write_bytes(raw)
             self.assertEqual(detect(firmware).image_kind, "firmware")
 
+    def test_cross_checked_sparse_nor_gap_is_restored(self) -> None:
+        image = bytearray(b"\xff" * 0x5000)
+        struct.pack_into("<I", image, 0, 0xEA000006)
+        for index in range(1, 8):
+            target = 0x4000 + index * 4
+            displacement = (target - (index * 4 + 8)) // 4
+            struct.pack_into("<I", image, index * 4,
+                             0xEA000000 | (displacement & 0xFFFFFF))
+        loop = bytes.fromhex(
+            "c1002e4a515800290bd0c10089188988c2002a4b9a581180"
+            "411c0904090c081ceee7"
+        )
+        image[0x11C:0x11C + len(loop)] = loop
+        struct.pack_into("<I", image, 0x1D8, 0x1158)
+        struct.pack_into(
+            "<8I", image, 0x1158,
+            0x048000A0, 6,
+            0x03000738, 0x1F,
+            0x0300073C, 0x2001,
+            0, 0,
+        )
+        for index in range(8):
+            struct.pack_into("<I", image, 0x4000 + index * 4, 0xEA000000)
+        sparse = bytes(image[:0x1000] + image[0x1020:])
+
+        restored, gap = restore_sparse_nor_gap(sparse)
+        self.assertEqual(gap, (0x1000, 0x20))
+        self.assertEqual(restored, bytes(image))
+        broken = bytearray(sparse)
+        broken[0x3FE0:0x4000] = b"\xff" * 0x20
+        self.assertIsNone(restore_sparse_nor_gap(bytes(broken))[1])
+
     def test_busy_delay_addresses_keep_exact_duplicate_functions(self) -> None:
-        image = bytearray(b"\xff" * 0x80)
+        image = bytearray(b"\xff" * 0xC0)
         image[0x10:0x10 + len(BUSY_DELAY_SIGNATURE)] = BUSY_DELAY_SIGNATURE
         image[0x50:0x50 + len(BUSY_DELAY_SIGNATURE)] = BUSY_DELAY_SIGNATURE
+        image[0x90:0x90 + len(BUSY_DELAY_REGISTER_SIGNATURE)] = (
+            BUSY_DELAY_REGISTER_SIGNATURE
+        )
 
         self.assertEqual(
             busy_delay_addresses(bytes(image), 0x10000000, None),
-            [0x10000010, 0x10000050],
+            [0x10000010, 0x10000050, 0x10000090],
         )
         self.assertEqual(
             busy_delay_addresses(bytes(image), 0x10000000, 0x20000000),
-            [0x10000010, 0x10000050, 0x20000000],
+            [0x10000010, 0x10000050, 0x10000090, 0x20000000],
         )
+
+    def test_optional_ram_probe_requires_caller_and_literal_cross_checks(self) -> None:
+        image = bytearray(b"\xff" * 0x1000)
+        caller, probe = 0x100, 0x2D4
+        image[caller:caller + len(OPTIONAL_RAM_CALLER_PATTERN)] = (
+            OPTIONAL_RAM_CALLER_PATTERN
+        )
+        # E250-shape relative BL; the other two BLs only need valid encoding.
+        image[caller + 0x16:caller + 0x1A] = bytes.fromhex("00f0ddf8")
+        image[caller + 0x1E:caller + 0x22] = bytes.fromhex("00f000f8")
+        image[caller + 0x32:caller + 0x36] = bytes.fromhex("00f000f8")
+        image[caller + 0x2E] = 0x01
+        struct.pack_into("<2I", image, caller + 0x40, 0x01001000, 0x01002000)
+        image[probe:probe + len(OPTIONAL_RAM_PROBE_SIGNATURE)] = (
+            OPTIONAL_RAM_PROBE_SIGNATURE
+        )
+        struct.pack_into("<2I", image, probe + 0x34,
+                         0x007FFFDE, 0x01001000)
+
+        self.assertEqual(absent_optional_ram_probe_addresses(
+            bytes(image), 0, 0x01000000, 0x00800000
+        ), [probe])
+        struct.pack_into("<I", image, probe + 0x34, 0x00D4FFDE)
+        self.assertEqual(absent_optional_ram_probe_addresses(
+            bytes(image), 0, 0x01000000, 0x00800000
+        ), [])
 
     def test_510x_dmd_signature_is_unique_and_completes_only_its_contract(self) -> None:
         image = bytearray(b"\xff" * 0x400)
@@ -381,7 +509,8 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(chipset_confidence(image, chipset), "high")
 
     def test_generic_510x_bsp_remains_msm5100(self) -> None:
-        image = b"dec5000.c\0clkrgm_5100.c\0boothw_510x.c\0"
+        image = b"boothw_510x.c\0clkrgm_5100.c\0"
+
         chipset = detect_chipset(image, "generic")
 
         self.assertEqual(chipset, "MSM5100")
@@ -430,7 +559,7 @@ class DetectionTests(unittest.TestCase):
                 find_fujitsu_x16_bulk_write(image + body, secondary_base)
             )
 
-    def test_complete_compound_fujitsu_dump_splits_secondary_nor(self) -> None:
+    def test_complete_compound_fujitsu_dump_splits_and_seeds_secondary_nor(self) -> None:
         primary_size, secondary_size = 0x400000, 0x200000
         writer = bytes.fromhex(
             "f0b5141c051c0f1c400803d2780801d2600802d3184919481ae00120c0050cf7"
@@ -557,9 +686,10 @@ class DetectionTests(unittest.TestCase):
             image[thunk:thunk + 2] = b"\x08\x47"
         self.assertIsNone(find_trampm5_consumer(image))
 
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_rex_5ms_irq_route_accepts_four_homologs(self) -> None:
         root = Path(__file__).resolve().parent.parent
+        if not (root / "firmwares").is_dir():
+            self.skipTest("private firmware corpus is not available")
         cases = (
             ("schx150.bin", 0x13D7C,
              (0x1A62CC, 0xA1DB0, 0x1381D20, 0x1383238,
@@ -579,9 +709,10 @@ class DetectionTests(unittest.TestCase):
             self.assertEqual(find_rex_5ms_irq_route(image, tick), expected)
             self.assertEqual(find_rex_5ms_irq_arm(image, tick), 0x030006E0)
 
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_rex_5ms_irq_route_accepts_x4500_enqueue_layout(self) -> None:
         root = Path(__file__).resolve().parent.parent
+        if not (root / "firmwares").is_dir():
+            self.skipTest("private firmware corpus is not available")
         image = bytearray((root / "firmwares" / "SPH-X4500.bin").read_bytes())
         expected = (0x18E2AC, 0x9400C, 0x1382AA8, 0x1382A70,
                     0x03000620, 0x03000628, 0x0200)
@@ -599,10 +730,11 @@ class DetectionTests(unittest.TestCase):
         struct.pack_into("<H", image, 0x179EA - 8, 0x2001)
         self.assertIsNone(find_rex_5ms_irq_arm(image, 0x17978))
 
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_rex_5ms_irq_route_rejects_broken_cross_checks(self) -> None:
-        image = bytearray((Path(__file__).resolve().parent.parent
-                           / "firmwares" / "schx150.bin").read_bytes())
+        root = Path(__file__).resolve().parent.parent
+        if not (root / "firmwares").is_dir():
+            self.skipTest("private firmware corpus is not available")
+        image = bytearray((root / "firmwares" / "schx150.bin").read_bytes())
         tick = 0x13D7C
         handler = 0xA1DB0
         default_position = handler - 0x38
@@ -709,10 +841,11 @@ class DetectionTests(unittest.TestCase):
             lambda position: position + 0x1000,
         ))
 
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_rex_5ms_irq_route_accepts_uniform_relocation_only(self) -> None:
-        original = bytearray((Path(__file__).resolve().parent.parent
-                              / "firmwares" / "schx150.bin").read_bytes())
+        root = Path(__file__).resolve().parent.parent
+        if not (root / "firmwares").is_dir():
+            self.skipTest("private firmware corpus is not available")
+        original = bytearray((root / "firmwares" / "schx150.bin").read_bytes())
         tick = 0x13D7C
         handler = 0xA1DB0
         wrapper = 0x1A62CC

@@ -304,6 +304,7 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
                 checkpoint = {
                     "target_instructions": target,
                     "executed_instructions": state["instructions"],
+                    "reset_entries": state["reset_entries"],
                     "phase": boot_phase(state, nonblack),
                     "pc": state["pc"],
                     "lr": state["lr"],
@@ -326,12 +327,18 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
                     "primary_flash_telemetry": state[
                         "primary_flash_telemetry"
                     ],
+                    "primary_parallel_nor_direct_id_probes": state[
+                        "primary_parallel_nor_direct_id_probes"
+                    ],
                     "rex_idle_entries": state["rex_idle_entries"],
                     "rex_ticks": state["rex_ticks"],
                     "rex_elapsed_ms": state["rex_elapsed_ms"],
                     "input_mode": state["input_mode"],
                     "input_events": state["input_events"],
                     "firmware_key_events": state["firmware_key_events"],
+                    "input_transport": state.get("input_transport"),
+                    "input_register_reads": state.get("input_register_reads", 0),
+                    "input_register_read_pcs": state.get("input_register_read_pcs", []),
                     "secondary_flash_reads": state["secondary_flash_reads"],
                     "secondary_flash_writes": state["secondary_flash_writes"],
                     "secondary_flash_changed_pages": state[
@@ -360,6 +367,9 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
                     "control_sink": state.get("control_sink"),
                     "last_unmapped": state["last_unmapped"],
                     "unmapped_accesses": state.get("unmapped_accesses", []),
+                    "dynamic_page_first_accesses": state.get(
+                        "dynamic_page_first_accesses", []
+                    ),
                     "top_hot_blocks": top_hot,
                     "top_mmio_reads": top_mmio,
                     "cumulative_mmio_reads": cumulative_mmio,

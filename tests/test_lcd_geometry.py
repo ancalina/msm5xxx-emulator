@@ -10,6 +10,28 @@ from msm5xxx import GenericMSMEmulator, detect_lcd_width_hint
 
 
 class LCDGeometryTests(unittest.TestCase):
+    def test_byte_raster_requires_all_160_rows_and_completion(self) -> None:
+        emulator = self._blank_emulator(False)
+        emulator._lcd_byte_raster_stage = ""
+        emulator._lcd_byte_raster_row = 0
+        emulator._lcd_byte_raster_pixels = bytearray()
+        for row in range(160):
+            for address, value in (
+                    (0x02000000, 0x05), (0x02000002, row),
+                    (0x02000000, 0x03), (0x02000002, 0),
+                    (0x02000000, 0x0B)):
+                self.assertFalse(emulator._lcd_byte_raster_write(address, 1, value))
+            for _column in range(128):
+                emulator._lcd_byte_raster_write(0x02000002, 1, 0xF8)
+                emulator._lcd_byte_raster_write(0x02000002, 1, 0x00)
+        self.assertEqual(emulator.frame_sequence, 7)
+        emulator._lcd_byte_raster_write(0x02000000, 1, 0x2B)
+        self.assertTrue(emulator._lcd_byte_raster_write(0x02000002, 1, 1))
+        self.assertEqual((emulator.config.width, emulator.config.height), (128, 160))
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(emulator._lcd_protocol, "byte-raster-rgb565")
+        self.assertEqual(emulator.framebuffer[:3], b"\xff\0\0")
+
     def test_same_geometry_returns_before_scanning_framebuffer(self) -> None:
         class UnscannableFramebuffer:
             def __iter__(self):
@@ -111,6 +133,9 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_byte_020_row_stage = ""
         emulator._lcd_byte_020_row_y = -1
         emulator._lcd_byte_020_row_words = []
+        emulator._lcd_byte_raster_stage = ""
+        emulator._lcd_byte_raster_row = 0
+        emulator._lcd_byte_raster_pixels = bytearray()
         return emulator
 
     def _routing_emulator(self, *, width: int = 128,
@@ -242,26 +267,33 @@ class LCDGeometryTests(unittest.TestCase):
         self._write_byte_row_packet(emulator, 0x10, 0)
         self._write_byte_row_packet(emulator, 0x11, 3)
         for x in range(128):
-            self._write_byte_row_packet(
-                emulator, 0x12, 0xF800 if x == 0 else 0x07E0
-            )
+            self._write_byte_row_packet(emulator, 0x12, 0xF800 if x == 0 else 0x07E0)
 
         row = 3 * 128 * 3
+        self.assertEqual(emulator.frame_sequence, 8)
         self.assertEqual(emulator._lcd_protocol, "byte-row-rgb565")
         self.assertEqual(emulator.display_frame[row:row + 6],
                          bytes((255, 0, 0, 0, 255, 0)))
 
+        self._write_byte_row_packet(emulator, 0x05, 0x14)
+        self._write_byte_row_packet(emulator, 0x10, 0)
+        self._write_byte_row_packet(emulator, 0x11, 4)
+        for _ in range(128):
+            self._write_byte_row_packet(emulator, 0x12, 0x001F)
+        self.assertEqual(emulator.frame_sequence, 9)
+        self.assertEqual(emulator.display_frame[4 * 128 * 3:4 * 128 * 3 + 3],
+                         bytes((0, 0, 255)))
+
     def test_byte_row_rgb565_127_words_do_not_change_frame(self) -> None:
         emulator = self._routing_emulator(width=128, height=160)
-        before = emulator.frame_sequence
         self._write_byte_row_packet(emulator, 0x05, 0x14)
         self._write_byte_row_packet(emulator, 0x10, 0)
         self._write_byte_row_packet(emulator, 0x11, 3)
         for _ in range(127):
             self._write_byte_row_packet(emulator, 0x12, 0xF800)
 
-        self.assertEqual(emulator.frame_sequence, before)
-        self.assertNotEqual(emulator._lcd_protocol, "byte-row-rgb565")
+        self.assertEqual(emulator.frame_sequence, 7)
+        self.assertEqual(emulator._lcd_protocol, "selector-4")
         self.assertFalse(any(emulator.framebuffer))
 
     def test_byte_row_rgb565_requires_05_preamble(self) -> None:
@@ -271,6 +303,7 @@ class LCDGeometryTests(unittest.TestCase):
         for _ in range(128):
             self._write_byte_row_packet(emulator, 0x12, 0xF800)
 
+        self.assertEqual(emulator.frame_sequence, 7)
         self.assertNotEqual(emulator._lcd_protocol, "byte-row-rgb565")
         self.assertFalse(any(emulator.framebuffer))
 
@@ -283,12 +316,14 @@ class LCDGeometryTests(unittest.TestCase):
             self._write_byte_row_packet(emulator, 0x12, 0xF800)
         emulator._lcd_write(None, 0, 0x02000004, 1, 0, None)
 
+        self.assertEqual(emulator.frame_sequence, 7)
         self.assertFalse(any(emulator.framebuffer))
         self._write_byte_row_packet(emulator, 0x05, 0x14)
         self._write_byte_row_packet(emulator, 0x10, 0)
         self._write_byte_row_packet(emulator, 0x11, 4)
         for _ in range(128):
             self._write_byte_row_packet(emulator, 0x12, 0x001F)
+        self.assertEqual(emulator.frame_sequence, 8)
         self.assertEqual(emulator.display_frame[4 * 128 * 3:4 * 128 * 3 + 3],
                          bytes((0, 0, 255)))
 

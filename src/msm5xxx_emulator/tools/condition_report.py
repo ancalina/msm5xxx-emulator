@@ -10,6 +10,9 @@ from pathlib import Path
 from ..core.emulator import detect, detect_input_profile
 
 
+FIRMWARE_SUFFIXES = (".bin", ".rom", ".dump")
+
+
 def integer(value: str) -> int:
     return int(value.replace("_", ""), 0)
 
@@ -24,7 +27,8 @@ def parser() -> argparse.ArgumentParser:
 def paths(source: Path) -> list[Path]:
     if source.is_file():
         return [source]
-    return sorted(item for item in source.iterdir() if item.is_file())
+    return sorted(item for item in source.iterdir()
+                  if item.is_file() and item.suffix.lower() in FIRMWARE_SUFFIXES)
 
 
 def profile(path: Path) -> dict[str, object]:
@@ -49,7 +53,7 @@ def profile(path: Path) -> dict[str, object]:
     if reused_targets:
         requirements.append("track-runtime-overlay-bank")
     if config.runtime_overlays:
-        requirements.append("load-runtime-overlay-from-sdram-nand")
+        requirements.append("inspect-runtime-overlay-sdram-source")
     if config.missing_overlays:
         requirements.append("missing-overlay-bytes")
     if "padded" in config.dump_status:

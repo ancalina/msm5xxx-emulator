@@ -226,6 +226,25 @@ NAND_WRITE_SIGNATURE = bytes.fromhex(
     "0290fff77bfe0d204005ff23013300219a4201d2017001e05022027080220d20"
 )
 BUSY_DELAY_SIGNATURE = bytes.fromhex("0943094309430138fadcf746")
+BUSY_DELAY_REGISTER_SIGNATURE = bytes.fromhex("094309430943401efadcf746")
+BUSY_DELAY_SIGNATURES = (BUSY_DELAY_SIGNATURE, BUSY_DELAY_REGISTER_SIGNATURE)
+OPTIONAL_RAM_PROBE_SIGNATURE = bytes.fromhex(
+    "0c480d4940080968400040180188aa22028002881206120e"
+    "aa2a06d15522028002881206120e552a01d0002070470180"
+    "01207047"
+)
+OPTIONAL_RAM_CALLER_PATTERN = bytes.fromhex(
+    "f0b500250e4c0f4e0020256030602f1c0320c0052060"
+    "00000000"
+    "002802d1"
+    "00000000"
+    "30603068002800d12760ff300030c069"
+    "00000000"
+    "2571f0bc08bc1847"
+)
+OPTIONAL_RAM_CALLER_WILDCARDS = frozenset((
+    *range(0x16, 0x1A), *range(0x1E, 0x22), 0x2E, *range(0x32, 0x36),
+))
 REGISTER_RAMP_PREFIX = bytes.fromhex(
     "32234b439d1822237b43341ceb1a9b1100d41c1c0f4f3c80"
     "32234b4332389b189b1101d41c1c00e0341c2404240c01e0"
@@ -286,6 +305,14 @@ ARM_MEMORY_COPY_TAIL = bytes.fromhex(
     "01c0d1240120c0440130c02401c0c0241eff2fe1"
 )
 ARM_MEMORY_COPY_TAIL_OFFSET = 0xF8
+# ARM ADS bootstrap clear loop.  HLE stops at each native watchdog boundary;
+# the firmware still performs every MMIO strobe and final tail comparison.
+ARM_MEMORY_CLEAR_CHUNK_SIGNATURE = bytes.fromhex(
+    "003041e0200053e30a00003aa332a0e1ff3ad3e30100000a"
+    "c41fa0e8f7ffffeaa4409fe50150a0e3005084e50050a0e3"
+    "005084e5f7ffffea010050e104208034fcffff3a"
+)
+ARM_MEMORY_CLEAR_STROBE_PERIOD = 0x20000
 DMD_DOWNLOAD_SIGNATURE = bytes.fromhex("f0b5002701250024354901200870")
 DMD_DOWNLOAD_510X_SIGNATURE = bytes.fromhex(
     "f0b539480027006801250024002800d060e0"
@@ -483,14 +510,86 @@ def arm_vector_score(image: bytes, offset: int = 0) -> int:
     return score
 
 
+_BOOT_REGISTER_TABLE_LOOP = bytes.fromhex(
+    "c100004a5158002900d0c10089188988c200004b9a581180"
+    "411c0904090c081c00e7"
+)
+_BOOT_REGISTER_TABLE_WILDCARDS = frozenset((2, 8, 18, 32))
+_BOOT_REGISTER_DESTINATIONS = (0x048000A0, 0x03000738, 0x0300073C)
+
+
+def _boot_register_table_pointer(image: bytes) -> int | None:
+    """Return the common reset loop's table pointer when uniquely observed."""
+    limit = min(len(image), 0x4000)
+    size = len(_BOOT_REGISTER_TABLE_LOOP)
+    found: set[int] = set()
+    for position in range(0, limit - size + 1, 2):
+        candidate = image[position:position + size]
+        if any(index not in _BOOT_REGISTER_TABLE_WILDCARDS
+               and candidate[index] != expected
+               for index, expected in enumerate(_BOOT_REGISTER_TABLE_LOOP)):
+            continue
+        pointers: list[int] = []
+        for instruction_position in (position + 2, position + 18):
+            instruction = struct.unpack_from(
+                "<H", image, instruction_position
+            )[0]
+            literal = ((instruction_position + 4) & ~3
+                       ) + (instruction & 0xFF) * 4
+            if literal + 4 > len(image):
+                break
+            pointers.append(struct.unpack_from("<I", image, literal)[0])
+        if len(pointers) != 2 or pointers[0] != pointers[1]:
+            continue
+        found.add(pointers[0])
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _is_boot_register_table(image: bytes, offset: int) -> bool:
+    if not 0 <= offset <= len(image) - 32:
+        return False
+    entries = struct.unpack_from("<8I", image, offset)
+    return (entries[0::2] == (*_BOOT_REGISTER_DESTINATIONS, 0)
+            and entries[1::2][-1] == 0)
+
+
+def restore_sparse_nor_gap(image: bytes) -> tuple[bytes, tuple[int, int] | None]:
+    """Restore a cross-validated erased 0x20-byte hole in a sparse NOR dump."""
+    gap_offset, gap_size = 0x1000, 0x20
+    if len(image) < 0x4040 or arm_vector_score(image) < 7:
+        return image, None
+    table = _boot_register_table_pointer(image)
+    if (table is None or table <= gap_offset + gap_size
+            or _is_boot_register_table(image, table)
+            or not _is_boot_register_table(image, table - gap_size)):
+        return image, None
+    targets: list[int] = []
+    for index, word in enumerate(struct.unpack_from("<8I", image), 0):
+        if index == 0:
+            continue
+        if word & 0x0E000000 != 0x0A000000:
+            return image, None
+        displacement = (word & 0x00FFFFFF) << 2
+        if displacement & 0x02000000:
+            displacement -= 0x04000000
+        targets.append((index * 4 + 8 + displacement) & 0xFFFFFFFF)
+    vector_block = min(targets) - 4
+    shifted = vector_block - gap_size
+    if (vector_block <= gap_offset
+            or arm_vector_score(image, vector_block) >= 4
+            or arm_vector_score(image, shifted) < 7):
+        return image, None
+    return (image[:gap_offset] + b"\xff" * gap_size + image[gap_offset:],
+            (gap_offset, gap_size))
+
+
 def find_arm_vector_offset(image: bytes) -> tuple[int, int]:
     """Return the best small dump-header offset and validated vector score."""
-    best = (0, arm_vector_score(image, 0))
+    candidates = [(0, arm_vector_score(image, 0))]
     for offset in range(4, min(0x100, len(image) - 32) + 1, 4):
-        score = arm_vector_score(image, offset)
-        if score > best[1]:
-            best = (offset, score)
-    return best
+        candidates.append((offset, arm_vector_score(image, offset)))
+    best_score = max(score for _offset, score in candidates)
+    return next(item for item in candidates if item[1] == best_score)
 
 
 def infer_ram_base(layout: LinkerLayout | None, chipset: str,
@@ -580,11 +679,13 @@ def default_state_paths(path: Path, image: bytes, flash_size: int,
                         ) -> tuple[str, str]:
     identity = hashlib.sha256(image[:flash_size]).hexdigest()[:16]
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem)[:48] or "firmware"
-    seed_identity = (_file_identity(secondary_image)
-                     or (hashlib.sha256(secondary_seed).hexdigest()[:16]
-                         if secondary_seed is not None else ""))
+    seed_identity = _file_identity(secondary_image)
+    internal_seed_identity = (hashlib.sha256(secondary_seed).hexdigest()[:16]
+                              if secondary_seed is not None else "")
     nand_identity = _file_identity(nand_image)
     suffix = ((f"-s{seed_identity}" if seed_identity else "")
+              + (f"-si{internal_seed_identity}"
+                 if internal_seed_identity and not seed_identity else "")
               + ("-sefs" if secondary_generated_efs and not seed_identity else "")
               + (f"-n{nand_identity}" if nand_identity else "")
               + ("-g" + "-".join(f"{value:x}" for value in nand_geometry)
@@ -658,11 +759,43 @@ def find_all(image: bytes, signature: bytes) -> list[int]:
 def busy_delay_addresses(image: bytes, load_address: int,
                          configured_address: int | None) -> list[int]:
     """Return all exact primary-ROM busy-delay entries, including overrides."""
-    addresses = {load_address + offset
-                 for offset in find_all(image, BUSY_DELAY_SIGNATURE)}
+    addresses = {load_address + offset for signature in BUSY_DELAY_SIGNATURES
+                 for offset in find_all(image, signature)}
     if configured_address is not None:
         addresses.add(configured_address)
     return sorted(addresses)
+
+
+def absent_optional_ram_probe_addresses(image: bytes, load_address: int,
+                                        ram_base: int,
+                                        ram_size: int) -> list[int]:
+    """Find cross-checked probes for an absent expansion bank beyond RAM."""
+    if ram_base + ram_size != 0x01800000:
+        return []
+    probes: set[int] = set()
+    for caller in find_all(image, OPTIONAL_RAM_CALLER_PATTERN[:0x16]):
+        if caller & 1 or caller + len(OPTIONAL_RAM_CALLER_PATTERN) > len(image):
+            continue
+        candidate = image[caller:caller + len(OPTIONAL_RAM_CALLER_PATTERN)]
+        if any(index not in OPTIONAL_RAM_CALLER_WILDCARDS
+               and value != OPTIONAL_RAM_CALLER_PATTERN[index]
+               for index, value in enumerate(candidate)):
+            continue
+        if candidate[0x2E] not in (0x01, 0x81):
+            continue
+        status, object_global = struct.unpack_from("<2I", image, caller + 0x40)
+        probe = thumb_bl_target(image, caller + 0x16)
+        if (status == object_global or probe is None
+                or image[probe:probe + len(OPTIONAL_RAM_PROBE_SIGNATURE)]
+                != OPTIONAL_RAM_PROBE_SIGNATURE
+                or probe + 0x3C > len(image)
+                or struct.unpack_from("<I", image, probe + 0x34)[0] != 0x007FFFDE
+                or struct.unpack_from("<I", image, probe + 0x38)[0] != status
+                or thumb_bl_target(image, caller + 0x1E) is None
+                or thumb_bl_target(image, caller + 0x32) is None):
+            continue
+        probes.add(load_address + probe)
+    return sorted(probes)
 
 
 def find_ma2_silent_boot_wait(image: bytes) -> int | None:
@@ -1755,7 +1888,7 @@ class FirmwareConfig:
     ram_image_offset: int
     ram_image_size: int
     entry: int
-    key_register: int
+    key_register: int | None
     key_active_low: bool
     audio_play_address: int | None
     ma2_silent_boot_address: int | None
@@ -1905,11 +2038,10 @@ def find_missing_overlays(image: bytes, flash_size: int,
 
 def find_runtime_overlays(image: bytes, ram_base: int,
                           ram_size: int) -> list[CopyLayout]:
-    """Find executable overlays whose source must first be loaded into SDRAM.
+    """Find structural SDRAM-to-internal-RAM overlay copy candidates.
 
-    Several later Samsung builds keep an application/DSP partition in NAND,
-    load it into external RAM, then copy a small executable bank into MSM
-    internal RAM.  Such a tuple must not be mistaken for a NOR file offset.
+    A tuple alone does not prove a NAND/partition loader: bootstrap code can
+    also initialize its SDRAM source from supplied NOR or scratch memory.
     """
     found: list[CopyLayout] = []
     ram_end = ram_base + ram_size
@@ -1966,7 +2098,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     # Keep the complete capture for model strings, EFS discovery, and an
     # optional RAM seed.  Code/layout discovery must only inspect primary NOR:
     # full dumps commonly append a live RAM snapshot containing copied code.
-    image = raw[image_offset:]
+    image, sparse_gap = restore_sparse_nor_gap(raw[image_offset:])
     requested_load_address = (getattr(overrides, "load_address", None)
                               if overrides else None)
     requested_load_address = 0 if requested_load_address is None else requested_load_address
@@ -1983,6 +2115,12 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     elif image_offset and requested_image_offset is None:
         detection_notes.append(
             f"skipped 0x{image_offset:X}-byte dump header before ARM vectors"
+        )
+    if sparse_gap is not None:
+        gap_offset, gap_size = sparse_gap
+        detection_notes.append(
+            f"restored 0x{gap_size:X}-byte erased sparse NOR gap at "
+            f"0x{gap_offset:X} from boot-table and vector references"
         )
     if confidence == "unknown":
         detection_notes.append("no generation-specific clock/boot BSP marker")
@@ -2270,7 +2408,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         and compound_secondary_size is not None else None
     )
     default_flash_state, default_secondary_state = default_state_paths(
-        path, image, flash_size, compound_secondary_size or flash_size,
+        path, image, flash_size,
+        compound_secondary_size or flash_size,
         secondary_seed=compound_secondary_seed,
     )
     config = FirmwareConfig(
@@ -2313,7 +2452,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         ram_image_size=0 if compound_fujitsu else plausible_ram_seed_size(
             len(image), flash_size
         ), entry=0,
-        key_register=0x03000738, key_active_low=True,
+        # No generic MSM keypad data register is proven.  In particular, the
+        # legacy 0x03000738 value is a Samsung GPIO control write target, not
+        # a scanner read contract.  A user-supplied override remains supported.
+        key_register=None, key_active_low=True,
         audio_play_address=audio_address,
         ma2_silent_boot_address=ma2_silent_boot_address,
         fast_boot_address=fast_boot_address,
@@ -2551,10 +2693,20 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     )
     if config.runtime_overlays:
         config.detection_notes.append(
-            f"{len(config.runtime_overlays)} internal-RAM overlay(s) require "
-            "a prior SDRAM/NAND partition load"
+            f"{len(config.runtime_overlays)} internal-RAM overlay candidate(s) "
+            "use SDRAM source; runtime provenance required before "
+            "partition-load inference"
         )
-    if missing:
+    if internal_secondary_seed is not None:
+        config.dump_status = (
+            f"complete compound NOR image; primary 0x{config.flash_size:X} + "
+            f"secondary 0x{config.secondary_flash_size:X}"
+        )
+        config.detection_notes.append(
+            "Fujitsu x16 command bus and GEFS records prove internal "
+            "secondary NOR image"
+        )
+    elif missing:
         config.dump_status = f"partial NOR; padded 0x{missing:X} erased bytes"
         config.detection_notes.append(
             f"dump is 0x{missing:X} bytes shorter than inferred NOR capacity"
@@ -2564,8 +2716,6 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 "missing executable overlay source "
                 f"0x{overlay.source:X}..0x{overlay.source + overlay.size:X}"
             )
-    elif config.secondary_flash_image_offset is not None:
-        config.dump_status = "complete compound NOR image"
     elif trailer:
         if config.ram_image_size:
             config.dump_status = f"full NOR + 0x{trailer:X} RAM snapshot"
@@ -2626,7 +2776,8 @@ class GenericMSMEmulator:
             )
         if not 32 <= config.width <= 1024 or not 32 <= config.height <= 1024:
             raise ValueError("screen dimensions must be in 32..1024")
-        if config.chipset not in ("MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"):
+        if config.chipset not in (
+                "MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"):
             raise ValueError(f"unsupported chipset: {config.chipset}")
         if not 0 <= config.load_address < ADDRESS_SPACE:
             raise ValueError("flash load address outside 32-bit address space")
@@ -2758,7 +2909,9 @@ class GenericMSMEmulator:
         raw = Path(config.path).read_bytes()
         if not 0 <= config.image_offset < len(raw):
             raise ValueError("image offset outside firmware")
-        available = raw[config.image_offset:]
+        available, _sparse_gap = restore_sparse_nor_gap(
+            raw[config.image_offset:]
+        )
         if config.secondary_flash_image_offset is not None:
             start = config.secondary_flash_image_offset
             end = start + config.secondary_flash_size
@@ -2844,8 +2997,10 @@ class GenericMSMEmulator:
                 secondary_base, secondary_base + config.secondary_flash_size,
                 "secondary flash",
             ))
-        register_ranges = [(config.key_register, config.key_register + 4,
-                            "key register")]
+        register_ranges = []
+        if config.key_register is not None:
+            register_ranges.append((config.key_register, config.key_register + 4,
+                                    "key register"))
         if config.board_revision_register is not None:
             register_ranges.append((
                 config.board_revision_register,
@@ -2899,7 +3054,6 @@ class GenericMSMEmulator:
         ranges = [
             (config.load_address, len(self.image)),
             (config.ram_base, config.ram_size),
-            (config.key_register, 4),
             (0x02000000, PAGE),       # LCD command/data bus
             (0x02800000, PAGE),       # alternate/indexed LCD bus
             (0x02C00000, PAGE),       # later parallel LCD command/data bus
@@ -2910,6 +3064,8 @@ class GenericMSMEmulator:
             (0xFFFFF000, PAGE),
             *((address, len(value)) for address, value in STABLE_MSM_MMIO),
         ]
+        if config.key_register is not None:
+            ranges.append((config.key_register, 4))
         if config.nand_enabled:
             ranges.extend((start, end - start) for start, end in NAND_MMIO_RANGES)
         if secondary_base is not None:
@@ -2949,8 +3105,9 @@ class GenericMSMEmulator:
             elif config.flash_id_value is not None:
                 self.secondary_flash.ids = (config.flash_id_value & 0xFFFF,
                                             config.flash_id_value >> 16 & 0xFFFF)
-        self.uc.mem_write(config.key_register,
-                          struct.pack("<I", 0xFFFFFFFF if config.key_active_low else 0))
+        if config.key_register is not None:
+            self.uc.mem_write(config.key_register,
+                              struct.pack("<I", 0xFFFFFFFF if config.key_active_low else 0))
         for address, value in STABLE_MSM_MMIO:
             self.uc.mem_write(address, value)
             self.uc.hook_add(UC_HOOK_MEM_READ, self._stable_mmio_read,
@@ -3166,6 +3323,9 @@ class GenericMSMEmulator:
         self._lcd_byte_020_row_stage = ""
         self._lcd_byte_020_row_y = -1
         self._lcd_byte_020_row_words: list[int] = []
+        self._lcd_byte_raster_stage = ""
+        self._lcd_byte_raster_row = 0
+        self._lcd_byte_raster_pixels = bytearray()
         # The E370-class +8/+C controller packs two RGB332 pixels into one
         # data word.  Keep it wholly separate from the ordinary 0x020/+4
         # command state: unrelated LCD traffic must not turn register 0x22
@@ -3217,6 +3377,10 @@ class GenericMSMEmulator:
         self._lcd_mmio_extended_mapped = False
         self.held_keys: set[int] = set()
         self.key_baselines: dict[int, int] = {}
+        self.key_press_read_epochs: dict[int, int] = {}
+        self.key_read_epoch = 0
+        self.key_register_reads = 0
+        self.key_register_read_pcs: Counter[int] = Counter()
         self.input_profile = detect_input_profile(self.image, config.load_address)
         self.input_error = ""
         self.input_events = 0
@@ -3247,10 +3411,12 @@ class GenericMSMEmulator:
             (0x02000000, 0x02801000),  # LCD buses and indexed registers
             (0x02C00000, 0x02C01000),
             (0x03000000, 0x04000000),  # MSM MMIO plus internal RAM
-            (config.key_register, config.key_register + 4),
             *((address, address + len(value))
               for address, value in STABLE_MSM_MMIO),
         ]
+        if config.key_register is not None:
+            open_bus_exclusions.append((config.key_register,
+                                        config.key_register + 4))
         if config.board_revision_register is not None:
             open_bus_exclusions.append((config.board_revision_register,
                                         config.board_revision_register + 4))
@@ -3366,9 +3532,19 @@ class GenericMSMEmulator:
         for address in busy_delay_addresses(self.original_image,
                                             config.load_address,
                                             config.busy_delay_address):
-            self.uc.hook_add(UC_HOOK_CODE, self._return_if_thumb_signature,
+            offset = address - config.load_address
+            signature = next((candidate for candidate in BUSY_DELAY_SIGNATURES
+                              if self.original_image[
+                                  offset:offset + len(candidate)] == candidate),
+                             BUSY_DELAY_SIGNATURE)
+            self.uc.hook_add(UC_HOOK_CODE, self._return_busy_delay,
                              begin=address, end=address,
-                             user_data=BUSY_DELAY_SIGNATURE)
+                             user_data=signature)
+        for address in absent_optional_ram_probe_addresses(
+                self.original_image, config.load_address,
+                config.ram_base, config.ram_size):
+            self.uc.hook_add(UC_HOOK_CODE, self._absent_optional_ram_probe,
+                             begin=address, end=address)
         if config.rex_idle_address is not None:
             self.uc.hook_add(UC_HOOK_CODE, self._rex_tick,
                              begin=config.rex_idle_address, end=config.rex_idle_address)
@@ -3768,10 +3944,11 @@ class GenericMSMEmulator:
                         source_empty = True
                 if dependency is not None and source_empty:
                     self.fault = (
-                        "runtime executable overlay source is absent: "
+                        "runtime executable overlay source is zero-filled in "
+                        "current SDRAM state: "
                         f"SDRAM 0x{dependency.source:08X}.."
-                        f"0x{dependency.source + dependency.size:08X} must be "
-                        "loaded from NAND/another partition before "
+                        f"0x{dependency.source + dependency.size:08X} has no "
+                        "nonzero bytes before "
                         f"0x{address:08X} can execute"
                     )
                 else:
@@ -3780,7 +3957,8 @@ class GenericMSMEmulator:
         else:
             self.zero_fetches = 0
         if self.fault is None and count >= 64 and not count & 0x3F:
-            if self._try_hot_thumb_memory_loop(uc, address):
+            if (self._try_hot_arm_memory_clear(uc, address)
+                    or self._try_hot_thumb_memory_loop(uc, address)):
                 self.hot_loop_hle_used = True
 
     def _read(self, uc: Uc, access: int, address: int, size: int,
@@ -3791,6 +3969,7 @@ class GenericMSMEmulator:
                 pc = uc.reg_read(UC_ARM_REG_LR) & ~1
         except UcError:
             pass
+        self._record_key_register_read(address, size, pc)
         self._board_adc_reader_data_read(uc, address, size)
         self._refresh_board_status_input(uc, address, size)
         status = getattr(self.config, "rex_irq_status_address", None)
@@ -3803,6 +3982,17 @@ class GenericMSMEmulator:
             uc.mem_write(address, ((current | set_mask) & ~clear_mask).to_bytes(size, "little"))
         self.mmio_reads[(pc, address, size)] += 1
         self.mmio_read_totals[(pc, address, size)] += 1
+
+    def _record_key_register_read(self, address: int, size: int, pc: int) -> None:
+        """Record a firmware read of the configured candidate key register."""
+        key_register = getattr(self.config, "key_register", None)
+        if (key_register is None
+                or max(address, key_register) >= min(address + size, key_register + 4)):
+            return
+        self.key_register_reads = getattr(self, "key_register_reads", 0) + 1
+        self.key_read_epoch = getattr(self, "key_read_epoch", 0) + 1
+        self.key_register_read_pcs = getattr(self, "key_register_read_pcs", Counter())
+        self.key_register_read_pcs[pc] += 1
 
     def _open_bus_read(self, uc: Uc, access: int, address: int, size: int,
                        value: int, user_data: object) -> None:
@@ -3872,7 +4062,8 @@ class GenericMSMEmulator:
         for (pc, address, size), count in self.mmio_reads.most_common(8):
             if count < 100 or not 0 < size <= 8:
                 continue
-            if max(address, key_start) < min(address + size, key_start + 4):
+            if (key_start is not None
+                    and max(address, key_start) < min(address + size, key_start + 4)):
                 continue
             if (board is not None
                     and max(address, board) < min(address + size, board + 4)):
@@ -5402,10 +5593,58 @@ class GenericMSMEmulator:
             command[2], high[2] << 8 | low[2]
         )
 
+    def _lcd_byte_raster_write(self, address: int, size: int,
+                               value: int) -> bool:
+        """Observe a complete 128x160 byte-command RGB565 raster."""
+        if size != 1 or address not in (0x02000000, 0x02000002):
+            return False
+        stage = self._lcd_byte_raster_stage
+        if address == 0x02000000:
+            expected = {"": 0x05, "x-command": 0x03,
+                        "pixels-command": 0x0B, "done-command": 0x2B}
+            if expected.get(stage) == value:
+                self._lcd_byte_raster_stage = {
+                    "": "row", "x-command": "x",
+                    "pixels-command": "pixels", "done-command": "done",
+                }[stage]
+            else:
+                self._lcd_byte_raster_stage = "row" if value == 0x05 else ""
+                self._lcd_byte_raster_row = 0
+                self._lcd_byte_raster_pixels.clear()
+            return False
+        if stage == "row" and value == self._lcd_byte_raster_row:
+            self._lcd_byte_raster_stage = "x-command"
+        elif stage == "x" and value == 0:
+            self._lcd_byte_raster_stage = "pixels-command"
+        elif stage == "pixels":
+            self._lcd_byte_raster_pixels.append(value)
+            row_bytes = len(self._lcd_byte_raster_pixels) - self._lcd_byte_raster_row * 256
+            if row_bytes == 256:
+                self._lcd_byte_raster_row += 1
+                self._lcd_byte_raster_stage = (
+                    "done-command" if self._lcd_byte_raster_row == 160 else ""
+                )
+        elif stage == "done" and value == 1:
+            payload = bytes(self._lcd_byte_raster_pixels)
+            self._set_display_geometry(128, 160, force=True)
+            for index in range(0, len(payload), 2):
+                self._pixel(index // 2, payload[index] << 8 | payload[index + 1])
+            self._lcd_protocol = "byte-raster-rgb565"
+            self._publish_frame()
+            self._lcd_byte_raster_stage = "qualified"
+            return True
+        else:
+            self._lcd_byte_raster_stage = ""
+            self._lcd_byte_raster_row = 0
+            self._lcd_byte_raster_pixels.clear()
+        return False
+
     def _lcd_write(self, uc: Uc, access: int, address: int, size: int,
                    value: int, user_data: object) -> None:
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        if self._lcd_byte_raster_write(address, size, value):
+            return
         if self._lcd_byte_020_row_write(address, size, value):
             return
         self._lcd_route_write(uc, access, address, size, value, user_data)
@@ -6113,6 +6352,41 @@ class GenericMSMEmulator:
                     bootstrap_limit=limit, bootstrap_strobe=body + 8,
                 )
         return False
+
+    def _try_hot_arm_memory_clear(self, uc: Uc, address: int) -> bool:
+        """Skip one pristine ARM clear segment, preserving native strobes."""
+        if uc.reg_read(UC_ARM_REG_CPSR) & 0x20:
+            return False
+        try:
+            expected = self._original_runtime_bytes(
+                address, len(ARM_MEMORY_CLEAR_CHUNK_SIGNATURE)
+            )
+            if (expected != ARM_MEMORY_CLEAR_CHUNK_SIGNATURE
+                    or bytes(uc.mem_read(address, len(expected))) != expected):
+                return False
+        except UcError:
+            return False
+        destination = uc.reg_read(UC_ARM_REG_R0)
+        end = uc.reg_read(UC_ARM_REG_R1)
+        if (uc.reg_read(UC_ARM_REG_R2) != 0
+                or not self.config.ram_base <= destination < end
+                <= self.config.ram_base + self.config.ram_size):
+            return False
+        remaining = end - destination
+        boundary_remaining = remaining & -ARM_MEMORY_CLEAR_STROBE_PERIOD
+        if boundary_remaining in (0, remaining):
+            return False
+        stop = end - boundary_remaining
+        try:
+            uc.mem_read(destination, stop - destination)
+            uc.mem_write(destination, b"\0" * (stop - destination))
+            uc.ctl_remove_cache(destination, stop)
+        except UcError:
+            return False
+        uc.reg_write(UC_ARM_REG_R0, stop)
+        uc.reg_write(UC_ARM_REG_PC, address)
+        self.fast_memory_clears += 1
+        return True
 
     def _fast_memory_clear(self, uc: Uc, address: int, size: int,
                            user_data: object) -> None:
@@ -6862,6 +7136,29 @@ class GenericMSMEmulator:
                 and self._thumb_runtime_matches(uc, address, user_data)):
             self._return_to_lr(uc, address, size, user_data)
 
+    def _return_busy_delay(self, uc: Uc, address: int, size: int,
+                           user_data: object) -> None:
+        """Preserve the exact terminal R0/NZCV state of the delay loop."""
+        if (not isinstance(user_data, bytes)
+                or user_data not in BUSY_DELAY_SIGNATURES
+                or not self._thumb_runtime_matches(uc, address, user_data)):
+            return
+        uc.reg_write(UC_ARM_REG_R0, 0)
+        cpsr = uc.reg_read(UC_ARM_REG_CPSR)
+        uc.reg_write(UC_ARM_REG_CPSR, (cpsr & ~0xF0000000) | 0x60000000)
+        self._return_to_lr(uc, address, size, user_data)
+
+    def _absent_optional_ram_probe(self, uc: Uc, address: int, size: int,
+                                   user_data: object) -> None:
+        """Fail a proven destructive probe for an absent expansion bank."""
+        if not self._thumb_runtime_matches(
+                uc, address, OPTIONAL_RAM_PROBE_SIGNATURE):
+            return
+        uc.reg_write(UC_ARM_REG_R0, 0)
+        cpsr = uc.reg_read(UC_ARM_REG_CPSR)
+        uc.reg_write(UC_ARM_REG_CPSR, (cpsr & ~0xC0000000) | 0x40000000)
+        self._return_to_lr(uc, address, size, user_data)
+
     def _ma2_silent_boot(self, uc: Uc, address: int, size: int,
                          user_data: object) -> None:
         """Acknowledge a proven MA2 wait without inventing device registers."""
@@ -6987,8 +7284,7 @@ class GenericMSMEmulator:
     def _rex_irq_boundary(self, uc: Uc, address: int) -> bool:
         """Enter one latched, enabled IRQ at a firmware block boundary."""
         enable = getattr(self.config, "rex_irq_enable_address", None)
-        mask = getattr(self.config, "rex_irq_mask", 0)
-        if (enable is None or not self._rex_irq_pending[0] & mask):
+        if enable is None or not self._rex_irq_pending[0]:
             return False
         cpsr = uc.reg_read(UC_ARM_REG_CPSR)
         if cpsr & 0x80 or cpsr & 0x1F in (0x11, 0x12):
@@ -6997,7 +7293,7 @@ class GenericMSMEmulator:
             enabled = struct.unpack("<H", bytes(uc.mem_read(enable, 2)))[0]
         except UcError:
             return False
-        if not enabled & mask:
+        if not enabled & self._rex_irq_pending[0]:
             return False
         if not self._rex_irq_route_valid(uc, stack=True):
             return False
@@ -7334,9 +7630,16 @@ class GenericMSMEmulator:
         LOGGER.info("emulator close begin model=%s instructions=%d fault=%r",
                     self.config.model, self.instructions, self.fault)
         try:
-            self.save_flash()
-            self._save_eeprom()
-            self._save_nand()
+            if self._host_backend_fault is None:
+                self.save_flash()
+                self._save_eeprom()
+                self._save_nand()
+            else:
+                # A host backend failure can interrupt a Python device hook at
+                # an unknown point.  Keep the last durable state instead of
+                # mixing a partial chunk into the next boot.
+                LOGGER.warning("emulator state persistence skipped after host backend fault "
+                               "model=%s", self.config.model)
         finally:
             if self.audio_player is not None:
                 self.audio_player.close()
@@ -7393,35 +7696,46 @@ class GenericMSMEmulator:
         if pressed == (bit in self.held_keys):
             return
         key_start = self.config.key_register
+        if key_start is None:
+            self.input_error = (
+                "automatic keypad transport not detected; "
+                "physical register override required"
+            )
+            return
         for address, size in tuple(self.ready_bits):
             if max(address, key_start) < min(address + size, key_start + 4):
                 del self.ready_bits[(address, size)]
-        value = int.from_bytes(self.uc.mem_read(self.config.key_register, 4),
+        value = int.from_bytes(self.uc.mem_read(key_start, 4),
                                "little")
         if self.input_profile is not None:
             family = "LG" if self.input_profile[0] == "lg-decoded" else "Samsung"
             self.input_error = (
-                f"{family} keypad startup task is not ready; physical register only"
+                f"{family} keypad queue candidate not observed while key held; "
+                "physical register only"
             )
         mask = 1 << bit
         if pressed:
             self.held_keys.add(bit)
             self.key_baselines[bit] = value & mask
+            self.key_press_read_epochs[bit] = self.key_read_epoch
             active = not self.config.key_active_low
             value = value | mask if active else value & ~mask
         else:
             self.held_keys.remove(bit)
             baseline = self.key_baselines.pop(bit)
+            self.key_press_read_epochs.pop(bit, None)
             value = value & ~mask | baseline
-        self.uc.mem_write(self.config.key_register, struct.pack("<I", value))
+        self.uc.mem_write(key_start, struct.pack("<I", value))
         LOGGER.info("key bit=%d pressed=%s register=0x%08X value=0x%08X",
-                    bit, pressed, self.config.key_register, value)
+                    bit, pressed, key_start, value)
 
     def _input_entry_observed(self, uc: Uc, address: int, size: int,
                               user_data: object) -> None:
         """Record firmware-side keypad producer consumption without injection."""
         self.input_events += 1
-        if self.held_keys:
+        if any(self.key_read_epoch > self.key_press_read_epochs.get(bit,
+                                                                      self.key_read_epoch)
+               for bit in self.held_keys):
             self.firmware_key_events += 1
             self.input_error = ""
 
@@ -7455,7 +7769,6 @@ class GenericMSMEmulator:
         hottest = max(reads.items(), key=lambda item: item[1]) if reads else None
         last_unmapped = getattr(self, "last_unmapped", None)
         unmapped_accesses = getattr(self, "unmapped_accesses", ())
-        dynamic_page_first_accesses = getattr(self, "dynamic_page_first_accesses", ())
         safe_unmapped = None
         if last_unmapped is not None:
             safe_unmapped = {
@@ -7472,14 +7785,6 @@ class GenericMSMEmulator:
                 **({"pc": f"0x{event['pc']:08X}"} if "pc" in event else {}),
             }
             for event in unmapped_accesses
-        ]
-        safe_dynamic_page_first_accesses = [
-            {**event,
-             "address": f"0x{event['address']:08X}",
-             "page": f"0x{event['page']:08X}",
-             "value": f"0x{event['value']:X}",
-             **({"pc": f"0x{event['pc']:08X}"} if "pc" in event else {})}
-            for event in dynamic_page_first_accesses
         ]
         secondary = getattr(self, "secondary_flash", None)
         return {
@@ -7523,7 +7828,14 @@ class GenericMSMEmulator:
             "dynamic_pages": len(self.dynamic_pages),
             "last_unmapped": safe_unmapped,
             "unmapped_accesses": safe_unmapped_accesses,
-            "dynamic_page_first_accesses": safe_dynamic_page_first_accesses,
+            "dynamic_page_first_accesses": [
+                {**event,
+                 "address": f"0x{event['address']:08X}",
+                 "page": f"0x{event['page']:08X}",
+                 "value": f"0x{event['value']:X}",
+                 **({"pc": f"0x{event['pc']:08X}"} if "pc" in event else {})}
+                for event in getattr(self, "dynamic_page_first_accesses", ())
+            ],
             "hottest_mmio_read": (
                 {"pc": f"0x{hottest[0][0]:08X}",
                  "address": f"0x{hottest[0][1]:08X}",
@@ -7739,13 +8051,25 @@ class GenericMSMEmulator:
                               if self.eeprom_enabled else None),
             "eeprom_error": self.eeprom_error,
             "input_profile": self.input_profile[0] if self.input_profile else "gpio",
-            "input_mode": ("firmware-consumed" if self.firmware_key_events
-                           else "physical-register"),
+            "input_mode": ("firmware-consumed" if self.firmware_key_events else
+                           "candidate-register" if self.config.key_register is not None else
+                           "not-detected"),
             "input_entry": (f"0x{self.input_profile[1]:08X}"
                             if self.input_profile else None),
             "input_error": self.input_error,
             "input_events": self.input_events,
             "firmware_key_events": self.firmware_key_events,
+            "input_register_reads": getattr(self, "key_register_reads", 0),
+            "input_register_read_pcs": [
+                {"pc": f"0x{pc:08X}", "reads": reads}
+                for pc, reads in getattr(self, "key_register_read_pcs", Counter()).most_common(16)
+            ],
+            "input_transport": (
+                "candidate-register+consumer" if self.firmware_key_events else
+                "candidate-register-observed" if getattr(self, "key_register_reads", 0) else
+                "candidate-register-unobserved" if self.config.key_register is not None else
+                "not-detected"
+            ),
             "audio_play_address": (f"0x{self.config.audio_play_address:08X}"
                                    if self.config.audio_play_address is not None else None),
             "audio_discovered_address": (f"0x{self.audio_discovered_address:08X}"
@@ -7785,7 +8109,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--display-metrics", action="store_true",
                         help="include immutable frame geometry/visible-pixel metrics")
     result.add_argument("--model")
-    result.add_argument("--chipset", choices=("MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"))
+    result.add_argument(
+        "--chipset",
+        choices=("MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"),
+    )
     result.add_argument("--width", type=integer)
     result.add_argument("--height", type=integer)
     result.add_argument("--framebuffer-address", type=integer)
@@ -7848,7 +8175,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    from ..diagnostics.runtime_log import install_runtime_logging, record_diagnostic
+    from runtime_log import install_runtime_logging, record_diagnostic
 
     session_log = install_runtime_logging("cli")
     args = parser().parse_args()

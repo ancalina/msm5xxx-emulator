@@ -79,7 +79,7 @@ def main() -> int:
                         raise RuntimeError(
                             f"{path.name}: booted without a visible frame"
                         )
-                if config.model in KNOWN_STEPS:
+                if config.model in KNOWN_STEPS and config.key_register is not None:
                     key = (2 if emulator.input_profile
                            and emulator.input_profile[0] == "lg-decoded" else 0)
                     before_press = int.from_bytes(emulator.uc.mem_read(
@@ -104,11 +104,11 @@ def main() -> int:
                     released = emulator.run(250_000)
                     if pressed["fault"] or released["fault"] or emulator.held_keys:
                         raise RuntimeError(f"{path.name}: input transition failed")
-                    if released["input_mode"] != "physical-register":
+                    if released["input_mode"] != "candidate-register":
                         raise RuntimeError(f"{path.name}: unexpected input mode")
             finally:
                 emulator.close()
-        suffix = ("BOOT+DISPLAY OK; input=physical-register"
+        suffix = ("BOOT+DISPLAY OK; input=not-detected"
                   if config.model in KNOWN_STEPS else
                   "DISPLAY OK; supplied dump stops after splash"
                   if config.model in VISUAL_ONLY_STEPS else "UNKNOWN: metrics only")

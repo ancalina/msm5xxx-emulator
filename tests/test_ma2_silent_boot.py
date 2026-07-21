@@ -16,12 +16,12 @@ from msm5xxx import GenericMSMEmulator, detect, find_ma2_silent_boot_wait
 
 
 FIRMWARES = Path(__file__).resolve().parent.parent / "firmwares"
-PRIVATE_FIRMWARES = FIRMWARES.is_dir()
 
 
 class Ma2SilentBootTests(unittest.TestCase):
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_three_native_drivers_enable_named_silent_boot_stub(self) -> None:
+        if not FIRMWARES.is_dir():
+            self.skipTest("private firmware corpus is not available")
         for name in ("x350_VC22.bin", "schx150.bin", "SCH-X250.bin"):
             with self.subTest(name=name):
                 path = FIRMWARES / name
@@ -35,8 +35,9 @@ class Ma2SilentBootTests(unittest.TestCase):
                     for note in config.detection_notes
                 ))
 
-    @unittest.skipUnless(PRIVATE_FIRMWARES, "requires private firmware corpus")
     def test_wait_only_unrelated_firmware_is_rejected(self) -> None:
+        if not FIRMWARES.is_dir():
+            self.skipTest("private firmware corpus is not available")
         path = FIRMWARES / "SPH-X4500.bin"
 
         self.assertIsNone(find_ma2_silent_boot_wait(path.read_bytes()))
