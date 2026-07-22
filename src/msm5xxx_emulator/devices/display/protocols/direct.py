@@ -3,8 +3,84 @@ from __future__ import annotations
 
 from ....core.constants import LCD_MEMORY_WRITE_COMMANDS
 
+_SPLIT_COMMAND_PORT = 0x02000000
+_SPLIT_DATA_PORT = 0x02200000
+_SPLIT_PREFIX_HEAD = (
+    (_SPLIT_COMMAND_PORT, 2, 0), (_SPLIT_COMMAND_PORT, 2, 0x16),
+    (_SPLIT_DATA_PORT, 2, 0x7F), (_SPLIT_DATA_PORT, 2, 0),
+    (_SPLIT_COMMAND_PORT, 2, 0), (_SPLIT_COMMAND_PORT, 2, 0x17),
+    (_SPLIT_DATA_PORT, 2, 0x7F), (_SPLIT_DATA_PORT, 2, 0),
+)
+_SPLIT_PREFIXES = (
+    _SPLIT_PREFIX_HEAD + (
+        (_SPLIT_COMMAND_PORT, 2, 0), (_SPLIT_COMMAND_PORT, 2, 0x21),
+        (_SPLIT_DATA_PORT, 2, 0), (_SPLIT_DATA_PORT, 2, 0),
+        (_SPLIT_COMMAND_PORT, 2, 0), (_SPLIT_COMMAND_PORT, 2, 0x22),
+    ),
+    _SPLIT_PREFIX_HEAD + (
+        (_SPLIT_COMMAND_PORT, 2, 0), (_SPLIT_COMMAND_PORT, 2, 0x20),
+        (_SPLIT_DATA_PORT, 2, 0), (_SPLIT_DATA_PORT, 2, 0),
+        (_SPLIT_COMMAND_PORT, 2, 0), (_SPLIT_COMMAND_PORT, 2, 0x21),
+        (_SPLIT_DATA_PORT, 2, 0), (_SPLIT_DATA_PORT, 2, 0),
+        (_SPLIT_COMMAND_PORT, 2, 0), (_SPLIT_COMMAND_PORT, 2, 0x22),
+    ),
+)
+
 
 class DirectProtocolMixin:
+    def _lcd_split_port_reset(self) -> None:
+        self._lcd_split_port_stage = 0
+        self._lcd_split_port_variant = 0
+        self._lcd_split_port_payload.clear()
+
+    def _lcd_split_port_write(self, address: int, size: int,
+                              value: int) -> bool:
+        """Promote one exact split-byte 128x128 RGB565 bus grammar."""
+        stage = self._lcd_split_port_stage
+        if (not stage and not (address == _SPLIT_COMMAND_PORT
+                               and size == 2 and value == 0)):
+            return False
+        event = (address, size, value)
+        qualified = self._lcd_split_port_qualified
+        variant = self._lcd_split_port_variant
+        if not variant:
+            matches = tuple(index for index, prefix in enumerate(_SPLIT_PREFIXES)
+                            if stage < len(prefix) and event == prefix[stage])
+            if matches:
+                if len(matches) == 1:
+                    self._lcd_split_port_variant = matches[0] + 1
+                self._lcd_split_port_stage = stage + 1
+                return qualified
+        else:
+            prefix = _SPLIT_PREFIXES[variant - 1]
+            if stage < len(prefix):
+                if event == prefix[stage]:
+                    self._lcd_split_port_stage = stage + 1
+                    return qualified
+            elif address == _SPLIT_DATA_PORT and size == 2 and 0 <= value <= 0xFF:
+                payload = self._lcd_split_port_payload
+                payload.append(value)
+                if len(payload) < 128 * 128 * 2:
+                    return qualified
+                self._lcd_split_port_stage = 0
+                self._lcd_split_port_variant = 0
+                self._lcd_split_port_payload = bytearray()
+                self._set_display_geometry(128, 128, force=True)
+                for index in range(128 * 128):
+                    offset = index * 2
+                    self._pixel(index, payload[offset] << 8 | payload[offset + 1])
+                self._lcd_split_port_qualified = True
+                self._lcd_protocol = "split-byte-rgb565"
+                self._publish_frame()
+                return True
+
+        if stage:
+            self._lcd_split_port_reset()
+        if event == _SPLIT_PREFIXES[0][0]:
+            self._lcd_split_port_stage = 1
+            return qualified
+        return False
+
     def _lcd_028_direct_probe_write(self, address: int, size: int,
                                     value: int) -> bool:
         """Consume only a complete old Samsung direct-window grammar."""

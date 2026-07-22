@@ -509,14 +509,12 @@ class NorStorageMixin:
         pending = self._parallel_nor_direct_probe
         if pending is None:
             return
-        if address == pending["base"] and "raw_id_word_0" not in pending:
-            pending["raw_id_word_0"] = int.from_bytes(data, "little")
-        elif (address == pending["base"] + 2
-              and "raw_id_word_0" in pending
-              and "raw_id_word_2" not in pending):
-            pending["raw_id_word_2"] = int.from_bytes(data, "little")
-        else:
+        offset = address - pending["base"]
+        key = {0: "raw_id_word_0", 2: "raw_id_word_2"}.get(offset)
+        if key is None or key in pending:
             self._parallel_nor_direct_probe = None
+            return
+        pending[key] = int.from_bytes(data, "little")
 
     def _secondary_flash_read_fast(self, uc: Uc, address: int, size: int,
                                    user_data: object) -> None:

@@ -117,6 +117,7 @@ class FirmwareConfig:
     missing_overlays: list[CopyLayout]
     runtime_overlays: list[CopyLayout]
     verified_model: str | None = None
+    guest_owned_status_72c: bool = False
 
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)

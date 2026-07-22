@@ -21,6 +21,7 @@ from .boot import (
     NAND_BAD_BLOCK_SIGNATURE, NAND_READ_SIGNATURE, NAND_WRITE_SIGNATURE,
     PRIMARY_FLASH_PROBE_SIGNATURE, REGISTER_RAMP_PREFIX,
     SECONDARY_FLASH_WRAPPER_PATTERN, find_ma2_silent_boot_wait,
+    detect_guest_owned_status_72c,
 )
 from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout
@@ -461,6 +462,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             raise ValueError("flash size must be positive")
         scan_flash_size = requested_flash_size
     primary_image = image[:min(len(image), scan_flash_size)]
+    guest_owned_status_72c, status_72c_note = detect_guest_owned_status_72c(
+        primary_image
+    )
+    if status_72c_note is not None:
+        detection_notes.append(status_72c_note)
     board_status_input = find_board_status_input(primary_image)
     if board_status_input is not None:
         detection_notes.append(
@@ -800,6 +806,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         flash_state=default_flash_state,
         linker=linker, overlays=overlays, missing_overlays=[], runtime_overlays=[],
         verified_model=hardware_model,
+        guest_owned_status_72c=guest_owned_status_72c,
     )
     if overrides is not None:
         _apply_overrides(

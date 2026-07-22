@@ -248,6 +248,8 @@ class DisplayControllerMixin:
                    value: int, user_data: object) -> None:
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        if self._lcd_split_port_write(address, size, value):
+            return
         if self._lcd_byte_raster_write(address, size, value):
             return
         if self._lcd_byte_020_row_write(address, size, value):

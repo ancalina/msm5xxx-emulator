@@ -165,6 +165,10 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_streamed = 0
         emulator._lcd_data_byte_latch = {}
         emulator._lcd_028_direct_probe = []
+        emulator._lcd_split_port_stage = 0
+        emulator._lcd_split_port_variant = 0
+        emulator._lcd_split_port_payload = bytearray()
+        emulator._lcd_split_port_qualified = False
         emulator._lcd_x = [0, width - 1]
         emulator._lcd_y = [0, height - 1]
         emulator._lcd_direct_cursor = [0, 0]
@@ -176,6 +180,127 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_gram_dirty = False
         emulator._lcd_packed_21_state = 0
         return emulator
+
+    @staticmethod
+    def _write_split_port_word(emulator: GenericMSMEmulator,
+                               address: int, value: int) -> None:
+        for lane in (value >> 8, value & 0xFF):
+            emulator._lcd_write(None, 0, address, 2, lane, None)
+
+    def _start_split_port_frame(self, emulator: GenericMSMEmulator) -> None:
+        for command, argument in ((0x16, 0x7F00), (0x17, 0x7F00),
+                                  (0x21, 0x0000)):
+            self._write_split_port_word(emulator, 0x02000000, command)
+            self._write_split_port_word(emulator, 0x02200000, argument)
+        self._write_split_port_word(emulator, 0x02000000, 0x22)
+
+    def _start_split_port_init_frame(self, emulator: GenericMSMEmulator) -> None:
+        for command, argument in ((0x16, 0x7F00), (0x17, 0x7F00),
+                                  (0x20, 0x0000), (0x21, 0x0000)):
+            self._write_split_port_word(emulator, 0x02000000, command)
+            self._write_split_port_word(emulator, 0x02200000, argument)
+        self._write_split_port_word(emulator, 0x02000000, 0x22)
+
+    def test_split_port_rgb565_requires_exact_full_frame(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        self._start_split_port_frame(emulator)
+        pixels = (0xF800, 0x07E0, 0x001F) + (0,) * (128 * 128 - 3)
+        for pixel in pixels[:-1]:
+            self._write_split_port_word(emulator, 0x02200000, pixel)
+
+        self.assertEqual(emulator.frame_sequence, 7)
+        self.assertFalse(any(emulator.framebuffer))
+        emulator._lcd_write(None, 0, 0x02200000, 2, 0, None)
+        self.assertEqual(emulator.frame_sequence, 7)
+        emulator._lcd_write(None, 0, 0x02200000, 2, 0, None)
+
+        self.assertTrue(emulator._lcd_split_port_qualified)
+        self.assertEqual((emulator.config.width, emulator.config.height), (128, 128))
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(emulator._lcd_frame_protocol, "split-byte-rgb565")
+        self.assertEqual(emulator.display_frame[:9],
+                         bytes((255, 0, 0, 0, 255, 0, 0, 0, 255)))
+        routed = []
+        emulator._lcd_route_write = lambda *event: routed.append(event[2:5])
+        emulator._lcd_write(None, 0, 0x02200000, 2, 0xFF, None)
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(routed, [(0x02200000, 2, 0xFF)])
+        self._start_split_port_frame(emulator)
+        self.assertEqual(routed, [(0x02200000, 2, 0xFF)])
+
+    def test_split_port_rgb565_accepts_exact_init_prefix(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        self._start_split_port_init_frame(emulator)
+        for _ in range(128 * 128):
+            self._write_split_port_word(emulator, 0x02200000, 0xFFFF)
+
+        self.assertTrue(emulator._lcd_split_port_qualified)
+        self.assertEqual((emulator.config.width, emulator.config.height), (128, 128))
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(emulator._lcd_frame_protocol, "split-byte-rgb565")
+        self.assertEqual(emulator.display_frame, b"\xff" * (128 * 128 * 3))
+
+    def test_split_port_rgb565_rejects_mutated_init_prefix(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        for command, argument in ((0x16, 0x7F00), (0x17, 0x7F00),
+                                  (0x20, 0x0001), (0x21, 0x0000)):
+            self._write_split_port_word(emulator, 0x02000000, command)
+            self._write_split_port_word(emulator, 0x02200000, argument)
+        self._write_split_port_word(emulator, 0x02000000, 0x22)
+        for _ in range(128 * 128):
+            self._write_split_port_word(emulator, 0x02200000, 0xFFFF)
+
+        self.assertFalse(emulator._lcd_split_port_qualified)
+        self.assertEqual((emulator.config.width, emulator.config.height), (176, 220))
+        self.assertEqual(emulator.frame_sequence, 7)
+
+    def test_split_port_rgb565_rejects_near_misses(self) -> None:
+        cases = (
+            ("nonzero-command-prefix", ((0x02000000, 2, 1),)),
+            ("reversed-window", (
+                (0x02000000, 2, 0), (0x02000000, 2, 0x16),
+                (0x02200000, 2, 0), (0x02200000, 2, 0x7F),
+            )),
+            ("out-of-range-window", (
+                (0x02000000, 2, 0), (0x02000000, 2, 0x16),
+                (0x02200000, 2, 0x80), (0x02200000, 2, 0),
+            )),
+            ("wrong-command", (
+                (0x02000000, 2, 0), (0x02000000, 2, 0x17),
+            )),
+            ("wide-lane", (
+                (0x02000000, 2, 0), (0x02000000, 2, 0x16),
+                (0x02200000, 2, 0x100),
+            )),
+            ("intervening-port", (
+                (0x02000000, 2, 0), (0x02000000, 2, 0x16),
+                (0x02800000, 2, 0),
+            )),
+        )
+        for name, events in cases:
+            with self.subTest(name=name):
+                emulator = self._routing_emulator(width=176, height=220)
+                for event in events:
+                    emulator._lcd_write(None, 0, *event, None)
+                self.assertEqual(emulator._lcd_split_port_stage, 0)
+                self.assertFalse(emulator._lcd_split_port_qualified)
+                self.assertEqual(emulator.frame_sequence, 7)
+
+        incomplete = self._routing_emulator(width=176, height=220)
+        self._start_split_port_frame(incomplete)
+        incomplete._lcd_write(None, 0, 0x02200000, 2, 0xF8, None)
+        incomplete._lcd_write(None, 0, 0x02000004, 2, 0, None)
+        self.assertEqual(incomplete._lcd_split_port_stage, 0)
+        self.assertEqual(incomplete._lcd_split_port_payload, bytearray())
+        self.assertEqual(incomplete.frame_sequence, 7)
+
+        interrupted = self._routing_emulator(width=176, height=220)
+        self._start_split_port_frame(interrupted)
+        interrupted._lcd_write(None, 0, 0x02200000, 2, 0xF8, None)
+        self._write_split_port_word(interrupted, 0x02000000, 0x16)
+        self.assertEqual(interrupted._lcd_split_port_stage, 2)
+        self.assertEqual(interrupted._lcd_split_port_payload, bytearray())
+        self.assertEqual(interrupted.frame_sequence, 7)
 
     def test_black_provisional_frames_can_be_replaced_by_proven_geometry(self) -> None:
         emulator = self._blank_emulator(visible=False)

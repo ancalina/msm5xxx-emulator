@@ -462,6 +462,8 @@ class LifecycleMixin:
                               struct.pack("<I", 0xFFFFFFFF if config.key_active_low else 0))
         for address, value in STABLE_MSM_MMIO:
             self.uc.mem_write(address, value)
+            if address == 0x0300072C and config.guest_owned_status_72c:
+                continue
             self.uc.hook_add(UC_HOOK_MEM_READ, self._stable_mmio_read,
                              begin=address, end=address + len(value) - 1,
                              user_data=(address, value))
@@ -573,6 +575,13 @@ class LifecycleMixin:
         # and one exact 96x64 RGB565 payload have both been observed.
         self._lcd_byte_rgb565_commands = bytearray()
         self._lcd_byte_rgb565_payload: bytearray | None = None
+        # One split-byte bus sends zero-prefixed commands at 0x02000000 and
+        # high/low RGB565 byte lanes at 0x02200000.  Keep it sidecar-only
+        # until an exact 128x128 window and one complete frame prove the bus.
+        self._lcd_split_port_stage = 0
+        self._lcd_split_port_variant = 0
+        self._lcd_split_port_payload = bytearray()
+        self._lcd_split_port_qualified = False
         # LG-LX5350 uses a byte-wide four-register window followed by
         # big-endian RGB565 bytes through +0x10/+0x11.  Keep it separate from
         # command/data transports until header and whole rectangle agree.
