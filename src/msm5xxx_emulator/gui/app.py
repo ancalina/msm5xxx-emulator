@@ -87,6 +87,7 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
         self.keyboard_sources: set[str] = set()
         self.pending_key_releases: dict[str, str] = {}
         self.photo: ImageTk.PhotoImage | None = None
+        self._screen_item: int | None = None
         self._render_cache: tuple[object, bytes, int, int, int, int] | None = None
         self.status = tk.StringVar(value=self._text("ready"))
         self.model = tk.StringVar(value=self._text("detecting"))
@@ -103,6 +104,7 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
         self._bind_keyboard()
         self._restart()
         self.root.after(50, self._refresh)
+        self.root.after(50, self._refresh_display)
         self.root.after(750, self._check_for_update)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 

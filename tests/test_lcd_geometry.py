@@ -42,6 +42,18 @@ class LCDGeometryTests(unittest.TestCase):
         emulator.framebuffer = UnscannableFramebuffer()
         emulator._set_display_geometry(128, 160)
 
+    def test_geometry_visibility_check_uses_native_byte_count(self) -> None:
+        class UniterableFramebuffer(bytearray):
+            def __iter__(self):
+                raise AssertionError("visibility check must not iterate in Python")
+
+        emulator = self._blank_emulator(False)
+        emulator.framebuffer = UniterableFramebuffer(emulator.framebuffer)
+
+        emulator._set_display_geometry(128, 160)
+
+        self.assertEqual((emulator.config.width, emulator.config.height), (128, 160))
+
     def test_pixel_writes_exact_rgb565_channels_without_touching_neighbours(self) -> None:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(width=2, height=1)

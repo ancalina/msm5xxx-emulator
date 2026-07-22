@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import tempfile
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from ..core.emulator import GenericMSMEmulator
 from ..detection.firmware import detect
@@ -109,8 +109,13 @@ def boot_event(state: dict[str, object], nonblack: int, frame_hash: str,
 
 
 def visible_pixels(frame: bytes) -> int:
-    return sum(any(frame[offset:offset + 3])
-               for offset in range(0, len(frame), 3))
+    pixels = (len(frame) + 2) // 3
+    if not pixels:
+        return 0
+    image = Image.frombytes("RGB", (pixels, 1), frame.ljust(pixels * 3, b"\0"))
+    red, green, blue = image.split()
+    maximum = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    return pixels - maximum.histogram()[0]
 
 
 def firmware_visible_frame(state: dict[str, object], nonblack: int) -> bool:

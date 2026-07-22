@@ -56,7 +56,7 @@ class DisplayControllerMixin:
         """Adopt a controller-proven panel geometry before its first visible frame."""
         if (width, height) == (self.config.width, self.config.height):
             return
-        visible = any(self.framebuffer)
+        visible = self.framebuffer.count(0) != len(self.framebuffer)
         if ((visible and not force)
                 or not (64 <= width <= 320 and 64 <= height <= 320)):
             return

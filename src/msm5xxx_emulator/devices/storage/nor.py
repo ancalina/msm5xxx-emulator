@@ -267,6 +267,8 @@ class NORFlash:
     def _unlogged_operations(self) -> list[tuple[str, int, bytes | int]]:
         expected = bytearray(self._baseline)
         self._apply_operations(expected, self._operations)
+        if self.data == expected:
+            return []
         operations: list[tuple[str, int, bytes | int]] = []
         start = 0
         while start < len(self.data):
@@ -464,7 +466,9 @@ class NorStorageMixin:
         relative = address - base
         data = flash.read(relative, size)
         self._observe_parallel_nor_direct_read(address, size, data, flash)
-        uc.mem_write(address, data)
+        if flash.phase == "autoselect" and flash.ids is not None:
+            uc.mem_write(address, data)
+            self._flash_restore[address] = flash._current(relative, size)
 
     def _observe_parallel_nor_direct_write(self, uc: Uc, address: int,
                                            size: int, value: int,

@@ -13,12 +13,16 @@ from .controls import METRIC_TEXT
 from .locale import runtime_notice_text
 
 
+DISPLAY_REFRESH_MS = 33
+STATE_REFRESH_MS = 100
+
+
 def frame_repaint_needed(
         cache: tuple[object, bytes, int, int, int, int] | None,
         emulator: object, frame: bytes, frame_width: int, frame_height: int,
         canvas_width: int, canvas_height: int) -> bool:
-    """Avoid rebuilding Pillow/Tk objects for an immutable displayed frame."""
-    return (cache is None or cache[0] is not emulator or cache[1] is not frame
+    """Avoid rebuilding Pillow/Tk objects for unchanged displayed contents."""
+    return (cache is None or cache[0] is not emulator or cache[1] != frame
             or cache[2:] != (frame_width, frame_height, canvas_width, canvas_height))
 
 
@@ -92,6 +96,9 @@ class DisplayViewMixin:
             if generation == self.generation:
                 latest.update(state)
         if latest:
+            profile_overrides = latest.get("_profile_overrides")
+            if isinstance(profile_overrides, dict):
+                self.overrides = dict(profile_overrides)
             if "model" in latest:
                 self.model.set(str(latest["model"]))
             if "device_details" in latest:
@@ -115,6 +122,9 @@ class DisplayViewMixin:
                     f"{'Host backend stopped' if self.ui_language == 'en' else '호스트 backend 중지'}: "
                     f"{latest['host_backend_fault']}"
                 )
+        self.root.after(STATE_REFRESH_MS, self._refresh)
+
+    def _refresh_display(self) -> None:
         emulator = self.emulator
         if emulator is not None:
             frame_width, frame_height, frame = emulator.display_snapshot()
@@ -127,15 +137,21 @@ class DisplayViewMixin:
                 scale = min(width / image.width, height / image.height)
                 size = (max(1, int(image.width * scale)),
                         max(1, int(image.height * scale)))
-                self.photo = ImageTk.PhotoImage(
+                photo = ImageTk.PhotoImage(
                     image.resize(size, Image.Resampling.NEAREST)
                 )
-                self.screen.delete("all")
-                self.screen.create_image(width // 2, height // 2, image=self.photo)
+                if self._screen_item is None:
+                    self._screen_item = self.screen.create_image(
+                        width // 2, height // 2, image=photo
+                    )
+                else:
+                    self.screen.coords(self._screen_item, width // 2, height // 2)
+                    self.screen.itemconfigure(self._screen_item, image=photo)
+                self.photo = photo
                 self._render_cache = (
                     emulator, frame, frame_width, frame_height, width, height
                 )
-        self.root.after(100, self._refresh)
+        self.root.after(DISPLAY_REFRESH_MS, self._refresh_display)
 
     def _show_save_errors(self) -> None:
         errors: list[str] = []

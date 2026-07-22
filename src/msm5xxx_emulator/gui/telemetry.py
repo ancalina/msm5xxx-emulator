@@ -29,8 +29,8 @@ TELEMETRY_POLL_ESCAPE_CAP = 8
 
 def _frame_metrics(frame: bytes, previous_frame: bytes, previous_hash: str,
                    previous_nonblack: int) -> tuple[str, int]:
-    """Reuse metrics for the immutable frame returned between publishes."""
-    if frame is previous_frame:
+    """Reuse metrics when a publish returns the same immutable frame contents."""
+    if frame == previous_frame:
         return previous_hash, previous_nonblack
     return hashlib.sha256(frame).hexdigest(), visible_pixels(frame)
 
@@ -141,7 +141,8 @@ def telemetry_artifact_due(*, transitioned: bool, terminal: bool,
 def runtime_telemetry(config: object, state: dict[str, object], *, generation: int,
                       phase: str, event: str, width: int, height: int,
                       frame: bytes, nonblack: int,
-                      screenshot: str | None = None) -> dict[str, object]:
+                      screenshot: str | None = None,
+                      frame_hash: str | None = None) -> dict[str, object]:
     """Keep periodic GUI evidence compact and free of local firmware paths."""
     registers = _mapping(state, "registers")
     payload: dict[str, object] = {
@@ -160,7 +161,8 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
         "frame": {
             "width": width,
             "height": height,
-            "sha256": hashlib.sha256(frame).hexdigest(),
+            "sha256": (frame_hash if frame_hash is not None
+                       else hashlib.sha256(frame).hexdigest()),
             "nonblack_pixels": nonblack,
             "sequence": _counter(state, "frame_sequence"),
             "firmware_sequence": _counter(state, "firmware_frame_sequence"),

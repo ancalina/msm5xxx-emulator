@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import Mock, call
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2
@@ -14,6 +15,18 @@ from nor_flash import FUJITSU_MB84VD2219X_IDS, NORFlash
 
 
 class NORTelemetryTests(unittest.TestCase):
+    def test_equal_logged_state_skips_python_unlogged_scan(self) -> None:
+        class UnindexedBytearray(bytearray):
+            def __getitem__(self, key: object) -> int | bytearray:
+                raise AssertionError("equal state must not use Python indexing")
+
+        with tempfile.TemporaryDirectory() as directory:
+            flash = NORFlash(b"\xff" * 0x1000, Path(directory) / "flash.json")
+            self.assertEqual(flash.program(0x20, b"\xaa"), b"\xaa")
+            flash.data = UnindexedBytearray(flash.data)
+
+            self.assertEqual(flash._unlogged_operations(), [])
+
     def test_capture_efs_seed_is_limited_to_msm5500(self) -> None:
         erased = b"\xff" * 0x200
         self.assertEqual(qualcomm_efs_seed(0x200, "MSM5000"), erased)
@@ -151,6 +164,57 @@ class NORTelemetryTests(unittest.TestCase):
             emulator._flash_write(uc, 0, base, 2, 0xFF, (base, flash))
 
             self.assertEqual(emulator.primary_parallel_nor_direct_id_probes, [])
+
+    def test_secondary_autoselect_override_is_restored_without_idle_writeback(self) -> None:
+        base = 0x00400000
+        original = bytes(range(16)) + b"\xff" * (0x1000 - 16)
+        with tempfile.TemporaryDirectory() as directory:
+            primary = NORFlash(b"\xff" * 0x1000,
+                               Path(directory) / "primary.json")
+            flash = NORFlash(original, Path(directory) / "secondary.json")
+            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator.config = SimpleNamespace(board_revision_register=None)
+            emulator.flash = primary
+            emulator._flash_restore = {}
+            emulator._parallel_nor_direct_probe = None
+            emulator.primary_parallel_nor_direct_id_probes = []
+            uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+            uc.mem_map(base, 0x1000)
+            uc.mem_write(base, original)
+            uc.mem_write = Mock(wraps=uc.mem_write)
+
+            emulator._flash_read(uc, 0, base + 6, 2, 0, (base, flash))
+            uc.mem_write.assert_not_called()
+
+            flash.phase = "autoselect"
+            flash.ids = (0x0001, 0x227E)
+            emulator._flash_read(uc, 0, base + 1, 4, 0, (base, flash))
+            uc.mem_write.assert_called_once_with(base + 1, b"\x00\x7e\x22\x04")
+            self.assertEqual(bytes(uc.mem_read(base + 1, 4)),
+                             b"\x00\x7e\x22\x04")
+
+            uc.mem_write.reset_mock()
+            emulator._flash_read(uc, 0, base + 2, 2, 0, (base, flash))
+            self.assertEqual(uc.mem_write.call_args_list, [
+                call(base + 1, b"\x01\x02\x03\x04"),
+                call(base + 2, b"\x7e\x22"),
+            ])
+            self.assertEqual(bytes(uc.mem_read(base + 1, 4)),
+                             b"\x01\x7e\x22\x04")
+
+            uc.mem_write.reset_mock()
+            emulator._restore_flash_once(uc, 0, 0, None)
+            uc.mem_write.assert_called_once_with(base + 2, b"\x02\x03")
+            self.assertEqual(bytes(uc.mem_read(base, 16)), original[:16])
+            self.assertEqual(emulator._flash_restore, {})
+
+            flash.phase = "idle"
+            uc.mem_write.reset_mock()
+            emulator._flash_read(uc, 0, base + 2, 2, 0, (base, flash))
+            uc.mem_write.assert_not_called()
+            self.assertEqual(flash.telemetry()["reads"], 4)
+            self.assertEqual(flash.telemetry()["read_bytes"], 10)
+            self.assertIsNone(emulator._parallel_nor_direct_probe)
 
     def test_fujitsu_bulk_hle_normalizes_absolute_secondary_address(self) -> None:
         body = bytes.fromhex(

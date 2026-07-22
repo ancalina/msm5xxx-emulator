@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import queue
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -18,6 +19,9 @@ from gui import (TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_POLL_ESCAPE_CAP,
                  frame_repaint_needed, hydrate_host_checkpoint, runtime_telemetry,
                  save_telemetry_frame,
                  system_ui_language, telemetry_artifact_due, telemetry_transition)
+from msm5xxx_emulator.gui.display_view import (
+    DISPLAY_REFRESH_MS, STATE_REFRESH_MS, DisplayViewMixin,
+)
 
 
 class GuiTelemetryTests(unittest.TestCase):
@@ -36,8 +40,8 @@ class GuiTelemetryTests(unittest.TestCase):
         cache = (emulator, frame, 1, 1, 100, 100)
         self.assertFalse(frame_repaint_needed(cache, emulator, frame, 1, 1, 100, 100))
         self.assertTrue(frame_repaint_needed(cache, object(), frame, 1, 1, 100, 100))
-        self.assertTrue(frame_repaint_needed(cache, emulator, bytes(bytearray(frame)),
-                                             1, 1, 100, 100))
+        self.assertFalse(frame_repaint_needed(cache, emulator, bytes(bytearray(frame)),
+                                              1, 1, 100, 100))
         self.assertTrue(frame_repaint_needed(cache, emulator, frame, 1, 1, 101, 100))
 
     def _state(self, **changes: object) -> dict[str, object]:
@@ -84,10 +88,74 @@ class GuiTelemetryTests(unittest.TestCase):
         frame = b"\0\0\0\xff\0\0"
         self.assertEqual(_frame_metrics(frame, frame, "cached", 4), ("cached", 4))
 
-        changed = bytes(bytearray(frame))
+        equal_copy = bytes(bytearray(frame))
+        self.assertEqual(_frame_metrics(equal_copy, frame, "cached", 4),
+                         ("cached", 4))
+
+        changed = b"\0\0\0\0\xff\0"
         frame_hash, nonblack = _frame_metrics(changed, frame, "cached", 4)
         self.assertEqual(frame_hash, hashlib.sha256(changed).hexdigest())
         self.assertEqual(nonblack, 1)
+
+    def test_visible_pixels_preserves_partial_rgb_chunk_semantics(self) -> None:
+        from boot_probe import visible_pixels
+
+        self.assertEqual(visible_pixels(b""), 0)
+        self.assertEqual(visible_pixels(b"\0\0\0\xff\0\0\0\xff\0\0\0\xff"), 3)
+        self.assertEqual(visible_pixels(b"\0\0\0\0"), 0)
+        self.assertEqual(visible_pixels(b"\0\0\0\1"), 1)
+
+    def test_display_refresh_reuses_one_canvas_item(self) -> None:
+        class Harness(DisplayViewMixin):
+            pass
+
+        class Emulator:
+            frame = b"\xff\0\0"
+
+            def display_snapshot(self) -> tuple[int, int, bytes]:
+                return 1, 1, self.frame
+
+        harness = Harness()
+        harness.root = SimpleNamespace(after=mock.Mock())
+        harness.screen = SimpleNamespace(
+            winfo_width=mock.Mock(return_value=100),
+            winfo_height=mock.Mock(return_value=80),
+            create_image=mock.Mock(return_value=7),
+            coords=mock.Mock(), itemconfigure=mock.Mock(),
+        )
+        harness.emulator = Emulator()
+        harness.photo = None
+        harness._screen_item = None
+        harness._render_cache = None
+        with mock.patch("msm5xxx_emulator.gui.display_view.ImageTk.PhotoImage",
+                        return_value=object()) as photo:
+            harness._refresh_display()
+            harness.emulator.frame = b"\0\xff\0"
+            harness._refresh_display()
+            harness.emulator.frame = bytes(bytearray(harness.emulator.frame))
+            harness._refresh_display()
+
+        self.assertEqual(photo.call_count, 2)
+        harness.screen.create_image.assert_called_once()
+        harness.screen.coords.assert_called_once_with(7, 50, 40)
+        harness.screen.itemconfigure.assert_called_once()
+        self.assertEqual((DISPLAY_REFRESH_MS, STATE_REFRESH_MS), (33, 100))
+        self.assertEqual(harness.root.after.call_args_list[-1].args,
+                         (DISPLAY_REFRESH_MS, harness._refresh_display))
+
+    def test_state_refresh_remains_ten_hertz(self) -> None:
+        class Harness(DisplayViewMixin):
+            pass
+
+        harness = Harness()
+        harness.root = SimpleNamespace(after=mock.Mock())
+        harness._show_save_errors = mock.Mock()
+        harness.update_results = queue.SimpleQueue()
+        harness.states = queue.SimpleQueue()
+        harness.generation = 1
+        harness._refresh()
+
+        harness.root.after.assert_called_once_with(STATE_REFRESH_MS, harness._refresh)
 
     def test_cadence_waits_for_one_million_instructions_and_phase_change_emits(self) -> None:
         before = self._state(instructions=TELEMETRY_INSTRUCTION_CADENCE - 1)
@@ -146,6 +214,7 @@ class GuiTelemetryTests(unittest.TestCase):
             config, self._state(instructions=123, eeprom_writes=2),
             generation=4, phase="early-boot", event="early-boot",
             width=1, height=1, frame=b"\x00\x00\x00", nonblack=0,
+            frame_hash="precomputed",
         )
 
         encoded = json.dumps(payload, sort_keys=True)
@@ -154,6 +223,7 @@ class GuiTelemetryTests(unittest.TestCase):
             "basename": "SCH-X350.bin", "bytes": 128, "sha256": "a" * 64,
         })
         self.assertEqual(payload["eeprom"]["writes"], 2)
+        self.assertEqual(payload["frame"]["sha256"], "precomputed")
         self.assertEqual(payload["nor"]["primary_parallel_nor_direct_id_probes"], [])
 
         host_state = self._state(registers={

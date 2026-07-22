@@ -6,12 +6,14 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from gui import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
                  resolve_ui_language, runtime_status_text, settings_apply_mode,
                  system_ui_language)
 from msm5xxx import detect
+from msm5xxx_emulator.gui.controls import detect_profile
 from msm5xxx_emulator.gui.settings import (parse_settings_values, settings_values,
                                            validate_settings_values)
 
@@ -101,12 +103,36 @@ class GuiLocaleTests(unittest.TestCase):
             with mock.patch("msm5xxx_emulator.gui.controls.LAST_CONFIG", config_path):
                 Window._save_config(window)
                 restored = Window.__new__(Window)
+                restored.firmware = window.firmware
                 self.assertEqual(Window._load_ui_language(restored), "en")
+                with mock.patch("msm5xxx_emulator.gui.controls.detect") as detector:
+                    self.assertEqual(Window._load_config(restored), {"width": 128})
+                    detector.assert_not_called()
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["ui_language"], "en")
             self.assertEqual(saved["profiles"][str(window.firmware.resolve())],
                              {"width": 128})
+
+    def test_profile_detection_reuses_baseline_without_manual_overrides(self) -> None:
+        firmware = Path("firmware.bin")
+        baseline = SimpleNamespace(width=128, height=160)
+        overridden = SimpleNamespace(width=176, height=160)
+        with mock.patch("msm5xxx_emulator.gui.controls.detect",
+                        side_effect=[baseline, overridden]) as detector:
+            config, overrides = detect_profile(
+                firmware, {"width": 128, "height": 160, "obsolete": 1}
+            )
+            self.assertIs(config, baseline)
+            self.assertEqual(overrides, {})
+            detector.assert_called_once_with(firmware)
+
+        with mock.patch("msm5xxx_emulator.gui.controls.detect",
+                        side_effect=[baseline, overridden]) as detector:
+            config, overrides = detect_profile(firmware, {"width": 176})
+            self.assertIs(config, overridden)
+            self.assertEqual(overrides, {"width": 176})
+            self.assertEqual(detector.call_count, 2)
 
 
 if __name__ == "__main__":

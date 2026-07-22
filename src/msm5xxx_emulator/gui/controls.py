@@ -134,6 +134,18 @@ def can_apply_live_framebuffer_format(edited: set[str], firmware_changed: bool,
             and framebuffer_format != "none")
 
 
+def detect_profile(firmware: Path, profile: dict[str, object]) -> tuple[object, dict[str, object]]:
+    """Detect once for normal startup while migrating legacy saved auto values."""
+    baseline = detect(firmware)
+    overrides = {
+        key: value for key, value in profile.items()
+        if hasattr(baseline, key) and value != getattr(baseline, key)
+    }
+    config = (detect(firmware, argparse.Namespace(**overrides))
+              if overrides else baseline)
+    return config, overrides
+
+
 class ControlsMixin:
     def _text(self, key: str) -> str:
         return UI_TEXT[self.ui_language][key]
@@ -239,7 +251,10 @@ class ControlsMixin:
         dialog = tk.Toplevel(self.root)
         dialog.title(self._text("boot_settings"))
         dialog.transient(self.root)
-        detected = self.emulator.config if self.emulator is not None else detect(self.firmware)
+        if self.emulator is not None:
+            detected = self.emulator.config
+        else:
+            detected, self.overrides = detect_profile(self.firmware, self.overrides)
 
         values = settings_values(self.firmware, detected, self.overrides)
         language_labels = {
@@ -358,8 +373,9 @@ class ControlsMixin:
                     )
                     self.firmware = firmware
                     try:
-                        self.overrides = self._load_config()
-                        detect(firmware, argparse.Namespace(**self.overrides))
+                        _config, self.overrides = detect_profile(
+                            firmware, self._load_config()
+                        )
                     except (OSError, ValueError):
                         self.firmware, self.overrides = old_firmware, old_overrides
                         raise
@@ -451,13 +467,7 @@ class ControlsMixin:
             profile = profiles.get(str(self.firmware.resolve()), {})
             if not isinstance(profile, dict):
                 return {}
-            # Migrate profiles written by older builds that stored every
-            # displayed auto value as if the user had overridden it.
-            baseline = detect(self.firmware)
-            return {
-                key: value for key, value in profile.items()
-                if hasattr(baseline, key) and value != getattr(baseline, key)
-            }
+            return dict(profile)
         except (AttributeError, OSError, ValueError):
             return {}
 

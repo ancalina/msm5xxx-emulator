@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import hashlib
 import logging
 from pathlib import Path
@@ -11,9 +10,9 @@ import time
 from ..probe.boot import visible_pixels
 from ..core.emulator import GenericMSMEmulator
 from ..core.errors import HostBackendFault
-from ..detection.firmware import detect
 from ..diagnostics.runtime_log import record_exception
 
+from .controls import detect_profile
 from .locale import display_model_name
 from .repro import (create_repro_bundle, finish_repro_bundle,
                     firmware_telemetry)
@@ -72,7 +71,7 @@ class WorkerMixin:
         captures = 0
         terminal = False
         try:
-            config = detect(firmware, argparse.Namespace(**overrides))
+            config, overrides = detect_profile(firmware, overrides)
             worker_boot = {
                 "generation": generation,
                 "firmware": firmware_telemetry(config),
@@ -88,6 +87,7 @@ class WorkerMixin:
             if generation == self.generation:
                 self.emulator = emulator
             self.states.put((generation, {
+                "_profile_overrides": overrides,
                 "model": display_model_name(
                     config.model, config.verified_model, self.ui_language
                 ),
@@ -158,6 +158,7 @@ class WorkerMixin:
                         config, state, generation=generation, phase=phase, event=event,
                         width=frame_width, height=frame_height, frame=frame,
                         nonblack=nonblack, screenshot=screenshot,
+                        frame_hash=frame_hash,
                     )
                     emit_telemetry(
                         "terminal_state" if terminal else "runtime_checkpoint",
