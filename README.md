@@ -1,5 +1,7 @@
 # MSM5xxx Emulator
 
+[한국어](README.ko.md)
+
 Unicorn-based Qualcomm MSM5000/MSM5100/MSM5500 feature-phone firmware emulator.
 Experimental project. 
 This tree contains no firmware, user state, logs, screenshots, or audio asset.
