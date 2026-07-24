@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import condition_report
+from msm5xxx_emulator.detection.memory_layout import infer_ram_base
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
@@ -64,6 +65,26 @@ from msm5xxx_emulator.detection.boot import DELAY_SIGNATURE
 
 
 class DetectionTests(unittest.TestCase):
+    def test_bootstrap_clear_descriptor_selects_ram_bank_and_rejects_near_miss(
+            self) -> None:
+        image = bytearray(b"\xff" * 0x300)
+        position = 0x100
+        struct.pack_into(
+            "<9H", image, position - 18,
+            0x4814, 0x6800, 0x4914, 0x6809, 0x1840, 0x1C06,
+            0x4811, 0x6800, 0x1C04,
+        )
+        image[position:position + 20] = bytes.fromhex(
+            "b4420dd202e0201d041cf9e700202060a003f8d1"
+        )
+        struct.pack_into("<2I", image, 0x140, 0x200, 0x204)
+        struct.pack_into("<2I", image, 0x200, 0x0100B088, 0x000DFD20)
+
+        self.assertEqual(infer_ram_base(None, "MSM5105", image), 0x01000000)
+
+        image[position + 14] ^= 1
+        self.assertEqual(infer_ram_base(None, "MSM5105", image), 0x01800000)
+
     def test_overrides_rebase_and_disable_detected_address(self) -> None:
         image = bytearray(b"\xff" * 0x4000)
         for offset in range(0, 32, 4):

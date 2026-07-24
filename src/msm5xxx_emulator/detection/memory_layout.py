@@ -5,7 +5,7 @@ import struct
 
 from ..core.config import CopyLayout, LinkerLayout
 
-from .arm import arm_vector_score
+from .arm import arm_vector_score, thumb_literal_value
 from .signatures import find_all
 
 
@@ -28,6 +28,43 @@ ARM_MEMORY_COPY_TAIL = bytes.fromhex(
     "01c0d1240120c0440130c02401c0c0241eff2fe1"
 )
 ARM_MEMORY_COPY_TAIL_OFFSET = 0xF8
+
+_BOOTSTRAP_PROGRESS_CLEAR = bytes.fromhex(
+    "b4420dd202e0201d041cf9e700202060a003f8d1"
+)
+
+
+def _bootstrap_ram_base(image: bytes) -> int | None:
+    """Recover the SDRAM bank from the reset clear loop's own descriptor."""
+    found: set[int] = set()
+    for position in find_all(image, _BOOTSTRAP_PROGRESS_CLEAR):
+        if position < 18:
+            continue
+        words = struct.unpack_from("<9H", image, position - 18)
+        if not (
+            words[0] & 0xFF00 == 0x4800
+            and words[1] == 0x6800
+            and words[2] & 0xFF00 == 0x4900
+            and words[3:6] == (0x6809, 0x1840, 0x1C06)
+            and words[6] & 0xFF00 == 0x4800
+            and words[7:] == (0x6800, 0x1C04)
+        ):
+            continue
+        start_pointer = thumb_literal_value(image, position - 18, 0)
+        size_pointer = thumb_literal_value(image, position - 14, 1)
+        if (
+            start_pointer is None
+            or start_pointer != thumb_literal_value(image, position - 6, 0)
+            or not 0 <= start_pointer <= len(image) - 4
+            or not 0 <= size_pointer <= len(image) - 4
+        ):
+            continue
+        start = struct.unpack_from("<I", image, start_pointer)[0]
+        size = struct.unpack_from("<I", image, size_pointer)[0]
+        for base in (0x01000000, 0x01800000):
+            if base <= start < start + size <= base + 0x00800000:
+                found.add(base)
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def _boot_register_table_pointer(image: bytes) -> int | None:
@@ -114,6 +151,8 @@ def infer_ram_base(layout: LinkerLayout | None, chipset: str,
             if base <= first and last <= base + 0x00800000:
                 return base
     if image:
+        if (bootstrap_base := _bootstrap_ram_base(image)) is not None:
+            return bootstrap_base
         # Linker tables are absent in several partial builds.  Literal pools
         # in the reset/driver region still reveal which external SDRAM bank
         # the image was linked against.  Requiring a 3:1 margin avoids random

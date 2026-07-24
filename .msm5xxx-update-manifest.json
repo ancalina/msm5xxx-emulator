@@ -37,7 +37,7 @@
     "src/msm5xxx_emulator/detection/display.py": "6b659ccd07b975f91149c6ed25676f9fd714460c8c6e6a3fa0f2e6d938c00524",
     "src/msm5xxx_emulator/detection/firmware.py": "99d6a67e9a13b0239eaca145637609137b3c343ee10c796201b87b9e324a969b",
     "src/msm5xxx_emulator/detection/input.py": "b26d6f88148006fa0c65224cde59a6ccb2bdd12cd13a5e1f3a4ca473c814604a",
-    "src/msm5xxx_emulator/detection/memory_layout.py": "9c50f5bf8617059d3f2dd34840c1b24df330e2956c28feeed8543ab57c309f73",
+    "src/msm5xxx_emulator/detection/memory_layout.py": "5270e81ae6974801a569096578dbed31ed9c66958e2bbe86d9caafd59985a898",
     "src/msm5xxx_emulator/detection/model.py": "58f3bbe5a863fa4f97c8a5f09ae31b0667648b579ce86e4f5755b6f730be0d65",
     "src/msm5xxx_emulator/detection/rex.py": "53c127dc587fff61ea82ec3193dd116f2057a46b0537d6b7e58552deb624c1f8",
     "src/msm5xxx_emulator/detection/signatures.py": "232f9cc25e332636b1e9f65842d197f52fd8384499bf87edf4ca137c1445cde1",
