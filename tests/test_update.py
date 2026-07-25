@@ -87,6 +87,32 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual((target / "logs" / "user.log").read_text(), "keep")
             self.assertEqual(update.local_revision(target), SHA)
 
+    def test_apply_adds_file_owned_only_by_new_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            target, prepared, state = base / "app", base / "new", base / "state"
+            target.mkdir()
+            (target / "gui.py").write_text("old", encoding="utf-8")
+            self._write_manifest(target, ("gui.py",))
+            (prepared / "src").mkdir(parents=True)
+            (prepared / "gui.py").write_text("new", encoding="utf-8")
+            (prepared / "src" / "input_matrix.py").write_text(
+                "new module", encoding="utf-8"
+            )
+            self._write_manifest(
+                prepared, ("gui.py", "src/input_matrix.py")
+            )
+            (prepared / update.REVISION_FILE).write_text(
+                SHA + "\n", encoding="ascii"
+            )
+
+            update.apply_prepared_update(prepared, target, state, SHA, False)
+
+            self.assertEqual(
+                (target / "src" / "input_matrix.py").read_text(),
+                "new module",
+            )
+
     def test_modified_install_requires_explicit_discard(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

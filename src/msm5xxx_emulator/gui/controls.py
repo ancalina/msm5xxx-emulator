@@ -248,13 +248,17 @@ class ControlsMixin:
         self.commands.put((bit, pressed))
 
     def _settings(self) -> None:
+        if self.emulator is None:
+            # Detection already runs in the worker.  Running it here freezes Tk
+            # for multi-second firmware scans before the dialog can appear.
+            self._settings_requested = True
+            self.status.set(self._text("detecting"))
+            return
+        self._settings_requested = False
         dialog = tk.Toplevel(self.root)
         dialog.title(self._text("boot_settings"))
         dialog.transient(self.root)
-        if self.emulator is not None:
-            detected = self.emulator.config
-        else:
-            detected, self.overrides = detect_profile(self.firmware, self.overrides)
+        detected = self.emulator.config
 
         values = settings_values(self.firmware, detected, self.overrides)
         language_labels = {

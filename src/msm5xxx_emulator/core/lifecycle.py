@@ -23,6 +23,7 @@ from ..detection.display import detect_lcd_width_hint
 from ..detection.firmware import ADDRESS_SPACE
 from ..detection.firmware import MAX_FLASH_SIZE
 from ..detection.input import detect_input_profile
+from ..detection.input_matrix import resolve_direct_matrix_input
 from ..detection.memory_layout import aligned
 from ..detection.memory_layout import interval_gaps
 from ..detection.memory_layout import restore_sparse_nor_gap
@@ -366,7 +367,11 @@ class LifecycleMixin:
             (0x02C00000, 0x02C01000, "alternate LCD MMIO"),
             (0x03800000, 0x03A00000, "internal RAM"),
             *((address, address + len(value), "stable MSM MMIO")
-              for address, value in STABLE_MSM_MMIO),
+              for address, value in STABLE_MSM_MMIO
+              if (config.key_register is None
+                  or not (config.key_register <= address
+                          and address + len(value)
+                          <= config.key_register + 4))),
             *((overlay.target, overlay.target + overlay.size, "executable overlay")
               for overlay in config.overlays),
         ]
@@ -461,6 +466,10 @@ class LifecycleMixin:
             self.uc.mem_write(config.key_register,
                               struct.pack("<I", 0xFFFFFFFF if config.key_active_low else 0))
         for address, value in STABLE_MSM_MMIO:
+            if (config.key_register is not None
+                    and config.key_register <= address
+                    and address + len(value) <= config.key_register + 4):
+                continue
             self.uc.mem_write(address, value)
             if address == 0x0300072C and config.guest_owned_status_72c:
                 continue
@@ -755,10 +764,34 @@ class LifecycleMixin:
         self.key_register_reads = 0
         self.key_register_read_pcs: Counter[int] = Counter()
         self.input_profile = detect_input_profile(self.image, config.load_address)
+        if config.key_register is None:
+            (
+                self.direct_input_profile,
+                self.direct_input_detection,
+                self.direct_input_rejections,
+            ) = resolve_direct_matrix_input(self.image, config.load_address)
+        else:
+            self.direct_input_profile = None
+            self.direct_input_detection = "explicit-key-register-override"
+            self.direct_input_rejections = []
+        self.direct_input_positions = self._direct_matrix_positions(
+            self.direct_input_profile
+        )
+        self.direct_key_scan_epochs: dict[int, int] = {}
+        self.direct_matrix_scans = 0
+        self.direct_matrix_active_reads = 0
+        self.direct_matrix_sink_events = 0
         self.input_error = ""
         self.input_events = 0
         self.firmware_key_events = 0
-        if self.input_profile is not None:
+        if self.direct_input_profile is not None:
+            self.uc.hook_add(
+                UC_HOOK_CODE,
+                self._direct_input_event_observed,
+                begin=int(self.direct_input_profile["event_sink"]),
+                end=int(self.direct_input_profile["event_sink"]),
+            )
+        elif self.input_profile is not None:
             self.uc.hook_add(UC_HOOK_CODE, self._input_entry_observed,
                              begin=self.input_profile[1], end=self.input_profile[1])
 
@@ -778,6 +811,7 @@ class LifecycleMixin:
         self.ma2_silent_boot_calls = 0
         self.audio_discovered_address: int | None = None
         self._audio_probe_hook: int | None = None
+        self._audio_probe_rejections: set[int] = set()
 
     def _install_remaining_hooks(
             self, config: FirmwareConfig, secondary_base: int | None,

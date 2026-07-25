@@ -47,8 +47,11 @@ class AudioMixin:
             prologue = int.from_bytes(uc.mem_read(address, 2), "little")
         except UcError:
             return
-        if (prologue & 0xFF00 != 0xB500
-                or not self._play_mmf_arguments(uc, True, submit=True)):
+        if prologue & 0xFF00 != 0xB500:
+            if self.config.load_address <= address < self.primary_rom_end:
+                self._audio_probe_rejections.add(address)
+            return
+        if not self._play_mmf_arguments(uc, True, submit=True):
             return
         self.audio_discovered_address = address
         self._audio_probe_hook = uc.hook_add(UC_HOOK_CODE, self._audio_play,

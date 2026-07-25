@@ -88,6 +88,14 @@ class GuiTelemetryTests(unittest.TestCase):
         frame = b"\0\0\0\xff\0\0"
         self.assertEqual(_frame_metrics(frame, frame, "cached", 4), ("cached", 4))
 
+        class IdentityFrame(bytes):
+            def __eq__(self, other: object) -> bool:
+                raise AssertionError("identity must avoid content comparison")
+
+        identity_frame = IdentityFrame(frame)
+        self.assertEqual(_frame_metrics(identity_frame, identity_frame, "cached", 4),
+                         ("cached", 4))
+
         equal_copy = bytes(bytearray(frame))
         self.assertEqual(_frame_metrics(equal_copy, frame, "cached", 4),
                          ("cached", 4))
@@ -156,6 +164,24 @@ class GuiTelemetryTests(unittest.TestCase):
         harness._refresh()
 
         harness.root.after.assert_called_once_with(STATE_REFRESH_MS, harness._refresh)
+
+    def test_pending_settings_open_after_worker_is_ready(self) -> None:
+        class Harness(DisplayViewMixin):
+            pass
+
+        harness = Harness()
+        harness.root = SimpleNamespace(after=mock.Mock())
+        harness._show_save_errors = mock.Mock()
+        harness.update_results = queue.SimpleQueue()
+        harness.states = queue.SimpleQueue()
+        harness.generation = 1
+        harness.emulator = object()
+        harness._settings_requested = True
+        harness._settings = mock.Mock()
+        harness._refresh()
+
+        harness._settings.assert_called_once_with()
+        self.assertFalse(harness._settings_requested)
 
     def test_cadence_waits_for_one_million_instructions_and_phase_change_emits(self) -> None:
         before = self._state(instructions=TELEMETRY_INSTRUCTION_CADENCE - 1)

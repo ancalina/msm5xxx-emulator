@@ -121,7 +121,7 @@ class WorkerMixin:
                         emulator.set_framebuffer_format(framebuffer_format)
                         LOGGER.info("live framebuffer format=%s generation=%d",
                                     framebuffer_format, generation)
-                state = emulator.run(25_000)
+                state = emulator.run(25_000, light_state=True)
                 frame_width, frame_height, frame = emulator.display_snapshot()
                 frame_hash, nonblack = _frame_metrics(
                     frame, previous_frame, previous_frame_hash, previous_nonblack
@@ -141,7 +141,11 @@ class WorkerMixin:
                     instructions=instructions,
                     last_screenshot_instructions=last_screenshot_instructions,
                 )
+                full_state = None
                 if telemetry_due:
+                    # No guest instructions run here.  Keep the expensive
+                    # diagnostic snapshot at evidence boundaries only.
+                    full_state = emulator.run(0)
                     screenshot = None
                     # Reserve one capture for a terminal fault after noisy animation.
                     if (artifact_due and captures < TELEMETRY_SCREENSHOT_CAP
@@ -155,7 +159,7 @@ class WorkerMixin:
                     if screenshot is not None or periodic_screenshot_due:
                         last_screenshot_instructions = instructions
                     telemetry = runtime_telemetry(
-                        config, state, generation=generation, phase=phase, event=event,
+                        config, full_state, generation=generation, phase=phase, event=event,
                         width=frame_width, height=frame_height, frame=frame,
                         nonblack=nonblack, screenshot=screenshot,
                         frame_hash=frame_hash,
@@ -172,7 +176,11 @@ class WorkerMixin:
                 previous_nonblack = nonblack
                 now = time.monotonic()
                 if state["fault"] or now - last_publish >= 0.1:
-                    self.states.put((generation, state))
+                    published_state = (
+                        full_state or emulator.run(0)
+                        if state["fault"] else state
+                    )
+                    self.states.put((generation, published_state))
                     last_publish = now
                 if state["fault"]:
                     terminal = True

@@ -30,7 +30,7 @@ TELEMETRY_POLL_ESCAPE_CAP = 8
 def _frame_metrics(frame: bytes, previous_frame: bytes, previous_hash: str,
                    previous_nonblack: int) -> tuple[str, int]:
     """Reuse metrics when a publish returns the same immutable frame contents."""
-    if frame == previous_frame:
+    if frame is previous_frame or frame == previous_frame:
         return previous_hash, previous_nonblack
     return hashlib.sha256(frame).hexdigest(), visible_pixels(frame)
 

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, call
 
-from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
+from unicorn import Uc, UC_ARCH_ARM, UC_MEM_READ_UNMAPPED, UC_MODE_ARM
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2
 
 from msm5xxx import GenericMSMEmulator, qualcomm_efs_seed
@@ -90,6 +90,52 @@ class NORTelemetryTests(unittest.TestCase):
             self.assertEqual(bytes(warm.data[0x20:0x21]), b"\xaa")
             self.assertEqual(bytes(warm.data[0x30:0x31]), b"\x55")
 
+    def test_lazy_secondary_nor_reuses_legacy_gefs_state(self) -> None:
+        base = 0x00400000
+        capacity = 0x00400000
+        with tempfile.TemporaryDirectory() as directory:
+            primary_state = Path(directory) / "primary.json"
+            state = primary_state.with_name(
+                "primary.lazy-secondary-00400000-400000.json"
+            )
+            legacy = NORFlash(qualcomm_efs_seed(capacity, "MSM5500"), state)
+            self.assertEqual(legacy.program(0x2000, b"\xa5"), b"\xa5")
+            legacy.save()
+            saved = state.read_text(encoding="utf-8")
+
+            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator.config = SimpleNamespace(
+                load_address=0,
+                flash_size=capacity,
+                ram_base=0x01000000,
+                flash_state=str(primary_state),
+                chipset="MSM5000",
+                secondary_flash_read_address=None,
+                secondary_flash_write_address=None,
+                secondary_flash_address=None,
+                secondary_flash_size=0,
+                secondary_flash_state="",
+                detection_notes=[],
+            )
+            emulator.original_image = b"\x0b$USER_DIRS\0"
+            emulator.secondary_flash = None
+            emulator.secondary_base = None
+            emulator._lazy_secondary_attempted = set()
+            uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+
+            self.assertTrue(emulator._attach_lazy_secondary_nor(
+                uc, UC_MEM_READ_UNMAPPED, base, 1, 0
+            ))
+            self.assertEqual(bytes(emulator.secondary_flash.data[0x2000:0x2001]),
+                             b"\xa5")
+            self.assertEqual(emulator.secondary_flash.state_path, state)
+            self.assertEqual(emulator.config.flash_state, str(primary_state))
+            self.assertEqual(emulator.config.secondary_flash_state,
+                             str(state.resolve()))
+            self.assertEqual(state.read_text(encoding="utf-8"), saved)
+            self.assertIn("legacy MSM5500 GEFS state compatibility",
+                          emulator.config.detection_notes[-1])
+
     def test_direct_intel_id_probe_is_observed_without_changing_nor(self) -> None:
         base = 0x00400000
         with tempfile.TemporaryDirectory() as directory:
@@ -99,6 +145,7 @@ class NORTelemetryTests(unittest.TestCase):
             emulator.config = SimpleNamespace(board_revision_register=None)
             emulator.flash = flash
             emulator._flash_restore = {}
+            emulator._audio_probe_rejections = {base}
             emulator._parallel_nor_direct_probe = None
             emulator.primary_parallel_nor_direct_id_probes = []
             emulator._detect_primary_flash_ids = lambda: None
@@ -108,6 +155,7 @@ class NORTelemetryTests(unittest.TestCase):
             uc.reg_write(UC_ARM_REG_PC, 0x1234)
 
             emulator._flash_write(uc, 0, base, 2, 0x90, (base, flash))
+            self.assertEqual(emulator._audio_probe_rejections, set())
             emulator._flash_read(uc, 0, base, 2, 0, (base, flash))
             emulator._flash_read(uc, 0, base + 2, 2, 0, (base, flash))
             uc.reg_write(UC_ARM_REG_PC, 0x5678)

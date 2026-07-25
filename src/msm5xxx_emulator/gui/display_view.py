@@ -122,6 +122,10 @@ class DisplayViewMixin:
                     f"{'Host backend stopped' if self.ui_language == 'en' else '호스트 backend 중지'}: "
                     f"{latest['host_backend_fault']}"
                 )
+        if (getattr(self, "_settings_requested", False)
+                and getattr(self, "emulator", None) is not None):
+            self._settings_requested = False
+            self._settings()
         self.root.after(STATE_REFRESH_MS, self._refresh)
 
     def _refresh_display(self) -> None:

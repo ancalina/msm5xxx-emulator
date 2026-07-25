@@ -23,8 +23,17 @@ run_windows.bat C:\path\to\firmware.bin
 First launcher run may create `.venv` and install `unicorn` and `Pillow`.
 Firmware original is read-only. Persistent NOR/EEPROM/NAND state defaults to
 `~/.msm5xxx-emulator/`; set `MSM5XXX_STATE_DIR` and `MSM5XXX_LOG_DIR` to move it.
+On a recognized legacy GEFS seed mismatch, existing persistent MSM5000
+secondary-NOR state is reused in place; its data and path are preserved.
 Diagnostic JSON uses additive `schema: 1`; `runtime.sources` contains path-free
 SHA-256 identities for CLI, GUI, boot probe, and runtime logger modules.
+
+Automatic keypad input is enabled only when firmware structure verifies both an
+exact direct 6x4 matrix scanner and a closed Samsung ring32 or LG ring256 queue
+sink. Detection uses no model- or filename-specific rules. Only numeric keys,
+`*`, and `#` are injected for LG ring256; Samsung ring32 also injects `MENU`.
+Unverified navigation or multi-key semantics are not injected, and telemetry
+records rejection reasons.
 
 ### Updates
 

@@ -13,7 +13,7 @@ from gui import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
                  resolve_ui_language, runtime_status_text, settings_apply_mode,
                  system_ui_language)
 from msm5xxx import detect
-from msm5xxx_emulator.gui.controls import detect_profile
+from msm5xxx_emulator.gui.controls import ControlsMixin, detect_profile
 from msm5xxx_emulator.gui.settings import (parse_settings_values, settings_values,
                                            validate_settings_values)
 
@@ -133,6 +133,21 @@ class GuiLocaleTests(unittest.TestCase):
             self.assertIs(config, overridden)
             self.assertEqual(overrides, {"width": 176})
             self.assertEqual(detector.call_count, 2)
+
+    def test_settings_waits_for_worker_detection_without_rescanning(self) -> None:
+        class Harness(ControlsMixin):
+            def _text(self, key: str) -> str:
+                return key
+
+        harness = Harness()
+        harness.emulator = None
+        harness._settings_requested = False
+        harness.status = mock.Mock()
+        with mock.patch("msm5xxx_emulator.gui.controls.detect_profile") as detector:
+            harness._settings()
+        detector.assert_not_called()
+        self.assertTrue(harness._settings_requested)
+        harness.status.set.assert_called_once_with("detecting")
 
 
 if __name__ == "__main__":

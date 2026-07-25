@@ -36,6 +36,20 @@ from msm5xxx import GenericMSMEmulator
 
 
 class RexIdleObservationTests(unittest.TestCase):
+    def test_audio_probe_caches_static_non_prologue(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(load_address=0)
+        emulator.primary_rom_end = 0x1000
+        emulator._audio_probe_rejections = set()
+        uc = Mock()
+        uc.reg_read.return_value = 0x20
+        uc.mem_read.return_value = b"\x00\xb4"
+
+        emulator._probe_audio_call(uc, 0x100)
+
+        self.assertEqual(emulator._audio_probe_rejections, {0x100})
+        uc.mem_read.assert_called_once_with(0x100, 2)
+
     def test_trace_skips_disabled_audio_probe_and_primary_rom_read(self) -> None:
         def harness(audio_player: object | None) -> GenericMSMEmulator:
             emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
@@ -52,6 +66,7 @@ class RexIdleObservationTests(unittest.TestCase):
             emulator.reset_entries = 0
             emulator.audio_player = audio_player
             emulator.audio_discovered_address = None
+            emulator._audio_probe_rejections = set()
             emulator.image = b"\x01" * 0x100
             emulator.primary_rom_end = len(emulator.image)
             emulator.zero_fetches = 0
@@ -86,6 +101,11 @@ class RexIdleObservationTests(unittest.TestCase):
         enabled = harness(object())
         enabled._trace(uc, 0x10, 4, None)
         enabled._probe_audio_call.assert_called_once_with(uc, 0x10)
+
+        cached = harness(object())
+        cached._audio_probe_rejections.add(0x10)
+        cached._trace(uc, 0x10, 4, None)
+        cached._probe_audio_call.assert_not_called()
 
     def test_idle_only_signature_observes_without_changing_cpu(self) -> None:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)

@@ -124,7 +124,8 @@ class MemoryBusMixin:
             self.reset_entries += 1
         if (getattr(self, "audio_player", None) is not None
                 and self.config.audio_play_address is None
-                and self.audio_discovered_address is None):
+                and self.audio_discovered_address is None
+                and address not in self._audio_probe_rejections):
             self._probe_audio_call(uc, address)
         in_primary = (self.config.load_address <= address
                       < self.config.load_address + len(self.image))
@@ -218,6 +219,9 @@ class MemoryBusMixin:
     def _record_key_register_read(self, address: int, size: int, pc: int) -> None:
         """Record a firmware read of the configured candidate key register."""
         key_register = getattr(self.config, "key_register", None)
+        direct = getattr(self, "direct_input_profile", None)
+        if key_register is None and direct is not None:
+            key_register = int(direct["register"])
         if (key_register is None
                 or max(address, key_register) >= min(address + size, key_register + 4)):
             return
@@ -246,11 +250,24 @@ class MemoryBusMixin:
                 uc.mem_write(current, b"\xff" * (next_page - current))
             current = next_page
 
-    @staticmethod
-    def _stable_mmio_read(uc: Uc, access: int, address: int, size: int,
+    def _stable_mmio_read(self, uc: Uc, access: int, address: int, size: int,
                           value: int, user_data: object) -> None:
         register, reset_value = user_data
-        uc.mem_write(register, reset_value)
+        response = reset_value
+        direct = getattr(self, "direct_input_profile", None)
+        if (direct is not None
+                and register == int(direct["register"])
+                and address == register
+                and size == 1
+                and uc.reg_read(UC_ARM_REG_PC)
+                == int(direct["sense_site"]) + 2):
+            nibble = self._direct_matrix_nibble(uc)
+            if nibble is not None:
+                response = bytes(((reset_value[0] & 0xF0) | nibble,))
+                self.direct_matrix_scans += 1
+                if nibble != int(direct["no_key"]):
+                    self.direct_matrix_active_reads += 1
+        uc.mem_write(register, response)
 
     def _board_revision_read(self, uc: Uc, access: int, address: int, size: int,
                              value: int, user_data: object) -> None:
@@ -287,6 +304,9 @@ class MemoryBusMixin:
         if status is not None:
             protected += ((status, status + 0x10),)
         key_start = self.config.key_register
+        direct = getattr(self, "direct_input_profile", None)
+        if key_start is None and direct is not None:
+            key_start = int(direct["register"])
         board = self.config.board_revision_register
         # A status-ready loop can be followed immediately by a device-ID/data
         # compare.  Once the first condition is already supplied, inspect the

@@ -62,6 +62,7 @@ from .detection.storage import (
     qualcomm_efs_seed,
 )
 from .devices.storage.nor import NORFlash
+from .cli import integer, parser
 
 
 __all__ = (
@@ -104,7 +105,7 @@ __all__ = (
     "find_24lcxx_x7700_driver", "find_compound_fujitsu_layout",
     "find_fujitsu_x16_bulk_write", "flash_id_for_size",
     "fujitsu_x16_bulk_write_at", "fujitsu_x16_flash_ids",
-    "qualcomm_efs_seed", "main",
+    "qualcomm_efs_seed", "integer", "parser", "main",
 )
 
 

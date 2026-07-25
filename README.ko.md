@@ -23,9 +23,17 @@ run_windows.bat C:\path\to\firmware.bin
 launcher를 처음 실행하면 `.venv`를 만들고 `unicorn`과 `Pillow`를 설치할 수
 있습니다. 펌웨어 원본은 읽기 전용입니다. 영구 NOR/EEPROM/NAND 상태는 기본적으로
 `~/.msm5xxx-emulator/`에 저장됩니다. 위치를 바꾸려면 `MSM5XXX_STATE_DIR`과
-`MSM5XXX_LOG_DIR`을 설정하십시오. 진단 JSON은 확장 가능한 `schema: 1`을
-사용합니다. `runtime.sources`에는 CLI, GUI, boot probe, runtime logger module의
-로컬 경로 없는 SHA-256 식별자가 기록됩니다.
+`MSM5XXX_LOG_DIR`을 설정하십시오. 인식된 legacy GEFS seed mismatch가 발생하면
+기존 영구 MSM5000 secondary NOR state를 제자리에서 재사용하며 data와 path를
+보존합니다. 진단 JSON은 확장 가능한 `schema: 1`을 사용합니다.
+`runtime.sources`에는 CLI, GUI, boot probe, runtime logger module의 로컬 경로
+없는 SHA-256 식별자가 기록됩니다.
+
+자동 keypad 입력은 펌웨어 구조에서 exact direct 6x4 matrix scanner와 closed
+Samsung ring32 또는 LG ring256 queue sink가 모두 검증된 경우에만 활성화됩니다.
+모델명·파일명별 규칙은 쓰지 않습니다. LG ring256에는 숫자 key, `*`, `#`만,
+Samsung ring32에는 `MENU`도 주입합니다. 검증되지 않은 navigation 또는 multi-key
+semantic은 주입하지 않으며 telemetry에 reject 이유를 기록합니다.
 
 ### 업데이트
 

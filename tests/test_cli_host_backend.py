@@ -19,6 +19,7 @@ class CLIHostBackendFaultTests(unittest.TestCase):
         self.assertEqual(msm5xxx.__name__, "msm5xxx_emulator.legacy_api")
         self.assertIn("GenericMSMEmulator", msm5xxx.__all__)
         self.assertIn("detect", msm5xxx.__all__)
+        self.assertIn("parser", msm5xxx.__all__)
         self.assertIn("main", msm5xxx.__all__)
 
     def _close_harness(self, host_fault: HostBackendFault | None) -> GenericMSMEmulator:

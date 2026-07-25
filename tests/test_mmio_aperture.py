@@ -500,6 +500,19 @@ class HardwarePollTests(unittest.TestCase):
         self.assertEqual(uc.hook_add_calls, 1)
         self.assertEqual(uc.hook_del_calls, 0)
 
+    def test_light_state_skips_full_diagnostic_assembly(self) -> None:
+        emulator, _uc, _service_calls = self._poll_harness()
+        emulator.config.to_dict = Mock(side_effect=AssertionError("full config"))
+        emulator.flash.telemetry = Mock(side_effect=AssertionError("full NOR"))
+
+        state = emulator.run(0, light_state=True)
+
+        self.assertEqual(state["instructions"], 0)
+        self.assertNotIn("config", state)
+        self.assertNotIn("registers", state)
+        emulator.config.to_dict.assert_not_called()
+        emulator.flash.telemetry.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

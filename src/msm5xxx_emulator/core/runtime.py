@@ -25,7 +25,14 @@ LOGGER = logging.getLogger("msm5xxx")
 
 
 class RuntimeMixin:
-    def run(self, steps: int, fast_boot_probe: int = 100_000) -> dict[str, object]:
+    def run(self, steps: int, fast_boot_probe: int = 100_000, *,
+            light_state: bool = False) -> dict[str, object]:
+        """Execute guest instructions and return a runtime snapshot.
+
+        ``light_state`` is GUI-worker-only.  It deliberately keeps the guest
+        execution and display flush path identical while avoiding diagnostics
+        that are useful only at checkpoints or faults.
+        """
         host_backend_fault = getattr(self, "_host_backend_fault", None)
         if host_backend_fault is not None:
             raise host_backend_fault
@@ -145,6 +152,9 @@ class RuntimeMixin:
             except UcError:
                 pass
         control_sink = self._control_sink_from_tail(self.tail, sink_instruction)
+        if light_state:
+            return self._light_runtime_state(control_sink)
+        direct_input_profile = getattr(self, "direct_input_profile", None)
         return {
             "config": self.config.to_dict(),
             "cpu_model": "TI925T (ARMv4T stand-in for ARM7TDMI)",
@@ -233,12 +243,22 @@ class RuntimeMixin:
             "eeprom_state": (str(self.eeprom_state_path)
                               if self.eeprom_enabled else None),
             "eeprom_error": self.eeprom_error,
-            "input_profile": self.input_profile[0] if self.input_profile else "gpio",
-            "input_mode": ("firmware-consumed" if self.firmware_key_events else
-                           "candidate-register" if self.config.key_register is not None else
-                           "not-detected"),
-            "input_entry": (f"0x{self.input_profile[1]:08X}"
-                            if self.input_profile else None),
+            "input_profile": (
+                str(direct_input_profile["grammar"])
+                if direct_input_profile is not None else
+                self.input_profile[0] if self.input_profile else "gpio"
+            ),
+            "input_mode": (
+                "firmware-consumed" if self.firmware_key_events else
+                "direct-matrix" if direct_input_profile is not None else
+                "candidate-register" if self.config.key_register is not None else
+                "not-detected"
+            ),
+            "input_entry": (
+                f"0x{int(direct_input_profile['function']):08X}"
+                if direct_input_profile is not None else
+                f"0x{self.input_profile[1]:08X}" if self.input_profile else None
+            ),
             "input_error": self.input_error,
             "input_events": self.input_events,
             "firmware_key_events": self.firmware_key_events,
@@ -247,7 +267,42 @@ class RuntimeMixin:
                 {"pc": f"0x{pc:08X}", "reads": reads}
                 for pc, reads in getattr(self, "key_register_read_pcs", Counter()).most_common(16)
             ],
+            "direct_matrix_family": (
+                direct_input_profile["event_sink_family"]
+                if direct_input_profile is not None else None
+            ),
+            "direct_matrix_detection": getattr(
+                self, "direct_input_detection", "not-found"
+            ),
+            "direct_matrix_evidence": (
+                direct_input_profile["evidence"]
+                if direct_input_profile is not None else None
+            ),
+            "direct_matrix_grammar_fingerprint": (
+                direct_input_profile["grammar_fingerprint"]
+                if direct_input_profile is not None else None
+            ),
+            "direct_matrix_rejections": list(getattr(
+                self, "direct_input_rejections", ()
+            )),
+            "direct_matrix_scans": getattr(self, "direct_matrix_scans", 0),
+            "direct_matrix_active_reads": getattr(
+                self, "direct_matrix_active_reads", 0
+            ),
+            "direct_matrix_sink_events": getattr(
+                self, "direct_matrix_sink_events", 0
+            ),
+            "direct_matrix_mapped_keys": len(getattr(
+                self, "direct_input_positions", {}
+            )),
             "input_transport": (
+                "direct-matrix+consumer"
+                if direct_input_profile is not None and self.firmware_key_events else
+                "direct-matrix-observed"
+                if (direct_input_profile is not None
+                    and getattr(self, "direct_matrix_scans", 0)) else
+                "direct-matrix-static"
+                if direct_input_profile is not None else
                 "candidate-register+consumer" if self.firmware_key_events else
                 "candidate-register-observed" if getattr(self, "key_register_reads", 0) else
                 "candidate-register-unobserved" if self.config.key_register is not None else
@@ -276,4 +331,45 @@ class RuntimeMixin:
                               "address_hex": f"0x{item['address']:08X}"}
                              for item in self.poll_escapes],
             "tail": [f"0x{address:08X}" for address in self.tail],
+        }
+
+    def _light_runtime_state(self, control_sink: int | None) -> dict[str, object]:
+        """Return only fields needed by the live GUI between full checkpoints."""
+        secondary = self.secondary_flash
+        return {
+            "instructions": self.instructions,
+            "reset_entries": self.reset_entries,
+            "pc": f"0x{self.uc.reg_read(UC_ARM_REG_PC):08X}",
+            "lr": f"0x{self.uc.reg_read(UC_ARM_REG_LR):08X}",
+            "fault": self.fault,
+            "control_sink": (f"0x{control_sink:08X}"
+                             if control_sink is not None else None),
+            "lcd_writes": self.lcd_writes,
+            "lcd_protocol": self._lcd_protocol,
+            "lcd_frame_protocol": self._lcd_frame_protocol,
+            "frame_sequence": self.frame_sequence,
+            "firmware_frame_sequence": self.firmware_frame_sequence,
+            "rex_idle_entries": self.rex_idle_entries,
+            "rex_ticks": self.rex_ticks,
+            "rex_elapsed_ms": self.rex_elapsed_ms,
+            "rex_irq_deliveries": self.rex_irq_deliveries,
+            "secondary_flash_reads": self.secondary_flash_reads,
+            "secondary_flash_writes": self.secondary_flash_writes,
+            "secondary_flash_changed_pages": (
+                len(secondary.changed_pages) if secondary is not None else 0
+            ),
+            "secondary_flash_telemetry": (
+                {"reads": secondary.read_operations,
+                 "programs": secondary.program_operations,
+                 "erases": secondary.erase_operations}
+                if secondary is not None else None
+            ),
+            "nand_reads": self.nand_reads,
+            "nand_writes": self.nand_writes,
+            "audio_play_requests": self.audio_play_requests,
+            "audio_backend": (self.audio_player.backend if self.audio_player is not None
+                              else "disabled"),
+            "audio_error": (self.audio_player.last_error if self.audio_player is not None
+                            else ""),
+            "input_error": self.input_error,
         }

@@ -376,8 +376,10 @@ class NorStorageMixin:
         self._lazy_secondary_attempted.add(base)
         # Detection normally gives every image a default ``.efs`` state name,
         # even when it did not prove a secondary chip at construction time.
-        # Do not reuse that potentially stale state after a runtime attach:
-        # the capacity and erased/GEFS seed are part of the device identity.
+        # Do not reuse that default state after a runtime attach: the dynamic
+        # name binds capacity and seed identity.  Older releases used the
+        # captured GEFS seed for MSM5000 marker images; the exact mismatch
+        # compatibility path below preserves those dynamic states.
         state_path = Path(self.config.flash_state).with_name(
             Path(self.config.flash_state).stem
             + f".lazy-secondary-{base:08x}-{capacity:x}.json"
@@ -386,7 +388,19 @@ class NorStorageMixin:
             seed = (qualcomm_efs_seed(capacity, self.config.chipset)
                     if b"\x0b$USER_DIRS\0" in self.original_image
                     else b"\xff" * capacity)
-            secondary = NORFlash(seed, state_path)
+            legacy_state_compat = False
+            try:
+                secondary = NORFlash(seed, state_path)
+            except ValueError as error:
+                mismatch = f"flash state firmware mismatch: {state_path}"
+                if (str(error) != mismatch or not state_path.is_file()
+                        or self.config.chipset == "MSM5500"
+                        or b"\x0b$USER_DIRS\0" not in self.original_image):
+                    raise
+                secondary = NORFlash(
+                    qualcomm_efs_seed(capacity, "MSM5500"), state_path
+                )
+                legacy_state_compat = True
             ids = fujitsu_x16_flash_ids(
                 self.original_image, self.config.secondary_flash_write_address,
                 self.config.load_address, base
@@ -425,15 +439,26 @@ class NorStorageMixin:
         self.config.secondary_flash_size = capacity
         self.config.secondary_flash_state = str(state_path.resolve())
         evidence = "AMD unlock" if unlock else "adjacent-bank read"
-        self.config.detection_notes.append(
-            f"lazy secondary NOR 0x{base:08X}+0x{capacity:X} attached from {evidence}"
+        compatibility = (
+            " using legacy MSM5500 GEFS state compatibility"
+            if legacy_state_compat else ""
         )
-        LOGGER.info("lazy secondary NOR attached base=0x%08X size=0x%X evidence=%s",
-                    base, capacity, evidence)
+        self.config.detection_notes.append(
+            f"lazy secondary NOR 0x{base:08X}+0x{capacity:X} attached from "
+            f"{evidence}{compatibility}"
+        )
+        LOGGER.info(
+            "lazy secondary NOR attached base=0x%08X size=0x%X evidence=%s "
+            "legacy_compatibility=%s",
+            base, capacity, evidence, legacy_state_compat,
+        )
         return True
 
     def _flash_write(self, uc: Uc, access: int, address: int, size: int,
                      value: int, user_data: object) -> None:
+        rejections = getattr(self, "_audio_probe_rejections", None)
+        if rejections is not None:
+            rejections.clear()
         board = self.config.board_revision_register
         if (board is not None
                 and max(address, board) < min(address + size, board + 4)):
