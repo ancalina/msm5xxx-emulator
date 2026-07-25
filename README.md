@@ -63,6 +63,12 @@ are stored separately. Do not guess different geometry—submit its log and size
 
 ## Help Improve the Emulator
 
+### Community Firmware Status
+
+Track firmware model, chipset, display, input, boot, and runtime status in the
+[community compatibility sheet](https://docs.google.com/spreadsheets/d/1Bhiq_9h1xQ0LCskiTuH1EMKqTPf5sHWTp17h9rjf8L4/edit?gid=260477920).
+This README link is the single canonical location for future sheet URL changes.
+
 ### Submit a Test Log
 
 1. Run the emulator with your firmware.

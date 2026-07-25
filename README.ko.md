@@ -63,6 +63,12 @@ python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
 
 ## 에뮬레이터 개선 참여
 
+### 커뮤니티 펌웨어 상태표
+
+[커뮤니티 호환성 시트](https://docs.google.com/spreadsheets/d/1Bhiq_9h1xQ0LCskiTuH1EMKqTPf5sHWTp17h9rjf8L4/edit?gid=260477920)에서
+펌웨어 모델, 칩셋, 화면, 입력, 부팅, runtime 상태를 기록할 수 있습니다.
+이 README 링크가 이후 시트 URL을 수정할 단일 기준 위치입니다.
+
 ### 테스트 로그 제출
 
 1. 펌웨어로 에뮬레이터를 실행합니다.
