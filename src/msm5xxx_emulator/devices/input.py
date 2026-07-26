@@ -14,7 +14,15 @@ import logging
 LOGGER = logging.getLogger("msm5xxx")
 DIRECT_MATRIX_NUMERIC_KEY_EVENTS = dict(zip(range(11, 23), b"123456789*0#"))
 DIRECT_MATRIX_SAMSUNG_KEY_EVENTS = {
-    0: 0x5B,
+    # Native X7509 key switch names these table events; X150/X350 runtime
+    # confirms each mapped control's shared scanner-to-queue path.
+    0: 0x5B,   # MENU
+    1: 0x54,   # UP
+    2: 0x52,   # CLR / cancel
+    3: 0x50,   # SEND / call
+    4: 0x65,   # LEFT
+    6: 0x66,   # RIGHT
+    9: 0x55,   # DOWN
     **DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
 }
 

@@ -1,8 +1,9 @@
 {
   "files": {
-    "README.md": "a13a4c21e3ff094e08dd8826020dad725e48537b5d86ad45e0f676ddcada22dd",
-    "README.ko.md": "d0ad5a54f67446a276589793b213f2573d0f016e0f9fd54973281e2f71ec97e1",
+    "README.md": "6b2e374f0bdf315b6a4ca23debc5fb8d333825a28c8acd7019e704cac45d6fa4",
+    "README.ko.md": "f25d8f06747f94ba56af3312e92824857aa4b8741b4a780e9eeb2e190c2bb7c0",
     "CONTRIBUTING.md": "aeb9d7512c9b35c4f54fdeb51bd29ed47019fbc91f09944e268f5900345362cf",
+    "docs/COMMUNITY_COMPATIBILITY_SHEET.md": "dce67d68becb0911d3b0d3b4ac0dcb1d07538655becb72db1298cdd4a9337ee8",
     "LICENSE": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
     "THIRD_PARTY_NOTICES.md": "ebbf2f0ed07c18c09082646e43013683fefb8ac933fcb1d68b3ce19a9c07ba2a",
     "_compat.py": "0a131685d9b2b105daa51cf9947e075599725573699184d125c162c583d1d182",
@@ -54,7 +55,7 @@
     "src/msm5xxx_emulator/devices/display/protocols/packed.py": "5ed98d2ec8f7f9a45a8430f7b96d36223f46f6749e28fde7486c16c853a2cdef",
     "src/msm5xxx_emulator/devices/display/protocols/page.py": "127ce4489bf49fc83415f405ab0aa0ff7cd3a930720d66f9ef4503d31a021e35",
     "src/msm5xxx_emulator/devices/display/protocols/rgb565.py": "dcda76bd1a30040fd8a39e642093204656da41ee7b0ef218e83e5dde7dda41f5",
-    "src/msm5xxx_emulator/devices/input.py": "eb86c50816fa39f1ac874a66038f1f34c3c5b33579f5d3b6f0635a3bfc13ffe5",
+    "src/msm5xxx_emulator/devices/input.py": "5716f3ba4610511157ea1f0669f4d463e8c6881a8d06e12f3c77e130dd1c96a7",
     "src/msm5xxx_emulator/devices/storage/__init__.py": "dd7f203976c8c058b73e233ac9ebc2128f3b545eedd91ec4ff4a4e04d383e454",
     "src/msm5xxx_emulator/devices/storage/eeprom.py": "24243dd89c344594aa998380fbd26431c9f9c0b37734d502b8cb635855457117",
     "src/msm5xxx_emulator/devices/storage/nand.py": "7fb608c1004387be642f5c675c4c4403e2a070f249cf2bc5ce6040ff7cb989d0",

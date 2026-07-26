@@ -126,16 +126,26 @@ class InputRuntimeTests(unittest.TestCase):
             "automatic keypad transport not detected; physical register override required",
         )
 
-    def test_direct_matrix_maps_gui_menu_and_digit_to_firmware_row_and_column(
+    def test_direct_matrix_maps_evidenced_samsung_keys_to_firmware_matrix(
             self) -> None:
         emulator = self._direct_emulator()
 
-        self.assertEqual(len(emulator.direct_input_positions), 13)
+        self.assertEqual(len(emulator.direct_input_positions), 19)
         self.assertEqual(emulator.direct_input_positions[0], (0x5B, 0, 1))
+        self.assertEqual(emulator.direct_input_positions[1], (0x54, 4, 3))
+        self.assertEqual(emulator.direct_input_positions[2], (0x52, 2, 3))
+        self.assertEqual(emulator.direct_input_positions[3], (0x50, 1, 2))
+        self.assertEqual(emulator.direct_input_positions[4], (0x65, 0, 2))
+        self.assertEqual(emulator.direct_input_positions[6], (0x66, 1, 0))
+        self.assertEqual(emulator.direct_input_positions[9], (0x55, 5, 3))
         self.assertEqual(
             emulator.direct_input_positions[15],
             (ord("5"), 3, 1),
         )
+        self.assertNotIn(5, emulator.direct_input_positions)
+        self.assertNotIn(7, emulator.direct_input_positions)
+        self.assertNotIn(8, emulator.direct_input_positions)
+        self.assertNotIn(10, emulator.direct_input_positions)
 
     def test_direct_matrix_lg_profile_keeps_menu_unmapped(self) -> None:
         profile = self._direct_profile()
@@ -145,6 +155,8 @@ class InputRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(positions), 12)
         self.assertNotIn(0, positions)
+        self.assertNotIn(1, positions)
+        self.assertNotIn(2, positions)
 
     def test_direct_matrix_unclassified_profile_maps_no_keys(self) -> None:
         profile = self._direct_profile()
@@ -189,7 +201,7 @@ class InputRuntimeTests(unittest.TestCase):
     def test_direct_matrix_rejects_unproven_and_simultaneous_keys(self) -> None:
         emulator = self._direct_emulator()
 
-        emulator.set_key(1, True)
+        emulator.set_key(5, True)
         self.assertEqual(emulator.held_keys, set())
         self.assertIn("semantic is not proven", emulator.input_error)
 

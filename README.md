@@ -31,9 +31,9 @@ SHA-256 identities for CLI, GUI, boot probe, and runtime logger modules.
 Automatic keypad input is enabled only when firmware structure verifies both an
 exact direct 6x4 matrix scanner and a closed Samsung ring32 or LG ring256 queue
 sink. Detection uses no model- or filename-specific rules. Only numeric keys,
-`*`, and `#` are injected for LG ring256; Samsung ring32 also injects `MENU`.
-Unverified navigation or multi-key semantics are not injected, and telemetry
-records rejection reasons.
+`*`, and `#` are injected for LG ring256. Samsung ring32 also injects `MENU`,
+`UP/DOWN/LEFT/RIGHT`, Cancel, and Call. Unverified `OK/STO`, End, volume, or
+multi-key semantics are not injected, and telemetry records rejection reasons.
 
 ### Updates
 
@@ -66,8 +66,8 @@ are stored separately. Do not guess different geometry—submit its log and size
 ### Community Firmware Status
 
 Track firmware model, chipset, display, input, boot, and runtime status in the
-[community compatibility sheet](https://docs.google.com/spreadsheets/d/1Bhiq_9h1xQ0LCskiTuH1EMKqTPf5sHWTp17h9rjf8L4/edit?gid=260477920).
-This README link is the single canonical location for future sheet URL changes.
+[community compatibility sheet](docs/COMMUNITY_COMPATIBILITY_SHEET.md).
+Its document contains the single canonical sheet URL for future changes.
 
 ### Submit a Test Log
 

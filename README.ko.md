@@ -32,8 +32,9 @@ launcher를 처음 실행하면 `.venv`를 만들고 `unicorn`과 `Pillow`를 �
 자동 keypad 입력은 펌웨어 구조에서 exact direct 6x4 matrix scanner와 closed
 Samsung ring32 또는 LG ring256 queue sink가 모두 검증된 경우에만 활성화됩니다.
 모델명·파일명별 규칙은 쓰지 않습니다. LG ring256에는 숫자 key, `*`, `#`만,
-Samsung ring32에는 `MENU`도 주입합니다. 검증되지 않은 navigation 또는 multi-key
-semantic은 주입하지 않으며 telemetry에 reject 이유를 기록합니다.
+Samsung ring32에는 `MENU`, `UP/DOWN/LEFT/RIGHT`, 취소, 통화도 주입합니다.
+검증되지 않은 `OK/STO`, 종료, 볼륨, multi-key semantic은 주입하지 않으며
+telemetry에 reject 이유를 기록합니다.
 
 ### 업데이트
 
@@ -65,9 +66,9 @@ python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
 
 ### 커뮤니티 펌웨어 상태표
 
-[커뮤니티 호환성 시트](https://docs.google.com/spreadsheets/d/1Bhiq_9h1xQ0LCskiTuH1EMKqTPf5sHWTp17h9rjf8L4/edit?gid=260477920)에서
+[커뮤니티 호환성 시트](docs/COMMUNITY_COMPATIBILITY_SHEET.md)에서
 펌웨어 모델, 칩셋, 화면, 입력, 부팅, runtime 상태를 기록할 수 있습니다.
-이 README 링크가 이후 시트 URL을 수정할 단일 기준 위치입니다.
+시트 URL 변경은 이 문서 한 곳에서만 수정합니다.
 
 ### 테스트 로그 제출
 
