@@ -72,7 +72,7 @@
     "src/msm5xxx_emulator/gui/locale.py": "91925e1d725c5cd106491a050dcf2af47ea3021ea5f922cc6e87131e8cea70dd",
     "src/msm5xxx_emulator/gui/repro.py": "5164079d60e4addab2ef13b9bb92112671eeb84d4117ee5e474f2b3253a3dfcd",
     "src/msm5xxx_emulator/gui/settings.py": "c27c0ae22704bb77fb0e00307d067ed33877093b6fea8c3eeb7243e0525e0e5e",
-    "src/msm5xxx_emulator/gui/telemetry.py": "0f1839f08497478c46fdb952313124ae44fdec801a3ccae9875764110137a563",
+    "src/msm5xxx_emulator/gui/telemetry.py": "8d16a91d1003537d81006780591086a992b03199c1dce96a7b278b36b43e4cd1",
     "src/msm5xxx_emulator/gui/worker.py": "cfb71afac7ca561ccd2f75bb6c29973f92ab04f0aaeb69a7402338d99049f2de",
     "src/msm5xxx_emulator/hle/__init__.py": "069a17b98a0025febe7b9f53e0ca204ed95531dc3a8ad1beaf81d1560d0483ce",
     "src/msm5xxx_emulator/hle/bootstrap.py": "9d0f3d54176e12d2f90dce63a81d97a2810060045a01a7dcab5bdfec8c2ee57b",

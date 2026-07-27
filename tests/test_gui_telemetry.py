@@ -276,6 +276,59 @@ class GuiTelemetryTests(unittest.TestCase):
         self.assertEqual((host_payload["pc"], host_payload["lr"]),
                          ("0x11111111", "0x22222222"))
 
+    def test_input_matrix_telemetry_is_bounded_and_path_safe(self) -> None:
+        config = SimpleNamespace(
+            path="/private/dumps/SCH-X350.bin", file_size=128,
+            model="SCH-X350", chipset="MSM5000", dump_status="complete",
+            firmware_identity=lambda: {"sha256": "a" * 64},
+        )
+        rejections = [{
+            "function": 0x1234, "grammar_fingerprint": "ignored",
+            "reasons": ["numeric-event-missing", "/private/dumps/leak"],
+        }] * 9
+        payload = runtime_telemetry(
+            config, self._state(
+                direct_matrix_detection="accepted",
+                direct_matrix_family="Samsung-ring32",
+                direct_matrix_evidence="static-scan-to-call",
+                direct_matrix_consumer_evidence="raw-ring-consumer",
+                direct_matrix_grammar_fingerprint="direct-6x4-v1",
+                direct_matrix_rejections=rejections,
+                input_profile="direct-low-nibble-6-row-v1",
+                input_mode="firmware-consumed", input_error="",
+                input_events=8, firmware_key_events=7, input_register_reads=6,
+                input_transport="direct-matrix+task-consumer",
+                direct_matrix_scans=7, direct_matrix_active_reads=6,
+                direct_matrix_sink_events=5,
+                direct_matrix_raw_enqueue_events=4,
+                direct_matrix_dequeue_events=3,
+                direct_matrix_task_consumer_events=2,
+                direct_matrix_mapped_keys=24,
+            ), generation=1, phase="early-boot", event="early-boot",
+            width=1, height=1, frame=b"\x00\x00\x00", nonblack=0,
+        )
+        matrix = payload["input"]
+        self.assertEqual(matrix["detection"], "accepted")
+        self.assertEqual(
+            (matrix["profile"], matrix["mode"], matrix["error"],
+             matrix["input_events"], matrix["firmware_key_events"],
+             matrix["register_reads"]),
+            ("direct-low-nibble-6-row-v1", "firmware-consumed", "", 8, 7, 6),
+        )
+        self.assertEqual(matrix["rejection_count"], 9)
+        self.assertEqual(len(matrix["rejections"]), 8)
+        self.assertEqual(matrix["rejections"][0], ["numeric-event-missing"])
+        self.assertEqual(matrix["transport"], "direct-matrix+task-consumer")
+        self.assertEqual(
+            (matrix["scans"], matrix["active_reads"], matrix["call_edges"],
+             matrix["raw_enqueues"], matrix["dequeues"],
+             matrix["task_consumers"], matrix["mapped_keys"]),
+            (7, 6, 5, 4, 3, 2, 24),
+        )
+        compact = _compact_telemetry(payload)
+        self.assertEqual(compact["input"], matrix)
+        self.assertNotIn("/private/dumps", json.dumps(payload, sort_keys=True))
+
     def test_session_frame_names_do_not_overwrite_same_checkpoint(self) -> None:
         config = SimpleNamespace(path=Path("/private/dumps/SCH-X350.bin"))
         first_frame = b"\x00\x00\x00"

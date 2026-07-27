@@ -27,6 +27,12 @@ TELEMETRY_SCREENSHOT_CAP = 32
 TELEMETRY_POLL_ESCAPE_CAP = 8
 
 
+TELEMETRY_MATRIX_REJECTION_CAP = 8
+
+
+TELEMETRY_MATRIX_REASON_CAP = 4
+
+
 def _frame_metrics(frame: bytes, previous_frame: bytes, previous_hash: str,
                    previous_nonblack: int) -> tuple[str, int]:
     """Reuse metrics when a publish returns the same immutable frame contents."""
@@ -48,6 +54,81 @@ def _nonnegative_counter(state: dict[str, object], name: str) -> int:
 def _mapping(state: dict[str, object], name: str) -> dict[str, object]:
     value = state.get(name)
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _matrix_label(value: object) -> str | None:
+    """Keep detector labels bounded and independent of local paths."""
+    if (not isinstance(value, str) or len(value) > 128
+            or "/" in value or "\\" in value):
+        return None
+    return value
+
+
+def _matrix_rejections(state: dict[str, object]) -> tuple[int, list[list[str]]]:
+    """Keep only bounded detector reject reasons, never candidate addresses."""
+    raw_rejections = state.get("direct_matrix_rejections")
+    if not isinstance(raw_rejections, list):
+        return 0, []
+    rejections: list[list[str]] = []
+    for raw_rejection in raw_rejections[:TELEMETRY_MATRIX_REJECTION_CAP]:
+        if not isinstance(raw_rejection, dict):
+            continue
+        raw_reasons = raw_rejection.get("reasons")
+        if not isinstance(raw_reasons, list):
+            continue
+        reasons = [label for reason in raw_reasons[:TELEMETRY_MATRIX_REASON_CAP]
+                   if (label := _matrix_label(reason)) is not None]
+        if reasons:
+            rejections.append(reasons)
+    return len(raw_rejections), rejections
+
+
+def _matrix_input_telemetry(state: dict[str, object]) -> dict[str, object]:
+    """Return detector status plus aggregate scanner-to-task progress."""
+    rejection_count, rejections = _matrix_rejections(state)
+    return {
+        "profile": _matrix_label(state.get("input_profile")),
+        "mode": _matrix_label(state.get("input_mode")),
+        "error": _matrix_label(state.get("input_error")),
+        "input_events": _nonnegative_counter(state, "input_events"),
+        "firmware_key_events": _nonnegative_counter(
+            state, "firmware_key_events"
+        ),
+        "register_reads": _nonnegative_counter(
+            state, "input_register_reads"
+        ),
+        "detection": _matrix_label(state.get("direct_matrix_detection")),
+        "family": _matrix_label(state.get("direct_matrix_family")),
+        "evidence": _matrix_label(state.get("direct_matrix_evidence")),
+        "consumer_evidence": _matrix_label(
+            state.get("direct_matrix_consumer_evidence")
+        ),
+        "grammar_fingerprint": _matrix_label(
+            state.get("direct_matrix_grammar_fingerprint")
+        ),
+        "rejection_count": rejection_count,
+        "rejections": rejections,
+        "transport": _matrix_label(state.get("input_transport")),
+        "scans": _nonnegative_counter(state, "direct_matrix_scans"),
+        "active_reads": _nonnegative_counter(
+            state, "direct_matrix_active_reads"
+        ),
+        "call_edges": _nonnegative_counter(
+            state, "direct_matrix_sink_events"
+        ),
+        "raw_enqueues": _nonnegative_counter(
+            state, "direct_matrix_raw_enqueue_events"
+        ),
+        "dequeues": _nonnegative_counter(
+            state, "direct_matrix_dequeue_events"
+        ),
+        "task_consumers": _nonnegative_counter(
+            state, "direct_matrix_task_consumer_events"
+        ),
+        "mapped_keys": _nonnegative_counter(
+            state, "direct_matrix_mapped_keys"
+        ),
+    }
 
 
 def _host_hle_telemetry(state: dict[str, object]) -> dict[str, object]:
@@ -210,6 +291,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
             "writes": _counter(state, "nand_writes"),
             "bad_block_probes": _counter(state, "nand_bad_block_probes"),
         },
+        "input": _matrix_input_telemetry(state),
         "host_hle": _host_hle_telemetry(state),
         "control_sink": state.get("control_sink"),
         "last_unmapped": _mapping(state, "last_unmapped"),
@@ -298,6 +380,7 @@ def _compact_telemetry(payload: dict[str, object]) -> dict[str, object]:
             "generation", "firmware", "model", "chipset", "dump_status",
             "instructions", "pc", "lr", "cpsr", "phase", "event", "frame",
             "lcd", "rex", "nor", "eeprom", "nand", "control_sink",
+            "input",
             "host_hle", "last_unmapped", "unmapped_accesses",
             "dynamic_page_first_accesses", "fault",
         ) if name in payload
