@@ -29,12 +29,38 @@ launcher를 처음 실행하면 `.venv`를 만들고 `unicorn`과 `Pillow`를 �
 `runtime.sources`에는 CLI, GUI, boot probe, runtime logger module의 로컬 경로
 없는 SHA-256 식별자가 기록됩니다.
 
-자동 keypad 입력은 펌웨어 구조에서 exact direct 6x4 matrix scanner와 closed
-Samsung ring32 또는 LG ring256 queue sink가 모두 검증된 경우에만 활성화됩니다.
-모델명·파일명별 규칙은 쓰지 않습니다. LG ring256에는 숫자 key, `*`, `#`만,
-Samsung ring32에는 `MENU`, `UP/DOWN/LEFT/RIGHT`, 취소, 통화도 주입합니다.
-검증되지 않은 `OK/STO`, 종료, 볼륨, multi-key semantic은 주입하지 않으며
-telemetry에 reject 이유를 기록합니다.
+Raw binary, strict Intel HEX (`.hex`), HXB (`.hxb`)를 직접 선택할 수 있습니다.
+HXB는 archive stem과 같은 top-level HEX member가 정확히 하나일 때만 memory에서
+decode합니다. Embedded loader를 실행하거나 파일을 추출하지 않으며 checksum,
+EOF, address, overlap, size가 잘못되면 거부합니다.
+
+펌웨어의 relocatable catalog, address materializer, translator, native AMD
+writer, caller grammar가 모두 닫히면 `0x02800000..0x02FFFFFF`에 독립 8 MiB
+NOR를 mapping합니다. 상태는 별도로 영속 저장하며 이 범위는 LCD traffic으로
+decode하지 않습니다. 불완전하거나 ambiguous한 일치는 native fallback을 유지하고
+reject 이유를 기록합니다. 이 storage 판정만으로 handset idle을 주장하지 않습니다.
+
+자동 keypad 입력은 exact direct 6x4 matrix와 Samsung ring32 또는 LG ring256
+queue sink가 닫힌 경우 활성화됩니다. LG descriptor 6x5 경로도 legacy 5 ms
+timer, detector-closed two- 또는 three-bank controller route, IRQ wrapper,
+handler slot, queue drain이 모두 닫힌 경우 활성화됩니다. Three-bank
+pending/status access는 검증된 IRQ handler 안으로 제한됩니다. 모델명·파일명별
+규칙은 쓰지 않습니다. LG class는 숫자 key, `*`, `#`만 검증된 matrix 위치에
+mapping합니다. Samsung ring32는 `MENU`, `UP/DOWN/LEFT/RIGHT`, 취소, 통화도
+mapping합니다. 검증되지 않은 `OK/STO`, 종료, 볼륨, multi-key semantic은
+mapping하지 않으며 telemetry에 reject 이유를 기록합니다.
+
+해당 semantic이 검증되기 전까지 mapping되지 않은 GUI 버튼을 누르면 임시
+event-byte 편집창이 열리며, 모든 버튼은 우클릭으로 편집할 수 있습니다. `0x53`
+같은 값은 검출된 firmware matrix table에 정확히 한 번 있을 때만 허용됩니다.
+그 row와 column을 정상 scanner/debounce 경로로 누르며 firmware queue에 byte를
+직접 주입하지 않습니다. Mapping은 firmware SHA-256별로 저장되고 빈 값으로
+삭제합니다.
+
+Descriptor 입력 telemetry는 scanner-to-enqueue call edge와 실제 raw-ring store,
+dequeue return, task receipt를 구분합니다. SV130과 SD810 After의 fresh 숫자키
+press/release는 fault 없이 네 단계를 모두 통과했습니다. 이는 firmware task 전달
+증명이며 visible UI 반응, handset idle, `OK` semantic 증명은 아닙니다.
 
 ### 업데이트
 

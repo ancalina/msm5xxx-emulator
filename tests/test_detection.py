@@ -62,9 +62,65 @@ from msm5xxx import (
     restore_sparse_nor_gap,
 )
 from msm5xxx_emulator.detection.boot import DELAY_SIGNATURE
+from msm5xxx_emulator.detection.rex import (
+    REX_5MS_ARM_PATTERN,
+    REX_5MS_REGISTRATION_PATTERN,
+    _rex_5ms_registration_targets,
+)
 
 
 class DetectionTests(unittest.TestCase):
+    def test_rex_5ms_prefilters_preserve_exclusive_eof_bounds(self) -> None:
+        registration = struct.pack(
+            "<4H", 0x4900, 0x201C, 0xF7FF, 0xFFFC
+        )
+        tick = struct.unpack_from("<I", registration, 4)[0]
+        self.assertEqual(
+            [match.start()
+             for match in REX_5MS_REGISTRATION_PATTERN.finditer(registration)],
+            [0],
+        )
+        self.assertEqual(_rex_5ms_registration_targets(registration, tick), [])
+
+        mapped_registration = bytearray(16)
+        struct.pack_into(
+            "<4H", mapped_registration, 0,
+            0x4901, 0x201C, 0xF000, 0xF802,
+        )
+        struct.pack_into("<I", mapped_registration, 8, 1)
+        calls: list[int] = []
+
+        def runtime(position: int) -> int:
+            calls.append(position)
+            return position
+
+        self.assertEqual(
+            _rex_5ms_registration_targets(
+                bytes(mapped_registration), 0, runtime
+            ),
+            [12],
+        )
+        self.assertEqual(calls, [0, 12, 2, 4, 6])
+
+        arm = bytes.fromhex("00490220087000491c2000f000f8")
+        self.assertEqual(
+            [match.start() for match in REX_5MS_ARM_PATTERN.finditer(arm)],
+            [0],
+        )
+        with (
+            patch(
+                "msm5xxx_emulator.detection.rex."
+                "_rex_5ms_registration_targets",
+                return_value=[0, 0, 0],
+            ),
+            patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
+                  side_effect=lambda _image, position, _register:
+                  0x030006E0 if position == 0 else tick | 1),
+            patch("msm5xxx_emulator.detection.rex.thumb_bl_target",
+                  return_value=0),
+        ):
+            self.assertIsNone(find_rex_5ms_irq_arm(arm, tick))
+
     def test_bootstrap_clear_descriptor_selects_ram_bank_and_rejects_near_miss(
             self) -> None:
         image = bytearray(b"\xff" * 0x300)
@@ -112,10 +168,60 @@ class DetectionTests(unittest.TestCase):
             path = Path(directory) / "SCH-E100.bin"
             path.write_bytes(raw)
             config = detect(path)
+            override = detect(path, argparse.Namespace(model="SCH-E100"))
 
         self.assertEqual(config.model, "SCH-E100")
         self.assertIsNone(config.verified_model)
         self.assertEqual((config.width, config.height), (176, 220))
+        self.assertEqual(config.display_geometry_source, "auto-default")
+        self.assertEqual((override.width, override.height), (176, 220))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unknown.bin"
+            path.write_bytes(raw)
+            width_override = detect(path, argparse.Namespace(width=176))
+        self.assertEqual(width_override.display_geometry_source, "override")
+
+    def test_model_override_does_not_select_board_revision_register(self) -> None:
+        raw = bytearray(b"\xff" * 0x2000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unknown.bin"
+            path.write_bytes(raw)
+            config = detect(path, argparse.Namespace(model="SCH-E470"))
+            explicit = detect(path, argparse.Namespace(
+                model="SCH-E470", board_revision_register=0x00DFFFDC,
+                board_revision_value=0x1D,
+            ))
+
+        self.assertIsNone(config.board_revision_register)
+        self.assertIsNone(config.board_revision_value)
+        self.assertEqual(explicit.board_revision_register, 0x00DFFFDC)
+        self.assertEqual(explicit.board_revision_value, 0x1D)
+
+    def test_msm_revision_marker_rejects_auto_map_but_keeps_override(self) -> None:
+        raw = bytearray(b"\xff" * 0x2000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        raw[0x100:0x100 + len(b" Unsupported MSM REV ")] = b" Unsupported MSM REV "
+        struct.pack_into("<I", raw, 0x200, 0x03000740)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unknown.bin"
+            path.write_bytes(raw)
+            config = detect(path)
+            explicit = detect(path, argparse.Namespace(
+                board_revision_register=0x0300075C, board_revision_value=0x20F2,
+            ))
+
+        self.assertIsNone(config.board_revision_register)
+        self.assertIsNone(config.board_revision_value)
+        self.assertIn(
+            "MSM revision marker + 0x03000740 found; automatic register/value rejected "
+            "without verified MMIO readback", config.detection_notes,
+        )
+        self.assertEqual(explicit.board_revision_register, 0x0300075C)
+        self.assertEqual(explicit.board_revision_value, 0x20F2)
 
     @staticmethod
     def _thumb_literal_position(image: bytes | bytearray,
@@ -205,6 +311,47 @@ class DetectionTests(unittest.TestCase):
             (root / "firmwares.7z").write_bytes(b"7z\xbc\xaf\x27\x1c")
             self.assertEqual(condition_report.paths(root), [firmware])
 
+    def test_condition_report_merges_recursive_exact_sha_shards(self) -> None:
+        raw = bytearray(b"\xff" * 0x100)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus"
+            for name in ("a/SCH-X150.bin", "b/SCH-X350.bin", "c/peer.b16"):
+                path = corpus / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            (corpus / "ignored.7z").write_bytes(b"7z\xbc\xaf\x27\x1c")
+            shards = [condition_report.scan_report(
+                corpus, shard_count=2, shard_index=index
+            ) for index in range(2)]
+            merged = condition_report.merge_reports(shards)
+
+            other = root / "other"
+            for name in ("a/SCH-X150.bin", "b/SCH-X350.bin", "d/peer.b16"):
+                path = other / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            wrong_shard = condition_report.scan_report(
+                other, shard_count=2, shard_index=1
+            )
+
+        self.assertEqual(merged["summary"]["raw_files"], 3)
+        self.assertEqual(merged["summary"]["unique_exact_sha256"], 1)
+        self.assertEqual(merged["summary"]["duplicate_raw_files"], 2)
+        self.assertTrue(merged["shard"]["complete"])
+        group = merged["exact_sha256_groups"][0]
+        self.assertEqual(group["paths"], [
+            "a/SCH-X150.bin", "b/SCH-X350.bin", "c/peer.b16",
+        ])
+        self.assertEqual(group["merge_basis"], "exact-raw-sha256")
+        self.assertEqual(
+            group["models_observed"], ["SCH-X150", "SCH-X350", "peer"]
+        )
+        with self.assertRaisesRegex(ValueError, "source inventory"):
+            condition_report.merge_reports([shards[0], wrong_shard])
+
     def test_literal_arm_vector_table_is_executable_firmware(self) -> None:
         raw = bytearray(b"\xff" * 0x100)
         struct.pack_into("<I", raw, 0, 0xEA000000)  # reset: b 0x8
@@ -222,6 +369,29 @@ class DetectionTests(unittest.TestCase):
             firmware = Path(directory) / "literal-vectors.bin"
             firmware.write_bytes(raw)
             self.assertEqual(detect(firmware).image_kind, "firmware")
+
+    def test_paired_dcc_loader_markers_override_only_paired_vectors(self) -> None:
+        raw = bytearray(b"\xff" * 0x100)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", raw, offset, 0xEA000000)
+        cases = (
+            (b"DumpNow DCC Loader.\0Compile flags:", "auxiliary/debug-loader"),
+            (b"DumpNow DCC Loader.", "firmware"),
+            (b"Compile flags:", "firmware"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for index, (markers, expected) in enumerate(cases):
+                firmware = Path(directory) / f"dcc-{index}.bin"
+                candidate = bytearray(raw)
+                candidate[0x40:0x40 + len(markers)] = markers
+                firmware.write_bytes(candidate)
+                config = detect(firmware)
+                self.assertEqual(config.image_kind, expected)
+                self.assertEqual(
+                    "paired DumpNow DCC loader markers"
+                    in config.detection_notes,
+                    expected == "auxiliary/debug-loader",
+                )
 
     def test_cross_checked_sparse_nor_gap_is_restored(self) -> None:
         image = bytearray(b"\xff" * 0x5000)
@@ -576,6 +746,9 @@ class DetectionTests(unittest.TestCase):
     def test_model_name_alone_does_not_assign_chipset(self) -> None:
         self.assertEqual(detect_chipset(b"generic firmware", "SPH-X9000"),
                          "MSM5xxx")
+
+    def test_model_name_does_not_upgrade_ambiguous_msm5000_text(self) -> None:
+        self.assertEqual(detect_chipset(b"MSM5000", "SCH-X430"), "MSM5xxx")
 
     def test_scp_filename_normalizes_identity_without_assigning_hardware_profile(self) -> None:
         self.assertEqual(

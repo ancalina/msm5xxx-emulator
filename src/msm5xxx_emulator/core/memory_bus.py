@@ -7,6 +7,7 @@ from .constants import LCD_MMIO_PRIMARY_END
 from .constants import LCD_MMIO_PRIMARY_START
 from .constants import MAX_DYNAMIC_PAGES
 from .constants import PAGE
+from ..detection.input_descriptor import LG_DESCRIPTOR_RAW
 from unicorn import UC_MEM_FETCH_UNMAPPED
 from unicorn import UC_MEM_READ_UNMAPPED
 from unicorn import UC_PROT_READ
@@ -206,8 +207,20 @@ class MemoryBusMixin:
         self._board_adc_reader_data_read(uc, address, size)
         self._refresh_board_status_input(uc, address, size)
         status = getattr(self.config, "rex_irq_status_address", None)
-        controller = (status is not None
-                      and max(address, status) < min(address + size, status + 0x10))
+        enable = getattr(self.config, "rex_irq_enable_address", None)
+        aperture = getattr(self, "_rex_irq_controller_aperture", None)
+        if isinstance(aperture, tuple) and len(aperture) == 2:
+            controller_start, controller_end = aperture
+        else:
+            controller_start = status
+            controller_end = (
+                max(status + 0x10, enable + 2)
+                if status is not None and enable is not None else
+                status + 0x10 if status is not None else None
+            )
+        controller = (controller_start is not None and controller_end is not None
+                      and max(address, int(controller_start))
+                      < min(address + size, int(controller_end)))
         masks = None if controller else self.ready_bits.get((address, size))
         if masks:
             current = int.from_bytes(uc.mem_read(address, size), "little")
@@ -236,6 +249,11 @@ class MemoryBusMixin:
                 and self.secondary_base <= address
                 and address + size <= self.secondary_base + self.config.secondary_flash_size):
             return
+        if (getattr(self, "upper_flash", None) is not None
+                and getattr(self, "upper_base", None) is not None
+                and self.upper_base <= address
+                and address + size <= self.upper_base + self.config.upper_flash_size):
+            return
         # A prior unmapped data access may have established writable RAM in a
         # nominal open-bus gap.  The broad read hook still covers that page;
         # preserve guest data instead of turning every later read into 0xFF.
@@ -256,6 +274,23 @@ class MemoryBusMixin:
         response = reset_value
         direct = getattr(self, "direct_input_profile", None)
         if (direct is not None
+                and direct.get("family") == LG_DESCRIPTOR_RAW
+                and register == int(direct["register"])
+                and address == register
+                and size == 2):
+            sense = self._descriptor_matrix_sense(
+                uc, uc.reg_read(UC_ARM_REG_PC) & ~1
+            )
+            if sense is not None:
+                current = int.from_bytes(uc.mem_read(register, 2), "little")
+                response = struct.pack(
+                    "<H", current & ~int(direct["no_key"]) | sense
+                )
+                self.direct_matrix_scans += 1
+                if sense != int(direct["no_key"]):
+                    self.direct_matrix_active_reads += 1
+        elif (direct is not None
+                and direct.get("family") != LG_DESCRIPTOR_RAW
                 and register == int(direct["register"])
                 and address == register
                 and size == 1
@@ -300,9 +335,20 @@ class MemoryBusMixin:
         if secondary not in (None, 0):
             protected += ((secondary,
                            secondary + self.config.secondary_flash_size),)
+        upper = getattr(self.config, "upper_flash_address", None)
+        if upper is not None:
+            protected += ((upper, upper + self.config.upper_flash_size),)
         status = getattr(self.config, "rex_irq_status_address", None)
         if status is not None:
-            protected += ((status, status + 0x10),)
+            enable = getattr(self.config, "rex_irq_enable_address", None)
+            aperture = getattr(self, "_rex_irq_controller_aperture", None)
+            protected += (
+                aperture if aperture is not None else (
+                    status,
+                    max(status + 0x10, enable + 2)
+                    if enable is not None else status + 0x10,
+                ),
+            )
         key_start = self.config.key_register
         direct = getattr(self, "direct_input_profile", None)
         if key_start is None and direct is not None:

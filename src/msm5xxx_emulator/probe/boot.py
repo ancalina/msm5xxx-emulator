@@ -57,15 +57,20 @@ def boot_phase(state: dict[str, object], nonblack: int) -> str:
     preseed = int(state["frame_sequence"]) > 0 and nonblack > 0 and not display
     scheduler = int(state["rex_ticks"]) > 0
     secondary_telemetry = state.get("secondary_flash_telemetry")
+    upper_telemetry = state.get("upper_flash_telemetry")
     secondary_operations = (
         sum(int(secondary_telemetry.get(name, 0))
             for name in ("reads", "programs", "erases"))
         if isinstance(secondary_telemetry, dict) else 0
     )
+    upper_operations = (sum(int(upper_telemetry.get(name, 0))
+                            for name in ("reads", "programs", "erases"))
+                        if isinstance(upper_telemetry, dict) else 0)
     storage = (int(state["secondary_flash_reads"])
                + int(state["secondary_flash_writes"])
                + int(state.get("secondary_flash_changed_pages", 0))
                + secondary_operations
+               + int(state.get("upper_flash_changed_pages", 0)) + upper_operations
                + int(state["nand_reads"]) + int(state["nand_writes"])) > 0
     if display and scheduler and storage:
         return "runtime+display+storage"
@@ -147,6 +152,7 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
         "rex_idle_address": config.rex_idle_address,
         "rex_tick_address": config.rex_tick_address,
         "secondary_flash_address": config.secondary_flash_address,
+        "upper_flash_address": getattr(config, "upper_flash_address", None),
         "detection_notes": config.detection_notes,
         "timeline": [],
         "checkpoints": [],
@@ -165,14 +171,21 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
         if state_dir is None:
             config.flash_state = str(state_root / "flash.json")
             config.secondary_flash_state = str(state_root / "secondary.json")
+            if getattr(config, "upper_flash_address", None) is not None:
+                config.upper_flash_state = str(state_root / "upper.json")
         else:
             config.flash_state = str(state_root / Path(config.flash_state).name)
             config.secondary_flash_state = str(
                 state_root / Path(config.secondary_flash_state).name
             )
+            if getattr(config, "upper_flash_address", None) is not None:
+                config.upper_flash_state = str(
+                    state_root / Path(config.upper_flash_state).name
+                )
         result["state_mode"] = "ephemeral" if state_dir is None else "persistent"
         result["flash_state"] = config.flash_state
         result["secondary_flash_state"] = config.secondary_flash_state
+        result["upper_flash_state"] = getattr(config, "upper_flash_state", "")
         emulator = GenericMSMEmulator(config)
         previous = 0
         try:
@@ -185,6 +198,9 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
                 "firmware_frame_sequence": baseline["firmware_frame_sequence"],
                 "display_width": initial_width,
                 "display_height": initial_height,
+                "display_geometry_source": getattr(
+                    config, "display_geometry_source", "external-config"
+                ),
                 "nonblack_pixels": initial_nonblack,
                 "frame_sha256": initial_hash,
             }
@@ -228,6 +244,9 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
                         "control_sink": state.get("control_sink"),
                         "display_width": width,
                         "display_height": height,
+                        "display_geometry_source": getattr(
+                            config, "display_geometry_source", "external-config",
+                        ),
                         "frame_sequence": state["frame_sequence"],
                         "frame_publishes_delta": delta("frame_sequence"),
                         "firmware_frame_sequence": state[
@@ -321,6 +340,9 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
                     "firmware_frame_sequence": state["firmware_frame_sequence"],
                     "display_width": config.width,
                     "display_height": config.height,
+                    "display_geometry_source": getattr(
+                        config, "display_geometry_source", "external-config",
+                    ),
                     "nonblack_pixels": nonblack,
                     "frame_sha256": frame_hash,
                     "screenshot": screenshot,
@@ -353,6 +375,8 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
                     "secondary_flash_telemetry": state[
                         "secondary_flash_telemetry"
                     ],
+                    "upper_flash_changed_pages": state.get("upper_flash_changed_pages", 0),
+                    "upper_flash_telemetry": state.get("upper_flash_telemetry"),
                     "eeprom_capacity": state["eeprom_capacity"],
                     "eeprom_reads": state["eeprom_reads"],
                     "eeprom_read_bytes": state["eeprom_read_bytes"],
@@ -388,6 +412,8 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
             emulator.close()
         result["secondary_flash_address"] = config.secondary_flash_address
         result["secondary_flash_state"] = config.secondary_flash_state
+        result["upper_flash_address"] = getattr(config, "upper_flash_address", None)
+        result["upper_flash_state"] = getattr(config, "upper_flash_state", "")
     result["status"] = (
         "fault" if result["checkpoints"][-1]["fault"] else "budget-exhausted"
     )

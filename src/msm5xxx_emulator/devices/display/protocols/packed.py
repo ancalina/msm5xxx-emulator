@@ -1,7 +1,6 @@
 """Display methods owned by protocols/packed."""
 from __future__ import annotations
 
-from ....detection.firmware import KNOWN_SCREENS
 from ....core.constants import PACKED_RGB332_WINDOW_COMMANDS
 
 
@@ -59,11 +58,13 @@ class PackedProtocolMixin:
         x0, y0, x1, y1 = window
         geometry = self._lcd_full_window_geometry([x0, x1], [y0, y1])
         current = (self.config.width, self.config.height)
-        known = KNOWN_SCREENS.get(getattr(self.config, "verified_model", ""))
         if (geometry is not None and (geometry == current
-                                      or (known is None
-                                          and current == (176, 220)))):
-            self._set_display_geometry(*geometry)
+                                      or getattr(self.config,
+                                                 "display_geometry_source",
+                                                 "external-config") == "auto-default")):
+            self._set_display_geometry(
+                *geometry, source=f"runtime:selector-{pixel_format}"
+            )
         if x1 < self.config.width and y1 < self.config.height:
             step = 2 if pixel_format == "rgb666" else 1
             width = x1 - x0 + 1
@@ -122,7 +123,8 @@ class PackedProtocolMixin:
                 # 0x22 frame.  A complete packed-window sequence is stronger
                 # evidence, so it may replace that provisional geometry once.
                 self._set_display_geometry(
-                    width, height, force=not self._lcd_packed_qualified
+                    width, height, source="runtime:packed-rgb332",
+                    force=not self._lcd_packed_qualified
                 )
             if (x0 * 2 >= self.config.width or x1 * 2 + 1 >= self.config.width
                     or y1 >= self.config.height):

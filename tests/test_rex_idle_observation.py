@@ -36,6 +36,32 @@ from msm5xxx import GenericMSMEmulator
 
 
 class RexIdleObservationTests(unittest.TestCase):
+    @staticmethod
+    def _legacy_route(
+            controller_class: str = "legacy-c80-two-bank-group10-v1",
+    ) -> dict[str, object]:
+        status, enable = 0x03000C80, 0x03000C94
+        if controller_class == "legacy-c80-three-bank-group14-v1":
+            return {
+                "signature": "legacy-rex-5ms-irq-route-v1",
+                "controller_class": controller_class, "status": status,
+                "enable": enable, "status_banks": (status, status + 4, status + 0x30),
+                "clear_banks": (status, status + 4, enable + 0x38),
+                "controller_write_banks": (enable, enable + 4, enable + 0x30),
+                "controller_aperture": (status, enable + 0x3A),
+                "status_bank_count": 3, "group_row_size": 14,
+                "handler": 0x2000, "handler_validation_size": 0x200,
+            }
+        return {
+            "signature": "legacy-rex-5ms-irq-route-v1",
+            "controller_class": controller_class, "status": status,
+            "enable": enable, "status_banks": (status, status + 4),
+            "clear_banks": (status, status + 4),
+            "controller_write_banks": (enable, enable + 4),
+            "controller_aperture": (status, enable + 6),
+            "status_bank_count": 2, "group_row_size": 10,
+        }
+
     def test_audio_probe_caches_static_non_prologue(self) -> None:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(load_address=0)
@@ -164,6 +190,323 @@ class RexIdleObservationTests(unittest.TestCase):
         self.assertEqual(uc.reg_read(UC_ARM_REG_LR), 0x1005)
         self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x2000)
 
+    def test_legacy_bridge_metadata_cannot_inject_outer_or_drain(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        bridge = {
+            "signature": "legacy-rex-5ms-scanner-timer-v1",
+            "tick_ms": 5,
+            "outer_callback": 0x2000,
+            "drain": 0x2100,
+        }
+        emulator.config = SimpleNamespace(
+            rex_idle_address=0x1000,
+            rex_tick_address=None,
+            rex_tick_ms=1000,
+        )
+        emulator.direct_input_profile = {"timer_bridge": bridge}
+        emulator.rex_idle_entries = 0
+        emulator.rex_ticks = 0
+        emulator.rex_elapsed_ms = 0
+        emulator.rex_next_instruction = 0
+        emulator.instructions = 100
+        emulator._rex_tick_return_address = None
+        emulator._rex_tick_context = None
+        emulator._thumb_runtime_matches = lambda *args, **kwargs: True
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0x1000, 0x3000)
+        before = {
+            UC_ARM_REG_R0: 0x10,
+            UC_ARM_REG_R1: 0x11,
+            UC_ARM_REG_R2: 0x12,
+            UC_ARM_REG_R3: 0x13,
+            UC_ARM_REG_R12: 0x1C,
+            UC_ARM_REG_LR: 0x1005,
+            UC_ARM_REG_SP: 0x3F00,
+            UC_ARM_REG_CPSR: 0xF0000033,
+        }
+        for register, value in before.items():
+            uc.reg_write(register, value)
+        uc.reg_write(UC_ARM_REG_PC, 0x1000)
+        unchanged = {
+            register: uc.reg_read(register)
+            for register in (UC_ARM_REG_R0, UC_ARM_REG_LR, UC_ARM_REG_PC)
+        }
+
+        emulator._rex_tick(uc, 0x1000, 4, None)
+        emulator._rex_tick(uc, 0x1004, 2, None)
+        for register, value in unchanged.items():
+            self.assertEqual(uc.reg_read(register), value)
+        self.assertEqual(emulator.rex_ticks, 0)
+        self.assertFalse(hasattr(emulator, "rex_legacy_timer_drains"))
+
+    def test_closed_legacy_route_latches_only_native_irq_pending(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        route = self._legacy_route()
+        emulator.config = SimpleNamespace(
+            rex_tick_address=0x2000,
+            rex_tick_ms=5,
+            rex_irq_wrapper_address=0x3000,
+            rex_irq_mask=0x0200,
+        )
+        emulator.direct_input_profile = {"timer_bridge": {
+            "signature": "legacy-rex-5ms-scanner-timer-v1",
+            "irq_route": route,
+        }}
+        emulator.rex_idle_entries = 0
+        emulator.rex_ticks = 0
+        emulator.rex_elapsed_ms = 0
+        emulator.rex_next_instruction = 0
+        emulator.instructions = 100
+        emulator._rex_irq_pending = [0, 0]
+        emulator._rex_tick_return_address = None
+        emulator._rex_tick_context = None
+        emulator._thumb_runtime_matches = (
+            lambda _uc, address, *args, **kwargs: address == 0x1000
+        )
+        emulator._rex_firmware_matches = Mock(return_value=True)
+        emulator._rex_irq_route_valid = Mock(return_value=True)
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0x1000, 0x3000)
+        uc.reg_write(UC_ARM_REG_R0, 0x10)
+        uc.reg_write(UC_ARM_REG_LR, 0x1005)
+        uc.reg_write(UC_ARM_REG_PC, 0x1000)
+        before = tuple(
+            uc.reg_read(register)
+            for register in (UC_ARM_REG_R0, UC_ARM_REG_LR, UC_ARM_REG_PC)
+        )
+
+        emulator._rex_tick(uc, 0x1000, 2, None)
+
+        self.assertEqual(emulator._rex_irq_pending, [0x0200, 0])
+        self.assertEqual((emulator.rex_ticks, emulator.rex_elapsed_ms), (1, 5))
+        self.assertEqual(
+            tuple(
+                uc.reg_read(register)
+                for register in (UC_ARM_REG_R0, UC_ARM_REG_LR, UC_ARM_REG_PC)
+            ),
+            before,
+        )
+
+        route.clear()
+        route.update(self._legacy_route(
+            "legacy-c80-three-bank-group14-v1"
+        ))
+        route["controller_aperture"] = (0x03000C80, 0x03000CC6)
+        emulator._rex_irq_pending = [0, 0]
+        emulator.rex_ticks = 0
+        emulator.rex_elapsed_ms = 0
+        emulator.rex_next_instruction = 0
+        emulator._original_runtime_bytes = Mock(return_value=None)
+        emulator._rex_tick(uc, 0x1000, 2, None)
+        self.assertEqual(emulator._rex_irq_pending, [0, 0])
+        self.assertEqual((emulator.rex_ticks, emulator.rex_elapsed_ms), (0, 0))
+
+    def test_lifecycle_rejects_legacy_bridge_without_irq_route(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.image = b"\0" * 4
+        emulator.uc = Mock()
+        config = SimpleNamespace(
+            key_register=None, load_address=0, overlays=(), linker=None,
+            rex_idle_address=0x1000, ram_base=0x01000000, ram_size=0x00800000,
+        )
+        descriptor = {
+            "function": 0x20,
+            "grammar_fingerprint": "descriptor-test",
+            "family": "lg-descriptor-raw-keypad-v1",
+            "prologue": 0x20,
+            "row_state_evidence": 0,
+            "row_register_evidence": None,
+            "row_state_site": 0x24,
+            "global_sense_sites": [0x24],
+            "row_sense_sites": [0x26],
+            "sense_site": 0x26,
+            "sense_sites": [0x24, 0x26],
+            "raw_enqueue": 0x30,
+            "raw_enqueue_callsite": 0x32,
+            "raw_enqueue_callsites": [0x32],
+            "absolute_roles": {"sense": 0x0300072C},
+        }
+        bridge = {"scanner": 0x20}
+
+        with (patch("msm5xxx_emulator.devices.input.detect_input_profile",
+                    return_value=None),
+              patch("msm5xxx_emulator.devices.input.resolve_direct_matrix_input",
+                    return_value=(None, "not-found", [])),
+              patch("msm5xxx_emulator.devices.input.resolve_lg_descriptor_input",
+                    return_value=(descriptor, "accepted", [])),
+              patch("msm5xxx_emulator.devices.input.find_rex_legacy_5ms_timer_bridge",
+                    return_value=bridge),
+              patch("msm5xxx_emulator.devices.input.find_rex_legacy_5ms_irq_route",
+                    return_value=None)):
+            emulator._init_input_state(config)
+
+        self.assertIsNone(emulator.direct_input_profile)
+        self.assertEqual(emulator.direct_input_detection, "rejected")
+        self.assertEqual(emulator.direct_input_rejections[-1]["reasons"], [
+            "legacy-irq-route-unclosed"
+        ])
+        emulator.uc.hook_add.assert_not_called()
+
+    def test_lifecycle_accepts_closed_legacy_irq_route(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.image = b"\0" * 4
+        emulator.uc = Mock()
+        config = SimpleNamespace(
+            key_register=None, load_address=0, overlays=(), linker=None,
+            rex_idle_address=0x1000, ram_base=0x01000000, ram_size=0x00800000,
+            rex_tick_address=None, rex_tick_ms=1000,
+            rex_irq_wrapper_address=None, rex_irq_handler_address=None,
+            rex_irq_handler_slot=None, rex_irq_callback_slot=None,
+            rex_irq_status_address=None, rex_irq_enable_address=None,
+            rex_irq_mask=0, rex_irq_arm_address=0x030006E0,
+        )
+        descriptor = {
+            "function": 0x20, "grammar_fingerprint": "descriptor-test",
+            "family": "lg-descriptor-raw-keypad-v1", "prologue": 0x20,
+            "row_state_evidence": 0, "row_register_evidence": None,
+            "row_state_site": 0x24, "global_sense_sites": [0x24],
+            "row_sense_sites": [0x26], "sense_site": 0x26,
+            "sense_sites": [0x24, 0x26], "raw_enqueue": 0x30,
+            "raw_enqueue_callsite": 0x32, "raw_enqueue_callsites": [0x32],
+            "raw_ring": 0x018B0C54, "raw_ring_capacity": 32,
+            "raw_enqueue_store": 0x34, "raw_enqueue_register": 7,
+            "raw_dequeue": 0x36, "raw_dequeue_return": 0x38,
+            "raw_task_entry": 0x3A, "raw_task_register": 7,
+            "raw_consumer_evidence": "shared-ring-post-bl-r7-v1",
+            "absolute_roles": {"sense": 0x0300072C}, "event_codes": [],
+            "rows": 6,
+        }
+        bridge = {"scanner": 0x20, "outer_callback": 0x40}
+        route = {
+            **self._legacy_route("legacy-c80-three-bank-group14-v1"),
+            "outer_callback": 0x40,
+            "vector_target": 0x01000000, "wrapper": 0x2000,
+            "handler": 0x2100, "handler_slot": 0x01000100,
+            "callback_slot": 0x01000200, "status": 0x03000C80,
+            "enable": 0x03000C94, "mask": 0x0200,
+        }
+
+        with (patch("msm5xxx_emulator.devices.input.detect_input_profile",
+                    return_value=None),
+              patch("msm5xxx_emulator.devices.input.resolve_direct_matrix_input",
+                    return_value=(None, "not-found", [])),
+              patch("msm5xxx_emulator.devices.input.resolve_lg_descriptor_input",
+                    return_value=(descriptor, "accepted", [])),
+              patch("msm5xxx_emulator.devices.input.find_rex_legacy_5ms_timer_bridge",
+                    return_value=bridge),
+              patch("msm5xxx_emulator.devices.input.find_rex_legacy_5ms_irq_route",
+                    return_value=route)):
+            emulator._init_input_state(config)
+
+        self.assertEqual(emulator.direct_input_detection, "accepted")
+        self.assertEqual(emulator.direct_input_profile["register"], 0x0300072C)
+        self.assertEqual(emulator.direct_input_profile["event_sink"], 0x30)
+        self.assertEqual(emulator._rex_irq_pending, [0, 0, 0])
+        self.assertEqual(emulator.direct_input_profile["timer_bridge"], {
+            **bridge, "irq_route": route,
+        })
+        self.assertEqual((config.rex_tick_address, config.rex_tick_ms), (0x40, 5))
+        self.assertEqual((config.rex_irq_wrapper_address,
+                          config.rex_irq_handler_address,
+                          config.rex_irq_handler_slot,
+                          config.rex_irq_callback_slot,
+                          config.rex_irq_status_address,
+                          config.rex_irq_enable_address,
+                          config.rex_irq_mask,
+                          config.rex_irq_arm_address),
+                         (0x2000, 0x2100, 0x01000100, 0x01000200,
+                          0x03000C80, 0x03000C94, 0x0200, None))
+        self.assertEqual(emulator.uc.hook_add.call_count, 4)
+        emulator.uc.hook_add.assert_any_call(
+            UC_HOOK_CODE, emulator._direct_input_event_observed,
+            begin=0x30, end=0x30,
+        )
+        for callback, address in (
+                (emulator._direct_raw_enqueue_store_observed, 0x34),
+                (emulator._direct_raw_dequeue_return_observed, 0x38),
+                (emulator._direct_raw_task_observed, 0x3A)):
+            emulator.uc.hook_add.assert_any_call(
+                UC_HOOK_CODE, callback, begin=address, end=address,
+            )
+
+    def test_lifecycle_rejects_unverified_legacy_irq_controller_class(
+            self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.image = b"\0" * 4
+        emulator.uc = Mock()
+        config = SimpleNamespace(
+            key_register=None, load_address=0, overlays=(), linker=None,
+            rex_idle_address=0x1000, ram_base=0x01000000,
+            ram_size=0x00800000, rex_tick_address=None, rex_tick_ms=1000,
+        )
+        descriptor = {
+            "function": 0x20, "grammar_fingerprint": "descriptor-test",
+            "family": "lg-descriptor-raw-keypad-v1", "prologue": 0x20,
+            "row_state_evidence": 0, "row_register_evidence": None,
+            "row_state_site": 0x24, "global_sense_sites": [0x24],
+            "row_sense_sites": [0x26], "sense_site": 0x26,
+            "sense_sites": [0x24, 0x26], "raw_enqueue": 0x30,
+            "raw_enqueue_callsite": 0x32,
+            "raw_enqueue_callsites": [0x32],
+            "absolute_roles": {"sense": 0x0300072C},
+        }
+        bridge = {"scanner": 0x20, "outer_callback": 0x40}
+        route = {
+            "controller_class": "legacy-c80-three-bank-group14-v1",
+            "outer_callback": 0x40, "vector_target": 0x01000000,
+            "handler_slot": 0x01000100, "callback_slot": 0x01000200,
+        }
+
+        with (patch("msm5xxx_emulator.devices.input.detect_input_profile",
+                    return_value=None),
+              patch("msm5xxx_emulator.devices.input.resolve_direct_matrix_input",
+                    return_value=(None, "not-found", [])),
+              patch("msm5xxx_emulator.devices.input.resolve_lg_descriptor_input",
+                    return_value=(descriptor, "accepted", [])),
+              patch("msm5xxx_emulator.devices.input.find_rex_legacy_5ms_timer_bridge",
+                    return_value=bridge),
+              patch("msm5xxx_emulator.devices.input.find_rex_legacy_5ms_irq_route",
+                    return_value=route)):
+            emulator._init_input_state(config)
+
+        self.assertIsNone(emulator.direct_input_profile)
+        self.assertEqual(emulator.direct_input_detection, "rejected")
+        self.assertEqual(emulator.direct_input_rejections[-1]["reasons"], [
+            "legacy-irq-controller-class-unverified"
+        ])
+        self.assertEqual((config.rex_tick_address, config.rex_tick_ms),
+                         (None, 1000))
+        emulator.uc.hook_add.assert_not_called()
+
+    def test_lifecycle_partial_raw_queue_metadata_installs_no_extra_hooks(
+            self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.image = b"\0" * 4
+        emulator.uc = Mock()
+        config = SimpleNamespace(
+            key_register=None, load_address=0, overlays=(), linker=None,
+        )
+        profile = {
+            "grammar": "test", "function": 0x20, "event_codes": [],
+            "rows": 6, "event_sink": 0x30, "event_sink_callsite": 0x32,
+            "event_sink_family": "unclassified", "raw_ring": 0x1000,
+            "raw_ring_capacity": 32, "raw_enqueue_store": 0x34,
+            "raw_enqueue_register": 7, "raw_dequeue": 0x36,
+            "raw_dequeue_return": 0x38, "raw_task_entry": 0x3A,
+            "raw_consumer_evidence": "test",
+        }
+
+        with (patch("msm5xxx_emulator.devices.input.detect_input_profile",
+                    return_value=None),
+              patch("msm5xxx_emulator.devices.input.resolve_direct_matrix_input",
+                    return_value=(profile, "accepted", []))):
+            emulator._init_input_state(config)
+
+        emulator.uc.hook_add.assert_called_once_with(
+            UC_HOOK_CODE, emulator._direct_input_event_observed,
+            begin=0x30, end=0x30,
+        )
+
     def test_5ms_post_sleep_without_complete_irq_route_fails_closed(self) -> None:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(rex_tick_address=0x2000, rex_tick_ms=5)
@@ -234,6 +577,65 @@ class RexIdleObservationTests(unittest.TestCase):
         self.assertEqual(
             struct.unpack("<2I", uc.mem_read(0x03000628, 8)),
             (0x11223344, 0x55667788),
+        )
+
+    def test_three_bank_status_refresh_and_clear_grammar(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        route = self._legacy_route("legacy-c80-three-bank-group14-v1")
+        emulator.config = SimpleNamespace(rex_irq_status_address=0x03000C80)
+        emulator.direct_input_profile = {"timer_bridge": {
+            "signature": "legacy-rex-5ms-scanner-timer-v1",
+            "irq_route": route,
+        }}
+        emulator._rex_irq_pending = [0x1234, 0xABCD, 0x0F0F]
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0x03000000, 0x1000)
+        uc.mem_write(0x03000C80, b"\xff" * 0x50)
+        uc.reg_write(UC_ARM_REG_PC, 0x2002)
+
+        emulator._rex_irq_status_read(uc, 0, 0x03000C80, 2, 0, None)
+        self.assertEqual(struct.unpack("<H", uc.mem_read(0x03000C80, 2))[0], 0x1234)
+        self.assertEqual(struct.unpack("<H", uc.mem_read(0x03000C84, 2))[0], 0xABCD)
+        self.assertEqual(struct.unpack("<H", uc.mem_read(0x03000CB0, 2))[0], 0x0F0F)
+        self.assertEqual(struct.unpack("<H", uc.mem_read(0x03000C94, 2))[0], 0xFFFF)
+
+        emulator._rex_irq_status_write(uc, 0, 0x03000C80, 1, 0x0F, None)
+        emulator._rex_irq_status_write(uc, 0, 0x03000C85, 1, 0xF0, None)
+        emulator._rex_irq_status_write(uc, 0, 0x03000CB0, 2, 0xFFFF, None)
+        emulator._rex_irq_status_write(uc, 0, 0x03000C94, 2, 0xFFFF, None)
+        self.assertEqual(emulator._rex_irq_pending, [0x1230, 0x0BCD, 0x0F0F])
+        emulator._rex_irq_status_write(uc, 0, 0x03000CCC, 2, 0x000F, None)
+        self.assertEqual(emulator._rex_irq_pending, [0x1230, 0x0BCD, 0x0F00])
+
+    def test_three_bank_status_shadow_ignores_non_handler_access(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        route = self._legacy_route("legacy-c80-three-bank-group14-v1")
+        emulator.config = SimpleNamespace(rex_irq_status_address=0x03000C80)
+        emulator.direct_input_profile = {"timer_bridge": {
+            "signature": "legacy-rex-5ms-scanner-timer-v1",
+            "irq_route": route,
+        }}
+        emulator._rex_irq_pending = [0x1234, 0xABCD, 0x0F0F]
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0x03000000, 0x1000)
+        uc.mem_write(0x03000C84, struct.pack("<H", 1))
+        uc.reg_write(UC_ARM_REG_PC, 0x000A124C)
+
+        emulator._rex_irq_status_read(uc, 0, 0x03000C84, 2, 0, None)
+        emulator._rex_irq_status_write(
+            uc, 0, 0x03000CCC, 2, 0xFFFF, None
+        )
+
+        self.assertEqual(
+            struct.unpack("<H", uc.mem_read(0x03000C84, 2))[0], 1
+        )
+        self.assertEqual(emulator._rex_irq_pending, [0x1234, 0xABCD, 0x0F0F])
+
+    def test_three_bank_route_rejects_malformed_metadata(self) -> None:
+        route = self._legacy_route("legacy-c80-three-bank-group14-v1")
+        route["controller_aperture"] = (0x03000C80, 0x03000CC6)
+        self.assertFalse(
+            GenericMSMEmulator._rex_legacy_irq_route_metadata_valid(route)
         )
 
     def test_irq_boundary_accepts_any_enabled_pending_route(self) -> None:

@@ -253,6 +253,8 @@ class NORTelemetryTests(unittest.TestCase):
             emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
             emulator.config = SimpleNamespace(board_revision_register=None)
             emulator.flash = primary
+            emulator.secondary_flash = flash
+            emulator.secondary_base = base
             emulator._flash_restore = {}
             emulator._parallel_nor_direct_probe = None
             emulator.primary_parallel_nor_direct_id_probes = []
@@ -260,6 +262,7 @@ class NORTelemetryTests(unittest.TestCase):
             uc.mem_map(base, 0x1000)
             uc.mem_write(base, original)
             uc.mem_write = Mock(wraps=uc.mem_write)
+            uc.ctl_remove_cache = Mock(wraps=uc.ctl_remove_cache)
 
             emulator._flash_read(uc, 0, base + 6, 2, 0, (base, flash))
             uc.mem_write.assert_not_called()
@@ -283,6 +286,7 @@ class NORTelemetryTests(unittest.TestCase):
             uc.mem_write.reset_mock()
             emulator._restore_flash_once(uc, 0, 0, None)
             uc.mem_write.assert_called_once_with(base + 2, b"\x02\x03")
+            uc.ctl_remove_cache.assert_not_called()
             self.assertEqual(bytes(uc.mem_read(base, 16)), original[:16])
             self.assertEqual(emulator._flash_restore, {})
 
@@ -293,6 +297,27 @@ class NORTelemetryTests(unittest.TestCase):
             self.assertEqual(flash.telemetry()["reads"], 4)
             self.assertEqual(flash.telemetry()["read_bytes"], 10)
             self.assertIsNone(emulator._parallel_nor_direct_probe)
+
+    def test_secondary_restore_invalidates_only_executable_nor_cache(self) -> None:
+        secondary = 0x00400000
+        primary = 0x00100020
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.secondary_base = secondary
+        emulator.secondary_flash = SimpleNamespace(data=bytearray(0x1000))
+        emulator._flash_restore = {
+            secondary + 0x20: b"\x12\x34",
+            primary: b"\x56\x78",
+        }
+        uc = Mock()
+
+        emulator._restore_flash_once(uc, 0, 0, None)
+
+        self.assertEqual(uc.mem_write.call_args_list, [
+            call(secondary + 0x20, b"\x12\x34"),
+            call(primary, b"\x56\x78"),
+        ])
+        uc.ctl_remove_cache.assert_called_once_with(primary, primary + 2)
+        self.assertEqual(emulator._flash_restore, {})
 
     def test_fujitsu_bulk_hle_normalizes_absolute_secondary_address(self) -> None:
         body = bytes.fromhex(

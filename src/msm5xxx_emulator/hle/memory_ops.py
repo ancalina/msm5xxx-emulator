@@ -377,6 +377,10 @@ class MemoryOpsHleMixin:
             source_ranges.append((
                 secondary, secondary + self.config.secondary_flash_size,
             ))
+        upper = getattr(self, "upper_base", None)
+        upper_flash = getattr(self, "upper_flash", None)
+        if upper is not None and upper_flash is not None and upper_flash.phase == "idle":
+            source_ranges.append((upper, upper + self.config.upper_flash_size))
         source_is_backed = any(
             start <= source <= source_end <= stop for start, stop in source_ranges
         )
@@ -469,6 +473,10 @@ class MemoryOpsHleMixin:
             source_ranges.append((
                 secondary, secondary + self.config.secondary_flash_size,
             ))
+        upper = getattr(self, "upper_base", None)
+        upper_flash = getattr(self, "upper_flash", None)
+        if upper is not None and upper_flash is not None and upper_flash.phase == "idle":
+            source_ranges.append((upper, upper + self.config.upper_flash_size))
         source_is_backed = any(
             start <= source <= source_end <= end for start, end in source_ranges
         )

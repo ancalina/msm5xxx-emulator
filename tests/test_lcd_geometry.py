@@ -38,9 +38,11 @@ class LCDGeometryTests(unittest.TestCase):
                 raise AssertionError("same geometry must not scan framebuffer")
 
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.config = SimpleNamespace(width=128, height=160)
+        emulator.config = SimpleNamespace(
+            width=128, height=160, display_geometry_source="external-config"
+        )
         emulator.framebuffer = UnscannableFramebuffer()
-        emulator._set_display_geometry(128, 160)
+        emulator._set_display_geometry(128, 160, source="runtime:test")
 
     def test_geometry_visibility_check_uses_native_byte_count(self) -> None:
         class UniterableFramebuffer(bytearray):
@@ -50,7 +52,7 @@ class LCDGeometryTests(unittest.TestCase):
         emulator = self._blank_emulator(False)
         emulator.framebuffer = UniterableFramebuffer(emulator.framebuffer)
 
-        emulator._set_display_geometry(128, 160)
+        emulator._set_display_geometry(128, 160, source="runtime:test")
 
         self.assertEqual((emulator.config.width, emulator.config.height), (128, 160))
 
@@ -79,9 +81,15 @@ class LCDGeometryTests(unittest.TestCase):
         )
 
     def _blank_emulator(self, visible: bool, width: int = 176,
-                        height: int = 220, model: str = "") -> GenericMSMEmulator:
+                        height: int = 220, model: str = "",
+                        geometry_source: str | None = None) -> GenericMSMEmulator:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.config = SimpleNamespace(width=width, height=height, model=model)
+        emulator.config = SimpleNamespace(
+            width=width, height=height, model=model,
+            display_geometry_source=(geometry_source if geometry_source is not None
+                                     else ("auto-default" if (width, height) == (176, 220)
+                                           else "external-config")),
+        )
         emulator.framebuffer = bytearray(width * height * 3)
         if visible:
             emulator.framebuffer[0] = 1
@@ -165,6 +173,12 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_streamed = 0
         emulator._lcd_data_byte_latch = {}
         emulator._lcd_028_direct_probe = []
+        emulator._lcd_028_rgb332_probe = []
+        emulator._lcd_028_rgb332_window = (0, 0, 0, 0)
+        emulator._lcd_028_rgb332_qualified = False
+        emulator._lg_pixels = []
+        emulator._lcd_lgfa_window_order = []
+        emulator._lcd_lgfa_window = None
         emulator._lcd_split_port_stage = 0
         emulator._lcd_split_port_variant = 0
         emulator._lcd_split_port_payload = bytearray()
@@ -180,6 +194,24 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_gram_dirty = False
         emulator._lcd_packed_21_state = 0
         return emulator
+
+    def test_lg_paired_window_proves_geometry_before_complete_frame(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        for value in (0x0200, 0x0300, 0x0477, 0x059F):
+            emulator._lcd_write(None, 0, 0x02000078, 2, value, None)
+        for index in range(120 * 160):
+            emulator._lcd_write(None, 0, 0x020000FA, 2, index & 3, None)
+            emulator._lcd_write(None, 0, 0x020000FA, 2, 0xFFFF, None)
+
+        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(emulator._lcd_frame_protocol, "lg-paired-rgb565")
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        for value in (0x0201, 0x0300, 0x0477, 0x059F):
+            near_miss._lcd_write(None, 0, 0x02000078, 2, value, None)
+        near_miss._lcd_write(None, 0, 0x020000FA, 2, 0, None)
+        self.assertEqual((near_miss.config.width, near_miss.config.height), (176, 220))
 
     @staticmethod
     def _write_split_port_word(emulator: GenericMSMEmulator,
@@ -305,7 +337,7 @@ class LCDGeometryTests(unittest.TestCase):
     def test_black_provisional_frames_can_be_replaced_by_proven_geometry(self) -> None:
         emulator = self._blank_emulator(visible=False)
 
-        emulator._set_display_geometry(128, 160)
+        emulator._set_display_geometry(128, 160, source="runtime:test")
 
         self.assertEqual((emulator.config.width, emulator.config.height), (128, 160))
         self.assertEqual(len(emulator.display_frame), 128 * 160 * 3)
@@ -313,7 +345,7 @@ class LCDGeometryTests(unittest.TestCase):
     def test_visible_frame_is_not_reinterpreted_without_force(self) -> None:
         emulator = self._blank_emulator(visible=True)
 
-        emulator._set_display_geometry(128, 160)
+        emulator._set_display_geometry(128, 160, source="runtime:test")
 
         self.assertEqual((emulator.config.width, emulator.config.height), (176, 220))
 
@@ -324,11 +356,44 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_promote_gram_geometry()
 
         self.assertEqual((emulator.config.width, emulator.config.height), (128, 160))
+        self.assertEqual(emulator.config.display_geometry_source, "runtime:gram")
 
-    def test_full_gram_window_does_not_expand_known_panel(self) -> None:
+    def test_explicit_default_geometry_is_not_runtime_replaceable(self) -> None:
         emulator = self._blank_emulator(
-            visible=False, width=120, height=160, model="LG-SD810",
+            visible=False, geometry_source="override"
         )
+        emulator._lcd_x, emulator._lcd_y = [0, 127], [0, 159]
+
+        emulator._lcd_promote_gram_geometry()
+
+        self.assertEqual((emulator.config.width, emulator.config.height), (176, 220))
+        self.assertEqual(emulator.config.display_geometry_source, "override")
+
+    def test_descriptor_geometry_is_not_force_replaceable(self) -> None:
+        emulator = self._blank_emulator(
+            visible=False, width=120, height=160,
+            geometry_source="framebuffer-descriptor",
+        )
+
+        emulator._set_display_geometry(
+            128, 160, source="runtime:test", force=True
+        )
+
+        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
+        self.assertEqual(emulator.config.display_geometry_source,
+                         "framebuffer-descriptor")
+
+    def test_same_geometry_promotes_auto_provenance_only(self) -> None:
+        emulator = self._blank_emulator(visible=False)
+
+        emulator._set_display_geometry(
+            176, 220, source="runtime:test"
+        )
+
+        self.assertEqual(emulator.config.display_geometry_source, "runtime:test")
+
+    def test_full_gram_window_does_not_replace_nondefault_geometry(self) -> None:
+        emulator = self._blank_emulator(visible=False, width=120, height=160)
         emulator._lcd_x, emulator._lcd_y = [0, 175], [0, 219]
 
         emulator._lcd_promote_gram_geometry()
@@ -617,6 +682,55 @@ class LCDGeometryTests(unittest.TestCase):
             emulator.display_frame,
             bytes((255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255)),
         )
+
+    def test_028_byte_rgb332_requires_complete_full_window(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+
+        def frame(target: GenericMSMEmulator, x1: int, payload: bytes) -> None:
+            for address, value in ((0x02800000, 0x75), (0x02800004, 0),
+                                   (0x02800004, 159), (0x02800000, 0x15),
+                                   (0x02800004, 0), (0x02800004, x1),
+                                   (0x02800000, 0x5C)):
+                target._lcd_write(None, 0, address, 1, value, None)
+            for value in payload:
+                target._lcd_write(None, 0, 0x02800004, 1, value, None)
+
+        frame(emulator, 119, bytes((0xFD,)) * (120 * 160))
+        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
+        self.assertEqual(emulator._lcd_protocol, "direct-rgb332")
+        self.assertEqual(emulator.display_frame[:3], bytes((255, 255, 85)))
+        self.assertEqual(emulator.frame_sequence, 8)
+
+        for address, value in ((0x02800000, 0x75), (0x02800004, 2),
+                               (0x02800004, 2), (0x02800000, 0x15),
+                               (0x02800004, 1), (0x02800004, 1),
+                               (0x02800000, 0x5C), (0x02800004, 0xFF)):
+            emulator._lcd_write(None, 0, address, 1, value, None)
+        pixel = (2 * 120 + 1) * 3
+        self.assertEqual(emulator.display_frame[pixel:pixel + 3], b"\xff\xff\xff")
+
+        for address, value in ((0x02800000, 0x75), (0x02800004, 3),
+                               (0x02800004, 3), (0x02800000, 0x15),
+                               (0x02800004, 2), (0x02800004, 2),
+                               (0x02800000, 0x5C), (0x02800004, 0xE3)):
+            emulator._lcd_write(None, 0, address, 2, value, None)
+        pixel = (3 * 120 + 2) * 3
+        self.assertEqual(emulator.display_frame[pixel:pixel + 3], b"\xff\x00\xff")
+        self.assertEqual(emulator._lcd_protocol, "direct-rgb332")
+
+        for address, value in ((0x02800000, 0x75), (0x02800004, 4),
+                               (0x02800004, 4), (0x02800000, 0x15),
+                               (0x02800004, 3), (0x02800004, 3),
+                               (0x02800000, 0x5C), (0x02800004, 0xF800)):
+            emulator._lcd_write(None, 0, address, 2, value, None)
+        pixel = (4 * 120 + 3) * 3
+        self.assertEqual(emulator.display_frame[pixel:pixel + 3], b"\xff\x00\x00")
+        self.assertEqual(emulator._lcd_protocol, "direct")
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        frame(near_miss, 62, bytes((0xFF,)) * (63 * 160))
+        self.assertEqual((near_miss.config.width, near_miss.config.height), (176, 220))
+        self.assertFalse(near_miss._lcd_028_rgb332_qualified)
 
     def test_qualified_packed_21_cursor_keeps_xy(self) -> None:
         def write(emulator: GenericMSMEmulator, command: int, value: int) -> None:

@@ -28,6 +28,92 @@ _SPLIT_PREFIXES = (
 
 
 class DirectProtocolMixin:
+    def _lcd_028_rgb332_replay(self, events: list[tuple[int, int, int]]) -> None:
+        """Return an unproven stream to the established 0x028 decoders."""
+        for address, size, value in events:
+            self._lcd_byte_rgb565_interrupt(address, size)
+            self._lcd_write_028_legacy(address, size, value)
+
+    def _lcd_028_rgb332_pixel(self, index: int, value: int) -> None:
+        """Store one native RGB332 pixel without passing through RGB565."""
+        if not 0 <= index < self.config.width * self.config.height:
+            return
+        offset = index * 3
+        self.framebuffer[offset] = (value >> 5) * 255 // 7
+        self.framebuffer[offset + 1] = (value >> 2 & 7) * 255 // 7
+        self.framebuffer[offset + 2] = (value & 3) * 255 // 3
+
+    def _lcd_028_rgb332_write(self, address: int, size: int,
+                               value: int) -> bool:
+        """Promote only complete low-byte 0x028 RGB332 window transfers."""
+        base, data = 0x02800000, 0x02800004
+        probe = self._lcd_028_rgb332_probe
+        event = (address, size, value)
+        if not probe:
+            if (address == base and value == 0x75
+                    and (size == 1
+                         or (size == 2 and self._lcd_028_rgb332_qualified))):
+                probe.append(event)
+                return True
+            return False
+        transfer_size = probe[0][1]
+        setup = ((data, transfer_size, None), (data, transfer_size, None),
+                 (base, transfer_size, 0x15),
+                 (data, transfer_size, None), (data, transfer_size, None),
+                 (base, transfer_size, 0x5C))
+        if len(probe) <= len(setup):
+            wanted_address, wanted_size, wanted_value = setup[len(probe) - 1]
+            if (address != wanted_address or size != wanted_size or not 0 <= value <= 0xFF
+                    or (wanted_value is not None and value != wanted_value)):
+                held = list(probe)
+                probe.clear()
+                self._lcd_028_rgb332_replay(held)
+                return False
+            probe.append(event)
+            if len(probe) != len(setup) + 1:
+                return True
+            y_axis = [probe[1][2], probe[2][2]]
+            x_axis = [probe[4][2], probe[5][2]]
+            geometry = self._lcd_full_window_geometry(x_axis, y_axis)
+            if geometry is not None:
+                self._lcd_028_rgb332_window = (x_axis[0], y_axis[0], *geometry)
+                return True
+            if (self._lcd_028_rgb332_qualified and x_axis[0] <= x_axis[1]
+                    and y_axis[0] <= y_axis[1] and x_axis[1] < self.config.width
+                    and y_axis[1] < self.config.height):
+                self._lcd_028_rgb332_window = (
+                    x_axis[0], y_axis[0], x_axis[1] - x_axis[0] + 1,
+                    y_axis[1] - y_axis[0] + 1,
+                )
+                return True
+            else:
+                held = list(probe)
+                probe.clear()
+                self._lcd_028_rgb332_replay(held)
+                return True
+        x0, y0, width, height = self._lcd_028_rgb332_window
+        if address != data or size != transfer_size or not 0 <= value <= 0xFF:
+            held = list(probe)
+            probe.clear()
+            self._lcd_028_rgb332_replay(held)
+            return False
+        probe.append(event)
+        if len(probe) < len(setup) + 1 + width * height:
+            return True
+        if not self._lcd_028_rgb332_qualified:
+            self._set_display_geometry(
+                width, height, source="runtime:direct-rgb332"
+            )
+        if x0 + width <= self.config.width and y0 + height <= self.config.height:
+            for index, (_address, _size, packed) in enumerate(probe[len(setup) + 1:]):
+                x, y = x0 + index % width, y0 + index // width
+                self._lcd_028_rgb332_pixel(y * self.config.width + x, packed)
+            self._lcd_028_rgb332_qualified = True
+            self._lcd_protocol = "direct-rgb332"
+            self._publish_frame()
+        probe.clear()
+        return True
+
     def _lcd_split_port_reset(self) -> None:
         self._lcd_split_port_stage = 0
         self._lcd_split_port_variant = 0
@@ -65,7 +151,11 @@ class DirectProtocolMixin:
                 self._lcd_split_port_stage = 0
                 self._lcd_split_port_variant = 0
                 self._lcd_split_port_payload = bytearray()
-                self._set_display_geometry(128, 128, force=True)
+                self._set_display_geometry(
+                    128, 128, source="runtime:split-byte-rgb565", force=True
+                )
+                if (self.config.width, self.config.height) != (128, 128):
+                    return True
                 for index in range(128 * 128):
                     offset = index * 2
                     self._pixel(index, payload[offset] << 8 | payload[offset + 1])
@@ -84,6 +174,8 @@ class DirectProtocolMixin:
     def _lcd_028_direct_probe_write(self, address: int, size: int,
                                     value: int) -> bool:
         """Consume only a complete old Samsung direct-window grammar."""
+        if self._lcd_028_rgb332_write(address, size, value):
+            return True
         base, data = 0x02800000, 0x02800004
         expected: tuple[tuple[int, int, int | None], ...] = (
             (base, 2, 0x75),
@@ -157,7 +249,7 @@ class DirectProtocolMixin:
         # new screen size.
         if (self._lcd_full_window_geometry(self._lcd_x, self._lcd_y) is not None
                 and spans[0] <= self.config.width and spans[1] <= self.config.height):
-            self._set_display_geometry(*spans)
+            self._set_display_geometry(*spans, source="runtime:direct-window")
         screen = (self.config.width, self.config.height)
         for axis, (start, span, visible) in enumerate(zip(
                 (self._lcd_x[0], self._lcd_y[0]), spans, screen)):

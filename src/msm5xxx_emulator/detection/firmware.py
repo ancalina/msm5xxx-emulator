@@ -25,6 +25,7 @@ from .boot import (
 )
 from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout
+from .firmware_image import load_firmware_image
 from .input import find_board_adc_reader, find_board_status_input
 from .memory_layout import (
     find_arm_memory_copy_addresses, find_arm_vector_offset, find_linker_layout,
@@ -40,6 +41,7 @@ from .rex import (REX_TICK_SIGNATURE, find_rex_5ms_irq_arm,
 from .signatures import find_all
 from .storage import (find_24lcxx_driver, find_compound_fujitsu_layout,
                       find_fujitsu_x16_bulk_write, flash_id_for_size)
+from .upper_nor import UPPER_FLASH_ADDRESS, UPPER_FLASH_SIZE, find_upper_nor
 
 
 _embedded_model_scores = embedded_model_scores
@@ -55,19 +57,6 @@ MAX_FLASH_SIZE = 0x04000000
 DEFAULT_STATE_ROOT = Path(os.environ.get(
     "MSM5XXX_STATE_DIR", Path.home() / ".msm5xxx-emulator"
 )).expanduser()
-
-
-KNOWN_SCREENS = {
-    "LG-SD810": (120, 160),
-    "LG-SV130": (176, 220),
-    "SCH-E100": (128, 160),
-    "SCH-E170": (176, 220),
-    "SCH-E370": (128, 160),
-    "SCH-E135": (128, 160),
-    "SCH-E470": (176, 220),
-    "SCH-V540": (176, 220),
-    "SCH-X430": (128, 160),
-}
 
 
 DISABLEABLE_ADDRESS_FIELDS = frozenset({
@@ -87,10 +76,7 @@ DISABLEABLE_ADDRESS_FIELDS = frozenset({
 MSM_REVISION_BLOCK = 0x03000740
 
 
-MSM_REVISION_REGISTER = MSM_REVISION_BLOCK + 0x1C
-
-
-MSM_REVISION_RAW_F022 = 0x20F2
+DCC_LOADER_MARKERS = (b"DumpNow DCC Loader.", b"Compile flags:")
 
 
 def _file_identity(filename: str | None) -> str:
@@ -172,6 +158,9 @@ def _apply_overrides(
         value = getattr(overrides, key, None)
         if value is not None:
             setattr(config, key, value)
+    if (getattr(overrides, "width", None) is not None
+            or getattr(overrides, "height", None) is not None):
+        config.display_geometry_source = "override"
     if (getattr(overrides, "framebuffer_stride", None) is None
             and config.framebuffer_address is not None
             and (getattr(overrides, "width", None) is not None
@@ -204,12 +193,6 @@ def _apply_overrides(
             and getattr(overrides, "ram_base", None) is None):
         config.ram_base = infer_ram_base(
             config.linker, config.chipset, primary_image
-        )
-    if (getattr(overrides, "model", None) is not None
-            and getattr(overrides, "width", None) is None
-            and getattr(overrides, "height", None) is None):
-        config.width, config.height = KNOWN_SCREENS.get(
-            config.model, (config.width, config.height)
         )
     if getattr(overrides, "flash_size", None) is None:
         limit = (config.ram_base - config.load_address
@@ -340,6 +323,22 @@ def _configure_state_paths(
     return internal_secondary_seed
 
 
+def _infer_upper_nor(config: FirmwareConfig, image: bytes) -> None:
+    admitted, reason = find_upper_nor(image)
+    if admitted:
+        config.upper_flash_address = UPPER_FLASH_ADDRESS
+        config.upper_flash_size = UPPER_FLASH_SIZE
+        state = Path(config.flash_state)
+        config.upper_flash_state = str(state.with_name(
+            state.stem + ".upper-02800000-800000.json"
+        ))
+        config.detection_notes.append(
+            "upper NOR admitted by relocatable catalog/materializer/AMD writer grammar"
+        )
+    else:
+        config.detection_notes.append(f"upper NOR detector rejected at {reason}")
+
+
 def _finalize_dump_status(
         config: FirmwareConfig, image: bytes,
         internal_secondary_seed: bytes | None) -> None:
@@ -386,7 +385,8 @@ def _finalize_dump_status(
 
 
 def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareConfig:
-    raw = path.read_bytes()
+    loaded = load_firmware_image(path)
+    raw = loaded.image
     requested_image_offset = (getattr(overrides, "image_offset", None)
                               if overrides else None)
     vector_offset, vector_score = find_arm_vector_offset(raw)
@@ -415,7 +415,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     vector_score = arm_vector_score(image)
     image_kind = "firmware" if vector_score >= 2 else "data/non-bootable"
     detection_notes: list[str] = []
-    if image_kind != "firmware":
+    if all(marker in image for marker in DCC_LOADER_MARKERS):
+        image_kind = "auxiliary/debug-loader"
+        detection_notes.append("paired DumpNow DCC loader markers")
+    elif image_kind != "firmware":
         detection_notes.append("no valid ARM exception vector table")
     elif image_offset and requested_image_offset is None:
         detection_notes.append(
@@ -472,7 +475,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             "Thumb byte-status mask/branch/debounce shape detected board-status input"
         )
-    width, height = KNOWN_SCREENS.get(hardware_model or "", (176, 220))
+    width, height = 176, 220
     revision_match = re.search(rb"(?:HW|BOARD)[ _-]?REV(?:ISION)?[^\x00\r\n]{0,24}", image, re.I)
     revision = revision_match.group().decode("ascii", "replace") if revision_match else "auto/unknown"
     auto_relative: set[str] = set()
@@ -697,9 +700,15 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             "raw NAND enabled from fs_ks_nand driver and physical port literals"
         )
-    needs_msm_revision = (b" Unsupported MSM REV " in primary_image
-                          and struct.pack("<I", MSM_REVISION_BLOCK)
-                          in primary_image)
+    unresolved_msm_revision = (
+        b" Unsupported MSM REV " in primary_image
+        and struct.pack("<I", MSM_REVISION_BLOCK) in primary_image
+    )
+    if unresolved_msm_revision:
+        detection_notes.append(
+            "MSM revision marker + 0x03000740 found; automatic register/value rejected "
+            "without verified MMIO readback"
+        )
     ram_base = infer_ram_base(linker, chipset, primary_image)
     requested_ram_base = (getattr(overrides, "ram_base", None)
                           if overrides else None)
@@ -723,22 +732,20 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         secondary_seed=compound_secondary_seed,
     )
     config = FirmwareConfig(
-        path=str(path), file_size=len(raw),
-        firmware_sha256=hashlib.sha256(raw).hexdigest(), model=model, chipset=chipset,
+        path=str(path), file_size=loaded.source_size,
+        firmware_sha256=loaded.source_sha256, model=model, chipset=chipset,
         chipset_confidence=confidence, image_kind=image_kind,
         dump_status="pending", detection_notes=detection_notes,
         width=width, height=height, board_revision=revision,
+        display_geometry_source=("framebuffer-descriptor"
+                                 if framebuffer is not None else "auto-default"),
         framebuffer_address=framebuffer_address,
         framebuffer_stride=framebuffer_stride,
         framebuffer_format=framebuffer_format,
         framebuffer_flush_address=framebuffer_flush_address,
         framebuffer_rect_flush_address=framebuffer_rect_flush_address,
-        board_revision_register=(0x00DFFFDC if hardware_model == "SCH-E470"
-                                 else MSM_REVISION_REGISTER
-                                 if needs_msm_revision else None),
-        board_revision_value=(0x1D if hardware_model == "SCH-E470"
-                              else MSM_REVISION_RAW_F022
-                              if needs_msm_revision else None),
+        board_revision_register=None,
+        board_revision_value=None,
         board_status_input=board_status_input,
         image_offset=image_offset, load_address=0,
         flash_size=flash_size,
@@ -820,5 +827,6 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     internal_secondary_seed = _configure_state_paths(
         config, path, image, overrides
     )
+    _infer_upper_nor(config, primary_image)
     _finalize_dump_status(config, image, internal_secondary_seed)
     return config

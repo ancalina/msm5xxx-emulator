@@ -16,6 +16,7 @@ from .arm import (
     thumb_bl_target,
     thumb_literal_value,
 )
+from .signatures import find_all
 
 
 DIRECT_MATRIX_TAIL = re.compile(
@@ -71,6 +72,14 @@ PRODUCER_FEATURES = {
         "halfword_write_index_store",
     ),
 }
+SAMSUNG_RAW_ENQUEUE_TAIL = bytes.fromhex(
+    "0e48120c417805784b1cdb06db0eab4206d009188f7041780131c906c90e4170"
+)
+SAMSUNG_RAW_DEQUEUE = bytes.fromhex(
+    "064a50781178884201d10020f74650180131c906c90e80781170f746"
+)
+SAMSUNG_RAW_RECEIVER_TAIL = bytes.fromhex("071c00d0")
+SAMSUNG_RAW_CONSUMER_EVIDENCE = "samsung-byte-ring32-r0-receiver-v1"
 
 
 def _producer_feature_names(word: int) -> tuple[str, ...]:
@@ -197,6 +206,45 @@ def validate_matrix_event_sink(
     if thumb_bl_target(image, callsite) != event_sink:
         return {"family": UNCLASSIFIED, "features": {}}
     return classify_matrix_event_sink(image, event_sink)
+
+
+def _samsung_raw_consumer_metadata(
+        image: bytes, event_sink: int, load_address: int
+) -> dict[str, object] | None:
+    """Recover one complete Samsung byte-ring observer chain."""
+    tail = event_sink + 0x4A
+    if (event_sink < 0 or event_sink & 1
+            or image[tail:tail + len(SAMSUNG_RAW_ENQUEUE_TAIL)]
+            != SAMSUNG_RAW_ENQUEUE_TAIL):
+        return None
+    ring = thumb_literal_value(image, tail, 0)
+    if ring is None or not 0x01000000 <= ring < 0x04000000:
+        return None
+    dequeues = [position for position in find_all(image, SAMSUNG_RAW_DEQUEUE)
+                if not position & 1
+                and thumb_literal_value(image, position, 2) == ring]
+    if len(dequeues) != 1:
+        return None
+    dequeue = dequeues[0]
+    receivers = [
+        tail - 4 for tail in find_all(image, SAMSUNG_RAW_RECEIVER_TAIL)
+        if tail >= 4 and not (tail - 4) & 1
+        and thumb_bl_target(image, tail - 4) == dequeue
+    ]
+    if len(receivers) != 1:
+        return None
+    receiver = receivers[0]
+    return {
+        "raw_ring": ring,
+        "raw_ring_capacity": 32,
+        "raw_enqueue_store": load_address + event_sink + 0x5E,
+        "raw_enqueue_register": 7,
+        "raw_dequeue": load_address + dequeue,
+        "raw_dequeue_return": load_address + dequeue + 0x1A,
+        "raw_task_entry": load_address + receiver + 4,
+        "raw_task_register": 0,
+        "raw_consumer_evidence": SAMSUNG_RAW_CONSUMER_EVIDENCE,
+    }
 
 
 def _thumb_inbound_entries(
@@ -420,6 +468,13 @@ def resolve_direct_matrix_input(
                 "reasons": reasons,
             })
         else:
+            if scanner["event_sink_family"] == SAMSUNG_RING32:
+                metadata = _samsung_raw_consumer_metadata(
+                    image, int(scanner["event_sink"]) - load_address,
+                    load_address,
+                )
+                if metadata is not None:
+                    scanner.update(metadata)
             accepted.append(scanner)
     if len(accepted) == 1:
         return accepted[0], "accepted", rejected

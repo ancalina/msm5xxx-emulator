@@ -104,6 +104,7 @@ def _phase_state(state: dict[str, object]) -> dict[str, object]:
             state, "secondary_flash_changed_pages"
         ),
         "secondary_flash_telemetry": _mapping(state, "secondary_flash_telemetry"),
+        "upper_flash_telemetry": _mapping(state, "upper_flash_telemetry"),
         "nand_reads": _counter(state, "nand_reads"),
         "nand_writes": _counter(state, "nand_writes"),
         "lcd_writes": _counter(state, "lcd_writes"),
@@ -171,6 +172,9 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
             "writes": _counter(state, "lcd_writes"),
             "protocol": state.get("lcd_protocol"),
             "frame_protocol": state.get("lcd_frame_protocol"),
+            "geometry_source": getattr(
+                config, "display_geometry_source", "external-config"
+            ),
         },
         "rex": {
             "idle_entries": _counter(state, "rex_idle_entries"),
@@ -189,6 +193,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
                 state, "secondary_flash_changed_pages"
             ),
             "secondary": _mapping(state, "secondary_flash_telemetry"),
+            "upper": _mapping(state, "upper_flash_telemetry"),
         },
         "eeprom": {
             "capacity": _counter(state, "eeprom_capacity"),

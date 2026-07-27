@@ -639,12 +639,37 @@ class NorStorageMixin:
 
     def _restore_flash_once(self, uc: Uc, address: int, size: int,
                             user_data: object) -> None:
+        secondary = getattr(self, "secondary_base", None)
+        secondary_flash = getattr(self, "secondary_flash", None)
+        secondary_size = (
+            len(secondary_flash.data) if secondary_flash is not None else 0
+        )
+        secondary_end = (
+            secondary + secondary_size if secondary is not None else 0
+        )
+        upper = getattr(self, "upper_base", None)
+        upper_flash = getattr(self, "upper_flash", None)
+        upper_end = upper + len(upper_flash.data) if upper is not None and upper_flash else 0
+        page_isolated_secondary = (
+            secondary is not None
+            and secondary % PAGE == 0
+            and secondary_size > 0
+            and secondary_size % PAGE == 0
+        )
         for target, data in self._flash_restore.items():
             uc.mem_write(target, data)
-            uc.ctl_remove_cache(target, target + len(data))
+            end = target + len(data)
+            # Secondary NOR contains data, not executable firmware.  Repeated
+            # invalidation of its temporary AMD command stores can crash the
+            # Unicorn backend; primary/code-bearing NOR still invalidates.
+            if not ((page_isolated_secondary and secondary <= target <= end <= secondary_end)
+                    or (upper is not None and upper <= target <= end <= upper_end)):
+                uc.ctl_remove_cache(target, end)
         self._flash_restore.clear()
 
     def save_flash(self) -> None:
         self.flash.save()
         if self.secondary_flash is not None:
             self.secondary_flash.save()
+        if getattr(self, "upper_flash", None) is not None:
+            self.upper_flash.save()

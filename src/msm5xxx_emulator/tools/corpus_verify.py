@@ -35,7 +35,9 @@ def main() -> int:
         raise SystemExit("steps/chunk steps must be non-negative; workers must be in 1..32")
     source_root = Path(__file__).resolve().parents[2]
     files = sorted(path for path in args.directory.rglob("*") if path.is_file()
-                   and path.suffix.lower() in (".bin", ".rom", ".dump"))
+                   and path.suffix.lower() in (
+                       ".bin", ".rom", ".dump", ".b16", ".bin_", ".ful"
+                   ))
     environment = dict(os.environ)
     # Keep the runner importable when it is launched from a source checkout,
     # but do not discard an explicit dependency path supplied by a test or

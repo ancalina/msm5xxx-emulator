@@ -118,6 +118,10 @@ class FirmwareConfig:
     runtime_overlays: list[CopyLayout]
     verified_model: str | None = None
     guest_owned_status_72c: bool = False
+    display_geometry_source: str = "external-config"
+    upper_flash_address: int | None = None
+    upper_flash_size: int = 0
+    upper_flash_state: str = ""
 
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)
@@ -132,7 +136,7 @@ class FirmwareConfig:
     def diagnostic_config(self) -> dict[str, object]:
         result = self.to_dict()
         for field in ("path", "flash_state", "secondary_flash_image",
-                      "secondary_flash_state", "nand_image"):
+                      "secondary_flash_state", "upper_flash_state", "nand_image"):
             result.pop(field, None)
         result["firmware"] = self.firmware_identity()
         return result

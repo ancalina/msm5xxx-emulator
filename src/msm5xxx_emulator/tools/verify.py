@@ -61,6 +61,8 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as directory:
             config.flash_state = str(Path(directory) / "flash.json")
             config.secondary_flash_state = str(Path(directory) / "secondary-flash.json")
+            if getattr(config, "upper_flash_address", None) is not None:
+                config.upper_flash_state = str(Path(directory) / "upper-flash.json")
             emulator = GenericMSMEmulator(config)
             try:
                 state = run_like_gui(

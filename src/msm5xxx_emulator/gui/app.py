@@ -30,7 +30,7 @@ from ..detection.firmware import (DEFAULT_STATE_ROOT, DISABLEABLE_ADDRESS_FIELDS
 from ..state_io import atomic_write_text, exclusive_path_lock
 from ..diagnostics.runtime_log import install_runtime_logging, record_exception
 from .controls import (
-    ControlsMixin, KEYS, LAYOUT, METRIC_TEXT,
+    ControlsMixin, LAYOUT, METRIC_TEXT,
     SETTINGS_ENGLISH, can_apply_live_framebuffer_format,
     merge_settings_overrides, settings_apply_mode,
 )
@@ -146,11 +146,12 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
                                 style="Phone.TButton", takefocus=False)
             button.grid(row=row, column=column, padx=2, pady=1)
             self.key_buttons[label] = button
-            bit = KEYS[label]
             button.bind("<ButtonPress-1>",
-                        lambda _event, b=bit: self._key(b, True, f"mouse:{b}"))
+                        lambda _event, key=label: self._mouse_key_press(key))
             button.bind("<ButtonRelease-1>",
-                        lambda _event, b=bit: self._key(b, False, f"mouse:{b}"))
+                        lambda _event, key=label: self._mouse_key_release(key))
+            button.bind("<Button-3>",
+                        lambda _event, key=label: self._edit_key_mapping(key))
 
         tools = ttk.Frame(outer, style="Phone.TFrame")
         tools.pack(pady=(2, 4))
@@ -306,7 +307,9 @@ def main() -> int:
     if firmware is None:
         root = tk.Tk()
         root.withdraw()
-        chosen = filedialog.askopenfilename(filetypes=(("Firmware", "*.bin"), ("All", "*")))
+        chosen = filedialog.askopenfilename(
+            filetypes=(("Firmware", "*.bin *.hex *.hxb"), ("All", "*"))
+        )
         root.destroy()
         if not chosen:
             LOGGER.info("firmware selection cancelled log=%s", session_log)

@@ -41,7 +41,9 @@ class Bgr444ProtocolMixin:
         if (geometry is not None
                 and geometry != (self.config.width, self.config.height)
                 and self.frame_sequence == 0):
-            self._set_display_geometry(*geometry, force=True)
+            self._set_display_geometry(
+                *geometry, source="runtime:cursor-bgr444", force=True
+            )
             for x0, y, words in self._lcd_bgr444_runs:
                 for offset, word in enumerate(words):
                     x = x0 + offset

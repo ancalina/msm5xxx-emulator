@@ -94,8 +94,6 @@ def runtime_status_text(latest: dict[str, object], ui_language: str) -> str:
         parts.append("Audio unavailable" if english else "오디오 재생기 없음")
     if latest.get("audio_error"):
         parts.append(f"{'Audio error' if english else '오디오 오류'}: {latest['audio_error']}")
-    if latest.get("input_error"):
-        parts.append(f"{'Input error' if english else '입력 오류'}: {latest['input_error']}")
     return "\n".join(parts)
 
 
@@ -112,7 +110,4 @@ def runtime_notice_text(latest: dict[str, object], ui_language: str) -> str:
     if latest.get("audio_error"):
         parts.append(f"{'Audio error' if english else '오디오 오류'}: "
                      f"{latest['audio_error']}")
-    if latest.get("input_error"):
-        parts.append(f"{'Input error' if english else '입력 오류'}: "
-                     f"{latest['input_error']}")
     return "\n".join(parts)

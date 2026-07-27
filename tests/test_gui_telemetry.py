@@ -22,9 +22,18 @@ from gui import (TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_POLL_ESCAPE_CAP,
 from msm5xxx_emulator.gui.display_view import (
     DISPLAY_REFRESH_MS, STATE_REFRESH_MS, DisplayViewMixin,
 )
+from msm5xxx_emulator.gui import repro as gui_repro
 
 
 class GuiTelemetryTests(unittest.TestCase):
+    def test_default_diagnostic_directory_survives_gui_module_split(self) -> None:
+        with mock.patch.object(gui_repro, "_diagnostic_session_log",
+                               return_value=None):
+            self.assertEqual(
+                gui_repro._diagnostic_directory(),
+                Path(gui_repro.__file__).resolve().parents[3] / "logs",
+            )
+
     def test_windows_without_lc_messages_uses_lc_ctype(self) -> None:
         windows_locale = SimpleNamespace(
             LC_CTYPE=0,
@@ -234,6 +243,7 @@ class GuiTelemetryTests(unittest.TestCase):
             model="SCH-X350",
             chipset="MSM5000",
             dump_status="complete",
+            display_geometry_source="runtime:gram",
             firmware_identity=lambda: {"sha256": "a" * 64},
         )
         payload = runtime_telemetry(
@@ -250,6 +260,7 @@ class GuiTelemetryTests(unittest.TestCase):
         })
         self.assertEqual(payload["eeprom"]["writes"], 2)
         self.assertEqual(payload["frame"]["sha256"], "precomputed")
+        self.assertEqual(payload["lcd"]["geometry_source"], "runtime:gram")
         self.assertEqual(payload["nor"]["primary_parallel_nor_direct_id_probes"], [])
 
         host_state = self._state(registers={

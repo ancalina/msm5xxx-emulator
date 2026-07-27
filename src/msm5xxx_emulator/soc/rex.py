@@ -4,6 +4,7 @@ from __future__ import annotations
 from ..detection.rex import REX_5MS_CALLBACK_SIZE
 from ..detection.rex import REX_IRQ_HANDLER_RUNTIME_SIZE
 from ..detection.rex import REX_IRQ_WRAPPER_RUNTIME_SIZE
+from ..detection.rex import REX_LEGACY_5MS_CALLBACK_SIZE
 from ..core.constants import REX_TICK_INTERVAL
 from ..detection.rex import REX_TICK_SIGNATURE
 from unicorn.arm_const import UC_ARM_REG_CPSR
@@ -21,20 +22,78 @@ from unicorn import Uc
 from unicorn import UcError
 from ..detection.arm import arm_b_word_target
 from ..detection.rex import rex_5ms_callback_at
+from ..detection.rex import rex_legacy_5ms_callback_shape_at
 from ..detection.rex import rex_sleep_call_at
 import struct
 
 
 class RexMixin:
+    def _rex_legacy_irq_route(self) -> dict[str, object] | None:
+        profile = getattr(self, "direct_input_profile", None)
+        bridge = (
+            profile.get("timer_bridge")
+            if isinstance(profile, dict) else None
+        )
+        route = (
+            bridge.get("irq_route")
+            if isinstance(bridge, dict)
+            and bridge.get("signature") == "legacy-rex-5ms-scanner-timer-v1"
+            else None
+        )
+        return (
+            route if isinstance(route, dict)
+            and route.get("controller_class") in {
+                "legacy-c80-two-bank-group10-v1",
+                "legacy-c80-three-bank-group14-v1",
+            }
+            and self._rex_legacy_irq_route_metadata_valid(route)
+            else None
+        )
+
+    @staticmethod
+    def _rex_legacy_irq_route_metadata_valid(route: dict[str, object]) -> bool:
+        """Keep runtime hooks inside a detector-closed controller grammar."""
+        status = route.get("status")
+        enable = route.get("enable")
+        if not isinstance(status, int) or not isinstance(enable, int):
+            return False
+        controller_class = route.get("controller_class")
+        if controller_class == "legacy-c80-two-bank-group10-v1":
+            banks = (status, status + 4)
+            clear_banks = banks
+            writes = (enable, enable + 4)
+            count, row_size, aperture = 2, 10, (status, enable + 6)
+        elif controller_class == "legacy-c80-three-bank-group14-v1":
+            banks = (status, status + 4, status + 0x30)
+            clear_banks = (status, status + 4, enable + 0x38)
+            writes = (enable, enable + 4, enable + 0x30)
+            count, row_size, aperture = 3, 14, (status, enable + 0x3A)
+        else:
+            return False
+        return (
+            route.get("status_banks") == banks
+            and route.get("clear_banks") == clear_banks
+            and route.get("controller_write_banks") == writes
+            and route.get("controller_aperture") == aperture
+            and route.get("status_bank_count") == count
+            and route.get("group_row_size") == row_size
+        )
+
     def _rex_irq_status_write(self, uc: Uc, access: int, address: int,
                               size: int, value: int,
                               user_data: object) -> None:
-        """Apply partial guest W1C writes to two 16-bit status banks."""
+        """Apply partial guest W1C writes to detector-closed status banks."""
         status = getattr(self.config, "rex_irq_status_address", None)
         if status is None or size <= 0:
             return
+        route = self._rex_legacy_irq_route()
+        if not self._rex_irq_shadow_access_allowed(uc, route):
+            return
         incoming = value.to_bytes(size, "little")
-        for index, bank in enumerate((status, status + 4)):
+        banks = route["clear_banks"] if route is not None else (
+            status, status + 4,
+        )
+        for index, bank in enumerate(banks):
             left = max(address, bank)
             right = min(address + size, bank + 2)
             if left < right:
@@ -42,17 +101,44 @@ class RexMixin:
                 clear = int.from_bytes(
                     incoming[offset:offset + right - left], "little"
                 ) << ((left - bank) * 8)
-                self._rex_irq_pending[index] &= ~clear & 0xFFFF
+                if index < len(self._rex_irq_pending):
+                    self._rex_irq_pending[index] &= ~clear & 0xFFFF
 
     def _rex_irq_status_read(self, uc: Uc, access: int, address: int,
                              size: int, value: int,
                              user_data: object) -> None:
         """Refresh guest backing from controller status shadow before reads."""
         status = getattr(self.config, "rex_irq_status_address", None)
-        if status is not None:
+        if status is None:
+            return
+        route = self._rex_legacy_irq_route()
+        if not self._rex_irq_shadow_access_allowed(uc, route):
+            return
+        if route is None or route["status_bank_count"] == 2:
             uc.mem_write(status, struct.pack("<I", self._rex_irq_pending[0]))
             uc.mem_write(status + 4,
                          struct.pack("<I", self._rex_irq_pending[1]))
+            return
+        banks = route["status_banks"]
+        for index, bank in enumerate(banks):
+            if index < len(self._rex_irq_pending):
+                uc.mem_write(bank, struct.pack("<H", self._rex_irq_pending[index]))
+
+    @staticmethod
+    def _rex_irq_shadow_access_allowed(
+            uc: Uc, route: dict[str, object] | None) -> bool:
+        """Keep group14 boot-time controller accesses guest-owned."""
+        if (route is None or route.get("controller_class")
+                != "legacy-c80-three-bank-group14-v1"):
+            return True
+        handler = route.get("handler")
+        length = route.get("handler_validation_size")
+        return (
+            isinstance(handler, int)
+            and isinstance(length, int)
+            and length > 0
+            and handler <= (uc.reg_read(UC_ARM_REG_PC) & ~1) < handler + length
+        )
 
     def _rex_firmware_matches(self, uc: Uc, target: int, length: int,
                               validator=None) -> bool:
@@ -85,13 +171,56 @@ class RexMixin:
         mask = getattr(self.config, "rex_irq_mask", 0)
         if (wrapper is None or handler is None or handler_slot is None
                 or callback_slot is None or tick is None or status is None
-                or status & 3 or enable != status + 8 or mask != 0x0200
-                or not self._rex_firmware_matches(
-                    uc, wrapper, REX_IRQ_WRAPPER_RUNTIME_SIZE)
-                or not self._rex_firmware_matches(
-                    uc, handler, REX_IRQ_HANDLER_RUNTIME_SIZE)
-                or not self._rex_firmware_matches(
-                    uc, tick, REX_5MS_CALLBACK_SIZE, rex_5ms_callback_at)):
+                or status & 3 or mask != 0x0200):
+            return False
+        legacy = self._rex_legacy_irq_route()
+        if legacy is None:
+            valid_firmware = enable == status + 8 and (
+                self._rex_firmware_matches(
+                    uc, wrapper, REX_IRQ_WRAPPER_RUNTIME_SIZE
+                )
+                and self._rex_firmware_matches(
+                    uc, handler, REX_IRQ_HANDLER_RUNTIME_SIZE
+                )
+                and self._rex_firmware_matches(
+                    uc, tick, REX_5MS_CALLBACK_SIZE, rex_5ms_callback_at
+                )
+            )
+        else:
+            wrapper_size = legacy.get("wrapper_validation_size")
+            handler_size = legacy.get("handler_validation_size")
+            if not all(
+                isinstance(length, int) and length > 0
+                for length in (wrapper_size, handler_size)
+            ):
+                return False
+            route_fields = {
+                "outer_callback": tick,
+                "wrapper": wrapper,
+                "handler": handler,
+                "handler_slot": handler_slot,
+                "callback_slot": callback_slot,
+                "status": status,
+                "enable": enable,
+                "mask": mask,
+            }
+            valid_firmware = (
+                all(value == legacy.get(field)
+                    for field, value in route_fields.items())
+                and status is not None
+                and enable == status + 0x14
+                and self._rex_firmware_matches(
+                    uc, wrapper, wrapper_size
+                )
+                and self._rex_firmware_matches(
+                    uc, handler, handler_size
+                )
+                and self._rex_firmware_matches(
+                    uc, tick, REX_LEGACY_5MS_CALLBACK_SIZE,
+                    rex_legacy_5ms_callback_shape_at,
+                )
+            )
+        if not valid_firmware:
             return False
         try:
             installed_handler = struct.unpack(
@@ -168,7 +297,8 @@ class RexMixin:
             self._rex_tick_context = None
             return
         post_sleep = False
-        if self.config.rex_tick_ms == 5:
+        legacy = self._rex_legacy_irq_route()
+        if self.config.rex_tick_ms == 5 and legacy is None:
             start = address - 46
             expected_sleep = self._original_runtime_bytes(start, 56)
             try:
@@ -189,9 +319,16 @@ class RexMixin:
                         and self._thumb_runtime_matches(
                             uc, tick_address, REX_TICK_SIGNATURE))
         if tick_address is not None and not tick_matches:
-            tick_matches = self._rex_firmware_matches(
-                uc,
-                tick_address, REX_5MS_CALLBACK_SIZE, rex_5ms_callback_at
+            tick_matches = (
+                self._rex_firmware_matches(
+                    uc, tick_address, REX_LEGACY_5MS_CALLBACK_SIZE,
+                    rex_legacy_5ms_callback_shape_at,
+                )
+                if legacy is not None else
+                self._rex_firmware_matches(
+                    uc, tick_address, REX_5MS_CALLBACK_SIZE,
+                    rex_5ms_callback_at,
+                )
             )
         if (tick_address is None
                 or not tick_matches
@@ -199,7 +336,7 @@ class RexMixin:
                 or self.instructions < self.rex_next_instruction):
             return
         if self.config.rex_tick_ms == 5:
-            if (not post_sleep
+            if ((legacy is None and not post_sleep)
                     or getattr(self.config, "rex_irq_wrapper_address", None) is None
                     or not self._rex_irq_route_valid(uc, stack=True)):
                 return

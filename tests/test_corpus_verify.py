@@ -40,7 +40,7 @@ class CorpusVerifyIsolationTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, output, "")
 
         with tempfile.TemporaryDirectory() as firmware_directory:
-            (Path(firmware_directory) / "phone.bin").write_bytes(b"firmware")
+            (Path(firmware_directory) / "phone.b16").write_bytes(b"firmware")
             arguments = ["corpus_verify.py", firmware_directory, "--steps", "1",
                          "--workers", "1"]
             with mock.patch.object(corpus_verify.subprocess, "run", side_effect=run):

@@ -231,6 +231,10 @@ class RuntimeMixin:
                 self.secondary_flash.telemetry()
                 if self.secondary_flash is not None else None
             ),
+            "upper_flash_changed_pages": (len(getattr(self, "upper_flash", None).changed_pages)
+                                          if getattr(self, "upper_flash", None) is not None else 0),
+            "upper_flash_telemetry": (getattr(self, "upper_flash", None).telemetry()
+                                       if getattr(self, "upper_flash", None) is not None else None),
             "eeprom_capacity": self.eeprom_capacity,
             "eeprom_reads": self.eeprom_reads,
             "eeprom_read_bytes": self.eeprom_read_bytes,
@@ -249,8 +253,11 @@ class RuntimeMixin:
                 self.input_profile[0] if self.input_profile else "gpio"
             ),
             "input_mode": (
-                "firmware-consumed" if self.firmware_key_events else
+                "firmware-consumed"
+                if (direct_input_profile is not None
+                    and getattr(self, "direct_matrix_task_consumer_events", 0)) else
                 "direct-matrix" if direct_input_profile is not None else
+                "firmware-consumed" if self.firmware_key_events else
                 "candidate-register" if self.config.key_register is not None else
                 "not-detected"
             ),
@@ -262,6 +269,11 @@ class RuntimeMixin:
             "input_error": self.input_error,
             "input_events": self.input_events,
             "firmware_key_events": self.firmware_key_events,
+            "firmware_key_events_semantics": (
+                "scanner-to-raw-enqueue-call-edge"
+                if direct_input_profile is not None else
+                "post-read-candidate-consumer"
+            ),
             "input_register_reads": getattr(self, "key_register_reads", 0),
             "input_register_read_pcs": [
                 {"pc": f"0x{pc:08X}", "reads": reads}
@@ -278,6 +290,10 @@ class RuntimeMixin:
                 direct_input_profile["evidence"]
                 if direct_input_profile is not None else None
             ),
+            "direct_matrix_consumer_evidence": (
+                direct_input_profile.get("raw_consumer_evidence")
+                if direct_input_profile is not None else None
+            ),
             "direct_matrix_grammar_fingerprint": (
                 direct_input_profile["grammar_fingerprint"]
                 if direct_input_profile is not None else None
@@ -292,12 +308,31 @@ class RuntimeMixin:
             "direct_matrix_sink_events": getattr(
                 self, "direct_matrix_sink_events", 0
             ),
+            "direct_matrix_raw_enqueue_events": getattr(
+                self, "direct_matrix_raw_enqueue_events", 0
+            ),
+            "direct_matrix_dequeue_events": getattr(
+                self, "direct_matrix_dequeue_events", 0
+            ),
+            "direct_matrix_task_consumer_events": getattr(
+                self, "direct_matrix_task_consumer_events", 0
+            ),
             "direct_matrix_mapped_keys": len(getattr(
                 self, "direct_input_positions", {}
             )),
             "input_transport": (
-                "direct-matrix+consumer"
-                if direct_input_profile is not None and self.firmware_key_events else
+                "direct-matrix+task-consumer"
+                if (direct_input_profile is not None
+                    and getattr(self, "direct_matrix_task_consumer_events", 0)) else
+                "direct-matrix+dequeue"
+                if (direct_input_profile is not None
+                    and getattr(self, "direct_matrix_dequeue_events", 0)) else
+                "direct-matrix+raw-enqueue"
+                if (direct_input_profile is not None
+                    and getattr(self, "direct_matrix_raw_enqueue_events", 0)) else
+                "direct-matrix+call-edge"
+                if (direct_input_profile is not None
+                    and getattr(self, "direct_matrix_sink_events", 0)) else
                 "direct-matrix-observed"
                 if (direct_input_profile is not None
                     and getattr(self, "direct_matrix_scans", 0)) else
@@ -336,6 +371,7 @@ class RuntimeMixin:
     def _light_runtime_state(self, control_sink: int | None) -> dict[str, object]:
         """Return only fields needed by the live GUI between full checkpoints."""
         secondary = self.secondary_flash
+        upper = getattr(self, "upper_flash", None)
         return {
             "instructions": self.instructions,
             "reset_entries": self.reset_entries,
@@ -364,6 +400,11 @@ class RuntimeMixin:
                  "erases": secondary.erase_operations}
                 if secondary is not None else None
             ),
+            "upper_flash_changed_pages": len(upper.changed_pages) if upper else 0,
+            "upper_flash_telemetry": ({"reads": upper.read_operations,
+                                        "programs": upper.program_operations,
+                                        "erases": upper.erase_operations}
+                                       if upper else None),
             "nand_reads": self.nand_reads,
             "nand_writes": self.nand_writes,
             "audio_play_requests": self.audio_play_requests,

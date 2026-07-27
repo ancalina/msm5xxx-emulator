@@ -22,8 +22,7 @@ from ..detection.boot import busy_delay_addresses
 from ..detection.display import detect_lcd_width_hint
 from ..detection.firmware import ADDRESS_SPACE
 from ..detection.firmware import MAX_FLASH_SIZE
-from ..detection.input import detect_input_profile
-from ..detection.input_matrix import resolve_direct_matrix_input
+from ..detection.firmware_image import load_firmware_image
 from ..detection.memory_layout import aligned
 from ..detection.memory_layout import interval_gaps
 from ..detection.memory_layout import restore_sparse_nor_gap
@@ -165,6 +164,8 @@ class LifecycleMixin:
             secondary_base = None
         if secondary_base is not None and not config.secondary_flash_state:
             raise ValueError("secondary flash state path is empty")
+        if config.upper_flash_address is not None and not config.upper_flash_state:
+            raise ValueError("upper flash state path is empty")
         return flash_end, ram_end, secondary_base
 
     def _prepare_state_paths(
@@ -178,6 +179,8 @@ class LifecycleMixin:
             config.secondary_flash_state = str(resolved_path(
                 config.secondary_flash_state
             ))
+        if config.upper_flash_address is not None:
+            config.upper_flash_state = str(resolved_path(config.upper_flash_state))
         eeprom_enabled = (
             config.eeprom_geometry_address is not None
             and (config.eeprom_read_address is not None
@@ -191,6 +194,10 @@ class LifecycleMixin:
             persistent_outputs.append((
                 "secondary flash state",
                 resolved_path(config.secondary_flash_state),
+            ))
+        if config.upper_flash_address is not None:
+            persistent_outputs.append((
+                "upper flash state", resolved_path(config.upper_flash_state),
             ))
         if eeprom_enabled:
             persistent_outputs.append(("EEPROM state", eeprom_state_path))
@@ -211,6 +218,8 @@ class LifecycleMixin:
             state_locks.append((
                 "secondary state lock", lock_path(config.secondary_flash_state)
             ))
+        if config.upper_flash_address is not None:
+            state_locks.append(("upper state lock", lock_path(config.upper_flash_state)))
         if eeprom_enabled:
             state_locks.append(("EEPROM state lock", lock_path(eeprom_state_path)))
         write_targets.extend(state_locks)
@@ -245,7 +254,11 @@ class LifecycleMixin:
     def _load_primary_image(
             self, config: FirmwareConfig,
             secondary_base: int | None) -> tuple[bytes, bytes]:
-        raw = Path(config.path).read_bytes()
+        loaded = load_firmware_image(Path(config.path))
+        if (loaded.source_size != config.file_size
+                or loaded.source_sha256 != config.firmware_sha256):
+            raise ValueError("firmware source changed after detection")
+        raw = loaded.image
         if not 0 <= config.image_offset < len(raw):
             raise ValueError("image offset outside firmware")
         available, _sparse_gap = restore_sparse_nor_gap(
@@ -288,6 +301,8 @@ class LifecycleMixin:
         self.image = bytes(self.flash.data)
         self.secondary_flash: NORFlash | None = None
         self.secondary_base: int | None = secondary_base
+        self.upper_flash: NORFlash | None = None
+        self.upper_base: int | None = config.upper_flash_address
         self._lazy_secondary_attempted: set[int] = set()
         if secondary_base is not None:
             secondary_end = secondary_base + config.secondary_flash_size
@@ -324,6 +339,19 @@ class LifecycleMixin:
             else:
                 seed = b"\xff" * config.secondary_flash_size
             self.secondary_flash = NORFlash(seed, Path(config.secondary_flash_state))
+        if self.upper_base is not None:
+            upper_end = self.upper_base + config.upper_flash_size
+            if (self.upper_base != 0x02800000 or config.upper_flash_size != 0x00800000
+                    or upper_end != 0x03000000):
+                raise ValueError("invalid upper flash range")
+            if (max(self.upper_base, config.load_address) < min(upper_end, config.load_address + len(self.image))
+                    or max(self.upper_base, config.ram_base) < min(upper_end, ram_end)
+                    or secondary_base is not None and max(self.upper_base, secondary_base) < min(upper_end, secondary_base + config.secondary_flash_size)
+                    or config.nand_enabled and any(max(self.upper_base, start) < min(upper_end, end)
+                                                   for start, end in NAND_MMIO_RANGES)):
+                raise ValueError("upper flash overlaps configured storage")
+            self.upper_flash = NORFlash(b"\xff" * config.upper_flash_size,
+                                        Path(config.upper_flash_state))
         self.eeprom_enabled = eeprom_enabled
         self.eeprom_state_path = eeprom_state_path
         self.eeprom_data = bytearray()
@@ -346,6 +374,10 @@ class LifecycleMixin:
                 secondary_base, secondary_base + config.secondary_flash_size,
                 "secondary flash",
             ))
+        if self.upper_base is not None:
+            storage_ranges.append((self.upper_base,
+                                   self.upper_base + config.upper_flash_size,
+                                   "upper flash"))
         register_ranges = []
         if config.key_register is not None:
             register_ranges.append((config.key_register, config.key_register + 4,
@@ -427,6 +459,8 @@ class LifecycleMixin:
             ranges.extend((start, end - start) for start, end in NAND_MMIO_RANGES)
         if secondary_base is not None:
             ranges.append((secondary_base, config.secondary_flash_size))
+        if self.upper_base is not None:
+            ranges.append((self.upper_base, config.upper_flash_size))
         if config.board_revision_register is not None:
             ranges.append((config.board_revision_register, 4))
         mapped_ranges: list[tuple[int, int]] = []
@@ -449,6 +483,8 @@ class LifecycleMixin:
         self.uc.mem_write(0xFFFFF000, b"\xff" * PAGE)
         if secondary_base is not None and self.secondary_flash is not None:
             self.uc.mem_write(secondary_base, bytes(self.secondary_flash.data))
+        if self.upper_base is not None and self.upper_flash is not None:
+            self.uc.mem_write(self.upper_base, bytes(self.upper_flash.data))
         if ram_seed:
             self.uc.mem_write(config.ram_base, ram_seed)
         self.flash.ids = self._detect_primary_flash_ids()
@@ -514,9 +550,11 @@ class LifecycleMixin:
         self._rex_tick_return_address: int | None = None
         self._rex_tick_context: tuple[tuple[int, int], ...] | None = None
         self._rex_irq_pending = [0, 0]
+        self._rex_irq_controller_aperture: tuple[int, int] | None = None
         self.rex_irq_deliveries = 0
         self.board_adc_reads = 0
         self._board_adc_reader_channel: int | None = None
+        self._board_adc_reader_layout_cache: tuple[bytes | None, int | None] | None = None
         self.flash_id_reads = 0
         self.fast_crc16_calls = 0
         self.fast_dmd_downloads = 0
@@ -671,6 +709,8 @@ class LifecycleMixin:
 
     def _init_display_protocol_state(self, config: FirmwareConfig) -> None:
         self._lg_pixels: list[int] = []
+        self._lcd_lgfa_window_order: list[int] = []
+        self._lcd_lgfa_window: tuple[int, int] | None = None
         self._lcd_mode = 0
         self._lcd_command = 0
         self._lcd_args: list[int] = []
@@ -693,6 +733,9 @@ class LifecycleMixin:
         # short grammar until it proves itself; all other traffic stays on
         # the existing parallel/page path.
         self._lcd_028_direct_probe: list[tuple[int, int, int]] = []
+        self._lcd_028_rgb332_probe: list[tuple[int, int, int]] = []
+        self._lcd_028_rgb332_window = (0, 0, 0, 0)
+        self._lcd_028_rgb332_qualified = False
         # Some byte-wide controllers send complete 128-pixel RGB565 rows as
         # 0/base-command/+2-high/+2-low packets.  Hold only this exact
         # grammar; a mismatch is replayed through the established decoders.
@@ -756,45 +799,6 @@ class LifecycleMixin:
         self._chunk_unmapped: dict[str, int | str] | None = None
         self._lcd_mmio_extended_mapped = False
 
-    def _init_input_state(self, config: FirmwareConfig) -> None:
-        self.held_keys: set[int] = set()
-        self.key_baselines: dict[int, int] = {}
-        self.key_press_read_epochs: dict[int, int] = {}
-        self.key_read_epoch = 0
-        self.key_register_reads = 0
-        self.key_register_read_pcs: Counter[int] = Counter()
-        self.input_profile = detect_input_profile(self.image, config.load_address)
-        if config.key_register is None:
-            (
-                self.direct_input_profile,
-                self.direct_input_detection,
-                self.direct_input_rejections,
-            ) = resolve_direct_matrix_input(self.image, config.load_address)
-        else:
-            self.direct_input_profile = None
-            self.direct_input_detection = "explicit-key-register-override"
-            self.direct_input_rejections = []
-        self.direct_input_positions = self._direct_matrix_positions(
-            self.direct_input_profile
-        )
-        self.direct_key_scan_epochs: dict[int, int] = {}
-        self.direct_matrix_scans = 0
-        self.direct_matrix_active_reads = 0
-        self.direct_matrix_sink_events = 0
-        self.input_error = ""
-        self.input_events = 0
-        self.firmware_key_events = 0
-        if self.direct_input_profile is not None:
-            self.uc.hook_add(
-                UC_HOOK_CODE,
-                self._direct_input_event_observed,
-                begin=int(self.direct_input_profile["event_sink"]),
-                end=int(self.direct_input_profile["event_sink"]),
-            )
-        elif self.input_profile is not None:
-            self.uc.hook_add(UC_HOOK_CODE, self._input_entry_observed,
-                             begin=self.input_profile[1], end=self.input_profile[1])
-
     def _init_nor_probe_state(self) -> None:
         self._flash_restore: dict[int, bytes] = {}
         # T720 and Motorola MSM510x firmware directly issue Intel's ID
@@ -818,8 +822,9 @@ class LifecycleMixin:
             eeprom_enabled: bool) -> None:
         self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, self._unmapped)
         self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x03000000, end=0x03FFFFFF)
-        self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x02800000, end=0x02800FFF)
-        self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x02C00000, end=0x02C00FFF)
+        if self.upper_flash is None:
+            self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x02800000, end=0x02800FFF)
+            self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x02C00000, end=0x02C00FFF)
         flash_end = config.load_address + len(self.image)
         open_bus_exclusions = [
             *NAND_MMIO_RANGES,
@@ -839,6 +844,9 @@ class LifecycleMixin:
             open_bus_exclusions.append((
                 secondary_base, secondary_base + config.secondary_flash_size
             ))
+        if self.upper_base is not None:
+            open_bus_exclusions.append((self.upper_base,
+                                        self.upper_base + config.upper_flash_size))
         for left, right in interval_gaps(
                 flash_end, config.ram_base, open_bus_exclusions):
             self.uc.hook_add(UC_HOOK_MEM_READ, self._open_bus_read,
@@ -857,9 +865,11 @@ class LifecycleMixin:
                              begin=config.board_revision_register,
                              end=config.board_revision_register + 3)
         self.uc.hook_add(UC_HOOK_MEM_WRITE, self._lcd_write,
-                         begin=0x02000000, end=0x02800FFF)
-        self.uc.hook_add(UC_HOOK_MEM_WRITE, self._lcd_write,
-                         begin=0x02C00000, end=0x02C00FFF)
+                         begin=0x02000000,
+                         end=0x027FFFFF if self.upper_flash is not None else 0x02800FFF)
+        if self.upper_flash is None:
+            self.uc.hook_add(UC_HOOK_MEM_WRITE, self._lcd_write,
+                             begin=0x02C00000, end=0x02C00FFF)
         if config.framebuffer_flush_address is not None:
             self.uc.hook_add(UC_HOOK_CODE, self._framebuffer_rows,
                              begin=config.framebuffer_flush_address,
@@ -893,6 +903,15 @@ class LifecycleMixin:
                 self.uc.hook_add(UC_HOOK_CODE, self._secondary_flash_write_fast,
                                  begin=config.secondary_flash_write_address,
                                  end=config.secondary_flash_write_address)
+        if self.upper_base is not None and self.upper_flash is not None:
+            self.uc.hook_add(UC_HOOK_MEM_WRITE, self._flash_write,
+                             begin=self.upper_base,
+                             end=self.upper_base + config.upper_flash_size - 1,
+                             user_data=(self.upper_base, self.upper_flash))
+            self.uc.hook_add(UC_HOOK_MEM_READ, self._flash_read,
+                             begin=self.upper_base,
+                             end=self.upper_base + config.upper_flash_size - 1,
+                             user_data=(self.upper_base, self.upper_flash))
         if eeprom_enabled:
             if config.eeprom_read_address is not None:
                 self.uc.hook_add(UC_HOOK_CODE, self._eeprom_read_fast,
@@ -963,17 +982,21 @@ class LifecycleMixin:
         if config.rex_idle_address is not None:
             self.uc.hook_add(UC_HOOK_CODE, self._rex_tick,
                              begin=config.rex_idle_address, end=config.rex_idle_address)
+        aperture = self._rex_irq_controller_aperture
         if (config.rex_irq_wrapper_address is not None
                 and config.rex_irq_status_address is not None):
+            if not (isinstance(aperture, tuple) and len(aperture) == 2):
+                aperture = (
+                    config.rex_irq_status_address,
+                    config.rex_irq_status_address + 8,
+                )
             self.uc.hook_add(
                 UC_HOOK_MEM_WRITE, self._rex_irq_status_write,
-                begin=config.rex_irq_status_address,
-                end=config.rex_irq_status_address + 7,
+                begin=int(aperture[0]), end=int(aperture[1]) - 1,
             )
             self.uc.hook_add(
                 UC_HOOK_MEM_READ, self._rex_irq_status_read,
-                begin=config.rex_irq_status_address,
-                end=config.rex_irq_status_address + 7,
+                begin=int(aperture[0]), end=int(aperture[1]) - 1,
             )
         if config.board_adc_address is not None:
             self.uc.hook_add(UC_HOOK_CODE, self._board_adc,

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import struct
 
-from .arm import thumb_bl_target, thumb_literal_value
+from .arm import arm_b_word_target, thumb_bl_target, thumb_literal_value
 
 
 REX_TICK_SIGNATURE = bytes.fromhex("00b500f08ffb08bc1847")
@@ -13,6 +13,8 @@ REX_5MS_WRAPPER_ANCHOR = bytes.fromhex(
 )
 REX_5MS_CALLBACK_SIZE = 64
 REX_TIMER_ADVANCE_SIZE = 70
+REX_LEGACY_5MS_CALLBACK_SIZE = 68
+REX_TIMER_CALLBACK_DRAIN_SIZE = 40
 
 
 REX_IRQ_WRAPPER_SIGNATURE = bytes.fromhex(
@@ -32,6 +34,41 @@ REX_IRQ_DRAIN_PATTERN = re.compile(
     rb"\x08\x43\x1f\xd1.{4}\x47\x48\x00\x88\x01\x28\x03\xd1"
     rb".{4}\x00\x28\xfb\xd1", re.S,
 )
+THUMB_BL_PATTERN = re.compile(
+    rb"[\x00-\xff][\xf0-\xf7][\x00-\xff][\xf8-\xff]", re.S,
+)
+REX_5MS_REGISTRATION_PATTERN = re.compile(
+    rb"[\x00-\xff][\x49-\x4f]\x1c\x20", re.S,
+)
+REX_5MS_ARM_PATTERN = re.compile(
+    rb"[\x00-\xff][\x49-\x4f]\x02\x20\x08\x70"
+    rb"[\x00-\xff][\x49-\x4f]\x1c\x20"
+    rb"[\x00-\xff][\xf0-\xf7][\x00-\xff][\xf8-\xff]", re.S,
+)
+
+
+def _rex_5ms_registration_targets(
+        image: bytes, tick_address: int, runtime_code=None,
+) -> list[int]:
+    """Return exact timer-registrar targets without sweeping every halfword."""
+    targets: list[int] = []
+    candidates = {
+        match.start() for match in REX_5MS_REGISTRATION_PATTERN.finditer(image)
+        if not match.start() & 1 and match.start() < len(image) - 8
+    }
+    positions = (range(0, len(image) - 8, 2)
+                 if runtime_code is not None else sorted(candidates))
+    for position in positions:
+        mapped = runtime_code(position) if runtime_code is not None else position
+        if (mapped is None or position not in candidates
+                or thumb_literal_value(image, position, 1)
+                != tick_address | 1):
+            continue
+        target = thumb_bl_target(image, position + 4)
+        if (target is not None and 0 <= target < len(image)
+                and (runtime_code is None or runtime_code(target) is not None)):
+            targets.append(target)
+    return targets
 
 
 def rex_timer_advance_at(image: bytes, position: int) -> bool:
@@ -68,6 +105,124 @@ def rex_timer_advance_at(image: bytes, position: int) -> bool:
         and bl(32)
         and words[34] == 0xBDF0
     )
+
+
+def legacy_rex_timer_advance_at(image: bytes, position: int) -> bool:
+    """Validate the older register-renamed REX delta-timer walker."""
+    if position < 0 or position + 0x38 > len(image):
+        return False
+    return (
+        image[position:position + 2] == b"\xf0\xb5"
+        and b"\xa0\x42" in image[position:position + 0x30]
+        and b"\x00\x20\xb8\x60" in image[position:position + 0x38]
+    )
+
+
+def legacy_software_timer_advance_at(image: bytes, position: int) -> bool:
+    """Validate the paired callback-work timer list used by old LG BSPs."""
+    if position < 0 or position + 56 > len(image):
+        return False
+    words = struct.unpack_from("<28H", image, position)
+    return (
+        image[position:position + 6] == b"\xf8\xb5\x04\x1c\x0f\x1c"
+        and words[8:12] == (0x6860, 0x2800, 0xD025, 0x6881)
+        and words[12:16] == (0x1BC9, 0x6081, 0xE01E, 0x6867)
+        and words[16:20] == (0x6938, 0x68B9, 0x1A46, 0x1C38)
+        and words[24:28] == (0x2800, 0xD008, 0x6138, 0x60B8)
+    )
+
+
+def _legacy_rex_timer_target(image: bytes, position: int) -> int | None:
+    if legacy_rex_timer_advance_at(image, position):
+        return position
+    if (position < 0 or position + 10 > len(image)
+            or image[position:position + 2] != b"\x00\xb5"
+            or image[position + 6:position + 10] != b"\x08\xbc\x18\x47"):
+        return None
+    walker = thumb_bl_target(image, position + 2)
+    return (
+        walker if walker is not None
+        and legacy_rex_timer_advance_at(image, walker) else None
+    )
+
+
+def rex_legacy_5ms_callback_shape_at(
+        image: bytes, position: int
+) -> tuple[int, int] | None:
+    """Return local BL indexes for one old dual-list 5-unit callback."""
+    if position < 0 or position + REX_LEGACY_5MS_CALLBACK_SIZE > len(image):
+        return None
+    words = struct.unpack_from("<34H", image, position)
+    if words[0] == 0xB580:
+        rex_call, software_call = 21, 25
+        fixed = {
+            3: 0x0407, 4: 0x0C3F, 5: 0x2105,
+            12: 0x0880, 13: 0xD301, 15: 0xE000,
+            17: 0x6808, 18: 0x3805, 19: 0x6008, 20: 0x2005,
+            23: 0x2105, 27: 0x2F00, 28: 0xD101,
+            31: 0xBC80, 32: 0xBC08, 33: 0x4718,
+        }
+        literal_indexes = (6, 9, 14, 16, 24)
+    elif words[0] == 0xB590:
+        rex_call, software_call = 22, 26
+        fixed = {
+            3: 0x0407, 4: 0x0C3F, 6: 0x2105, 7: 0x1C20,
+            13: 0x0880, 14: 0xD301, 16: 0xE000,
+            18: 0x6808, 19: 0x3805, 20: 0x6008, 21: 0x2005,
+            24: 0x2105, 28: 0x2F00, 29: 0xD101,
+        }
+        literal_indexes = (5, 10, 15, 17, 25)
+    else:
+        return None
+    if (any(words[index] != value for index, value in fixed.items())
+            or any(words[index] & 0xF800 != 0x4800
+                   for index in literal_indexes)
+            or any(
+                words[index] & 0xF800 != 0xF000
+                or words[index + 1] & 0xF800 != 0xF800
+                for index in (rex_call, software_call)
+            )):
+        return None
+    return rex_call, software_call
+
+
+def rex_legacy_5ms_callback_at(
+        image: bytes, position: int
+) -> tuple[int, int] | None:
+    """Return closed REX/software walkers from one old 5-unit callback."""
+    calls = rex_legacy_5ms_callback_shape_at(image, position)
+    if calls is None:
+        return None
+    rex = thumb_bl_target(image, position + calls[0] * 2)
+    software = thumb_bl_target(image, position + calls[1] * 2)
+    if (rex is None or software is None
+            or _legacy_rex_timer_target(image, rex) is None
+            or not legacy_software_timer_advance_at(image, software)):
+        return None
+    return rex, software
+
+
+def rex_timer_callback_drain_at(image: bytes, position: int) -> int | None:
+    """Validate one callback-work queue drain and return its queue address."""
+    if position < 0 or position + REX_TIMER_CALLBACK_DRAIN_SIZE > len(image):
+        return None
+    words = struct.unpack_from("<20H", image, position)
+    if not (
+        words[0] == 0xB580
+        and words[1] & 0xF800 == 0x4800
+        and words[2] & 0xF800 == 0xF000
+        and words[3] & 0xF800 == 0xF800
+        and words[4:9] == (0x1C07, 0xD00A, 0x68F8, 0x6939, 0x68BA)
+        and words[9] & 0xF800 == 0xF000
+        and words[10] & 0xF800 == 0xF800
+        and words[11:20] == (
+            0x2000, 0x7138, 0x2001, 0xBC80, 0xBC08,
+            0x4718, 0x2000, 0xE7FA, 0x0000,
+        )
+    ):
+        return None
+    queue = thumb_literal_value(image, position + 2, 0)
+    return queue if queue is not None and 0x01000000 <= queue < 0x02000000 else None
 
 
 def rex_5ms_callback_at(image: bytes, position: int) -> int | None:
@@ -181,28 +336,27 @@ def find_trampm5_consumer(image: bytes) -> int | None:
 
 def find_rex_5ms_irq_arm(image: bytes, tick_position: int) -> int | None:
     """Find one MMIO byte arm bound to this 5 ms callback registrar."""
-    registration_targets: list[int] = []
-    for position in range(0, len(image) - 8, 2):
-        if (thumb_literal_value(image, position, 1) == tick_position | 1
-                and struct.unpack_from("<H", image, position + 2)[0]
-                == 0x201C):
-            target = thumb_bl_target(image, position + 4)
-            if target is not None and 0 <= target < len(image):
-                registration_targets.append(target)
+    registration_targets = _rex_5ms_registration_targets(
+        image, tick_position
+    )
     if (len(registration_targets) != 3
             or len(set(registration_targets)) != 1):
         return None
     registrar = registration_targets[0]
     arms: list[int] = []
-    for position in range(10, len(image) - 4, 2):
-        arm = thumb_literal_value(image, position - 10, 1)
+    for match in REX_5MS_ARM_PATTERN.finditer(image):
+        arm_position = match.start()
+        position = arm_position + 10
+        if (arm_position & 1 or position >= len(image) - 4):
+            continue
+        arm = thumb_literal_value(image, arm_position, 1)
         if (thumb_bl_target(image, position) == registrar
                 and arm is not None and 0x03000000 <= arm < 0x04000000
-                and struct.unpack_from("<2H", image, position - 8)
+                and struct.unpack_from("<2H", image, arm_position + 2)
                 == (0x2002, 0x7008)
-                and thumb_literal_value(image, position - 4, 1)
+                and thumb_literal_value(image, arm_position + 6, 1)
                 == tick_position | 1
-                and struct.unpack_from("<H", image, position - 2)[0]
+                and struct.unpack_from("<H", image, arm_position + 8)[0]
                 == 0x201C):
             arms.append(arm)
     return arms[0] if len(arms) == 1 else None
@@ -421,17 +575,9 @@ def find_rex_5ms_irq_route(
         if len(wrappers) != 1:
             continue
 
-        registration_targets: list[int] = []
-        for position in range(0, len(image) - 8, 2):
-            if (runtime_code(position) is not None
-                    and thumb_literal_value(image, position, 1)
-                    == tick_address | 1
-                    and struct.unpack_from("<H", image, position + 2)[0]
-                    == 0x201C):
-                target = thumb_bl_target(image, position + 4)
-                if (target is not None and 0 <= target < len(image)
-                        and runtime_code(target) is not None):
-                    registration_targets.append(target)
+        registration_targets = _rex_5ms_registration_targets(
+            image, tick_address, runtime_code
+        )
         if (len(registration_targets) != 3
                 or len(set(registration_targets)) != 1):
             continue
@@ -520,14 +666,505 @@ def find_rex_5ms_sleep_timer(image: bytes) -> tuple[int, int, int] | None:
     return None
 
 
+def _legacy_timer_registration_at(
+        image: bytes, scanner: int, callback_literal: int,
+) -> dict[str, int] | None:
+    """Close one old timer registrar call's complete Thumb argument ABI."""
+    if (callback_literal < 0x24 or callback_literal + 6 > len(image)
+            or thumb_literal_value(image, callback_literal, 1) != scanner | 1
+            or struct.unpack_from("<2H", image, callback_literal - 6)
+            != (0x2219, 0x2319)
+            or not any(struct.unpack_from("<2H", image, flag)
+                       == (0x2201, 0x9200)
+                       for flag in range(callback_literal - 16,
+                                         callback_literal - 6, 2))):
+        return None
+    registrar = thumb_bl_target(image, callback_literal + 2)
+    if registrar is None:
+        return None
+    setup = struct.unpack_from("<H", image, callback_literal - 2)[0]
+    timer: int | None = None
+    if setup & 0xFFC7 == 0x1C00 and not setup & 7:
+        register = setup >> 3 & 7
+        loads = [position for position in range(callback_literal - 0x24,
+                                                callback_literal - 2, 2)
+                 if thumb_literal_value(image, position, register) is not None]
+        if len(loads) != 1:
+            return None
+        timer = thumb_literal_value(image, loads[0], register)
+        first = struct.unpack_from("<H", image, loads[0] + 2)[0]
+        if (first >> 8 & 7 == register
+                and first & 0xF800 in (0x3000, 0x3800)):
+            timer += (first & 0xFF) * (
+                1 if first & 0xF800 == 0x3000 else -1)
+        elif (register >= 4 and callback_literal == loads[0] + 0x12
+              and first == (0x1C20 | register << 3)
+              and thumb_bl_target(image, loads[0] + 4) is not None
+              and struct.unpack_from("<2H", image, loads[0] + 8)
+              == (0x2201, 0x9200)):
+            pass
+        elif (register >= 4 and callback_literal == loads[0] + 0x16
+              and first & 0xF800 == 0x7000
+              and (adjust := struct.unpack_from("<H", image, loads[0] + 4)[0])
+              >> 8 & 7 == register
+              and adjust & 0xF800 in (0x3000, 0x3800)
+              and adjust & 0xFF
+              and struct.unpack_from("<H", image, loads[0] + 6)[0]
+              == (0x1C20 | register << 3)
+              and thumb_bl_target(image, loads[0] + 8) is not None
+              and struct.unpack_from("<2H", image, loads[0] + 12)
+              == (0x2201, 0x9200)):
+            timer += (adjust & 0xFF) * (
+                1 if adjust & 0xF800 == 0x3000 else -1)
+        else:
+            return None
+    elif setup & 0xF800 == 0x3800:
+        literal = thumb_literal_value(image, callback_literal - 8, 0)
+        if literal is None:
+            return None
+        timer = literal - (setup & 0xFF)
+    if timer is None:
+        return None
+    return {
+        "callback_literal_file_offset": ((callback_literal + 4) & ~3)
+        + (struct.unpack_from("<H", image, callback_literal)[0] & 0xFF) * 4,
+        "registration_callsite_file_offset": callback_literal + 2,
+        "timer_object": timer,
+        "registrar_file_offset": registrar,
+        "initial": 0x19,
+        "reload": 0x19,
+        "stack_flag": 1,
+    }
+
+
+def find_rex_legacy_5ms_timer_bridge(
+        image: bytes, scanner_file_offset: int,
+        file_to_runtime=lambda position: position,
+        runtime_to_file=lambda address: address,
+) -> dict[str, object] | None:
+    """Return only a callback-specific, fully closed legacy 5 ms timer ABI."""
+    scanner = scanner_file_offset
+    if scanner < 0 or scanner & 1 or scanner >= len(image):
+        return None
+
+    def runtime(position: int) -> int | None:
+        address = file_to_runtime(position)
+        return (address if isinstance(address, int) and address >= 0
+                and runtime_to_file(address) == position else None)
+
+    scanner_runtime = runtime(scanner)
+    outers: list[tuple[int, int, int]] = []
+    for prefix in (b"\x80\xb5", b"\x90\xb5"):
+        offset = 0
+        while (offset := image.find(prefix, offset)) >= 0:
+            walkers = rex_legacy_5ms_callback_at(image, offset)
+            if walkers is not None and runtime(offset) is not None:
+                outers.append((offset, *walkers))
+            offset += 2
+    if scanner_runtime is None or len(outers) != 1:
+        return None
+    outer, rex_walker, software = outers[0]
+    if any(runtime(position) is None
+           for position in (outer, rex_walker, software)):
+        return None
+
+    registration_sites: set[int] = set()
+    literal = image.find(struct.pack("<I", scanner | 1))
+    while literal >= 0:
+        for position in range(max(0, literal - 0x400) & ~1,
+                              min(len(image) - 2, literal + 2), 2):
+            if thumb_literal_value(image, position, 1) == scanner | 1:
+                registration_sites.add(position)
+        literal = image.find(struct.pack("<I", scanner | 1), literal + 1)
+    registrations = [result for position in registration_sites
+                     if (result := _legacy_timer_registration_at(
+                         image, scanner, position)) is not None]
+    if len(registrations) != 1:
+        return None
+    registration = registrations[0]
+    registrar = registration["registrar_file_offset"]
+    if runtime(registrar) is None:
+        return None
+
+    if (software + 0x56 > len(image)
+            or struct.unpack_from("<2H", image, software + 0x4E)
+            != (0x1DF8, 0x3019)):
+        return None
+    expiry_callsite = software + 0x52
+    veneer = thumb_bl_target(image, expiry_callsite)
+    if veneer is None or runtime(veneer) is None:
+        return None
+    dispatcher_runtime = runtime(veneer)
+    dispatcher_file = veneer
+    if (veneer + 16 <= len(image)
+            and struct.unpack_from("<2H", image, veneer) == (0x4778, 0x46C0)
+            and struct.unpack_from("<2I", image, veneer + 4)
+            == (0xE59FC000, 0xE12FFF1C)):
+        dispatcher_runtime = struct.unpack_from("<I", image, veneer + 12)[0] & ~1
+        dispatcher_file = runtime_to_file(dispatcher_runtime)
+    if (not isinstance(dispatcher_file, int)
+            or not 0 <= dispatcher_file <= len(image) - 0x50
+            or runtime(dispatcher_file) != dispatcher_runtime):
+        return None
+
+    drains: list[tuple[int, int]] = []
+    offset = 0
+    while (offset := image.find(b"\x80\xb5", offset)) >= 0:
+        queue = rex_timer_callback_drain_at(image, offset)
+        if queue is not None and runtime(offset) is not None:
+            drains.append((offset, queue))
+        offset += 2
+    if len(drains) != 1:
+        return None
+    drain, queue = drains[0]
+
+    puts = [(site + 4, target) for site in range(
+                dispatcher_file,
+                min(dispatcher_file + 0x80, len(image) - 6), 2)
+            if (struct.unpack_from("<H", image, site)[0] == 0x1C39
+                and thumb_literal_value(image, site + 2, 0) == queue
+                and (target := thumb_bl_target(image, site + 4)) is not None
+                and runtime(target) is not None)]
+    if len(puts) != 1:
+        return None
+    def drains_until_empty(caller: int) -> bool:
+        if (caller + 8 > len(image)
+                or thumb_bl_target(image, caller) != drain
+                or struct.unpack_from("<H", image, caller + 4)[0] != 0x2800
+                or runtime(caller) is None):
+            return False
+        branch = struct.unpack_from("<H", image, caller + 6)[0]
+        if branch & 0xFF00 != 0xD100:
+            return False
+        displacement = (branch & 0xFF) * 2
+        if displacement & 0x100:
+            displacement -= 0x200
+        return caller + 10 + displacement == caller
+
+    loops = [caller for match in THUMB_BL_PATTERN.finditer(image)
+             if not (caller := match.start()) & 1
+             and drains_until_empty(caller)]
+    if len(loops) != 1:
+        return None
+
+    addresses = (scanner, outer, rex_walker, software, registrar,
+                 registration["callback_literal_file_offset"], expiry_callsite,
+                 veneer, dispatcher_file, puts[0][0], puts[0][1], drain,
+                 loops[0])
+    if any(runtime(position) is None for position in addresses):
+        return None
+    return {
+        "signature": "legacy-rex-5ms-scanner-timer-v1",
+        "tick_ms": 5,
+        "scanner": scanner_runtime,
+        "scanner_file_offset": scanner,
+        "callback": scanner_runtime | 1,
+        "outer_callback": runtime(outer),
+        "outer_callback_file_offset": outer,
+        "outer_callback_pointer": runtime(outer) | 1,
+        "rex_walker": runtime(rex_walker),
+        "rex_walker_file_offset": rex_walker,
+        "software_timer": runtime(software),
+        "software_timer_file_offset": software,
+        "timer_object": registration["timer_object"],
+        "registrar": runtime(registrar),
+        "registrar_file_offset": registrar,
+        "registration_callsite": runtime(registration[
+            "registration_callsite_file_offset"]),
+        "registration_callsite_file_offset": registration[
+            "registration_callsite_file_offset"],
+        "callback_literal": runtime(registration[
+            "callback_literal_file_offset"]),
+        "callback_literal_file_offset": registration[
+            "callback_literal_file_offset"],
+        "initial": 0x19,
+        "reload": 0x19,
+        "stack_flag": 1,
+        "software_expiry_enqueue_callsite": runtime(expiry_callsite),
+        "software_expiry_enqueue_callsite_file_offset": expiry_callsite,
+        "enqueue_target": runtime(veneer),
+        "enqueue_target_file_offset": veneer,
+        "dispatcher": dispatcher_runtime,
+        "dispatcher_file_offset": dispatcher_file,
+        "dispatcher_qput_callsite": runtime(puts[0][0]),
+        "dispatcher_qput_callsite_file_offset": puts[0][0],
+        "qput": runtime(puts[0][1]),
+        "qput_file_offset": puts[0][1],
+        "callback_queue": queue,
+        "drain": runtime(drain),
+        "drain_file_offset": drain,
+        "drain_loop_caller": runtime(loops[0]),
+        "drain_loop_caller_file_offset": loops[0],
+        "drain_loop_signature": "BL drain; CMP R0,#0; BNE back",
+    }
+
+
+def find_rex_legacy_5ms_irq_route(
+        image: bytes, bridge: dict[str, object],
+        file_to_runtime=lambda position: position,
+        runtime_to_file=lambda address: address,
+) -> dict[str, object] | None:
+    """Close one old-LG controller descriptor route for a legacy timer bridge.
+
+    This deliberately proves code/data topology only.  It does not assign a
+    peripheral polarity or arrange host IRQ delivery.
+    """
+    outer = bridge.get("outer_callback_file_offset")
+    loop = bridge.get("drain_loop_caller_file_offset")
+    drain = bridge.get("drain_file_offset")
+    if (not isinstance(outer, int) or not isinstance(loop, int)
+            or not isinstance(drain, int) or not 0 <= outer < len(image)
+            or not 0 <= loop < len(image) or not 0 <= drain < len(image)):
+        return None
+
+    def runtime(position: int) -> int | None:
+        address = file_to_runtime(position)
+        return (address if isinstance(address, int) and address >= 0
+                and runtime_to_file(address) == position else None)
+
+    def resolve_thumb(target: int | None) -> int | None:
+        """Resolve a direct Thumb target or the exact BX-PC ARM veneer."""
+        if target is None or not 0 <= target < len(image):
+            return None
+        if (target + 12 <= len(image)
+                and struct.unpack_from("<6H", image, target)
+                == (0x4778, 0x46C0, 0xC000, 0xE59F, 0xFF1C, 0xE12F)):
+            address = struct.unpack_from("<I", image, target + 12)[0] & ~1
+            mapped = runtime_to_file(address)
+            if (isinstance(mapped, int) and 0 <= mapped < len(image)
+                    and runtime(mapped) == address):
+                return mapped
+            return None
+        if runtime(target) is not None:
+            return target
+        return None
+
+    outer_runtime = runtime(outer)
+    if outer_runtime is None:
+        return None
+
+    def literal_loads(value: int, register: int) -> set[int]:
+        """Bound Thumb-LDR search to actual little-endian literal pools."""
+        loads: set[int] = set()
+        literal = image.find(struct.pack("<I", value))
+        while literal >= 0:
+            for candidate in range(max(0, literal - 0x400) & ~1,
+                                   min(len(image) - 2, literal + 2), 2):
+                if thumb_literal_value(image, candidate, register) == value:
+                    loads.add(candidate)
+            literal = image.find(struct.pack("<I", value), literal + 1)
+        return loads
+
+    registrations: list[tuple[int, int, int]] = []
+    for position in literal_loads(outer_runtime | 1, 1):
+        index_word = struct.unpack_from("<H", image, position + 2)[0]
+        target = resolve_thumb(thumb_bl_target(image, position + 4))
+        if index_word & 0xFF00 == 0x2000 and target is not None:
+            index = index_word & 0xFF
+            if index in (0x1E, 0x2B):
+                registrations.append((position, index, target))
+    if len(registrations) != 3 or len({item[1:] for item in registrations}) != 1:
+        return None
+    registration, index, registrar = registrations[0]
+    if (registrar + 0x70 > len(image) or runtime(registrar) is None):
+        return None
+    words = struct.unpack_from("<56H", image, registrar)
+    if not (
+        words[:3] == (0xB5F0, 0x1C04, 0x1C0F)
+        and words[5:14] == (0x1C05, 0x2F00, words[7], 0xD100,
+                             0x1C37, 0x2C00, 0xDB01,
+                             0x2C00 | (0x1F if index == 0x1E else 0x2C),
+                             words[13])
+        and words[21:25] == (0x201C, words[22], 0x4360, 0x1840)
+        and words[28:31] == (
+            0x630F if index == 0x1E else 0x620F,
+            0xE000, 0x6147,
+        )
+    ):
+        return None
+    descriptor_base = thumb_literal_value(image, registrar + 44, 1)
+    if descriptor_base is None:
+        return None
+
+    seed_prefix = struct.pack("<3I", 0x03000C80, 0x03000C94, 0x200)
+    seeds: list[tuple[int, tuple[int, ...]]] = []
+    offset = 0
+    while (offset := image.find(seed_prefix, offset)) >= 0:
+        if offset + 28 <= len(image):
+            seed = struct.unpack_from("<7I", image, offset)
+            if seed[6] == 0 and seed[3] and seed[4] and seed[5]:
+                seeds.append((offset, seed))
+        offset += 1
+    if len(seeds) != 1:
+        return None
+    seed_position, seed = seeds[0]
+    table_seed_base = seed_position - index * 0x1C
+    group_offsets = (0xC, 6) if index == 0x1E else (0x10, 8)
+    if (table_seed_base < 0
+            or seed[3:5] != (
+                descriptor_base - group_offsets[0],
+                descriptor_base - group_offsets[1],
+            )
+            or thumb_literal_value(image, registrar + 14, 6) != seed[5]):
+        return None
+    row_size = 10 if index == 0x1E else 14
+    group_row = (struct.pack("<4H2B", 0x200, 0, 0x200, 4, index, index)
+                 if row_size == 10 else struct.pack(
+                     "<6H2B", 0x200, 0, 0, 0x200, 4, 0xE000, index, index))
+    group_start = table_seed_base + (index + 1) * 0x1C + 4
+    group_final = group_start + 3 * row_size
+    if (group_final + row_size > len(image)
+            or image[group_final:group_final + row_size] != group_row):
+        return None
+
+    handlers: list[int] = []
+    variant = ((0x17E, 0xB087) if index == 0x1E else (0x214, 0xB08A))
+    for delta, prologue in (variant,):
+        handler = loop - delta
+        if (handler < 0 or handler + REX_IRQ_HANDLER_RUNTIME_SIZE > len(image)
+                or runtime(handler) is None
+                or struct.unpack_from("<2H", image, handler)
+                != (0xB5F0, prologue)
+                or struct.pack("<H", 0x6978) not in image[handler:handler + 0x180]):
+            continue
+        literals = {thumb_literal_value(image, site, register)
+                    for site in range(handler, handler + 0x180, 2)
+                    for register in range(8)
+                    if thumb_literal_value(image, site, register) is not None}
+        if not {seed[0], descriptor_base}.issubset(literals):
+            continue
+        callback_sites = [site for site in range(handler, handler + 0x180 - 4, 2)
+                          if struct.unpack_from("<H", image, site)[0] == 0x6978
+                          and (target := thumb_bl_target(image, site + 2)) is not None
+                          and 0 <= target <= len(image) - 16
+                          and image[target:target + 2] in (b"\x00\x47", b"\x78\x47")]
+        if not callback_sites:
+            continue
+        if not (thumb_bl_target(image, loop) == drain
+                and struct.unpack_from("<2H", image, loop + 4) == (0x2800, 0xD1FB)):
+            continue
+        handlers.append(handler)
+    if len(handlers) != 1:
+        return None
+    handler = handlers[0]
+
+    wrapper_prefix = struct.pack("<4I", 0xE24EE004, 0xE92D540F,
+                                 0xE14F0000, 0xE92D0001)
+    wrappers: list[tuple[int, int]] = []
+    position = 0
+    while (position := image.find(wrapper_prefix, position)) >= 0:
+        if position + REX_IRQ_WRAPPER_RUNTIME_SIZE <= len(image):
+            instruction = struct.unpack_from("<I", image, position + 0x28)[0]
+            if instruction & 0xFFFFF000 == 0xE59F3000:
+                literal = position + 0x30 + (instruction & 0xFFF)
+                if literal + 4 <= len(image) and runtime(position) is not None:
+                    wrappers.append((position, struct.unpack_from("<I", image, literal)[0]))
+        position += 4
+    if len(wrappers) != 1:
+        return None
+    wrapper, callback_slot = wrappers[0]
+    if callback_slot < 0x01000000:
+        return None
+
+    setters: list[tuple[int, int]] = []
+    handler_runtime = runtime(handler)
+    for position in literal_loads(handler_runtime | 1, 1):
+        if struct.unpack_from("<H", image, position + 2)[0] != 0x2000:
+            continue
+        setter = resolve_thumb(thumb_bl_target(image, position + 4))
+        if setter is None or setter + 14 > len(image):
+            continue
+        setter_words = struct.unpack_from("<7H", image, setter)
+        base = thumb_literal_value(image, setter, 2)
+        first_store, second_store = setter_words[3], setter_words[5]
+        first_offset = (first_store >> 6 & 0x1F) * 4
+        second_offset = (second_store >> 6 & 0x1F) * 4
+        if (setter_words[1:3] == (0x2800, 0xD101)
+                and first_store & 0xF83F == 0x6011
+                and setter_words[4] == 0x4770
+                and second_store & 0xF83F == 0x6011
+                and setter_words[6] == 0x4770
+                and base is not None
+                and base + first_offset == callback_slot
+                and second_offset == first_offset + 4):
+            setters.append((position, setter))
+    if len(setters) != 1:
+        return None
+
+    vector = (
+        struct.unpack_from("<I", image, 0x18)[0]
+        if len(image) >= 0x1C else 0
+    )
+    vector_address = runtime(0x18)
+    vector_target = (
+        arm_b_word_target(vector, vector_address)
+        if vector_address is not None else None
+    )
+    if vector_target is None:
+        return None
+    wrapper_literal = wrapper + 0x30 + (struct.unpack_from("<I", image, wrapper + 0x28)[0] & 0xFFF)
+    wrapper_validation_size = wrapper_literal + 4 - wrapper
+    handler_validation_size = loop - handler + 8
+    return {
+        "signature": "legacy-rex-5ms-irq-route-v1",
+        "controller_class": (
+            "legacy-c80-two-bank-group10-v1" if index == 0x1E
+            else "legacy-c80-three-bank-group14-v1"
+        ),
+        "outer_callback": outer_runtime,
+        "wrapper": runtime(wrapper), "wrapper_file_offset": wrapper,
+        "handler": runtime(handler), "handler_file_offset": handler,
+        "handler_slot": callback_slot, "callback_slot": descriptor_base + index * 0x1C + 0x14,
+        "status": seed[0], "controller_field": seed[1], "enable": seed[1], "mask": seed[2],
+        "vector_target": vector_target, "vector": 0x18,
+        "registrar": runtime(registrar), "registrar_file_offset": registrar,
+        "registration": runtime(registration), "registration_file_offset": registration,
+        "handler_registration": runtime(setters[0][0]), "handler_registration_file_offset": setters[0][0],
+        "handler_setter": runtime(setters[0][1]), "handler_setter_file_offset": setters[0][1],
+        "index": index, "group_row_size": row_size,
+        "status_bank_count": 2 if index == 0x1E else 3,
+        "status_banks": (
+            (seed[0], seed[0] + 4) if index == 0x1E
+            else (seed[0], seed[0] + 4, seed[0] + 0x30)
+        ),
+        "clear_banks": (
+            (seed[0], seed[0] + 4) if index == 0x1E
+            else (seed[0], seed[0] + 4, seed[1] + 0x38)
+        ),
+        "controller_write_banks": (
+            (seed[1], seed[1] + 4) if index == 0x1E
+            else (seed[1], seed[1] + 4, seed[1] + 0x30)
+        ),
+        "controller_aperture": (
+            seed[0], seed[1] + (6 if index == 0x1E else 0x3A)
+        ),
+        "rom_seed": seed_position,
+        "handler_runtime_size": REX_IRQ_HANDLER_RUNTIME_SIZE,
+        "wrapper_runtime_size": REX_IRQ_WRAPPER_RUNTIME_SIZE,
+        "handler_validation_size": handler_validation_size,
+        "wrapper_validation_size": wrapper_validation_size,
+        "drain": runtime(drain), "drain_file_offset": drain,
+        "drain_loop": runtime(loop), "drain_loop_file_offset": loop,
+    }
+
+
 def find_rex_idle_address(image: bytes) -> int | None:
-    """Find the final idle BL in the old Qualcomm REX signal loop."""
+    """Find the final idle BL in one validated Qualcomm REX signal loop."""
     candidates: list[int] = []
+
+    def unconditional_target(address: int, word: int) -> int | None:
+        if word & 0xF800 != 0xE000:
+            return None
+        displacement = (word & 0x7FF) * 2
+        if displacement & 0x800:
+            displacement -= 0x1000
+        return address + 4 + displacement
+
     fixed = {
         0: 0x0BC1, 1: 0xD306, 2: 0x2108, 6: 0x2101, 7: 0x0389,
         8: 0xE007, 9: 0x0B81, 10: 0xD309, 11: 0x2108,
-        15: 0x2101, 16: 0x0349, 20: 0xE7D8, 21: 0x0A80,
-        22: 0xD302, 25: 0xE7D3,
+        15: 0x2101, 16: 0x0349, 21: 0x0A80,
+        22: 0xD302,
     }
     anchor = struct.pack("<3H", fixed[0], fixed[1], fixed[2])
     offset = 0
@@ -540,6 +1177,14 @@ def find_rex_idle_address(image: bytes) -> int | None:
             offset += 2
             continue
         if any(words[index] & 0xFFC7 != 0x1C00 for index in (3, 12, 17)):
+            offset += 2
+            continue
+        def backward_branch(index: int) -> bool:
+            target = unconditional_target(
+                offset + index * 2, words[index]
+            )
+            return target is not None and target <= offset
+        if not all(backward_branch(index) for index in (20, 25)):
             offset += 2
             continue
         if any(not (words[index] & 0xF800 == 0xF000
@@ -566,4 +1211,68 @@ def find_rex_idle_address(image: bytes) -> int | None:
                     candidates.append(last_bl)
                 break
         offset += 2
+
+    # Newer MSM5500 REX uses a distinct four-stage signal loop. Require its
+    # complete setup, bit 1/15/14/10 stages, and every same-loop backedge.
+    setup_fixed = {
+        0: 0xB5B0, 1: 0x4D21, 2: 0x4C21, 3: 0x2201,
+        4: 0x1C29, 5: 0x1C20, 8: 0x2201, 9: 0x0252,
+        10: 0x1DE0, 11: 0x3015, 12: 0x491B, 15: 0x1DE0,
+        16: 0x3015, 21: 0x1C22, 22: 0x210F, 23: 0x2001,
+        26: 0x27FF, 27: 0x37A0, 28: 0xE007, 29: 0x1C28,
+        32: 0x0841, 33: 0xD307, 34: 0x200F,
+        37: 0x1C39, 38: 0x1C20,
+    }
+    stage_fixed = {
+        0: 0x0BC1, 1: 0xD304, 4: 0x2101, 5: 0x0389,
+        7: 0x0B81, 8: 0xD307, 11: 0x2101, 12: 0x0349,
+        13: 0x1C28, 17: 0x0A80, 18: 0xD302,
+    }
+    anchor = struct.pack("<2H", stage_fixed[0], stage_fixed[1])
+    offset = 0
+    while (offset := image.find(anchor, offset)) >= 0:
+        function = offset - 84
+        if offset & 1 or function < 0 or offset + 50 > len(image):
+            offset += 1
+            continue
+        setup = struct.unpack_from("<42H", image, function)
+        stages = struct.unpack_from("<25H", image, offset)
+
+        def bl(words: tuple[int, ...], index: int) -> bool:
+            return (words[index] & 0xF800 == 0xF000
+                    and words[index + 1] & 0xF800 == 0xF800)
+
+        if (any(setup[index] != value
+                for index, value in setup_fixed.items())
+                or any(stages[index] != value
+                       for index, value in stage_fixed.items())
+                or not all(bl(setup, index)
+                           for index in (6, 13, 17, 19, 24, 30, 35, 39))
+                or not all(bl(stages, index)
+                           for index in (2, 9, 14, 19, 22))):
+            offset += 2
+            continue
+        loop = offset - 26
+        if (unconditional_target(function + 82, setup[41]) != loop
+                or unconditional_target(offset + 12, stages[6])
+                != offset + 26
+                or any(unconditional_target(offset + index * 2,
+                                             stages[index]) != loop
+                       for index in (16, 21, 24))):
+            offset += 2
+            continue
+        idle = offset + 44
+        target = thumb_bl_target(image, idle)
+        if target is None or not 0 <= target < len(image):
+            offset += 2
+            continue
+        callers = [
+            match.start() for match in THUMB_BL_PATTERN.finditer(image)
+            if not match.start() & 1
+            and thumb_bl_target(image, match.start()) == target
+        ]
+        if callers == [idle]:
+            candidates.append(idle)
+        offset += 2
+    candidates = sorted(set(candidates))
     return candidates[0] if len(candidates) == 1 else None

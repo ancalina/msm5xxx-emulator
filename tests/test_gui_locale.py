@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import struct
 import tempfile
 import unittest
@@ -12,13 +13,24 @@ from unittest import mock
 from gui import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
                  resolve_ui_language, runtime_status_text, settings_apply_mode,
                  system_ui_language)
+from msm5xxx_emulator import gui as package_gui
+from msm5xxx_emulator.gui.app import main as package_main
 from msm5xxx import detect
-from msm5xxx_emulator.gui.controls import ControlsMixin, detect_profile
+from msm5xxx_emulator.gui.controls import (ControlsMixin, detect_profile,
+                                           manual_keymap,
+                                           parse_manual_key_event)
+from msm5xxx_emulator.gui.locale import runtime_notice_text
 from msm5xxx_emulator.gui.settings import (parse_settings_values, settings_values,
                                            validate_settings_values)
 
 
 class GuiLocaleTests(unittest.TestCase):
+    def test_package_gui_public_exports_match_compatibility_surface(self) -> None:
+        self.assertIs(package_gui.Window, Window)
+        self.assertIs(package_gui.main, package_main)
+        self.assertEqual(package_gui.METRIC_TEXT, METRIC_TEXT)
+        self.assertIs(package_gui.settings_apply_mode, settings_apply_mode)
+
     def test_settings_parse_and_validation_are_gui_independent(self) -> None:
         image = bytearray(b"\xff" * 0x1000)
         for offset in range(0, 32, 4):
@@ -93,6 +105,23 @@ class GuiLocaleTests(unittest.TestCase):
             "Run 1,234,567\nPC 0x1000\nLCD 2\nframe 3\nAudio unavailable",
         )
 
+    def test_input_errors_are_not_gui_runtime_text(self) -> None:
+        latest = {
+            "instructions": 12, "pc": "0x1000", "lcd_writes": 3,
+            "frame_sequence": 4, "audio_play_requests": 5,
+            "input_error": "fail-closed key rejected",
+        }
+        for language, label in (("en", "Input error"), ("ko", "입력 오류")):
+            status = runtime_status_text(latest, language)
+            notice = runtime_notice_text(latest, language)
+            self.assertIn("12", status)
+            self.assertIn("5", status)
+            self.assertIn("5", notice)
+            self.assertNotIn(label, status)
+            self.assertNotIn(label, notice)
+            self.assertNotIn("fail-closed key rejected", status)
+            self.assertNotIn("fail-closed key rejected", notice)
+
     def test_preference_is_global_not_firmware_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "last_config.json"
@@ -113,6 +142,69 @@ class GuiLocaleTests(unittest.TestCase):
             self.assertEqual(saved["ui_language"], "en")
             self.assertEqual(saved["profiles"][str(window.firmware.resolve())],
                              {"width": 128})
+
+    def test_manual_keymap_is_validated_and_firmware_sha_scoped(self) -> None:
+        firmware_sha256 = "a" * 64
+        self.assertEqual(parse_manual_key_event("0x53"), 0x53)
+        self.assertEqual(parse_manual_key_event("83"), 0x53)
+        with self.assertRaises(ValueError):
+            parse_manual_key_event("0x100")
+        data = {
+            "manual_keymaps": {
+                firmware_sha256: {
+                    "5": 0x53, "7": True, "8": 0x100, "bad": 0x51,
+                },
+                "b" * 64: {"5": 0x51},
+            },
+        }
+        self.assertEqual(manual_keymap(data, firmware_sha256), {5: 0x53})
+
+    def test_manual_keymap_save_preserves_regular_preferences(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "last_config.json"
+            firmware_sha256 = "a" * 64
+            config_path.write_text(json.dumps({
+                "ui_language": "en",
+                "profiles": {"/firmware.bin": {"width": 128}},
+            }), encoding="utf-8")
+            window = Window.__new__(Window)
+            window.emulator = SimpleNamespace(
+                config=SimpleNamespace(firmware_sha256=firmware_sha256)
+            )
+            with mock.patch("msm5xxx_emulator.gui.controls.LAST_CONFIG", config_path):
+                Window._save_manual_key_event(window, 5, 0x53)
+                self.assertEqual(Window._manual_key_event(window, 5), 0x53)
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["ui_language"], "en")
+            self.assertEqual(saved["profiles"]["/firmware.bin"], {"width": 128})
+            self.assertEqual(
+                saved["manual_keymaps"][firmware_sha256], {"5": 0x53}
+            )
+
+    def test_unmapped_button_opens_editor_without_guest_command(self) -> None:
+        window = Window.__new__(Window)
+        window.emulator = mock.Mock()
+        window.emulator.can_set_key.return_value = False
+        window.commands = queue.SimpleQueue()
+        with (mock.patch.object(Window, "_manual_key_event", return_value=None),
+              mock.patch.object(Window, "_edit_key_mapping",
+                                return_value="break") as editor):
+            self.assertEqual(Window._mouse_key_press(window, "OK"), "break")
+        editor.assert_called_once_with("OK")
+        with self.assertRaises(queue.Empty):
+            window.commands.get_nowait()
+
+    def test_manual_button_queues_event_only_on_press(self) -> None:
+        window = Window.__new__(Window)
+        window.emulator = mock.Mock()
+        window.emulator.can_set_key.return_value = True
+        window.commands = queue.SimpleQueue()
+        window.held = {}
+        with mock.patch.object(Window, "_manual_key_event", return_value=0x53):
+            Window._mouse_key_press(window, "OK")
+            Window._mouse_key_release(window, "OK")
+        self.assertEqual(window.commands.get_nowait(), (5, True, 0x53))
+        self.assertEqual(window.commands.get_nowait(), (5, False))
 
     def test_profile_detection_reuses_baseline_without_manual_overrides(self) -> None:
         firmware = Path("firmware.bin")

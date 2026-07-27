@@ -107,15 +107,37 @@ class WorkerMixin:
             last_event: str | None = None
             last_telemetry_instructions = 0
             last_screenshot_instructions = 0
+            pending_command: tuple[object, ...] | None = None
             while not stop.is_set():
+                key_transition_pending = False
                 while True:
-                    try:
-                        command = commands.get_nowait()
-                    except queue.Empty:
+                    if stop.is_set():
                         break
-                    if len(command) == 2 and isinstance(command[0], int):
-                        bit, pressed = command
-                        emulator.set_key(bit, bool(pressed))
+                    if pending_command is not None:
+                        command = pending_command
+                        pending_command = None
+                    else:
+                        try:
+                            command = commands.get_nowait()
+                        except queue.Empty:
+                            break
+                    if (len(command) in (2, 3)
+                            and isinstance(command[0], int)):
+                        bit, pressed = command[:2]
+                        if key_transition_pending:
+                            # Preserve this edge for the next worker
+                            # iteration.  The ordinary run and complete
+                            # telemetry pipeline must stay between key
+                            # state transitions.
+                            pending_command = command
+                            break
+                        event_code = (
+                            int(command[2]) if len(command) == 3 else None
+                        )
+                        emulator.set_key(
+                            int(bit), bool(pressed), event_code
+                        )
+                        key_transition_pending = True
                     elif command[0] == "framebuffer-format" and len(command) == 2:
                         framebuffer_format = str(command[1])
                         emulator.set_framebuffer_format(framebuffer_format)

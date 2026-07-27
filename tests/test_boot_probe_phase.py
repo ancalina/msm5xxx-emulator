@@ -128,6 +128,18 @@ class BootProbePhaseTests(unittest.TestCase):
                     Path("test.bin"), [1], Path(directory) / "frames"
                 )
         self.assertEqual(report["checkpoints"][0]["reset_entries"], 2)
+        self.assertEqual(
+            report["initial_display"]["display_geometry_source"],
+            "external-config",
+        )
+        self.assertEqual(
+            report["timeline"][0]["display_geometry_source"],
+            "external-config",
+        )
+        self.assertEqual(
+            report["checkpoints"][0]["display_geometry_source"],
+            "external-config",
+        )
 
 
 if __name__ == "__main__":

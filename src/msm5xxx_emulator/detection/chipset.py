@@ -20,8 +20,6 @@ def detect_chipset(image: bytes, model: str) -> str:
         return "MSM5500"
     if has_5100 and not has_5500:
         return "MSM5100"
-    if model == "SCH-X430" and b"MSM5000" in upper:
-        return "MSM5000"
     return "MSM5xxx"
 
 

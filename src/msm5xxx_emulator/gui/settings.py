@@ -8,6 +8,7 @@ from ..core.config import FirmwareConfig
 from ..core.constants import (MAX_NAND_BACKING_SIZE, MAX_NAND_DATA_SIZE,
                               MAX_RAM_SIZE, PAGE)
 from ..detection.firmware import MAX_FLASH_SIZE
+from ..detection.firmware_image import load_firmware_image
 
 
 SETTINGS_SECTIONS = (
@@ -268,7 +269,7 @@ def validate_settings_values(
             raise ValueError("Framebuffer pixel format을 선택해야 함")
         if overrides["framebuffer_stride"] < overrides["width"] * 2:
             raise ValueError("Framebuffer stride가 한 줄보다 작음")
-    file_size = firmware.stat().st_size
+    file_size = len(load_firmware_image(firmware).image)
     if ("image_offset" in edited
             and not 0 <= overrides["image_offset"] < file_size):
         raise ValueError("이미지 오프셋이 펌웨어 범위를 벗어남")

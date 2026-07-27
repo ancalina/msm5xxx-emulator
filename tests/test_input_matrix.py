@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import struct
 import unittest
+from pathlib import Path
 
 from src.msm5xxx_emulator.detection.input_matrix import (
     DIRECT_MATRIX_FINGERPRINT,
@@ -60,6 +61,34 @@ class DirectInputMatrixTests(unittest.TestCase):
         self.assertEqual(
             profile["grammar_fingerprint"], DIRECT_MATRIX_FINGERPRINT
         )
+
+    def test_samsung_raw_telemetry_requires_complete_relocation_abi(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        expected = {
+            "x350_VC22.bin": (0x013A2248, 0x328E6, 0x32868, 0x32882, 0xB5252),
+            "schx150.bin": (0x013A3EC8, 0x329B6, 0x32938, 0x32952, 0xB539A),
+        }
+        for name, values in expected.items():
+            image = (root / "firmwares" / name).read_bytes()
+            profile, status, rejected = resolve_direct_matrix_input(image)
+            self.assertEqual((status, rejected), ("accepted", []))
+            assert profile is not None
+            self.assertEqual(
+                tuple(profile[field] for field in (
+                    "raw_ring", "raw_enqueue_store", "raw_dequeue",
+                    "raw_dequeue_return", "raw_task_entry",
+                )), values,
+            )
+            self.assertEqual(profile["raw_ring_capacity"], 32)
+            self.assertEqual(profile["raw_enqueue_register"], 7)
+            self.assertEqual(profile["raw_task_register"], 0)
+
+            near_miss = bytearray(image)
+            near_miss[values[2] + 0x16] ^= 1
+            profile, status, rejected = resolve_direct_matrix_input(bytes(near_miss))
+            self.assertEqual((status, rejected), ("accepted", []))
+            assert profile is not None
+            self.assertNotIn("raw_ring", profile)
 
     def test_lg_ring256_shape_is_classified_without_model_name(self) -> None:
         image = self._image((

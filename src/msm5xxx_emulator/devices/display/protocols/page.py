@@ -17,7 +17,10 @@ class PageProtocolMixin:
             # during its blank first scan, before we have published pixels.
             # Preserve an already visible frame rather than guessing its
             # geometry during a later rectangle update.
-            self._set_display_geometry(*target, force=self.frame_sequence == 0)
+            self._set_display_geometry(
+                *target, source=f"runtime:page-{self._lcd_page_bits_per_pixel}bpp",
+                force=self.frame_sequence == 0,
+            )
         if (target == (self.config.width, self.config.height)
                 and (changed or not self._lcd_page_geometry_rendered)):
             self._lcd_page_geometry_rendered = True
@@ -326,26 +329,36 @@ class PageProtocolMixin:
         # evidence than the filename fallback.  Known model geometry is left
         # untouched, as a 128x160 transfer can also be a rectangle update.
         if self.frame_sequence == 0:
-            if ((self.config.width, self.config.height) == (176, 220)
+            if (getattr(self.config, "display_geometry_source", "external-config")
+                    == "auto-default"
                     and address in (0x02000004, 0x02800004, 0x02C00004)
                     and count == 128 * 160):
-                self._set_display_geometry(128, 160)
+                self._set_display_geometry(
+                    128, 160, source="runtime:raw-fifo"
+                )
             # The KP8500/LP2400-style FIFO has a fixed 160x240 transfer at
             # an otherwise unused LCD aperture.  Its exact 38,400-pixel run
             # is sufficient proof of panel size before publishing a frame.
-            elif ((self.config.width, self.config.height) == (176, 220)
+            elif (getattr(self.config, "display_geometry_source", "external-config")
+                  == "auto-default"
                   and address in (0x02000080, 0x02800080)
                   and count == 160 * 240):
-                self._set_display_geometry(160, 240)
+                self._set_display_geometry(
+                    160, 240, source="runtime:raw-fifo"
+                )
             # SCH-E135-class panels issue a command-delimited, exact 128x128
             # RGB565 transfer through the indexed +4 FIFO.  The preceding
             # 0x51/0x43/0x42 programming sequence distinguishes it from a
             # 128x160 panel's first 16K rectangle update.
-            elif (address == 0x02800004 and count == 128 * 128
+            elif (getattr(self.config, "display_geometry_source", "external-config")
+                  == "auto-default"
+                  and address == 0x02800004 and count == 128 * 128
                   and tuple(self._lcd_recent_commands)[-7:]
                   == (0x51, 0x43, 0x00, 0x7F, 0x42, 0x00, 0x7F)):
                 values = tuple(stream)
-                self._set_display_geometry(128, 128)
+                self._set_display_geometry(
+                    128, 128, source="runtime:raw-fifo"
+                )
                 for index, pixel in enumerate(values):
                     self._pixel(index, pixel)
                 self._lcd_raw_frames[port] += 1
@@ -374,12 +387,15 @@ class PageProtocolMixin:
         count = self._lcd_raw_segment_counts[port]
         stream = self._lcd_raw_segment_streams.get(port)
         if (stream is not None and count == 128 * 160
-                and (self.config.width, self.config.height) == (176, 220)
+                and getattr(self.config, "display_geometry_source",
+                            "external-config") == "auto-default"
                 and self.frame_sequence == 0
                 and incoming_command & 0xFF == 0x43):
             values = tuple(stream)
             if len(values) == 128 * 160 and any(values):
-                self._set_display_geometry(128, 160)
+                self._set_display_geometry(
+                    128, 160, source="runtime:raw-fifo"
+                )
                 for index, pixel in enumerate(values):
                     self._pixel(index, pixel)
                 self._lcd_raw_frames[port] += 1
@@ -502,7 +518,12 @@ class PageProtocolMixin:
                 )
         elif stage == "done" and value == 1:
             payload = bytes(self._lcd_byte_raster_pixels)
-            self._set_display_geometry(128, 160, force=True)
+            self._set_display_geometry(
+                128, 160, source="runtime:byte-raster-rgb565", force=True
+            )
+            if (self.config.width, self.config.height) != (128, 160):
+                self._lcd_byte_raster_stage = "qualified"
+                return True
             for index in range(0, len(payload), 2):
                 self._pixel(index // 2, payload[index] << 8 | payload[index + 1])
             self._lcd_protocol = "byte-raster-rgb565"

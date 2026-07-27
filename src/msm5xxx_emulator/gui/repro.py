@@ -41,7 +41,7 @@ def _diagnostic_session_log() -> Path | None:
 def _diagnostic_directory() -> Path:
     session = _diagnostic_session_log()
     return (session.parent if session is not None
-            else Path(__file__).resolve().parent / "logs")
+            else Path(__file__).resolve().parents[3] / "logs")
 
 
 def _diagnostic_session_token() -> str:
@@ -58,6 +58,9 @@ def _repro_state_files(emulator: object) -> tuple[tuple[str, Path, bool], ...]:
     secondary = getattr(getattr(emulator, "secondary_flash", None), "state_path", None)
     if isinstance(secondary, Path):
         files.append(("secondary-flash-state", secondary, True))
+    upper = getattr(getattr(emulator, "upper_flash", None), "state_path", None)
+    if isinstance(upper, Path):
+        files.append(("upper-flash-state", upper, True))
     eeprom = getattr(emulator, "eeprom_state_path", None)
     if getattr(emulator, "eeprom_enabled", False) and isinstance(eeprom, Path):
         files.append(("eeprom-state", eeprom, True))

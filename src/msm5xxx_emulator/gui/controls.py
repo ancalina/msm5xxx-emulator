@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ..detection.firmware import (DEFAULT_STATE_ROOT, DISABLEABLE_ADDRESS_FIELDS,
                                   detect)
@@ -31,6 +31,38 @@ KEYS = {
     "볼륨+": 10, "1": 11, "2": 12, "3": 13, "4": 14, "5": 15,
     "6": 16, "7": 17, "8": 18, "9": 19, "*": 20, "0": 21, "#": 22,
 }
+
+
+def parse_manual_key_event(text: str) -> int:
+    """Parse one opt-in firmware event byte without guessing its base."""
+    try:
+        value = int(text.strip(), 0)
+    except ValueError as error:
+        raise ValueError("key event must be 0x00..0xFF or decimal 0..255") from error
+    if not 0 <= value <= 0xFF:
+        raise ValueError("key event must be 0x00..0xFF or decimal 0..255")
+    return value
+
+
+def manual_keymap(data: object, firmware_sha256: str) -> dict[int, int]:
+    """Read one validated SHA-scoped GUI mapping from saved preferences."""
+    if not isinstance(data, dict):
+        return {}
+    mappings = data.get("manual_keymaps")
+    raw = mappings.get(firmware_sha256) if isinstance(mappings, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    valid_bits = set(KEYS.values())
+    result: dict[int, int] = {}
+    for key, value in raw.items():
+        try:
+            bit = int(key)
+        except (TypeError, ValueError):
+            continue
+        if (bit in valid_bits and isinstance(value, int)
+                and not isinstance(value, bool) and 0 <= value <= 0xFF):
+            result[bit] = value
+    return result
 
 
 LAYOUT = (
@@ -187,18 +219,22 @@ class ControlsMixin:
         if label is None:
             return
         bit = KEYS[label]
+        event_code = self._manual_key_event(bit)
+        if pressed and not self._key_supported(bit, event_code):
+            return
         if pressed:
-            self._keyboard_press(source, bit)
+            self._keyboard_press(source, bit, event_code)
         else:
             self._keyboard_release(source, bit)
 
-    def _keyboard_press(self, source: str, bit: int) -> None:
+    def _keyboard_press(self, source: str, bit: int,
+                        event_code: int | None = None) -> None:
         pending = self.pending_key_releases.pop(source, None)
         if pending is not None:
             self.root.after_cancel(pending)
         self.keyboard_sources.add(source)
         self.keyboard_bits[source] = bit
-        self._key(bit, True, source)
+        self._key(bit, True, source, event_code)
 
     def _keyboard_release(self, source: str, bit: int) -> None:
         pending = self.pending_key_releases.pop(source, None)
@@ -227,7 +263,8 @@ class ControlsMixin:
         self.keyboard_bits.clear()
         self.keyboard_sources.clear()
 
-    def _key(self, bit: int, pressed: bool, source: str = "legacy") -> None:
+    def _key(self, bit: int, pressed: bool, source: str = "legacy",
+             event_code: int | None = None) -> None:
         sources = self.held.get(bit)
         if pressed:
             if sources is not None and source in sources:
@@ -245,7 +282,128 @@ class ControlsMixin:
             if sources:
                 return
             del self.held[bit]
-        self.commands.put((bit, pressed))
+        self.commands.put(
+            (bit, pressed, event_code) if event_code is not None
+            else (bit, pressed)
+        )
+
+    def _key_supported(self, bit: int, event_code: int | None = None) -> bool:
+        emulator = self.emulator
+        return emulator is not None and emulator.can_set_key(bit, event_code)
+
+    def _mouse_key_press(self, label: str) -> str:
+        bit = KEYS[label]
+        event_code = self._manual_key_event(bit)
+        if not self._key_supported(bit, event_code):
+            self._edit_key_mapping(label)
+            return "break"
+        self._key(bit, True, f"mouse:{bit}", event_code)
+        return "break"
+
+    def _mouse_key_release(self, label: str) -> str:
+        bit = KEYS[label]
+        self._key(bit, False, f"mouse:{bit}")
+        return "break"
+
+    def _firmware_sha256(self) -> str | None:
+        emulator = self.emulator
+        value = (
+            getattr(emulator.config, "firmware_sha256", None)
+            if emulator is not None else None
+        )
+        return value if isinstance(value, str) and value else None
+
+    def _manual_key_event(self, bit: int) -> int | None:
+        firmware_sha256 = self._firmware_sha256()
+        if firmware_sha256 is None:
+            return None
+        if getattr(self, "_manual_key_sha256", None) != firmware_sha256:
+            try:
+                data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            self._manual_key_events = manual_keymap(data, firmware_sha256)
+            self._manual_key_sha256 = firmware_sha256
+        return getattr(self, "_manual_key_events", {}).get(bit)
+
+    def _save_manual_key_event(self, bit: int,
+                               event_code: int | None) -> None:
+        firmware_sha256 = self._firmware_sha256()
+        if firmware_sha256 is None:
+            raise ValueError("firmware detection is not ready")
+        path = LAST_CONFIG
+        with exclusive_path_lock(path):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            mappings = data.get("manual_keymaps")
+            if not isinstance(mappings, dict):
+                mappings = {}
+            current = manual_keymap(
+                {"manual_keymaps": mappings}, firmware_sha256
+            )
+            if event_code is None:
+                current.pop(bit, None)
+            else:
+                current[bit] = event_code
+            if current:
+                mappings[firmware_sha256] = {
+                    str(key): value for key, value in sorted(current.items())
+                }
+            else:
+                mappings.pop(firmware_sha256, None)
+            data["manual_keymaps"] = mappings
+            atomic_write_text(
+                path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+            )
+        self._manual_key_events = current
+        self._manual_key_sha256 = firmware_sha256
+        LOGGER.info(
+            "manual key mapping firmware_sha256=%s bit=%d event=%s",
+            firmware_sha256[:12], bit,
+            "reset" if event_code is None else f"0x{event_code:02X}",
+        )
+
+    def _edit_key_mapping(self, label: str) -> str:
+        bit = KEYS[label]
+        if self.emulator is None:
+            self.status.set(self._text("detecting"))
+            return "break"
+        if bit in self.held:
+            return "break"
+        current = self._manual_key_event(bit)
+        prompt = (
+            "검출된 matrix event byte 입력 (예: 0x53).\n"
+            "펌웨어 event table의 고유 row/column만 사용합니다.\n"
+            "빈 값은 수동 매핑 삭제."
+            if self.ui_language == "ko" else
+            "Enter detected matrix event byte (example: 0x53).\n"
+            "Only a unique row/column in firmware event table is used.\n"
+            "Leave empty to remove manual mapping."
+        )
+        value = simpledialog.askstring(
+            self._key_text(label), prompt, parent=self.root,
+            initialvalue=(f"0x{current:02X}" if current is not None else ""),
+        )
+        if value is None:
+            return "break"
+        try:
+            event_code = parse_manual_key_event(value) if value.strip() else None
+            if (event_code is not None
+                    and not self._key_supported(bit, event_code)):
+                raise ValueError(
+                    f"event 0x{event_code:02X} is absent or duplicated "
+                    "in the detected matrix"
+                )
+            self._save_manual_key_event(bit, event_code)
+        except (OSError, ValueError) as error:
+            messagebox.showerror(
+                self._text("settings_error"), str(error), parent=self.root
+            )
+        return "break"
 
     def _settings(self) -> None:
         if self.emulator is None:
@@ -289,7 +447,7 @@ class ControlsMixin:
                 title=self._text("choose_firmware"),
                 initialdir=str(initial_dir),
                 filetypes=(
-                    ("Firmware images", "*.bin *.dump *.img *.mbn"),
+                    ("Firmware images", "*.bin *.dump *.img *.mbn *.hex *.hxb"),
                     ("All files", "*"),
                 ),
             )
@@ -488,11 +646,15 @@ class ControlsMixin:
             if not isinstance(profiles, dict):
                 profiles = {}
             profiles[str(self.firmware.resolve())] = self.overrides
+            manual_keymaps = data.get("manual_keymaps")
+            if not isinstance(manual_keymaps, dict):
+                manual_keymaps = {}
             atomic_write_text(
                 path,
                 json.dumps({
                     "ui_language": self.ui_language_preference,
                     "profiles": profiles,
+                    "manual_keymaps": manual_keymaps,
                 }, ensure_ascii=False, indent=2) + "\n",
             )
             LOGGER.info("GUI profile saved firmware=%s override_keys=%s",

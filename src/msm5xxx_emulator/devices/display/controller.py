@@ -1,7 +1,6 @@
 """Display methods owned by controller."""
 from __future__ import annotations
 
-from ...detection.firmware import KNOWN_SCREENS
 from ...core.constants import LCD_MEMORY_WRITE_COMMANDS
 from unicorn import Uc
 
@@ -52,16 +51,25 @@ class DisplayControllerMixin:
             return None
         return spans
 
-    def _set_display_geometry(self, width: int, height: int, *, force: bool = False) -> None:
+    def _set_display_geometry(self, width: int, height: int, *,
+                              source: str, force: bool = False) -> None:
         """Adopt a controller-proven panel geometry before its first visible frame."""
+        current_source = getattr(self.config, "display_geometry_source",
+                                 "external-config")
         if (width, height) == (self.config.width, self.config.height):
+            if (current_source == "auto-default"
+                    or (force and current_source.startswith("runtime:"))):
+                self.config.display_geometry_source = source
             return
         visible = self.framebuffer.count(0) != len(self.framebuffer)
-        if ((visible and not force)
+        if ((current_source != "auto-default"
+             and not (force and current_source.startswith("runtime:")))
+                or (visible and not force)
                 or not (64 <= width <= 320 and 64 <= height <= 320)):
             return
         with self._display_lock:
             self.config.width, self.config.height = width, height
+            self.config.display_geometry_source = source
             self.framebuffer = bytearray(width * height * 3)
             self.display_frame = bytes(self.framebuffer)
         self._lcd_direct_calibrated = [False, False]
@@ -76,14 +84,44 @@ class DisplayControllerMixin:
         """Use an addressed full GRAM window before cursor-wrapped pixels."""
         geometry = self._lcd_full_window_geometry(self._lcd_x, self._lcd_y)
         current = (self.config.width, self.config.height)
-        known = KNOWN_SCREENS.get(getattr(self.config, "verified_model", ""))
-        # GRAM dimensions can be larger than the glass.  They may replace the
-        # generic 176x220 fallback (as on SC-7080), but never overwrite a
-        # known model panel or a previously detected/manual non-default size.
+        # GRAM dimensions can be larger than the glass. They may replace only
+        # an auto-detected fallback, never descriptor/manual geometry.
         if (geometry is not None and (geometry == current
-                                      or (known is None
-                                          and current == (176, 220)))):
-            self._set_display_geometry(*geometry)
+                                      or getattr(self.config,
+                                                 "display_geometry_source",
+                                                 "external-config") == "auto-default")):
+            self._set_display_geometry(*geometry, source="runtime:gram")
+
+    def _lcd_lgfa_register(self, size: int, value: int) -> None:
+        """Observe the paired-pixel controller's exact full-window grammar."""
+        order = self._lcd_lgfa_window_order
+        if size != 2:
+            order.clear()
+            return
+        register, argument = value >> 8 & 0xFF, value & 0xFF
+        if register == 2:
+            order[:] = [argument]
+        elif order and len(order) < 4 and register == 2 + len(order):
+            order.append(argument)
+        else:
+            order.clear()
+            return
+        if len(order) != 4:
+            return
+        self._lcd_lgfa_window = self._lcd_full_window_geometry(
+            [order[0], order[2]], [order[1], order[3]]
+        )
+        self._lg_pixels.clear()
+        order.clear()
+
+    def _lcd_promote_lgfa_geometry(self) -> None:
+        geometry = self._lcd_lgfa_window
+        if geometry is None:
+            return
+        current = (self.config.width, self.config.height)
+        if (geometry == current or getattr(self.config, "display_geometry_source",
+                                           "external-config") == "auto-default"):
+            self._set_display_geometry(*geometry, source="runtime:lgfa")
 
     def _flush_indexed_frame(self) -> None:
         if self._lcd_indexed_dirty:
@@ -259,6 +297,8 @@ class DisplayControllerMixin:
     def _lcd_route_write(self, uc: Uc, access: int, address: int, size: int,
                          value: int, user_data: object) -> None:
         self._lcd_lowbyte_page_event(address, size, value)
+        if address == 0x02000078:
+            self._lcd_lgfa_register(size, value)
         # Match every LCD write while a direct-window candidate is held: an
         # intervening aperture access is a mismatch, not a later continuation.
         if self._lcd_028_direct_probe_write(address, size, value & 0xFFFF):
@@ -267,6 +307,7 @@ class DisplayControllerMixin:
         if self._lcd_window_rgb565_write(address, size, value):
             return
         if address == 0x020000FA:
+            self._lcd_promote_lgfa_geometry()
             self._lg_pixels.append(value & ((1 << (size * 8)) - 1))
             count = self.config.width * self.config.height * 2
             if len(self._lg_pixels) >= count:
@@ -276,6 +317,7 @@ class DisplayControllerMixin:
                              | ((second >> 1) & 0x07FF))
                     self._pixel(index // 2, pixel)
                 del self._lg_pixels[:count]
+                self._lcd_protocol = "lg-paired-rgb565"
                 self._publish_frame()
             return
         # Two-wire parallel LCD controllers occur at both 0x020 and 0x02C.

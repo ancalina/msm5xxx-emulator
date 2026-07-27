@@ -145,6 +145,7 @@ class CheckpointMixin:
             for event in unmapped_accesses
         ]
         secondary = getattr(self, "secondary_flash", None)
+        upper = getattr(self, "upper_flash", None)
         return {
             "firmware": identity,
             "model": getattr(self.config, "model", "unknown"),
@@ -178,6 +179,9 @@ class CheckpointMixin:
                     "secondary_nor_changed_pages": len(
                         getattr(secondary, "changed_pages", ())
                     ),
+                    "upper_nor_changed_pages": len(getattr(upper, "changed_pages", ())),
+                    "upper_nor_reads": getattr(upper, "read_operations", 0),
+                    "upper_nor_programs": getattr(upper, "program_operations", 0),
                     "nand_reads": self.nand_reads,
                     "nand_writes": self.nand_writes,
                     "nand_commands": len(self.nand_commands),

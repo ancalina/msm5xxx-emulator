@@ -41,6 +41,31 @@ BOARD_ADC_READER_BL_OFFSETS = (0x04, 0x0C, 0x12, 0x52, 0x56, 0x5A,
 BOARD_ADC_READER_SIZE = 0x98
 BOARD_ADC_READER_LITERAL = 0x03000780
 BOARD_ADC_READER_DATA_ADDRESS = BOARD_ADC_READER_LITERAL + 0x0C
+BOARD_ADC_READER_VARIANT_SIZE = BOARD_ADC_READER_SIZE + 4
+BOARD_ADC_READER_VARIANT_BL_OFFSETS = (0x04, 0x0C, 0x12, 0x4E, 0x52,
+                                       0x56, 0x68, 0x6C, 0x72, 0x76, 0x86)
+BOARD_ADC_READER_VARIANT_FIXED = (
+    (0, BOARD_ADC_READER_PREFIX),
+    (8, bytes.fromhex("0404240c")),
+    (0x10, bytes.fromhex("2a20")),
+    (0x16, bytes.fromhex(
+        "1f48802201781143017001789f2319400170022f02d10178202208e0"
+        "032f02d10178602203e0002f03d10178402211430170071c01780a20")),
+    (0x5A, bytes.fromhex("3878802398430106090e38700a20")),
+    (0x70, bytes.fromhex("0b20")),
+    (0x7A, bytes.fromhex("0748808907063f0e002c01d1")),
+    (0x8A, bytes.fromhex("381c90bc08bc1847")),
+)
+BOARD_ADC_READER_FIXED = (
+    (0, BOARD_ADC_READER_PREFIX),
+    (8, bytes.fromhex("0404240c")),
+    (0x10, bytes.fromhex("2a20")),
+    (0x16, BOARD_ADC_READER_BODY),
+    (0x5E, BOARD_ADC_READER_MID_BODY),
+    (0x72, bytes.fromhex("0b20")),
+    (0x7C, BOARD_ADC_READER_TAIL),
+    (0x8C, bytes.fromhex("381c90bd")),
+)
 
 
 BOARD_STATUS_INPUT_BODY = bytes.fromhex(
@@ -48,28 +73,39 @@ BOARD_STATUS_INPUT_BODY = bytes.fromhex(
 )
 
 
+def board_adc_reader_read_offset_at(image: bytes, position: int) -> int | None:
+    """Return the data-read PC offset for one pristine reader layout."""
+    if position & 1 or position < 0:
+        return None
+    if (position + BOARD_ADC_READER_SIZE <= len(image)
+            and not any(image[position + offset:position + offset + len(expected)] != expected
+                        for offset, expected in BOARD_ADC_READER_FIXED)
+            and struct.unpack_from("<I", image, position + 0x94)[0]
+            == BOARD_ADC_READER_LITERAL):
+        return 0x7E
+    if (position + BOARD_ADC_READER_VARIANT_SIZE <= len(image)
+            and not any(image[position + offset:position + offset + len(expected)] != expected
+                        for offset, expected in BOARD_ADC_READER_VARIANT_FIXED)
+            and struct.unpack_from("<I", image, position + 0x98)[0]
+            == BOARD_ADC_READER_LITERAL):
+        return 0x7C
+    return None
+
+
 def board_adc_reader_at(image: bytes, position: int) -> bool:
     """Validate one shared ADC reader without matching unrelated MMIO users."""
-    if position & 1 or position < 0 or position + BOARD_ADC_READER_SIZE > len(image):
-        return False
-    fixed = (
-        (0, BOARD_ADC_READER_PREFIX),
-        (8, bytes.fromhex("0404240c")),
-        (0x10, bytes.fromhex("2a20")),
-        (0x16, BOARD_ADC_READER_BODY),
-        (0x5E, BOARD_ADC_READER_MID_BODY),
-        (0x72, bytes.fromhex("0b20")),
-        (0x7C, BOARD_ADC_READER_TAIL),
-        (0x8C, bytes.fromhex("381c90bd")),
-    )
-    if any(image[position + offset:position + offset + len(expected)] != expected
-           for offset, expected in fixed):
-        return False
-    if struct.unpack_from("<I", image, position + 0x94)[0] != BOARD_ADC_READER_LITERAL:
-        return False
+    offset = board_adc_reader_read_offset_at(image, position)
+    return (offset is not None
+            and _reader_targets_in_image(
+                image, position,
+                (BOARD_ADC_READER_BL_OFFSETS if offset == 0x7E
+                 else BOARD_ADC_READER_VARIANT_BL_OFFSETS)))
+
+
+def _reader_targets_in_image(image: bytes, position: int,
+                             offsets: tuple[int, ...]) -> bool:
     return all((target := thumb_bl_target(image, position + offset)) is not None
-               and 0 <= target < len(image)
-               for offset in BOARD_ADC_READER_BL_OFFSETS)
+               and 0 <= target < len(image) for offset in offsets)
 
 
 def find_board_adc_reader(image: bytes) -> int | None:

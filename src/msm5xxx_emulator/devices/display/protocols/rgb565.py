@@ -52,6 +52,7 @@ class Rgb565ProtocolMixin:
         # geometry.  Never replace a previously rendered, unrelated panel.
         self._set_display_geometry(
             BYTE_RGB565_BOOT_WIDTH, BYTE_RGB565_BOOT_HEIGHT,
+            source="runtime:byte-rgb565",
             force=self.frame_sequence == 0,
         )
         if (self.config.width, self.config.height) == (
