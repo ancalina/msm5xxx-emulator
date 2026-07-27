@@ -1,6 +1,7 @@
 """Closed-shape tests for automatic direct-MMIO keypad detection."""
 from __future__ import annotations
 
+import os
 import struct
 import unittest
 from pathlib import Path
@@ -12,6 +13,19 @@ from src.msm5xxx_emulator.detection.input_matrix import (
     find_direct_matrix_scanners,
     resolve_direct_matrix_input,
 )
+
+
+def _test_firmware_root() -> Path | None:
+    configured = os.environ.get("MSM5XXX_TEST_FIRMWARE_ROOT")
+    if configured:
+        root = Path(configured).expanduser()
+        return root if root.is_dir() else None
+    test_file = Path(__file__).resolve()
+    for parent in (test_file.parents[1], test_file.parents[2]):
+        root = parent / "firmwares"
+        if root.is_dir():
+            return root
+    return None
 
 
 class DirectInputMatrixTests(unittest.TestCase):
@@ -63,13 +77,18 @@ class DirectInputMatrixTests(unittest.TestCase):
         )
 
     def test_samsung_raw_telemetry_requires_complete_relocation_abi(self) -> None:
-        root = Path(__file__).resolve().parents[2]
         expected = {
             "x350_VC22.bin": (0x013A2248, 0x328E6, 0x32868, 0x32882, 0xB5252),
             "schx150.bin": (0x013A3EC8, 0x329B6, 0x32938, 0x32952, 0xB539A),
         }
+        root = _test_firmware_root()
+        if root is None or any(
+                not (root / name).is_file() for name in expected):
+            self.skipTest(
+                "firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT"
+            )
         for name, values in expected.items():
-            image = (root / "firmwares" / name).read_bytes()
+            image = (root / name).read_bytes()
             profile, status, rejected = resolve_direct_matrix_input(image)
             self.assertEqual((status, rejected), ("accepted", []))
             assert profile is not None
@@ -89,6 +108,47 @@ class DirectInputMatrixTests(unittest.TestCase):
             self.assertEqual((status, rejected), ("accepted", []))
             assert profile is not None
             self.assertNotIn("raw_ring", profile)
+
+    def test_samsung_r7_raw_telemetry_requires_closed_task_dispatch(self) -> None:
+        expected = {
+            "incoming-msm5xxx-candidates-20260726/Samsung/SCH-X350/x350eng/x350eng.bin": ((
+                0x013A2ED4, 0x340F6, 0x34078, 0x34092, 0xB85EC,
+            ), 0, "samsung-byte-ring32-r0-receiver-v1", None),
+            "SCH-X250.bin": ((
+                0x01124BA8, 0x34086, 0x34010, 0xBB498, 0xBAE66,
+            ), 7, "samsung-byte-ring32-r7-task-dispatch-v1", 0xBB498),
+            "incoming-msm5xxx-candidates-20260726/Samsung/SCH-X250/X250rus/extracted/X250rus.bin": ((
+                0x01124BA4, 0x3405E, 0x33FE8, 0xBB47E, 0xBAE5E,
+            ), 7, "samsung-byte-ring32-r7-task-dispatch-v1", 0xBB47E),
+        }
+        root = _test_firmware_root()
+        if root is None or any(
+                not (root / name).is_file() for name in expected):
+            self.skipTest(
+                "firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT"
+            )
+        for name, (values, register, evidence, capture) in expected.items():
+            image = (root / name).read_bytes()
+            profile, status, rejected = resolve_direct_matrix_input(image)
+            self.assertEqual((status, rejected), ("accepted", []))
+            assert profile is not None
+            self.assertEqual(
+                tuple(profile[field] for field in (
+                    "raw_ring", "raw_enqueue_store", "raw_dequeue",
+                    "raw_dequeue_return", "raw_task_entry",
+                )), values,
+            )
+            self.assertEqual(profile["raw_task_register"], register)
+            self.assertEqual(profile["raw_consumer_evidence"], evidence)
+            if capture is not None:
+                near_miss = bytearray(image)
+                near_miss[capture] ^= 1
+                profile, status, rejected = resolve_direct_matrix_input(
+                    bytes(near_miss)
+                )
+                self.assertEqual((status, rejected), ("accepted", []))
+                assert profile is not None
+                self.assertNotIn("raw_ring", profile)
 
     def test_lg_ring256_shape_is_classified_without_model_name(self) -> None:
         image = self._image((

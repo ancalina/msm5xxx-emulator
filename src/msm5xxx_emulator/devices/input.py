@@ -19,6 +19,7 @@ from unicorn import Uc
 from unicorn import UcError
 from unicorn.arm_const import UC_ARM_REG_LR
 from unicorn.arm_const import UC_ARM_REG_R0
+import json
 import struct
 import logging
 
@@ -35,6 +36,11 @@ DIRECT_MATRIX_SAMSUNG_KEY_EVENTS = {
     6: 0x66,   # RIGHT
     9: 0x55,   # DOWN
     **DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
+}
+DIRECT_MATRIX_EVIDENCED_KEY_EVENTS = {
+    SAMSUNG_RING32: DIRECT_MATRIX_SAMSUNG_KEY_EVENTS,
+    LG_RING256: DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
+    LG_DESCRIPTOR_RAW: DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
 }
 
 
@@ -224,6 +230,7 @@ class InputMixin:
         )
         self.direct_key_positions: dict[int, tuple[int, int, int]] = {}
         self.direct_key_scan_epochs: dict[int, int] = {}
+        self.direct_key_mapping_sources: dict[int, str] = {}
         self.direct_matrix_scans = 0
         self.direct_matrix_active_reads = 0
         self.direct_matrix_sink_events = 0
@@ -296,37 +303,136 @@ class InputMixin:
         )
         if key_start is None and direct is not None:
             if position is None:
+                family = direct.get(
+                    "event_sink_family", direct.get("family")
+                )
+                key_events = DIRECT_MATRIX_EVIDENCED_KEY_EVENTS.get(family, {})
+                mapping_source = (
+                    "manual" if event_code is not None else
+                    ("automatic-evidenced" if bit in key_events
+                     else "automatic-experimental")
+                )
+                unique = None
+                if event_code is not None:
+                    unique = (
+                        list(direct["event_codes"]).count(event_code) == 1
+                    )
                 self.input_error = (
                     f"manual matrix event 0x{event_code:02X} is absent or ambiguous"
                     if event_code is not None else
                     "automatic matrix detected; this key semantic is not proven"
                 )
-                return
-            if pressed and self.held_keys:
-                self.input_error = (
-                    "automatic matrix supports one evidenced key at a time"
+                self._log_direct_key(
+                    bit, pressed, event_code,
+                    reason=(
+                        "manual-event-absent-or-ambiguous"
+                        if event_code is not None else
+                        "automatic-cell-unavailable"
+                    ),
+                    mapping_source=mapping_source,
+                    mapping_rule=(
+                        "manual-event-rejected"
+                        if event_code is not None else
+                        ("evidenced-event-unavailable"
+                         if mapping_source == "automatic-evidenced" else
+                         "experimental-cell-unavailable")
+                    ),
+                    event_unique=unique,
                 )
                 return
+            key_events = DIRECT_MATRIX_EVIDENCED_KEY_EVENTS.get(
+                direct.get("event_sink_family", direct.get("family")), {}
+            )
+            automatic_source = (
+                "automatic-evidenced"
+                if key_events.get(bit) == position[0]
+                else "automatic-experimental"
+            )
+            requested_source = (
+                "manual" if event_code is not None else automatic_source
+            )
+            if pressed and self.held_keys:
+                self.input_error = (
+                    "direct matrix supports one key at a time"
+                )
+                self._log_direct_key(
+                    bit, pressed, event_code,
+                    reason="simultaneous-key-unsupported",
+                    mapping_source=requested_source,
+                    mapping_rule="simultaneous-key-rejected",
+                    position=position,
+                    event_unique=True,
+                )
+                return
+            mapping_sources = getattr(self, "direct_key_mapping_sources", None)
+            if not isinstance(mapping_sources, dict):
+                mapping_sources = {}
+                self.direct_key_mapping_sources = mapping_sources
+            scan_epoch = self.direct_key_scan_epochs.get(bit)
             if pressed:
                 self.held_keys.add(bit)
                 self.direct_key_positions[bit] = position
                 self.direct_key_scan_epochs[bit] = self.direct_matrix_scans
                 self.key_press_read_epochs[bit] = self.key_read_epoch
+                mapping_sources[bit] = requested_source
             else:
                 self.held_keys.remove(bit)
                 self.direct_key_positions.pop(bit, None)
                 self.direct_key_scan_epochs.pop(bit, None)
                 self.key_press_read_epochs.pop(bit, None)
+            mapping_source = (
+                mapping_sources[bit] if pressed
+                else mapping_sources.pop(bit, requested_source)
+            )
             self.input_error = ""
-            LOGGER.info(
-                "matrix key bit=%d event=0x%02X row=%d column=%d pressed=%s",
-                bit, position[0], position[1], position[2], pressed,
+            experimental_bits = [
+                candidate for candidate in range(HANDSET_KEY_COUNT)
+                if (candidate in self.direct_input_positions
+                    and key_events.get(candidate)
+                    != self.direct_input_positions[candidate][0])
+            ]
+            self._log_direct_key(
+                bit, pressed,
+                position[0] if mapping_source == "manual" else None,
+                reason={
+                    "manual": "manual-event-override",
+                    "automatic-evidenced": "evidenced-event-match",
+                    "automatic-experimental":
+                        "experimental-remaining-unique-cell",
+                }[mapping_source],
+                mapping_source=mapping_source,
+                position=position,
+                event_unique=True,
+                fallback_rank=(
+                    experimental_bits.index(bit) + 1
+                    if mapping_source == "automatic-experimental"
+                    else None
+                ),
+                scanner_active_during_hold=(
+                    None if pressed else (
+                        scan_epoch is not None
+                        and self.direct_matrix_scans > scan_epoch
+                    )
+                ),
             )
             return
         if key_start is None:
             self.input_error = (
                 "automatic keypad transport not detected; "
                 "physical register override required"
+            )
+            self._log_direct_key(
+                bit, pressed, event_code,
+                reason="keypad-transport-not-detected",
+                mapping_source=(
+                    "manual" if event_code is not None
+                    else "automatic-experimental"
+                ),
+                mapping_rule=(
+                    "manual-transport-unavailable"
+                    if event_code is not None
+                    else "transport-profile-required"
+                ),
             )
             return
         for address, size in tuple(self.ready_bits):
@@ -356,28 +462,153 @@ class InputMixin:
         LOGGER.info("key bit=%d pressed=%s register=0x%08X value=0x%08X",
                     bit, pressed, key_start, value)
 
+    def _log_direct_key(
+            self, bit: int, pressed: bool, requested_event: int | None, *,
+            reason: str, mapping_source: str | None = None,
+            mapping_rule: str | None = None,
+            position: tuple[int, int, int] | None = None,
+            event_unique: bool | None = None,
+            fallback_rank: int | None = None,
+            scanner_active_during_hold: bool | None = None,
+    ) -> None:
+        profile = getattr(self, "direct_input_profile", None)
+        family = (
+            profile.get("event_sink_family", profile.get("family"))
+            if profile is not None else None
+        )
+        identifier = (
+            profile.get("grammar_fingerprint")
+            or profile.get("grammar")
+            or family
+            if profile is not None else None
+        )
+        evidence = (
+            profile.get("evidence")
+            or profile.get("event_sink_validation")
+            or profile.get("raw_consumer_evidence")
+            if profile is not None else None
+        )
+        payload = {
+            "accepted": position is not None
+                        and reason != "simultaneous-key-unsupported",
+            "bit": bit,
+            "pressed": pressed,
+            "requested_event": (
+                f"0x{requested_event:02X}"
+                if requested_event is not None else None
+            ),
+            "requested_source": (
+                "manual" if requested_event is not None else "automatic"
+            ),
+            "reason": reason,
+            "mapping": mapping_source,
+            "mapping_source": mapping_source,
+            "mapping_rule": mapping_rule or {
+                "manual": "manual-unique-event",
+                "automatic-evidenced": "evidenced-event",
+                "automatic-experimental":
+                    "remaining-unique-cell-table-order",
+            }.get(mapping_source),
+            "manual_override": requested_event is not None,
+            "event_unique": event_unique,
+            "fallback_rank": fallback_rank,
+            "firmware_event": (
+                f"0x{position[0]:02X}" if position is not None else None
+            ),
+            "matrix": (
+                {"row": position[1], "column": position[2]}
+                if position is not None else None
+            ),
+            "detection": getattr(
+                self, "direct_input_detection",
+                "accepted" if profile is not None else "not-found",
+            ),
+            "detection_status": getattr(
+                self, "direct_input_detection",
+                "accepted" if profile is not None else "not-found",
+            ),
+            "family": family,
+            "profile": identifier,
+            "grammar_fingerprint": (
+                profile.get("grammar_fingerprint")
+                if profile is not None else None
+            ),
+            "evidence": evidence,
+            "confidence": {
+                "manual": "user-override",
+                "automatic-evidenced": "evidenced",
+                "automatic-experimental": "experimental",
+            }.get(mapping_source, "rejected"),
+            "scanner_active_during_hold": scanner_active_during_hold,
+            "counters": {
+                "register_reads": getattr(self, "key_register_reads", 0),
+                "scans": getattr(self, "direct_matrix_scans", 0),
+                "active_reads": getattr(
+                    self, "direct_matrix_active_reads", 0
+                ),
+                "call_edges": getattr(
+                    self, "direct_matrix_sink_events", 0
+                ),
+                "raw_enqueues": getattr(
+                    self, "direct_matrix_raw_enqueue_events", 0
+                ),
+                "dequeues": getattr(
+                    self, "direct_matrix_dequeue_events", 0
+                ),
+                "task_consumers": getattr(
+                    self, "direct_matrix_task_consumer_events", 0
+                ),
+            },
+        }
+        LOGGER.info(
+            "matrix key payload=%s",
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+
     @staticmethod
     def _direct_matrix_positions(
             profile: dict[str, object] | None) -> dict[int, tuple[int, int, int]]:
         if profile is None:
             return {}
+        family = profile.get("event_sink_family", profile.get("family"))
+        key_events = DIRECT_MATRIX_EVIDENCED_KEY_EVENTS.get(family)
+        required = (
+            "event_codes", "rows", "columns",
+            "single_key_column_sense", "no_key",
+        )
+        if key_events is None or any(field not in profile for field in required):
+            return {}
         events = list(profile["event_codes"])
         rows = int(profile["rows"])
-        family = profile.get("event_sink_family", profile.get("family"))
-        if family == SAMSUNG_RING32:
-            key_events = DIRECT_MATRIX_SAMSUNG_KEY_EVENTS
-        elif family in (LG_RING256, LG_DESCRIPTOR_RAW):
-            key_events = DIRECT_MATRIX_NUMERIC_KEY_EVENTS
-        else:
+        columns = int(profile["columns"])
+        if rows <= 0 or columns <= 0:
             return {}
+        senses = list(profile["single_key_column_sense"])
+        cell_limit = min(len(events), rows * columns, rows * len(senses))
+        event_counts = Counter(events)
         result: dict[int, tuple[int, int, int]] = {}
         for bit, event in key_events.items():
             matches = [index for index, value in enumerate(events)
                        if value == event]
             if len(matches) == 1:
                 index = matches[0]
-                result[bit] = event, index % rows, index // rows
-        return result if len(result) == len(key_events) else {}
+                row, column = index % rows, index // rows
+                if index < cell_limit:
+                    result[bit] = event, row, column
+        evidenced_events = set(key_events.values())
+        remaining = (
+            bit for bit in range(HANDSET_KEY_COUNT) if bit not in result
+        )
+        fillers = {0, 0xFF, int(profile["no_key"]) & 0xFF}
+        candidates = (
+            (int(event), index % rows, index // rows)
+            for index, event in enumerate(events[:cell_limit])
+            if (event_counts[event] == 1
+                and int(event) not in evidenced_events
+                and int(event) not in fillers)
+        )
+        result.update(zip(remaining, candidates))
+        return result
 
     def _direct_matrix_position(
             self, bit: int, event_code: int | None
@@ -386,6 +617,8 @@ class InputMixin:
             return getattr(self, "direct_input_positions", {}).get(bit)
         profile = getattr(self, "direct_input_profile", None)
         if profile is None or not 0 <= event_code <= 0xFF:
+            return None
+        if event_code in {0, 0xFF, int(profile["no_key"]) & 0xFF}:
             return None
         events = list(profile["event_codes"])
         matches = [index for index, value in enumerate(events)

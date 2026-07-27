@@ -205,6 +205,14 @@ def _thumb_writes_register(word: int, register: int) -> bool:
 
 def _thumb_path_preserves_register(
         image: bytes, start: int, goal: int, end: int, register: int) -> bool:
+    return goal in _thumb_reachable_preserving_register(
+        image, start, end, register
+    )
+
+
+def _thumb_reachable_preserving_register(
+        image: bytes, start: int, end: int, register: int) -> set[int]:
+    """Return bounded offsets reachable before one register is overwritten."""
     limit = min(end, len(image))
     pending = [start]
     reached: set[int] = set()
@@ -213,8 +221,6 @@ def _thumb_path_preserves_register(
         if (current in reached or not 0 <= current <= limit - 2
                 or current < start or current & 1):
             continue
-        if current == goal:
-            return True
         reached.add(current)
         word = struct.unpack_from("<H", image, current)[0]
         is_call = (
@@ -227,7 +233,7 @@ def _thumb_path_preserves_register(
                 or _thumb_writes_register(word, register)):
             continue
         pending.extend(_thumb_successors(image, current, end))
-    return False
+    return reached
 
 
 def _thumb_callable_entry(

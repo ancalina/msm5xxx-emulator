@@ -46,17 +46,28 @@ descriptor 6x5 path is also enabled when its legacy 5 ms timer, detector-closed
 two- or three-bank controller route, IRQ wrapper, handler slots, and queue drain
 all close. Three-bank pending/status access is limited to its validated IRQ
 handler. Detection uses no model- or filename-specific rules. LG classes map
-only numeric keys, `*`, and `#` to evidenced matrix positions. Samsung ring32
-also maps `MENU`, `UP/DOWN/LEFT/RIGHT`, Cancel, and Call. Unverified `OK/STO`,
-End, volume, or multi-key semantics are not mapped, and telemetry records
-rejection reasons.
+numeric keys, `*`, and `#` to evidenced matrix positions. Samsung ring32 also
+maps `MENU`, `UP/DOWN/LEFT/RIGHT`, Cancel, and Call. Remaining single-key GUI
+controls use a deterministic experimental mapping to unused, unique,
+non-filler cells in firmware table order. This best-effort label can be wrong;
+it exists so test logs can show what each physical cell actually does. Unknown
+transports, ambiguous cells, and multi-key input remain disabled.
 
-Until those semantics are proven, clicking an unmapped GUI button opens a
-temporary manual event-byte editor; right-click edits any button. A value such
-as `0x53` is accepted only when it occurs exactly once in the detected firmware
-matrix table. The emulator then drives that physical row and column through the
-normal scanner/debounce path—it never injects the byte into a firmware queue.
-Mappings are stored per firmware SHA-256; an empty value removes the mapping.
+Right-click any button to override its event byte. Clicking a control with no
+usable automatic cell opens the same editor. A value such as `0x53` is accepted
+only when it occurs exactly once in the detected firmware matrix table;
+`0x00`, `0xFF`, and matrix no-key values are rejected. The emulator drives that
+physical row and column through normal scanner/debounce—it never injects the
+byte into a firmware queue. Mappings are stored per firmware SHA-256; an empty
+value removes the mapping.
+
+Every accepted or rejected edge logs requested source, mapping source
+(`automatic-evidenced`, `automatic-experimental`, or `manual`), rule, and
+reason. Accepted edges also record detector family/fingerprint, firmware
+event, row/column, fallback rank, and scanner/queue/task counters. Manual
+mapping edits log their accepted/rejected decision and sanitized requested
+value. These fields distinguish a wrong experimental label from a transport
+failure.
 
 For descriptor input, telemetry distinguishes the scanner-to-enqueue call edge
 from the actual raw-ring store, dequeue return, and task receipt. Fresh numeric
@@ -103,6 +114,7 @@ Its document contains the single canonical sheet URL for future changes.
 1. Run the emulator with your firmware.
 2. Compress the generated `logs/` directory as `logs.zip` and submit it through
    [the test log form](https://forms.gle/8ThEtrJgZceiAE3HA).
+3. State the GUI button, expected action, and action the firmware actually took.
 
 ...or find Ancalina somewhere and send the archive directly.
 

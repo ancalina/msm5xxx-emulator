@@ -12,6 +12,7 @@ from .arm import (
     _thumb_function_start,
     _thumb_path_preserves_register,
     _thumb_reachable,
+    _thumb_reachable_preserving_register,
     _thumb_successors,
     thumb_bl_target,
     thumb_literal_value,
@@ -79,7 +80,9 @@ SAMSUNG_RAW_DEQUEUE = bytes.fromhex(
     "064a50781178884201d10020f74650180131c906c90e80781170f746"
 )
 SAMSUNG_RAW_RECEIVER_TAIL = bytes.fromhex("071c00d0")
+SAMSUNG_RAW_R7_MOVE = bytes.fromhex("071c")
 SAMSUNG_RAW_CONSUMER_EVIDENCE = "samsung-byte-ring32-r0-receiver-v1"
+SAMSUNG_RAW_R7_CONSUMER_EVIDENCE = "samsung-byte-ring32-r7-task-dispatch-v1"
 
 
 def _producer_feature_names(word: int) -> tuple[str, ...]:
@@ -244,6 +247,89 @@ def _samsung_raw_consumer_metadata(
         "raw_task_entry": load_address + receiver + 4,
         "raw_task_register": 0,
         "raw_consumer_evidence": SAMSUNG_RAW_CONSUMER_EVIDENCE,
+    }
+
+
+def _samsung_raw_r7_consumer_metadata(
+        image: bytes, event_sink: int, event_codes: list[int],
+        load_address: int,
+) -> dict[str, object] | None:
+    """Recover an exact r7 dequeue-task observer without assigning key meaning."""
+    if event_sink < 0 or event_sink & 1:
+        return None
+    enqueue_end = min(len(image), event_sink + 0x70)
+    rings = [thumb_literal_value(image, current, 0)
+             for current in range(event_sink + 0x40, enqueue_end - 1, 2)
+             if struct.unpack_from("<H", image, current)[0] & 0xF800 == 0x4800
+             and struct.unpack_from("<H", image, current)[0] >> 8 & 7 == 0]
+    rings = [ring for ring in rings
+             if ring is not None and 0x01000000 <= ring < 0x04000000]
+    if len(rings) != 1:
+        return None
+    ring = rings[0]
+    stores = [current for current in range(event_sink + 0x40, enqueue_end - 1, 2)
+              if (struct.unpack_from("<H", image, current)[0] & 0xF800 == 0x7000
+                  and struct.unpack_from("<H", image, current)[0] & 7 == 7
+                  and struct.unpack_from("<H", image, current)[0] >> 6 & 0x1F == 2)]
+    if (len(stores) != 1
+            or stores[0] not in _thumb_reachable(
+                image, event_sink, enqueue_end
+            )):
+        return None
+    dequeues = [position for position in find_all(image, SAMSUNG_RAW_DEQUEUE)
+                if not position & 1
+                and thumb_literal_value(image, position, 2) == ring]
+    if len(dequeues) != 1:
+        return None
+    dequeue = dequeues[0]
+    tasks: list[tuple[int, int]] = []
+    for move in find_all(image, SAMSUNG_RAW_R7_MOVE):
+        call = move - 4
+        if (call < 0 or call & 1 or thumb_bl_target(image, call) != dequeue
+                or call + 10 > len(image)
+                or struct.unpack_from("<H", image, call + 4)[0] != 0x1C07
+                or struct.unpack_from("<H", image, call + 6)[0] & 0xFF00
+                != 0xD000
+                or struct.unpack_from("<H", image, call + 8)[0] & 0xF800
+                != 0xE000):
+            continue
+        branches = _thumb_successors(image, call + 8, len(image))
+        if len(branches) != 1:
+            continue
+        task = branches[0]
+        end = min(len(image), task + 0x1000)
+        consumers: dict[int, set[int]] = {}
+        for current in _thumb_reachable_preserving_register(
+                image, task, end, 7):
+            word = struct.unpack_from("<H", image, current)[0]
+            if (word & 0xFF00 != 0x2F00 or word & 0xFF not in event_codes
+                    or current + 4 > len(image)):
+                continue
+            successors = _thumb_successors(image, current + 2, len(image))
+            target = next((item for item in successors if item != current + 4), None)
+            if (target is None or target + 6 > len(image)
+                    or struct.unpack_from("<H", image, target)[0] != 0x1C38):
+                continue
+            consumer = thumb_bl_target(image, target + 2)
+            if consumer is not None:
+                consumers.setdefault(consumer, set()).add(word & 0xFF)
+        closed = [consumer for consumer, events in consumers.items()
+                  if len(events) >= 3]
+        if len(closed) == 1:
+            tasks.append((call, task))
+    if len(tasks) != 1:
+        return None
+    call, task = tasks[0]
+    return {
+        "raw_ring": ring,
+        "raw_ring_capacity": 32,
+        "raw_enqueue_store": load_address + stores[0],
+        "raw_enqueue_register": 7,
+        "raw_dequeue": load_address + dequeue,
+        "raw_dequeue_return": load_address + call + 4,
+        "raw_task_entry": load_address + task,
+        "raw_task_register": 7,
+        "raw_consumer_evidence": SAMSUNG_RAW_R7_CONSUMER_EVIDENCE,
     }
 
 
@@ -473,6 +559,11 @@ def resolve_direct_matrix_input(
                     image, int(scanner["event_sink"]) - load_address,
                     load_address,
                 )
+                if metadata is None:
+                    metadata = _samsung_raw_r7_consumer_metadata(
+                        image, int(scanner["event_sink"]) - load_address,
+                        list(events), load_address,
+                    )
                 if metadata is not None:
                     scanner.update(metadata)
             accepted.append(scanner)

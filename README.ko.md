@@ -45,17 +45,27 @@ queue sink가 닫힌 경우 활성화됩니다. LG descriptor 6x5 경로도 lega
 timer, detector-closed two- 또는 three-bank controller route, IRQ wrapper,
 handler slot, queue drain이 모두 닫힌 경우 활성화됩니다. Three-bank
 pending/status access는 검증된 IRQ handler 안으로 제한됩니다. 모델명·파일명별
-규칙은 쓰지 않습니다. LG class는 숫자 key, `*`, `#`만 검증된 matrix 위치에
+규칙은 쓰지 않습니다. LG class는 숫자 key, `*`, `#`를 검증된 matrix 위치에
 mapping합니다. Samsung ring32는 `MENU`, `UP/DOWN/LEFT/RIGHT`, 취소, 통화도
-mapping합니다. 검증되지 않은 `OK/STO`, 종료, 볼륨, multi-key semantic은
-mapping하지 않으며 telemetry에 reject 이유를 기록합니다.
+mapping합니다. 남은 single-key GUI control은 firmware table 순서의 미사용
+unique/non-filler cell에 deterministic experimental mapping합니다. 실제 key
+의미와 다를 수 있으며 test log로 physical cell의 동작을 수집하기 위한
+best-effort 기능입니다. 미검출 transport, ambiguous cell, multi-key 입력은
+계속 비활성입니다.
 
-해당 semantic이 검증되기 전까지 mapping되지 않은 GUI 버튼을 누르면 임시
-event-byte 편집창이 열리며, 모든 버튼은 우클릭으로 편집할 수 있습니다. `0x53`
-같은 값은 검출된 firmware matrix table에 정확히 한 번 있을 때만 허용됩니다.
-그 row와 column을 정상 scanner/debounce 경로로 누르며 firmware queue에 byte를
-직접 주입하지 않습니다. Mapping은 firmware SHA-256별로 저장되고 빈 값으로
-삭제합니다.
+모든 버튼은 우클릭으로 event byte를 override할 수 있습니다. 사용할 수 있는
+자동 cell이 없는 버튼을 누르면 같은 편집창이 열립니다. `0x53` 같은 값은
+검출된 firmware matrix table에 정확히 한 번 있을 때만 허용하며 `0x00`,
+`0xFF`, matrix no-key 값은 거절합니다. 그 row와 column을 정상
+scanner/debounce 경로로 누르며 firmware queue에 byte를 직접 주입하지
+않습니다. Mapping은 firmware SHA-256별로 저장되고 빈 값으로 삭제합니다.
+
+모든 accepted/rejected edge는 requested source, mapping source
+(`automatic-evidenced`, `automatic-experimental`, `manual`), rule, reason을
+기록합니다. Accepted edge는 detector family/fingerprint, firmware event,
+row/column, fallback rank, scanner/queue/task counter도 기록합니다. 수동
+mapping 편집은 accept/reject 결정과 정리된 requested value를 남깁니다. 이를
+이용해 experimental label 오탐과 transport 실패를 구분합니다.
 
 Descriptor 입력 telemetry는 scanner-to-enqueue call edge와 실제 raw-ring store,
 dequeue return, task receipt를 구분합니다. SV130과 SD810 After의 fresh 숫자키
@@ -101,6 +111,7 @@ python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
 1. 펌웨어로 에뮬레이터를 실행합니다.
 2. 생성된 `logs/` directory를 `logs.zip`으로 압축해
    [테스트 로그 제출 양식](https://forms.gle/8ThEtrJgZceiAE3HA)으로 보냅니다.
+3. 누른 GUI 버튼, 기대 동작, firmware에서 실제 발생한 동작을 함께 적습니다.
 
 ...또는 Ancalina를 찾아 archive를 직접 보내도 됩니다.
 

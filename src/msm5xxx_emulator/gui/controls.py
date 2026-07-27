@@ -44,6 +44,31 @@ def parse_manual_key_event(text: str) -> int:
     return value
 
 
+def _log_manual_key_mapping(
+        firmware_sha256: str | None, bit: int, event_code: int | None, *,
+        accepted: bool, reason: str, mapping_rule: str,
+        requested_value: str | None = None,
+) -> None:
+    """Log one GUI mapping decision without exposing state-file paths."""
+    payload = {
+        "accepted": accepted,
+        "bit": bit,
+        "firmware_sha256_prefix": (firmware_sha256 or "unknown")[:12],
+        "mapping_source": "manual",
+        "mapping_rule": mapping_rule,
+        "reason": reason,
+        "requested_event": (
+            f"0x{event_code:02X}" if event_code is not None else None
+        ),
+        "requested_source": "manual",
+        "requested_value": requested_value,
+    }
+    LOGGER.info(
+        "manual key mapping payload=%s",
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
+
+
 def manual_keymap(data: object, firmware_sha256: str) -> dict[int, int]:
     """Read one validated SHA-scoped GUI mapping from saved preferences."""
     if not isinstance(data, dict):
@@ -361,10 +386,17 @@ class ControlsMixin:
             )
         self._manual_key_events = current
         self._manual_key_sha256 = firmware_sha256
-        LOGGER.info(
-            "manual key mapping firmware_sha256=%s bit=%d event=%s",
-            firmware_sha256[:12], bit,
-            "reset" if event_code is None else f"0x{event_code:02X}",
+        _log_manual_key_mapping(
+            firmware_sha256, bit, event_code,
+            accepted=True,
+            reason=(
+                "manual-mapping-deleted" if event_code is None
+                else "manual-mapping-saved"
+            ),
+            mapping_rule=(
+                "manual-mapping-delete" if event_code is None
+                else "manual-unique-event"
+            ),
         )
 
     def _edit_key_mapping(self, label: str) -> str:
@@ -390,6 +422,7 @@ class ControlsMixin:
         )
         if value is None:
             return "break"
+        event_code: int | None = None
         try:
             event_code = parse_manual_key_event(value) if value.strip() else None
             if (event_code is not None
@@ -400,6 +433,24 @@ class ControlsMixin:
                 )
             self._save_manual_key_event(bit, event_code)
         except (OSError, ValueError) as error:
+            reason = (
+                "invalid-value" if isinstance(error, ValueError)
+                else "state-io-error"
+            )
+            _log_manual_key_mapping(
+                self._firmware_sha256(), bit, event_code,
+                accepted=False,
+                reason=reason,
+                mapping_rule=(
+                    "manual-event-rejected"
+                    if isinstance(error, ValueError)
+                    else "manual-state-io-error"
+                ),
+                requested_value=(
+                    f"0x{event_code:02X}"
+                    if event_code is not None else "<invalid>"
+                ),
+            )
             messagebox.showerror(
                 self._text("settings_error"), str(error), parent=self.root
             )

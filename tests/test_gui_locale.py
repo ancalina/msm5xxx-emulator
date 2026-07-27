@@ -181,6 +181,41 @@ class GuiLocaleTests(unittest.TestCase):
                 saved["manual_keymaps"][firmware_sha256], {"5": 0x53}
             )
 
+    def test_manual_mapping_save_and_delete_log_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = Window.__new__(Window)
+            window.emulator = SimpleNamespace(
+                config=SimpleNamespace(firmware_sha256="a" * 64)
+            )
+            config_path = Path(directory) / "last_config.json"
+            with (mock.patch(
+                    "msm5xxx_emulator.gui.controls.LAST_CONFIG", config_path),
+                  mock.patch(
+                    "msm5xxx_emulator.gui.controls.LOGGER.info") as log):
+                Window._save_manual_key_event(window, 5, 0x53)
+                Window._save_manual_key_event(window, 5, None)
+        payloads = [json.loads(call.args[1]) for call in log.call_args_list]
+        self.assertEqual(payloads, [
+            {
+                "accepted": True, "bit": 5,
+                "firmware_sha256_prefix": "a" * 12,
+                "mapping_source": "manual",
+                "mapping_rule": "manual-unique-event",
+                "reason": "manual-mapping-saved",
+                "requested_event": "0x53", "requested_source": "manual",
+                "requested_value": None,
+            },
+            {
+                "accepted": True, "bit": 5,
+                "firmware_sha256_prefix": "a" * 12,
+                "mapping_source": "manual",
+                "mapping_rule": "manual-mapping-delete",
+                "reason": "manual-mapping-deleted",
+                "requested_event": None, "requested_source": "manual",
+                "requested_value": None,
+            },
+        ])
+
     def test_unmapped_button_opens_editor_without_guest_command(self) -> None:
         window = Window.__new__(Window)
         window.emulator = mock.Mock()
@@ -205,6 +240,80 @@ class GuiLocaleTests(unittest.TestCase):
             Window._mouse_key_release(window, "OK")
         self.assertEqual(window.commands.get_nowait(), (5, True, 0x53))
         self.assertEqual(window.commands.get_nowait(), (5, False))
+
+    def test_rejected_manual_key_event_is_logged(self) -> None:
+        window = Window.__new__(Window)
+        window.emulator = SimpleNamespace(
+            config=SimpleNamespace(firmware_sha256="a" * 64)
+        )
+        window.held = {}
+        window.root = None
+        window.ui_language = "en"
+        with (mock.patch.object(Window, "_manual_key_event",
+                                return_value=None),
+              mock.patch.object(Window, "_key_supported", return_value=False),
+              mock.patch.object(Window, "_key_text", return_value="OK"),
+              mock.patch.object(Window, "_text", return_value="Input error"),
+              mock.patch(
+                  "msm5xxx_emulator.gui.controls.simpledialog.askstring",
+                  return_value="not-a-byte",
+              ),
+              mock.patch(
+                  "msm5xxx_emulator.gui.controls.messagebox.showerror"
+              ),
+              mock.patch(
+                  "msm5xxx_emulator.gui.controls.LOGGER.info"
+              ) as log):
+            self.assertEqual(Window._edit_key_mapping(window, "OK"), "break")
+        self.assertEqual(json.loads(log.call_args.args[1]), {
+            "accepted": False, "bit": 5,
+            "firmware_sha256_prefix": "a" * 12,
+            "mapping_source": "manual",
+            "mapping_rule": "manual-event-rejected",
+            "reason": "invalid-value",
+            "requested_event": None, "requested_source": "manual",
+            "requested_value": "<invalid>",
+        })
+
+    def test_rejected_manual_key_storage_error_log_omits_path(self) -> None:
+        window = Window.__new__(Window)
+        window.emulator = SimpleNamespace(
+            config=SimpleNamespace(firmware_sha256="a" * 64)
+        )
+        window.held = {}
+        window.root = None
+        window.ui_language = "en"
+        error = OSError("write failed: /private/state.json")
+        with (mock.patch.object(Window, "_manual_key_event",
+                                return_value=None),
+              mock.patch.object(Window, "_key_supported", return_value=True),
+              mock.patch.object(Window, "_key_text", return_value="OK"),
+              mock.patch.object(Window, "_text", return_value="Input error"),
+              mock.patch.object(Window, "_save_manual_key_event",
+                                side_effect=error),
+              mock.patch(
+                  "msm5xxx_emulator.gui.controls.simpledialog.askstring",
+                  return_value="0x53",
+              ),
+              mock.patch(
+                  "msm5xxx_emulator.gui.controls.messagebox.showerror"
+              ) as dialog,
+              mock.patch(
+                  "msm5xxx_emulator.gui.controls.LOGGER.info"
+              ) as log):
+            self.assertEqual(Window._edit_key_mapping(window, "OK"), "break")
+        self.assertEqual(json.loads(log.call_args.args[1]), {
+            "accepted": False, "bit": 5,
+            "firmware_sha256_prefix": "a" * 12,
+            "mapping_source": "manual",
+            "mapping_rule": "manual-state-io-error",
+            "reason": "state-io-error",
+            "requested_event": "0x53", "requested_source": "manual",
+            "requested_value": "0x53",
+        })
+        dialog.assert_called_once_with(
+            "Input error", str(error), parent=None
+        )
 
     def test_profile_detection_reuses_baseline_without_manual_overrides(self) -> None:
         firmware = Path("firmware.bin")
