@@ -33,6 +33,7 @@
     "src/msm5xxx_emulator/core/runtime.py": "b12e4c4dd7ff9df5e4e4b0f7b4d4fe72874c0e4cf5155ebcefca15888517e564",
     "src/msm5xxx_emulator/detection/__init__.py": "40b814ed397d50d23dc2ab3e35ba1078e0eacee4d6dfa1b33b69d3c67b43df4f",
     "src/msm5xxx_emulator/detection/arm.py": "b057514cf5a29cd3045184f0a3b455ea5c1f73f50e18d2849ffbc45649a129b6",
+    "src/msm5xxx_emulator/detection/baseband.py": "973311d285ba28b6e7ef1bfdf50ea6005780673969d27d058897b73d3aa0120e",
     "src/msm5xxx_emulator/detection/boot.py": "908a793fa7cb16c321ed29ca5d658848a3e13a1d2ed82613b35da415067beb85",
     "src/msm5xxx_emulator/detection/chipset.py": "91a2217d92822a05ee5e738add70e1a09c8b7e5a7fb08e70318f35b7412e5e61",
     "src/msm5xxx_emulator/detection/display.py": "6b659ccd07b975f91149c6ed25676f9fd714460c8c6e6a3fa0f2e6d938c00524",
