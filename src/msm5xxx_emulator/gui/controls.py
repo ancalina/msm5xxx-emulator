@@ -586,7 +586,7 @@ class ControlsMixin:
                     )
                     self.firmware = firmware
                     try:
-                        _config, self.overrides = detect_profile(
+                        config, self.overrides = detect_profile(
                             firmware, self._load_config()
                         )
                     except (OSError, ValueError):
@@ -605,6 +605,7 @@ class ControlsMixin:
                     dialog.destroy()
                     if self.ui_language != old_language:
                         self._apply_ui_language()
+                    self._prepared_profile = (config, dict(self.overrides))
                     self._restart()
                     return
                 overrides = parse_settings_values(raw)
@@ -660,6 +661,7 @@ class ControlsMixin:
                                 if self.ui_language == "en"
                                 else "Framebuffer 색상맵 적용 중")
             else:
+                self._prepared_profile = (effective, dict(minimal))
                 self._restart()
 
         footer = ttk.Frame(dialog, padding=(10, 4, 10, 10))

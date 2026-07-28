@@ -89,6 +89,7 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
         self.photo: ImageTk.PhotoImage | None = None
         self._screen_item: int | None = None
         self._render_cache: tuple[object, bytes, int, int, int, int] | None = None
+        self._prepared_profile: tuple[object, dict[str, object]] | None = None
         self._settings_requested = False
         self.status = tk.StringVar(value=self._text("ready"))
         self.model = tk.StringVar(value=self._text("detecting"))

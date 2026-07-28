@@ -546,7 +546,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         rex_idle_address = mapped_runtime(idle_position)
         rex_tick_address = mapped_runtime(tick_position)
         rex_irq_route = find_rex_5ms_irq_route(
-            primary_image, tick_position, mapped_runtime
+            primary_image, tick_position, mapped_runtime,
+            candidate_only_mapper=True,
         )
         detection_notes.append(
             "REX sleep loop and periodic wrapper prove 5 ms timer-list advance"

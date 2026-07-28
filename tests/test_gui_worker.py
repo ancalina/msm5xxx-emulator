@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import queue
+from tempfile import TemporaryDirectory
 import threading
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.gui.worker import WorkerMixin
+from msm5xxx_emulator.gui.worker import (
+    WorkerMixin, _prepared_profile_matches,
+)
 
 
 class _Config:
@@ -137,6 +141,68 @@ class GuiWorkerCommandDrainTests(unittest.TestCase):
         self.assertEqual(calls[:2], [("format", "rgb565le"), ("run", 25_000, True)])
         self.assertEqual(sum(call[0] == "run" for call in calls), 1)
         self.assertEqual(transitions, [25_000])
+
+    def test_prepared_profile_skips_repeated_detection(self) -> None:
+        worker = _Worker()
+        stop = threading.Event()
+        commands: queue.SimpleQueue[tuple[object, ...]] = queue.SimpleQueue()
+        config = _Config()
+        firmware_data = b"firmware"
+
+        def stop_after_first_run(emulator: _Emulator, steps: int, *,
+                                 light_state: bool = False):
+            stop.set()
+            return {"fault": None, "instructions": steps}
+
+        with TemporaryDirectory() as directory:
+            firmware = Path(directory) / "test.bin"
+            firmware.write_bytes(firmware_data)
+            config.path = str(firmware.resolve())
+            config.file_size = len(firmware_data)
+            config.firmware_sha256 = hashlib.sha256(firmware_data).hexdigest()
+            with (patch("msm5xxx_emulator.gui.worker.detect_profile",
+                        side_effect=AssertionError("redetect")),
+                  patch("msm5xxx_emulator.gui.worker.GenericMSMEmulator",
+                        side_effect=_Emulator),
+                  patch("msm5xxx_emulator.gui.worker.display_model_name",
+                        return_value="test"),
+                  patch("msm5xxx_emulator.gui.worker.firmware_telemetry",
+                        return_value={}),
+                  patch("msm5xxx_emulator.gui.worker.visible_pixels",
+                        return_value=0),
+                  patch("msm5xxx_emulator.gui.worker._frame_metrics",
+                        return_value=("frame", 0)),
+                  patch("msm5xxx_emulator.gui.worker.telemetry_transition",
+                        return_value=("boot", None, False, False)),
+                  patch("msm5xxx_emulator.gui.worker.emit_telemetry"),
+                  patch.object(_Emulator, "run", stop_after_first_run)):
+                worker._run(
+                    1, stop, commands, firmware, {}, (config, {})
+                )
+
+    def test_prepared_profile_requires_current_identity(self) -> None:
+        config = _Config()
+        with TemporaryDirectory() as directory:
+            firmware = Path(directory) / "test.bin"
+            firmware.write_bytes(b"firmware")
+            config.path = str(firmware)
+            config.file_size = 8
+            config.firmware_sha256 = hashlib.sha256(b"firmware").hexdigest()
+            prepared = (config, {})
+
+            self.assertTrue(_prepared_profile_matches(
+                prepared, firmware, {}
+            ))
+            self.assertFalse(_prepared_profile_matches(
+                prepared, firmware, {"width": 128}
+            ))
+            self.assertFalse(_prepared_profile_matches(
+                prepared, firmware.with_name("other.bin"), {}
+            ))
+            firmware.write_bytes(b"changed!")
+            self.assertFalse(_prepared_profile_matches(
+                prepared, firmware, {}
+            ))
 
 
 if __name__ == "__main__":

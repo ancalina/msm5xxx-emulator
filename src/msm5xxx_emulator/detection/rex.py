@@ -48,16 +48,20 @@ REX_5MS_ARM_PATTERN = re.compile(
 
 
 def _rex_5ms_registration_targets(
-        image: bytes, tick_address: int, runtime_code=None,
+        image: bytes, tick_address: int, runtime_code=None, *,
+        candidate_only_mapper: bool = False,
 ) -> list[int]:
-    """Return exact timer-registrar targets without sweeping every halfword."""
+    """Return timer-registrar targets; candidate-only mapping requires purity."""
     targets: list[int] = []
     candidates = {
         match.start() for match in REX_5MS_REGISTRATION_PATTERN.finditer(image)
         if not match.start() & 1 and match.start() < len(image) - 8
     }
-    positions = (range(0, len(image) - 8, 2)
-                 if runtime_code is not None else sorted(candidates))
+    positions = (
+        sorted(candidates)
+        if runtime_code is None or candidate_only_mapper
+        else range(0, len(image) - 8, 2)
+    )
     for position in positions:
         mapped = runtime_code(position) if runtime_code is not None else position
         if (mapped is None or position not in candidates
@@ -363,9 +367,10 @@ def find_rex_5ms_irq_arm(image: bytes, tick_position: int) -> int | None:
 
 
 def find_rex_5ms_irq_route(
-        image: bytes, tick_position: int,
-        map_position=None) -> tuple[int, int, int, int, int, int, int] | None:
-    """Bind one 5 ms callback to its complete old Qualcomm IRQ route."""
+        image: bytes, tick_position: int, map_position=None, *,
+        candidate_only_mapper: bool = False,
+) -> tuple[int, int, int, int, int, int, int] | None:
+    """Bind one 5 ms callback; candidate-only mapping requires a pure mapper."""
     runtime = map_position or (lambda position: position)
     tick_address = runtime(tick_position)
     if tick_address is None:
@@ -576,7 +581,8 @@ def find_rex_5ms_irq_route(
             continue
 
         registration_targets = _rex_5ms_registration_targets(
-            image, tick_address, runtime_code
+            image, tick_address, runtime_code,
+            candidate_only_mapper=candidate_only_mapper,
         )
         if (len(registration_targets) != 3
                 or len(set(registration_targets)) != 1):

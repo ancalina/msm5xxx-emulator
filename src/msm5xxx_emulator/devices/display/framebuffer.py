@@ -41,22 +41,41 @@ class FramebufferMixin:
         if x0 > x1 or y0 > y1:
             return False
         endian = "big" if self.config.framebuffer_format.endswith("be") else "little"
+        word_format = ">H" if endian == "big" else "<H"
         bgr = self.config.framebuffer_format.startswith("bgr")
         changed = False
         for y in range(y0, y1 + 1):
+            requested = (x1 - x0 + 1) * 2
             row = self.uc.mem_read(
                 address + y * self.config.framebuffer_stride + x0 * 2,
-                (x1 - x0 + 1) * 2,
+                requested,
             )
-            for column, offset in enumerate(range(0, len(row), 2), x0):
-                value = int.from_bytes(row[offset:offset + 2], endian)
+            if len(row) != requested:
+                for column, offset in enumerate(range(0, len(row), 2), x0):
+                    value = int.from_bytes(row[offset:offset + 2], endian)
+                    if bgr:
+                        value = ((value & 0x07E0) | (value & 0x001F) << 11
+                                 | (value >> 11 & 0x001F))
+                    target = (y * self.config.width + column) * 3
+                    before = self.framebuffer[target:target + 3]
+                    self._pixel(y * self.config.width + column, value)
+                    changed |= before != self.framebuffer[target:target + 3]
+                continue
+            target = (y * self.config.width + x0) * 3
+            for (value,) in struct.iter_unpack(word_format, row):
                 if bgr:
                     value = ((value & 0x07E0) | (value & 0x001F) << 11
                              | (value >> 11 & 0x001F))
-                target = (y * self.config.width + column) * 3
-                before = self.framebuffer[target:target + 3]
-                self._pixel(y * self.config.width + column, value)
-                changed |= before != self.framebuffer[target:target + 3]
+                red = (value >> 8 & 0xF8) | (value >> 13)
+                green = (value >> 3 & 0xFC) | (value >> 9 & 3)
+                blue = (value << 3 & 0xF8) | (value >> 2 & 7)
+                changed |= (self.framebuffer[target] != red
+                            or self.framebuffer[target + 1] != green
+                            or self.framebuffer[target + 2] != blue)
+                self.framebuffer[target] = red
+                self.framebuffer[target + 1] = green
+                self.framebuffer[target + 2] = blue
+                target += 3
         if force or changed:
             self._lcd_protocol = f"framebuffer-{self.config.framebuffer_format}"
             self._publish_frame(firmware_originated=firmware_originated)

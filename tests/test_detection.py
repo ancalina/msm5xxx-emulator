@@ -101,6 +101,15 @@ class DetectionTests(unittest.TestCase):
             [12],
         )
         self.assertEqual(calls, [0, 12, 2, 4, 6])
+        calls.clear()
+        self.assertEqual(
+            _rex_5ms_registration_targets(
+                bytes(mapped_registration), 0, runtime,
+                candidate_only_mapper=True,
+            ),
+            [12],
+        )
+        self.assertEqual(calls, [0, 12])
 
         arm = bytes.fromhex("00490220087000491c2000f000f8")
         self.assertEqual(
@@ -938,6 +947,12 @@ class DetectionTests(unittest.TestCase):
         for name, tick, expected in cases:
             image = (root / "firmwares" / name).read_bytes()
             self.assertEqual(find_rex_5ms_irq_route(image, tick), expected)
+            self.assertEqual(
+                find_rex_5ms_irq_route(
+                    image, tick, candidate_only_mapper=True
+                ),
+                expected,
+            )
             self.assertEqual(find_rex_5ms_irq_arm(image, tick), 0x030006E0)
 
     def test_rex_5ms_irq_route_accepts_x4500_enqueue_layout(self) -> None:
