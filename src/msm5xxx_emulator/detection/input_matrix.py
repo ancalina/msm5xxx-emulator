@@ -49,6 +49,7 @@ DIRECT_MATRIX_FINGERPRINT = hashlib.sha256(
     ).encode()
 ).hexdigest()
 SAMSUNG_RING32 = "samsung-filtered-ring32-event-queue-v1"
+SAMSUNG_DUAL_PLANE_RING32 = "samsung-dual-plane-ring32-event-queue-v1"
 LG_RING256 = "lg-ring256-event-queue-v1"
 UNCLASSIFIED = "unclassified"
 ASCII_KEY_EVENTS = tuple(b"123456789*0#")
@@ -72,6 +73,16 @@ PRODUCER_FEATURES = {
         "halfword_write_index",
         "halfword_write_index_store",
     ),
+    SAMSUNG_DUAL_PLANE_RING32: (
+        "event_arg_r0_to_r4",
+        "event_aux_r1_to_r5",
+        "ring32_lsl27",
+        "ring32_lsr27",
+        "dual_plane_event_store",
+        "dual_plane_aux_store",
+        "byte_write_index_store",
+        "halfword_read_index",
+    ),
 }
 SAMSUNG_RAW_ENQUEUE_TAIL = bytes.fromhex(
     "0e48120c417805784b1cdb06db0eab4206d009188f7041780131c906c90e4170"
@@ -83,6 +94,31 @@ SAMSUNG_RAW_RECEIVER_TAIL = bytes.fromhex("071c00d0")
 SAMSUNG_RAW_R7_MOVE = bytes.fromhex("071c")
 SAMSUNG_RAW_CONSUMER_EVIDENCE = "samsung-byte-ring32-r0-receiver-v1"
 SAMSUNG_RAW_R7_CONSUMER_EVIDENCE = "samsung-byte-ring32-r7-task-dispatch-v1"
+N330_5X6_ENTRY = bytes.fromhex(
+    "f0b501260024f1058bb0b04823f046fa002106224a43002000236a4400231354"
+    "01300006000e0628f8d301310906090e0529eed3"
+)
+N330_PRESS_PREFIX = bytes.fromhex(
+    "285d2a2801d052280dd1ac490978002909d0ff212d310122480067f066f9"
+    "285da74908800be00021"
+)
+N330_RELEASE_PREFIX = bytes.fromhex(
+    "295d081c0938f12803d889300006000e00e08020"
+)
+N330_GLOBAL_SENSE = bytes.fromhex("9b4f786b0068c006c00e1f2871d0")
+N330_ROW_SENSE = bytes.fromhex("774f786b0068c206d20e1f2a15d0")
+N330_5X6_SEMANTICS = {
+    "rows": 6,
+    "columns": 5,
+    "register": "0x09000070",
+    "register_size": 4,
+    "sense_mask": "0x1f",
+    "senses": (0x1E, 0x1D, 0x1B, 0x17, 0x0F),
+    "release": "event-plus-0x80; invalid fallback=0x80",
+}
+N330_5X6_FINGERPRINT = hashlib.sha256(
+    json.dumps(N330_5X6_SEMANTICS, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
 
 
 def _producer_feature_names(word: int) -> tuple[str, ...]:
@@ -169,6 +205,14 @@ def classify_matrix_event_sink(
         current_names: list[str] = []
         if current == event_sink + 2 and word == 0x1C07:
             current_names.append("event_arg_r0_to_r7")
+        if current == event_sink + 2 and word == 0x1C04:
+            current_names.append("event_arg_r0_to_r4")
+        if current == event_sink + 6 and word == 0x1C0D:
+            current_names.append("event_aux_r1_to_r5")
+        if word == 0x7084:
+            current_names.append("dual_plane_event_store")
+        if word == 0x7085:
+            current_names.append("dual_plane_aux_store")
         current_names.extend(_producer_feature_names(word))
         for name in current_names:
             features.setdefault(name, set()).add(current)
@@ -188,10 +232,26 @@ def classify_matrix_event_sink(
     )
     family = UNCLASSIFIED
     if boundary == "linear-return":
-        family = next((
-            candidate for candidate, required in required_masks.items()
-            if any(mask & required == required for mask in return_masks)
-        ), UNCLASSIFIED)
+        dual_plane_required = required_masks[SAMSUNG_DUAL_PLANE_RING32]
+        dual_plane_core = dual_plane_required & ~feature_bits["halfword_read_index"]
+        dual_plane_index = (
+            feature_bits["event_arg_r0_to_r4"]
+            | feature_bits["event_aux_r1_to_r5"]
+            | feature_bits["ring32_lsl27"]
+            | feature_bits["ring32_lsr27"]
+            | feature_bits["halfword_read_index"]
+        )
+        if (any(mask & dual_plane_core == dual_plane_core
+                for mask in return_masks)
+                and any(mask & dual_plane_index == dual_plane_index
+                        for mask in return_masks)):
+            family = SAMSUNG_DUAL_PLANE_RING32
+        else:
+            family = next((
+                candidate for candidate, required in required_masks.items()
+                if candidate != SAMSUNG_DUAL_PLANE_RING32
+                and any(mask & required == required for mask in return_masks)
+            ), UNCLASSIFIED)
     return {
         "family": family,
         "boundary": boundary,
@@ -355,6 +415,81 @@ def _thumb_inbound_entries(
             if not remaining:
                 break
     return inbound
+
+
+def _find_n330_5x6_scanners(
+        image: bytes, load_address: int
+) -> list[dict[str, object]]:
+    """Recover the closed temporary N330 producer grammar."""
+    found: list[dict[str, object]] = []
+    start = 0
+    while True:
+        scanner = image.find(N330_5X6_ENTRY, start)
+        if scanner < 0:
+            return found
+        start = scanner + 1
+        press = scanner + 0x3EC
+        release = scanner + 0x472
+        press_call = press + len(N330_PRESS_PREFIX)
+        release_call = release + len(N330_RELEASE_PREFIX)
+        if (image[scanner + 0x6A:scanner + 0x6A + len(N330_GLOBAL_SENSE)]
+                != N330_GLOBAL_SENSE
+                or image[scanner + 0xF8:scanner + 0xF8 + len(N330_ROW_SENSE)]
+                != N330_ROW_SENSE
+                or image[press:press_call] != N330_PRESS_PREFIX
+                or image[release:release_call] != N330_RELEASE_PREFIX):
+            continue
+        queue = thumb_bl_target(image, press_call)
+        if queue is None or thumb_bl_target(image, release_call) != queue:
+            continue
+        producer = classify_matrix_event_sink(image, queue)
+        if producer["family"] != SAMSUNG_DUAL_PLANE_RING32:
+            continue
+        literals = (scanner + 0x6A0, scanner + 0x90C)
+        if any(literal + 4 > len(image) for literal in literals):
+            continue
+        pointers = tuple(struct.unpack_from("<I", image, literal)[0]
+                         for literal in literals)
+        table = pointers[0] - load_address
+        if (len(set(pointers)) != 1 or table < 0 or table + 30 > len(image)):
+            continue
+        events = list(image[table:table + 30])
+        if events.count(0) != 5 or events[-5:] != [0] * 5:
+            continue
+        found.append({
+            "grammar": "n330-5x6-dual-plane-ring32-v1",
+            "grammar_fingerprint": N330_5X6_FINGERPRINT,
+            "evidence": "exact-entry+press-release+table-xrefs",
+            "function": load_address + scanner,
+            "sense_site": load_address + scanner + 0xFC,
+            "global_sense_sites": [load_address + scanner + 0x6E],
+            "row_sense_sites": [load_address + scanner + 0xFC],
+            "register": 0x09000070,
+            "register_size": 4,
+            "register_reset": 0x1F,
+            "row_register": 5,
+            "rows": 6,
+            "columns": 5,
+            "sense_mask": 0x1F,
+            "no_key": 0x1F,
+            "single_key_column_sense": [0x1E, 0x1D, 0x1B, 0x17, 0x0F],
+            "dynamic_mapped_sense": True,
+            "mmio_map_start": 0x09000000,
+            "mmio_map_size": 0x1000,
+            "event_table": pointers[0],
+            "event_table_bytes": events,
+            "event_codes": events,
+            "event_table_formula": "event_codes[column * 6 + row]",
+            "event_table_literal_xrefs": [load_address + literal for literal in literals],
+            "event_sink_callsite": load_address + press_call,
+            "event_sink": load_address + queue,
+            "event_sink_family": SAMSUNG_DUAL_PLANE_RING32,
+            "event_sink_validation": "required-dual-plane-queue-features",
+            "press_event_load": load_address + press,
+            "release_event_load": load_address + release,
+            "release_callsite": load_address + release_call,
+            "release_grammar": "event-plus-0x80; invalid fallback=0x80",
+        })
 
 
 def find_direct_matrix_scanners(
@@ -528,7 +663,8 @@ def find_direct_matrix_scanners(
             "fingerprint_scope": "linear-prefix",
             "fingerprint_boundary": boundary,
         }
-    return [found[start] for start in sorted(found)]
+    return ([_ for _ in _find_n330_5x6_scanners(image, load_address)]
+            + [found[start] for start in sorted(found)])
 
 
 def resolve_direct_matrix_input(
@@ -543,10 +679,11 @@ def resolve_direct_matrix_input(
         reasons: list[str] = []
         if scanner["event_sink_family"] is None:
             reasons.append("event-sink-family-unclassified")
-        if any(events.count(event) == 0 for event in ASCII_KEY_EVENTS):
-            reasons.append("numeric-event-missing")
-        if any(events.count(event) > 1 for event in ASCII_KEY_EVENTS):
-            reasons.append("numeric-event-duplicated")
+        if scanner["event_sink_family"] != SAMSUNG_DUAL_PLANE_RING32:
+            if any(events.count(event) == 0 for event in ASCII_KEY_EVENTS):
+                reasons.append("numeric-event-missing")
+            if any(events.count(event) > 1 for event in ASCII_KEY_EVENTS):
+                reasons.append("numeric-event-duplicated")
         if reasons:
             rejected.append({
                 "function": scanner["function"],
@@ -590,7 +727,9 @@ __all__ = (
     "ASCII_KEY_EVENTS",
     "DIRECT_MATRIX_FINGERPRINT",
     "LG_RING256",
+    "N330_5X6_FINGERPRINT",
     "SAMSUNG_RING32",
+    "SAMSUNG_DUAL_PLANE_RING32",
     "classify_matrix_event_sink",
     "detect_direct_matrix_input",
     "find_direct_matrix_scanners",

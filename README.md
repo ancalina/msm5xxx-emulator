@@ -46,12 +46,14 @@ descriptor 6x5 path is also enabled when its legacy 5 ms timer, detector-closed
 two- or three-bank controller route, IRQ wrapper, handler slots, and queue drain
 all close. Three-bank pending/status access is limited to its validated IRQ
 handler. Detection uses no model- or filename-specific rules. LG classes map
-numeric keys, `*`, and `#` to evidenced matrix positions. Samsung ring32 also
-maps `MENU`, `UP/DOWN/LEFT/RIGHT`, Cancel, and Call. Remaining single-key GUI
-controls use a deterministic experimental mapping to unused, unique,
-non-filler cells in firmware table order. This best-effort label can be wrong;
-it exists so test logs can show what each physical cell actually does. Unknown
-transports, ambiguous cells, and multi-key input remain disabled.
+numeric keys, `*`, and `#` to evidenced matrix positions; remaining single-key
+controls use deterministic experimental unique-cell mapping. Samsung ring32
+maps `MENU`, `UP/DOWN/LEFT/RIGHT`, Cancel, and Call, but never infers remaining
+labels from firmware table order. Centre OK is provisionally mapped to `0x53`
+only when the same image contains the exact KEYEMUL `O=0x53` grammar and one
+unique matrix cell. It is logged as `automatic-experimental`; End and volume
+remain unmapped. Unknown transports, ambiguous cells, and multi-key input
+remain disabled.
 
 Right-click any button to override its event byte. Clicking a control with no
 usable automatic cell opens the same editor. A value such as `0x53` is accepted

@@ -46,12 +46,13 @@ timer, detector-closed two- 또는 three-bank controller route, IRQ wrapper,
 handler slot, queue drain이 모두 닫힌 경우 활성화됩니다. Three-bank
 pending/status access는 검증된 IRQ handler 안으로 제한됩니다. 모델명·파일명별
 규칙은 쓰지 않습니다. LG class는 숫자 key, `*`, `#`를 검증된 matrix 위치에
-mapping합니다. Samsung ring32는 `MENU`, `UP/DOWN/LEFT/RIGHT`, 취소, 통화도
-mapping합니다. 남은 single-key GUI control은 firmware table 순서의 미사용
-unique/non-filler cell에 deterministic experimental mapping합니다. 실제 key
-의미와 다를 수 있으며 test log로 physical cell의 동작을 수집하기 위한
-best-effort 기능입니다. 미검출 transport, ambiguous cell, multi-key 입력은
-계속 비활성입니다.
+mapping하고 남은 single-key control은 deterministic experimental unique-cell
+mapping을 씁니다. Samsung ring32는 `MENU`, `UP/DOWN/LEFT/RIGHT`, 취소, 통화를
+mapping하지만 firmware table 순서로 남은 label을 추측하지 않습니다. 같은 image에
+exact KEYEMUL `O=0x53` grammar와 unique `0x53` matrix cell이 함께 있을 때만
+가운데 OK를 provisional mapping하며 `automatic-experimental`로 기록합니다.
+종료와 볼륨은 unmapped로 유지합니다. 미검출 transport, ambiguous cell,
+multi-key 입력은 계속 비활성입니다.
 
 모든 버튼은 우클릭으로 event byte를 override할 수 있습니다. 사용할 수 있는
 자동 cell이 없는 버튼을 누르면 같은 편집창이 열립니다. `0x53` 같은 값은

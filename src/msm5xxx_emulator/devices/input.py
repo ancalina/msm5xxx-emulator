@@ -11,13 +11,18 @@ from ..detection.input_descriptor import resolve_lg_descriptor_input
 from ..detection.input_descriptor import LG_DESCRIPTOR_RAW
 from ..detection.input_matrix import LG_RING256
 from ..detection.input_matrix import SAMSUNG_RING32
+from ..detection.input_matrix import SAMSUNG_DUAL_PLANE_RING32
 from ..detection.input_matrix import resolve_direct_matrix_input
+from ..detection.input_semantics import detect_keyemu_semantics
 from ..detection.rex import find_rex_legacy_5ms_irq_route
 from ..detection.rex import find_rex_legacy_5ms_timer_bridge
 from unicorn import UC_HOOK_CODE
+from unicorn import UC_HOOK_MEM_READ
+from unicorn import UC_PROT_ALL
 from unicorn import Uc
 from unicorn import UcError
 from unicorn.arm_const import UC_ARM_REG_LR
+from unicorn.arm_const import UC_ARM_REG_PC
 from unicorn.arm_const import UC_ARM_REG_R0
 import json
 import struct
@@ -37,8 +42,14 @@ DIRECT_MATRIX_SAMSUNG_KEY_EVENTS = {
     9: 0x55,   # DOWN
     **DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
 }
+DIRECT_MATRIX_SAMSUNG_DUAL_PLANE_KEY_EVENTS = {
+    0: 0x5B, 1: 0x63, 2: 0x52, 3: 0x50, 4: 0x65, 6: 0x66,
+    8: 0x55, 9: 0x64, 10: 0x54,
+    **DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
+}
 DIRECT_MATRIX_EVIDENCED_KEY_EVENTS = {
     SAMSUNG_RING32: DIRECT_MATRIX_SAMSUNG_KEY_EVENTS,
+    SAMSUNG_DUAL_PLANE_RING32: DIRECT_MATRIX_SAMSUNG_DUAL_PLANE_KEY_EVENTS,
     LG_RING256: DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
     LG_DESCRIPTOR_RAW: DIRECT_MATRIX_NUMERIC_KEY_EVENTS,
 }
@@ -59,6 +70,7 @@ class InputMixin:
                 self.direct_input_detection,
                 self.direct_input_rejections,
             ) = resolve_direct_matrix_input(self.image, config.load_address)
+            self._attach_samsung_keyemul_ok_mapping(config.load_address)
             if self.direct_input_profile is None:
                 descriptor, status, rejected = resolve_lg_descriptor_input(
                     self.image
@@ -244,6 +256,7 @@ class InputMixin:
         self.input_events = 0
         self.firmware_key_events = 0
         if self.direct_input_profile is not None:
+            self._install_dynamic_mapped_matrix_sense()
             self.uc.hook_add(
                 UC_HOOK_CODE,
                 self._direct_input_event_observed,
@@ -278,6 +291,59 @@ class InputMixin:
             self.uc.hook_add(UC_HOOK_CODE, self._input_entry_observed,
                              begin=self.input_profile[1], end=self.input_profile[1])
 
+    def _install_dynamic_mapped_matrix_sense(self) -> None:
+        """Map only an explicitly detected keypad sense register."""
+        profile = self.direct_input_profile
+        if profile is None or profile.get("dynamic_mapped_sense") is not True:
+            return
+        required = (
+            "register", "register_size", "register_reset", "sense_mask",
+            "global_sense_sites", "row_sense_sites", "mmio_map_start",
+            "mmio_map_size",
+        )
+        if any(field not in profile for field in required):
+            return
+        register = int(profile["register"])
+        size = int(profile["register_size"])
+        start = int(profile["mmio_map_start"])
+        mapped_size = int(profile["mmio_map_size"])
+        if (size <= 0 or mapped_size <= 0 or start & 0xFFF
+                or mapped_size & 0xFFF
+                or not start <= register < register + size <= start + mapped_size):
+            return
+        reset = int(profile["register_reset"])
+        self.uc.mem_map(start, mapped_size, UC_PROT_ALL)
+        self.uc.mem_write(register, reset.to_bytes(size, "little"))
+        self.uc.hook_add(
+            UC_HOOK_MEM_READ, self._dynamic_mapped_matrix_sense_read,
+            begin=register, end=register + size - 1,
+        )
+
+    def _dynamic_mapped_matrix_sense_read(
+            self, uc: Uc, access: int, address: int, size: int,
+            value: int, user_data: object) -> None:
+        profile = getattr(self, "direct_input_profile", None)
+        if (profile is None or profile.get("dynamic_mapped_sense") is not True
+                or address != int(profile["register"])
+                or size != int(profile["register_size"])):
+            return
+        pc = uc.reg_read(UC_ARM_REG_PC) & ~1
+        if pc in {int(site) for site in profile["global_sense_sites"]}:
+            sense = self._direct_matrix_global_sense()
+        elif pc in {int(site) for site in profile["row_sense_sites"]}:
+            sense = self._direct_matrix_nibble(uc)
+        else:
+            return
+        if sense is None:
+            return
+        register = int(profile["register"])
+        mask = int(profile["sense_mask"])
+        current = int.from_bytes(uc.mem_read(register, size), "little")
+        response = current & ~mask | sense & mask
+        uc.mem_write(register, response.to_bytes(size, "little"))
+        self.direct_matrix_scans += 1
+        if (sense & mask) != (int(profile["no_key"]) & mask):
+            self.direct_matrix_active_reads += 1
 
     def can_set_key(self, bit: int, event_code: int | None = None) -> bool:
         """Report whether one GUI key can use an evidenced physical path."""
@@ -286,6 +352,27 @@ class InputMixin:
         if self.config.key_register is not None:
             return event_code is None
         return self._direct_matrix_position(bit, event_code) is not None
+
+    def _attach_samsung_keyemul_ok_mapping(self, load_address: int) -> None:
+        """Keep the KEYEMUL O mapping scoped to one exact firmware image."""
+        profile = getattr(self, "direct_input_profile", None)
+        if (profile is None or profile.get("event_sink_family") != SAMSUNG_RING32):
+            return
+        if list(profile.get("event_codes", ())).count(0x53) != 1:
+            return
+        semantics = detect_keyemu_semantics(self.image, load_address)
+        event_map = dict(semantics.event_map)
+        if (semantics.confidence != "exact-native"
+                or event_map.get("O") != (0x53,)):
+            return
+        profile["provisional_mappings"] = {
+            5: {
+                "event": 0x53,
+                "rule": "same-image-exact-keyemul-O-unique-cell",
+                "evidence": "same-image-exact-keyemul-semantics+unique-matrix-event;offline-corpus-crosscheck",
+                "semantic_grammar_fingerprint": semantics.grammar_fingerprint,
+            },
+        }
 
     def set_key(self, bit: int, pressed: bool,
                 event_code: int | None = None) -> None:
@@ -384,6 +471,20 @@ class InputMixin:
                 mapping_sources[bit] if pressed
                 else mapping_sources.pop(bit, requested_source)
             )
+            provisional = (None if event_code is not None else
+                           self._direct_provisional_mapping(bit, position, direct))
+            mapping_rules = getattr(self, "direct_key_mapping_rules", {})
+            mapping_evidence = getattr(self, "direct_key_mapping_evidence", {})
+            if pressed:
+                if provisional is not None:
+                    mapping_rules[bit] = provisional["rule"]
+                    mapping_evidence[bit] = provisional
+                self.direct_key_mapping_rules = mapping_rules
+                self.direct_key_mapping_evidence = mapping_evidence
+            mapping_rule = (mapping_rules.get(bit) if pressed
+                            else mapping_rules.pop(bit, None))
+            mapping_detail = (mapping_evidence.get(bit) if pressed
+                              else mapping_evidence.pop(bit, None))
             self.input_error = ""
             experimental_bits = [
                 candidate for candidate in range(HANDSET_KEY_COUNT)
@@ -398,14 +499,19 @@ class InputMixin:
                     "manual": "manual-event-override",
                     "automatic-evidenced": "evidenced-event-match",
                     "automatic-experimental":
-                        "experimental-remaining-unique-cell",
+                        ("experimental-same-image-keyemul-ok"
+                         if provisional is not None
+                         else "experimental-remaining-unique-cell"),
                 }[mapping_source],
                 mapping_source=mapping_source,
+                mapping_rule=mapping_rule,
+                mapping_evidence=mapping_detail,
                 position=position,
                 event_unique=True,
                 fallback_rank=(
                     experimental_bits.index(bit) + 1
-                    if mapping_source == "automatic-experimental"
+                    if (mapping_source == "automatic-experimental"
+                        and provisional is None)
                     else None
                 ),
                 scanner_active_during_hold=(
@@ -466,6 +572,7 @@ class InputMixin:
             self, bit: int, pressed: bool, requested_event: int | None, *,
             reason: str, mapping_source: str | None = None,
             mapping_rule: str | None = None,
+            mapping_evidence: dict[str, object] | None = None,
             position: tuple[int, int, int] | None = None,
             event_unique: bool | None = None,
             fallback_rank: int | None = None,
@@ -509,6 +616,7 @@ class InputMixin:
                 "automatic-experimental":
                     "remaining-unique-cell-table-order",
             }.get(mapping_source),
+            "mapping_evidence": mapping_evidence,
             "manual_override": requested_event is not None,
             "event_unique": event_unique,
             "fallback_rank": fallback_rank,
@@ -574,7 +682,7 @@ class InputMixin:
         key_events = DIRECT_MATRIX_EVIDENCED_KEY_EVENTS.get(family)
         required = (
             "event_codes", "rows", "columns",
-            "single_key_column_sense", "no_key",
+            "no_key",
         )
         if key_events is None or any(field not in profile for field in required):
             return {}
@@ -583,10 +691,20 @@ class InputMixin:
         columns = int(profile["columns"])
         if rows <= 0 or columns <= 0:
             return {}
-        senses = list(profile["single_key_column_sense"])
+        senses = list(profile.get(
+            "senses", profile.get("single_key_column_sense", ())
+        ))
         cell_limit = min(len(events), rows * columns, rows * len(senses))
         event_counts = Counter(events)
         result: dict[int, tuple[int, int, int]] = {}
+        if family == SAMSUNG_DUAL_PLANE_RING32:
+            for bit, event in key_events.items():
+                matches = [index for index, value in enumerate(events)
+                           if value == event and index < cell_limit]
+                if len(matches) == 1:
+                    index = matches[0]
+                    result[bit] = event, index % rows, index // rows
+            return result
         for bit, event in key_events.items():
             matches = [index for index, value in enumerate(events)
                        if value == event]
@@ -595,6 +713,24 @@ class InputMixin:
                 row, column = index % rows, index // rows
                 if index < cell_limit:
                     result[bit] = event, row, column
+        if family == SAMSUNG_RING32:
+            mappings = profile.get("provisional_mappings")
+            for bit, mapping in (mappings.items()
+                                 if isinstance(mappings, dict) else ()):
+                if not isinstance(bit, int):
+                    continue
+                event = mapping.get("event") if isinstance(mapping, dict) else None
+                matches = [index for index, value in enumerate(events)
+                           if value == event]
+                if len(matches) != 1:
+                    continue
+                index = matches[0]
+                if index < cell_limit:
+                    position = event, index % rows, index // rows
+                    if InputMixin._direct_provisional_mapping(
+                            bit, position, profile) is not None:
+                        result[bit] = position
+            return result
         evidenced_events = set(key_events.values())
         remaining = (
             bit for bit in range(HANDSET_KEY_COUNT) if bit not in result
@@ -609,6 +745,22 @@ class InputMixin:
         )
         result.update(zip(remaining, candidates))
         return result
+
+    @staticmethod
+    def _direct_provisional_mapping(
+            bit: int, position: tuple[int, int, int] | None,
+            profile: dict[str, object] | None = None,
+    ) -> dict[str, object] | None:
+        if profile is None or position is None:
+            return None
+        mappings = profile.get("provisional_mappings")
+        mapping = mappings.get(bit) if isinstance(mappings, dict) else None
+        if (not isinstance(mapping, dict) or mapping.get("event") != position[0]
+                or not isinstance(mapping.get("rule"), str)
+                or not isinstance(mapping.get("evidence"), str)
+                or not isinstance(mapping.get("semantic_grammar_fingerprint"), str)):
+            return None
+        return mapping
 
     def _direct_matrix_position(
             self, bit: int, event_code: int | None
@@ -631,7 +783,9 @@ class InputMixin:
         row, column = index % rows, index // rows
         if row >= rows or column >= columns:
             return None
-        senses = list(profile["single_key_column_sense"])
+        senses = list(profile.get(
+            "senses", profile.get("single_key_column_sense", ())
+        ))
         return ((event_code, row, column)
                 if column < len(senses) else None)
 
@@ -649,9 +803,23 @@ class InputMixin:
         row_register = THUMB_LOW_REGISTERS[int(profile["row_register"])]
         row = uc.reg_read(row_register) & 0xFF
         return (
-            int(profile["single_key_column_sense"][column])
+            int(profile.get(
+                "senses", profile["single_key_column_sense"]
+            )[column])
             if row == target_row else int(profile["no_key"])
         )
+
+    def _direct_matrix_global_sense(self) -> int | None:
+        profile = getattr(self, "direct_input_profile", None)
+        if profile is None or not self.held_keys:
+            return int(profile["no_key"]) if profile is not None else None
+        bit = next(iter(self.held_keys))
+        position = self._active_direct_matrix_position(bit)
+        if position is None:
+            return int(profile["no_key"])
+        return int(profile.get(
+            "senses", profile["single_key_column_sense"]
+        )[position[2]])
 
     def _active_direct_matrix_position(
             self, bit: int

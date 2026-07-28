@@ -9,6 +9,7 @@ from pathlib import Path
 from src.msm5xxx_emulator.detection.input_matrix import (
     DIRECT_MATRIX_FINGERPRINT,
     LG_RING256,
+    SAMSUNG_DUAL_PLANE_RING32,
     SAMSUNG_RING32,
     find_direct_matrix_scanners,
     resolve_direct_matrix_input,
@@ -29,6 +30,100 @@ def _test_firmware_root() -> Path | None:
 
 
 class DirectInputMatrixTests(unittest.TestCase):
+    def test_n330_5x6_profile_requires_complete_release_grammar(self) -> None:
+        image = bytearray(b"\xff" * 0x1300)
+        scanner = 0x100
+        press = scanner + 0x3EC
+        release = scanner + 0x472
+        press_prefix = bytes.fromhex(
+            "285d2a2801d052280dd1ac490978002909d0ff212d310122480067f066f9"
+            "285da74908800be00021"
+        )
+        release_prefix = bytes.fromhex(
+            "295d081c0938f12803d889300006000e00e08020"
+        )
+        image[scanner:scanner + 64] = bytes.fromhex(
+            "f0b501260024f1058bb0b04823f046fa002106224a43002000236a4400231354"
+            "01300006000e0628f8d301310906090e0529eed3"
+        )
+        image[scanner + 0x6A:scanner + 0x78] = bytes.fromhex(
+            "9b4f786b0068c006c00e1f2871d0"
+        )
+        image[scanner + 0xF8:scanner + 0x106] = bytes.fromhex(
+            "774f786b0068c206d20e1f2a15d0"
+        )
+        image[press:press + len(press_prefix)] = press_prefix
+        image[release:release + len(release_prefix)] = release_prefix
+
+        def call(at: int, target: int) -> None:
+            displacement = target - (at + 4)
+            struct.pack_into(
+                "<2H", image, at,
+                0xF000 | ((displacement >> 12) & 0x7FF),
+                0xF800 | ((displacement >> 1) & 0x7FF),
+            )
+
+        call(press + len(press_prefix), 0x80)
+        call(release + len(release_prefix), 0x80)
+        struct.pack_into(
+            "<11H", image, 0x80,
+            0xB500, 0x1C04, 0x46C0, 0x1C0D, 0x06C0, 0x0EC0,
+            0x7084, 0x7085, 0x7040, 0x8800, 0x4770,
+        )
+        load_address = 0x1000
+        table = 0x1200
+        struct.pack_into("<I", image, scanner + 0x6A0, load_address + table)
+        struct.pack_into("<I", image, scanner + 0x90C, load_address + table)
+        image[table:table + 30] = bytes((
+            0x61, 0x50, ord("1"), ord("4"), ord("7"), ord("*"),
+            0x54, 0x55, ord("2"), ord("5"), ord("8"), ord("0"),
+            0x5B, 0x52, ord("3"), ord("6"), ord("9"), ord("#"),
+            0x53, 0x65, 0x66, 0x64, 0x63, 0x63, 0x62, 0, 0, 0, 0, 0,
+        ))
+
+        profile, status, rejected = resolve_direct_matrix_input(
+            bytes(image), load_address
+        )
+
+        self.assertEqual((status, rejected), ("accepted", []))
+        assert profile is not None
+        self.assertEqual(profile["event_sink_family"], SAMSUNG_DUAL_PLANE_RING32)
+        self.assertEqual(
+            tuple(profile[field] for field in (
+                "rows", "columns", "row_register", "register",
+                "register_size", "sense_mask", "no_key",
+            )), (6, 5, 5, 0x09000070, 4, 0x1F, 0x1F),
+        )
+        self.assertEqual(
+            profile["single_key_column_sense"], [0x1E, 0x1D, 0x1B, 0x17, 0x0F]
+        )
+        self.assertEqual(profile["event_sink"], load_address + 0x80)
+        self.assertEqual(profile["sense_site"], load_address + scanner + 0xFC)
+        self.assertEqual(profile["global_sense_sites"],
+                         [load_address + scanner + 0x6E])
+        self.assertEqual(profile["row_sense_sites"],
+                         [load_address + scanner + 0xFC])
+        self.assertEqual(profile["release_grammar"],
+                         "event-plus-0x80; invalid fallback=0x80")
+
+        image[release] ^= 1
+        self.assertEqual(
+            resolve_direct_matrix_input(bytes(image), load_address)[1],
+            "not-found",
+        )
+        image[release] ^= 1
+        image[scanner + 0xFC] ^= 1
+        self.assertEqual(
+            resolve_direct_matrix_input(bytes(image), load_address)[1],
+            "not-found",
+        )
+        image[scanner + 0xFC] ^= 1
+        image[0x8E] ^= 1
+        self.assertEqual(
+            resolve_direct_matrix_input(bytes(image), load_address)[1],
+            "not-found",
+        )
+
     @staticmethod
     def _image(sink_words: tuple[int, ...]) -> bytearray:
         image = bytearray(b"\xff" * 0x180)

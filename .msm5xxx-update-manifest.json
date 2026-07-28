@@ -1,7 +1,7 @@
 {
   "files": {
-    "README.md": "7273805be2f70d57961a348ff08d4608a0f2be49fffd1e9e637d0dc7d9714313",
-    "README.ko.md": "a6cc03a72ac19d7fb91117d851670273d64c410d007063c6dcb509eb3dc38edc",
+    "README.md": "cd694d137278fcb40699a4f6c4d4339bbc7a0704bd37da12f4265e23be897439",
+    "README.ko.md": "e9087bd780990e83d1e182cea780fd625bbd17478c8591987e796396f0d9ecf8",
     "CONTRIBUTING.md": "aeb9d7512c9b35c4f54fdeb51bd29ed47019fbc91f09944e268f5900345362cf",
     "docs/COMMUNITY_COMPATIBILITY_SHEET.md": "dce67d68becb0911d3b0d3b4ac0dcb1d07538655becb72db1298cdd4a9337ee8",
     "LICENSE": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
@@ -40,7 +40,8 @@
     "src/msm5xxx_emulator/detection/firmware_image.py": "cb13ee427e479195efe7e835ed3c8d293b62f62ed08dc61d5978c6b0ed5d730e",
     "src/msm5xxx_emulator/detection/input.py": "d8fa1dea46b8ce156177df0902579a4b7c65aca995e0138174e386798f3f6956",
     "src/msm5xxx_emulator/detection/input_descriptor.py": "599e201f22865d384e9b6f2cdbb622126384d91ef078b5f23196dad318800ac9",
-    "src/msm5xxx_emulator/detection/input_matrix.py": "3ed297f02ce56db283f834e91c4aa5fdfcaff4367d38f3a29e99d7e1589b7884",
+    "src/msm5xxx_emulator/detection/input_matrix.py": "5cc858678440442abcffdcff3518a9045a7d2fd1c0a25ca44c2d9c0f5e8c23c3",
+    "src/msm5xxx_emulator/detection/input_semantics.py": "febcef165c09276f36a9bf4cd93c8b6245bea08bdfd33d4b1a78cb24bc0d02dd",
     "src/msm5xxx_emulator/detection/memory_layout.py": "5270e81ae6974801a569096578dbed31ed9c66958e2bbe86d9caafd59985a898",
     "src/msm5xxx_emulator/detection/model.py": "58f3bbe5a863fa4f97c8a5f09ae31b0667648b579ce86e4f5755b6f730be0d65",
     "src/msm5xxx_emulator/detection/rex.py": "968e28040723830b0e5d57968727b79f42fae6aa929759a352dd4ca395cc5561",
@@ -58,7 +59,7 @@
     "src/msm5xxx_emulator/devices/display/protocols/packed.py": "835b2a2ca98a5a1e0fd9979f684829cdc4f893a9f2b08ede933c6661f8c060bf",
     "src/msm5xxx_emulator/devices/display/protocols/page.py": "22472be08ffc28a53d5aa1d2b46b8536c6d4b2989910b249ebeed5d5f777e0d7",
     "src/msm5xxx_emulator/devices/display/protocols/rgb565.py": "91de2a5ede7eace11cd5f20f064d4c16be1d3dde1b1d576ba4e8674647ecb3cc",
-    "src/msm5xxx_emulator/devices/input.py": "5e8df276bff5abc16de9a79f1589bb991b6ec837fa94c16dd6f0f92567610095",
+    "src/msm5xxx_emulator/devices/input.py": "a024a57934369624b8c8117995eba60dba07e107914ba3de38b5c5f221fa3f1e",
     "src/msm5xxx_emulator/devices/storage/__init__.py": "dd7f203976c8c058b73e233ac9ebc2128f3b545eedd91ec4ff4a4e04d383e454",
     "src/msm5xxx_emulator/devices/storage/eeprom.py": "24243dd89c344594aa998380fbd26431c9f9c0b37734d502b8cb635855457117",
     "src/msm5xxx_emulator/devices/storage/nand.py": "7fb608c1004387be642f5c675c4c4403e2a070f249cf2bc5ce6040ff7cb989d0",
