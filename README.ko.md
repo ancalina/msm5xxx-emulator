@@ -40,29 +40,25 @@ NOR를 mapping합니다. 상태는 별도로 영속 저장하며 이 범위는 L
 decode하지 않습니다. 불완전하거나 ambiguous한 일치는 native fallback을 유지하고
 reject 이유를 기록합니다. 이 storage 판정만으로 handset idle을 주장하지 않습니다.
 
-자동 keypad 입력은 exact direct 6x4 matrix와 Samsung ring32 또는 LG ring256
-queue sink가 닫힌 경우 활성화됩니다. LG descriptor 6x5 경로도 legacy 5 ms
-timer, detector-closed two- 또는 three-bank controller route, IRQ wrapper,
-handler slot, queue drain이 모두 닫힌 경우 활성화됩니다. Three-bank
-pending/status access는 검증된 IRQ handler 안으로 제한됩니다. 모델명·파일명별
-규칙은 쓰지 않습니다. LG class는 숫자 key, `*`, `#`를 검증된 matrix 위치에
-mapping하고 남은 single-key control은 deterministic experimental unique-cell
-mapping을 씁니다. Samsung ring32는 `MENU`, `UP/DOWN/LEFT/RIGHT`, 취소, 통화를
-mapping하지만 firmware table 순서로 남은 label을 추측하지 않습니다. 같은 image에
-exact KEYEMUL `O=0x53` grammar와 unique `0x53` matrix cell이 함께 있을 때만
-가운데 OK를 provisional mapping하며 `automatic-experimental`로 기록합니다.
-종료와 볼륨은 unmapped로 유지합니다. 미검출 transport, ambiguous cell,
-multi-key 입력은 계속 비활성입니다.
+자동 keypad 입력은 exact direct matrix와 recognized queue sink가 닫힌 경우만
+활성화됩니다. LG descriptor 6x5 경로도 legacy 5 ms timer, detector-closed two-
+또는 three-bank controller route, IRQ wrapper, handler slot, queue drain이 모두
+닫힌 경우 활성화됩니다. Three-bank pending/status access는 검증된 IRQ handler
+안으로 제한됩니다. 모델명·파일명별 규칙은 쓰지 않습니다. 모든 자동 위치는
+firmware table 순서의 unique non-filler matrix cell이며 명시적으로 experimental로
+기록합니다. Samsung, LG, KEYEMUL, 모델명, 파일명 map으로 event byte를 GUI key
+label에 배정하지 않습니다. 미검출 transport, ambiguous cell, multi-key 입력은
+계속 비활성입니다.
 
 모든 버튼은 우클릭으로 event byte를 override할 수 있습니다. 사용할 수 있는
-자동 cell이 없는 버튼을 누르면 같은 편집창이 열립니다. `0x53` 같은 값은
-검출된 firmware matrix table에 정확히 한 번 있을 때만 허용하며 `0x00`,
+자동 cell이 없는 버튼을 누르면 같은 편집창이 열립니다. `0x53`, log 형식
+`053`, `05f`는 검출된 firmware matrix table에 정확히 한 번 있을 때만 허용하며 `0x00`,
 `0xFF`, matrix no-key 값은 거절합니다. 그 row와 column을 정상
 scanner/debounce 경로로 누르며 firmware queue에 byte를 직접 주입하지
 않습니다. Mapping은 firmware SHA-256별로 저장되고 빈 값으로 삭제합니다.
 
 모든 accepted/rejected edge는 requested source, mapping source
-(`automatic-evidenced`, `automatic-experimental`, `manual`), rule, reason을
+(`automatic-experimental`, `manual`), rule, reason을
 기록합니다. Accepted edge는 detector family/fingerprint, firmware event,
 row/column, fallback rank, scanner/queue/task counter도 기록합니다. 수동
 mapping 편집은 accept/reject 결정과 정리된 requested value를 남깁니다. 이를
@@ -138,7 +134,7 @@ msm5xxx-boot-probe /path/to/firmware.bin
 ## 개발
 
 ```sh
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m py_compile _compat.py msm5xxx.py gui.py boot_probe.py
 python3 -m py_compile $(find src -name '*.py' -print)
 ```

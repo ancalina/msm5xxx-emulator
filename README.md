@@ -41,30 +41,27 @@ fallback behavior and records its rejection reason. This storage admission is
 not by itself a handset-idle claim.
 
 Automatic keypad input is enabled only when firmware structure closes an exact
-direct 6x4 matrix with a Samsung ring32 or LG ring256 queue sink. An LG
-descriptor 6x5 path is also enabled when its legacy 5 ms timer, detector-closed
-two- or three-bank controller route, IRQ wrapper, handler slots, and queue drain
-all close. Three-bank pending/status access is limited to its validated IRQ
-handler. Detection uses no model- or filename-specific rules. LG classes map
-numeric keys, `*`, and `#` to evidenced matrix positions; remaining single-key
-controls use deterministic experimental unique-cell mapping. Samsung ring32
-maps `MENU`, `UP/DOWN/LEFT/RIGHT`, Cancel, and Call, but never infers remaining
-labels from firmware table order. Centre OK is provisionally mapped to `0x53`
-only when the same image contains the exact KEYEMUL `O=0x53` grammar and one
-unique matrix cell. It is logged as `automatic-experimental`; End and volume
-remain unmapped. Unknown transports, ambiguous cells, and multi-key input
-remain disabled.
+direct matrix with a recognized queue sink. An LG descriptor 6x5 path is also
+enabled when its legacy 5 ms timer, detector-closed two- or three-bank controller
+route, IRQ wrapper, handler slots, and queue drain all close. Three-bank
+pending/status access is limited to its validated IRQ handler. Detection uses no
+model- or filename-specific rules. Every automatic position is a unique,
+non-filler matrix cell in firmware table order and is explicitly logged as
+experimental: event bytes are never assigned to GUI key labels by a Samsung,
+LG, KEYEMUL, model, or filename map. Unknown transports, ambiguous cells, and
+multi-key input remain disabled.
 
 Right-click any button to override its event byte. Clicking a control with no
-usable automatic cell opens the same editor. A value such as `0x53` is accepted
-only when it occurs exactly once in the detected firmware matrix table;
+usable automatic cell opens the same editor. `0x53` and log-style hex such as
+`053` or `05f` are accepted only when the value occurs exactly once in the
+detected firmware matrix table;
 `0x00`, `0xFF`, and matrix no-key values are rejected. The emulator drives that
 physical row and column through normal scanner/debounce—it never injects the
 byte into a firmware queue. Mappings are stored per firmware SHA-256; an empty
 value removes the mapping.
 
 Every accepted or rejected edge logs requested source, mapping source
-(`automatic-evidenced`, `automatic-experimental`, or `manual`), rule, and
+(`automatic-experimental` or `manual`), rule, and
 reason. Accepted edges also record detector family/fingerprint, firmware
 event, row/column, fallback rank, and scanner/queue/task counters. Manual
 mapping edits log their accepted/rejected decision and sanitized requested
@@ -142,7 +139,7 @@ Existing source-checkout commands remain supported: `python msm5xxx.py`,
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m py_compile _compat.py msm5xxx.py gui.py boot_probe.py
 python3 -m py_compile $(find src -name '*.py' -print)
 ```

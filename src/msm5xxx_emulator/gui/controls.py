@@ -34,13 +34,26 @@ KEYS = {
 
 
 def parse_manual_key_event(text: str) -> int:
-    """Parse one opt-in firmware event byte without guessing its base."""
+    """Parse one opt-in firmware event byte from decimal or log-style hex."""
+    value_text = text.strip()
     try:
-        value = int(text.strip(), 0)
+        # User logs conventionally render event bytes as ``053`` / ``05f``.
+        # Keep unprefixed nonzero values decimal, but accept that zero-prefixed
+        # firmware notation as hexadecimal.
+        base = (
+            16 if (len(value_text) > 1 and value_text.startswith("0")
+                   and not value_text.lower().startswith(("0x", "0o", "0b")))
+            else 0
+        )
+        value = int(value_text, base)
     except ValueError as error:
-        raise ValueError("key event must be 0x00..0xFF or decimal 0..255") from error
+        raise ValueError(
+            "key event must be 0x00..0xFF, zero-prefixed hex, or decimal 0..255"
+        ) from error
     if not 0 <= value <= 0xFF:
-        raise ValueError("key event must be 0x00..0xFF or decimal 0..255")
+        raise ValueError(
+            "key event must be 0x00..0xFF, zero-prefixed hex, or decimal 0..255"
+        )
     return value
 
 
@@ -408,11 +421,11 @@ class ControlsMixin:
             return "break"
         current = self._manual_key_event(bit)
         prompt = (
-            "검출된 matrix event byte 입력 (예: 0x53).\n"
+            "검출된 matrix event byte 입력 (예: 0x53 또는 053).\n"
             "펌웨어 event table의 고유 row/column만 사용합니다.\n"
             "빈 값은 수동 매핑 삭제."
             if self.ui_language == "ko" else
-            "Enter detected matrix event byte (example: 0x53).\n"
+            "Enter detected matrix event byte (example: 0x53 or 053).\n"
             "Only a unique row/column in firmware event table is used.\n"
             "Leave empty to remove manual mapping."
         )

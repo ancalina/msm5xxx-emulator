@@ -70,6 +70,13 @@ class InputRuntimeTests(unittest.TestCase):
             "raw_task_entry": 0x31030,
             "raw_task_register": 7,
             "raw_consumer_evidence": "shared-ring-post-bl-r7-v1",
+            "consumer_route_status": "closed",
+            "consumer_route_evidence": "test-r7-route-v1",
+            "consumer_route_fingerprint": "a" * 64,
+            "consumer_route_event_fingerprints": {
+                "0x54": "b" * 64, "0x55": "c" * 64,
+                "0x63": "d" * 64, "0x64": "e" * 64,
+            },
             "event_sink_family": "samsung-filtered-ring32-event-queue-v1",
             "rows": 6,
             "columns": 4,
@@ -306,27 +313,18 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertIsNone(payload["family"])
         self.assertIsNone(payload["grammar_fingerprint"])
 
-    def test_direct_matrix_preserves_evidence_without_semantic_filler(
-            self) -> None:
+    def test_direct_matrix_uses_unique_cells_in_table_order(self) -> None:
         emulator = self._direct_emulator()
 
-        self.assertEqual(len(emulator.direct_input_positions), 19)
-        self.assertEqual(emulator.direct_input_positions[0], (0x5B, 0, 1))
-        self.assertEqual(emulator.direct_input_positions[1], (0x54, 4, 3))
-        self.assertEqual(emulator.direct_input_positions[2], (0x52, 2, 3))
-        self.assertEqual(emulator.direct_input_positions[3], (0x50, 1, 2))
-        self.assertEqual(emulator.direct_input_positions[4], (0x65, 0, 2))
-        self.assertEqual(emulator.direct_input_positions[6], (0x66, 1, 0))
-        self.assertEqual(emulator.direct_input_positions[9], (0x55, 5, 3))
+        self.assertEqual(len(emulator.direct_input_positions), 23)
+        self.assertEqual(emulator.direct_input_positions[0], (0x63, 0, 0))
+        self.assertEqual(emulator.direct_input_positions[7], (0x53, 1, 1))
+        self.assertEqual(emulator.direct_input_positions[22], (0x55, 5, 3))
         self.assertEqual(
-            emulator.direct_input_positions[15],
-            (ord("5"), 3, 1),
+            len(set(emulator.direct_input_positions.values())), 23,
         )
-        self.assertTrue({5, 7, 8, 10}.isdisjoint(
-            emulator.direct_input_positions
-        ))
 
-    def test_direct_matrix_lg_profiles_fill_non_numeric_unique_cells(
+    def test_direct_matrix_recognized_profiles_share_raw_table_order(
             self) -> None:
         for family in ("lg-ring256-event-queue-v1", LG_DESCRIPTOR_RAW):
             profile = self._direct_profile()
@@ -335,7 +333,7 @@ class InputRuntimeTests(unittest.TestCase):
             positions = GenericMSMEmulator._direct_matrix_positions(profile)
 
             self.assertEqual(len(positions), 23)
-            self.assertEqual(positions[15], (ord("5"), 3, 1))
+            self.assertEqual(positions[0], (0x63, 0, 0))
             self.assertEqual(len(set(positions.values())), 23)
 
     def test_direct_matrix_experimental_fallback_is_stable_and_filtered(
@@ -350,10 +348,10 @@ class InputRuntimeTests(unittest.TestCase):
         profile["event_codes"][0] = profile["no_key"]
         profile["event_codes"][18] = 0x53
         filtered = GenericMSMEmulator._direct_matrix_positions(profile)
-        self.assertTrue({5, 7, 8, 10}.isdisjoint(filtered))
         self.assertNotIn(
             profile["no_key"], (position[0] for position in filtered.values())
         )
+        self.assertNotIn(0x53, (position[0] for position in filtered.values()))
 
     def test_direct_matrix_unclassified_profile_maps_no_keys(self) -> None:
         profile = self._direct_profile()
@@ -364,7 +362,7 @@ class InputRuntimeTests(unittest.TestCase):
     def test_manual_event_uses_unique_detected_matrix_cell_only(self) -> None:
         emulator = self._direct_emulator()
 
-        self.assertFalse(emulator.can_set_key(5))
+        self.assertTrue(emulator.can_set_key(5))
         self.assertTrue(emulator.can_set_key(5, 0x53))
         self.assertFalse(emulator.can_set_key(5, 0x7F))
         self.assertFalse(emulator.can_set_key(5, 0))
@@ -394,7 +392,7 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertFalse(rejected["accepted"])
         emulator.direct_input_profile = self._direct_profile()
 
-        self.assertFalse(emulator.can_set_key(5))
+        self.assertTrue(emulator.can_set_key(5))
         emulator.set_key(5, True, 0x53)
         self.assertEqual(emulator.direct_key_positions[5], (0x53, 1, 1))
         self.assertEqual(emulator.held_keys, {5})
@@ -415,7 +413,7 @@ class InputRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(uc.memory[register], b"\x1f")
 
-        emulator.set_key(15, True)
+        emulator.set_key(15, True, ord("5"))
         emulator._stable_mmio_read(
             uc, 0, register, 1, 0, (register, b"\x10")
         )
@@ -464,11 +462,12 @@ class InputRuntimeTests(unittest.TestCase):
             "no_key": 0x1F,
         })
         emulator.direct_input_positions = emulator._direct_matrix_positions(profile)
-        self.assertEqual(emulator.direct_input_positions[0], (0x5B, 0, 2))
-        self.assertEqual(emulator.direct_input_positions[10], (0x54, 0, 1))
+        self.assertEqual(emulator.direct_input_positions[0], (0x61, 0, 0))
+        self.assertEqual(emulator.direct_input_positions[6], (0x54, 0, 1))
         self.assertEqual(profile["event_codes"].count(0x63), 2)
-        self.assertNotIn(1, emulator.direct_input_positions)
-        self.assertNotIn(7, emulator.direct_input_positions)
+        self.assertNotIn(0x63, {
+            position[0] for position in emulator.direct_input_positions.values()
+        })
 
         uc = RegisterMemoryUc()
         emulator.uc = uc
@@ -477,7 +476,7 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(uc.memory[0x09000070], b"\x1f\0\0\0")
         self.assertEqual(uc.hooks[0][2:], (0x09000070, 0x09000073))
 
-        emulator.set_key(15, True)
+        emulator.set_key(15, True, ord("5"))
         uc.memory[0x09000070] = b"\xa0\xbb\xcc\xdd"
         uc.registers[UC_ARM_REG_R5] = 2
         uc.registers[UC_ARM_REG_PC] = 0x33000
@@ -503,7 +502,7 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(emulator.direct_matrix_active_reads, 2)
 
         emulator.set_key(15, False)
-        emulator.set_key(20, True)
+        emulator.set_key(20, True, ord("*"))
         uc.memory[0x09000070] = b"\xa0\xbb\xcc\xdd"
         uc.registers[UC_ARM_REG_R5] = 5
         uc.registers[UC_ARM_REG_PC] = 0x33002
@@ -534,17 +533,6 @@ class InputRuntimeTests(unittest.TestCase):
 
     def test_direct_matrix_keyedge_logging_preserves_mapping_and_hold_scan(self) -> None:
         emulator = self._direct_emulator()
-        emulator.direct_input_profile["provisional_mappings"] = {
-            5: {
-                "event": 0x53,
-                "rule": "same-image-exact-keyemul-O-unique-cell",
-                "evidence": "same-image-exact-keyemul-semantics+unique-matrix-event;offline-corpus-crosscheck",
-                "semantic_grammar_fingerprint": "exact-keyemul",
-            },
-        }
-        emulator.direct_input_positions = emulator._direct_matrix_positions(
-            emulator.direct_input_profile
-        )
         with mock.patch(
                 "msm5xxx_emulator.devices.input.LOGGER.info") as logged:
             emulator.set_key(5, True, 0x53)
@@ -559,8 +547,8 @@ class InputRuntimeTests(unittest.TestCase):
         payloads = [json.loads(call.args[1]) for call in logged.call_args_list]
         (
             manual_press, manual_release,
-            evidenced_press, evidenced_release,
-            experimental_press, experimental_release,
+            automatic_press, automatic_release,
+            fallback_press, fallback_release,
         ) = payloads
         self.assertEqual(
             (manual_press["mapping"], manual_release["mapping"],
@@ -576,25 +564,22 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(manual_release["counters"]["scans"], 1)
         self.assertEqual(manual_release["counters"]["raw_enqueues"], 1)
         self.assertEqual(
-            (evidenced_press["mapping_source"],
-             evidenced_release["mapping_source"],
-             evidenced_release["scanner_active_during_hold"]),
-            ("automatic-evidenced", "automatic-evidenced", False),
+            (automatic_press["mapping_source"],
+             automatic_release["mapping_source"],
+             automatic_release["scanner_active_during_hold"]),
+            ("automatic-experimental", "automatic-experimental", False),
         )
         self.assertEqual(
-            (experimental_press["mapping_source"],
-             experimental_release["mapping_source"],
-             experimental_press["mapping_rule"],
-             experimental_press["fallback_rank"]),
+            (fallback_press["mapping_source"],
+             fallback_release["mapping_source"],
+             fallback_press["mapping_rule"],
+             fallback_press["fallback_rank"]),
             (
                 "automatic-experimental", "automatic-experimental",
-                "same-image-exact-keyemul-O-unique-cell", None,
+                "remaining-unique-cell-table-order", 6,
             ),
         )
-        self.assertEqual(
-            experimental_press["mapping_evidence"]["semantic_grammar_fingerprint"],
-            "exact-keyemul",
-        )
+        self.assertIsNone(fallback_press["mapping_evidence"])
         for payload in payloads:
             self.assertEqual(
                 payload["grammar_fingerprint"],
@@ -602,12 +587,19 @@ class InputRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(payload["detection_status"], "accepted")
             self.assertIn("raw_enqueues", payload["counters"])
+            self.assertEqual(payload["consumer_route_status"], "closed")
+            self.assertEqual(payload["consumer_route_evidence"], "test-r7-route-v1")
+            self.assertEqual(payload["consumer_route_fingerprint"], "a" * 64)
+            self.assertEqual(
+                payload["consumer_route_event_fingerprints"]["0x54"],
+                "b" * 64,
+            )
         self.assertTrue(manual_press["manual_override"])
         self.assertTrue(manual_release["manual_override"])
         self.assertEqual(manual_release["requested_event"], "0x53")
         self.assertEqual(manual_press["requested_source"], "manual")
-        self.assertFalse(evidenced_press["manual_override"])
-        self.assertEqual(evidenced_press["requested_source"], "automatic")
+        self.assertFalse(automatic_press["manual_override"])
+        self.assertEqual(automatic_press["requested_source"], "automatic")
 
     def test_descriptor_matrix_uses_global_gate_and_guest_row_state(self) -> None:
         emulator = self._descriptor_emulator()
@@ -623,7 +615,7 @@ class InputRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(uc.memory[register], b"\xff\x55")
 
-        emulator.set_key(15, True)
+        emulator.set_key(15, True, ord("5"))
         profile["row_register"] = 0
         profile["row_state_evidence"] = "ldrb-state-increment-store"
         uc.registers[UC_ARM_REG_R0] = 0xFF
@@ -688,7 +680,7 @@ class InputRuntimeTests(unittest.TestCase):
         uc = RegisterMemoryUc()
         profile = emulator.direct_input_profile
         register = int(profile["register"])
-        emulator.set_key(15, True)
+        emulator.set_key(15, True, ord("5"))
 
         uc.registers[UC_ARM_REG_PC] = 0x34012
         emulator._stable_mmio_read(
@@ -717,7 +709,7 @@ class InputRuntimeTests(unittest.TestCase):
         register = int(profile["register"])
         uc.memory[register] = b"\xE0\x55"
         uc.registers[UC_ARM_REG_PC] = 0x34012
-        emulator.set_key(15, True)
+        emulator.set_key(15, True, ord("5"))
 
         uc.registers[UC_ARM_REG_R4] = 0
         emulator._stable_mmio_read(
@@ -743,18 +735,6 @@ class InputRuntimeTests(unittest.TestCase):
     def test_direct_matrix_experimental_key_rejects_simultaneous_key(
             self) -> None:
         emulator = self._direct_emulator()
-        emulator.direct_input_profile["provisional_mappings"] = {
-            5: {
-                "event": 0x53,
-                "rule": "same-image-exact-keyemul-O-unique-cell",
-                "evidence": "same-image-exact-keyemul-semantics+unique-matrix-event;offline-corpus-crosscheck",
-                "semantic_grammar_fingerprint": "exact-keyemul",
-            },
-        }
-        emulator.direct_input_positions = emulator._direct_matrix_positions(
-            emulator.direct_input_profile
-        )
-
         emulator.set_key(5, True)
         self.assertEqual(emulator.held_keys, {5})
         with mock.patch(
@@ -766,7 +746,7 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertFalse(rejected["accepted"])
         self.assertEqual(rejected["reason"], "simultaneous-key-unsupported")
         self.assertEqual(
-            rejected["mapping_source"], "automatic-evidenced"
+            rejected["mapping_source"], "automatic-experimental"
         )
 
         emulator.set_key(5, False)
@@ -776,7 +756,7 @@ class InputRuntimeTests(unittest.TestCase):
         emulator = self._direct_emulator()
         uc = RegisterMemoryUc()
         profile = emulator.direct_input_profile
-        emulator.set_key(15, True)
+        emulator.set_key(15, True, ord("5"))
         uc.registers[UC_ARM_REG_R0] = ord("5")
 
         uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 3
@@ -862,7 +842,7 @@ class InputRuntimeTests(unittest.TestCase):
                 emulator.close()
 
 
-    def test_samsung_keyemul_metadata_maps_only_unique_ok_cell(self) -> None:
+    def test_direct_matrix_ignores_semantic_metadata(self) -> None:
         profile = self._direct_profile()
         profile["provisional_mappings"] = {
             5: {
@@ -872,54 +852,9 @@ class InputRuntimeTests(unittest.TestCase):
                 "semantic_grammar_fingerprint": "exact-keyemul",
             },
         }
-        positions = GenericMSMEmulator._direct_matrix_positions(profile)
-
-        self.assertEqual(positions[5], (0x53, 1, 1))
-        self.assertTrue({7, 8, 10}.isdisjoint(positions))
-        for mutation in ((1, 0x53),):
-            duplicate = self._direct_profile()
-            duplicate["event_codes"][mutation[0]] = mutation[1]
-            duplicate["provisional_mappings"] = profile["provisional_mappings"]
-            self.assertNotIn(
-                5, GenericMSMEmulator._direct_matrix_positions(duplicate)
-            )
-        missing = self._direct_profile()
-        missing["event_codes"][7] = 0x62
-        missing["provisional_mappings"] = profile["provisional_mappings"]
-        self.assertNotIn(5, GenericMSMEmulator._direct_matrix_positions(missing))
-
-    def test_same_image_exact_keyemul_gate_attaches_only_complete_O(self) -> None:
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.image = b"same-image"
-        emulator.direct_input_profile = self._direct_profile()
-        exact = SimpleNamespace(
-            confidence="exact-native", event_map=(("O", (0x53,)),),
-            grammar_fingerprint="exact-keyemul",
+        self.assertEqual(
+            GenericMSMEmulator._direct_matrix_positions(profile),
+            GenericMSMEmulator._direct_matrix_positions(self._direct_profile()),
         )
-        with mock.patch(
-                "msm5xxx_emulator.devices.input.detect_keyemu_semantics",
-                return_value=exact) as detected:
-            emulator._attach_samsung_keyemul_ok_mapping(0x10000000)
-        detected.assert_called_once_with(b"same-image", 0x10000000)
-        self.assertIn(5, emulator.direct_input_profile["provisional_mappings"])
-
-        emulator.direct_input_profile = self._direct_profile()
-        incomplete = SimpleNamespace(
-            confidence="exact-native", event_map=(("O", (0x53, 0x54)),),
-            grammar_fingerprint="exact-keyemul",
-        )
-        with mock.patch(
-                "msm5xxx_emulator.devices.input.detect_keyemu_semantics",
-                return_value=incomplete):
-            emulator._attach_samsung_keyemul_ok_mapping(0x10000000)
-        self.assertNotIn("provisional_mappings", emulator.direct_input_profile)
-
-        emulator.direct_input_profile = self._direct_profile()
-        emulator.direct_input_profile["event_codes"][1] = 0x53
-        with mock.patch(
-                "msm5xxx_emulator.devices.input.detect_keyemu_semantics") as detected:
-            emulator._attach_samsung_keyemul_ok_mapping(0x10000000)
-        detected.assert_not_called()
-        self.assertNotIn("provisional_mappings", emulator.direct_input_profile)
 if __name__ == "__main__":
     unittest.main()

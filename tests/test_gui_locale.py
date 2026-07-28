@@ -147,6 +147,8 @@ class GuiLocaleTests(unittest.TestCase):
         firmware_sha256 = "a" * 64
         self.assertEqual(parse_manual_key_event("0x53"), 0x53)
         self.assertEqual(parse_manual_key_event("83"), 0x53)
+        self.assertEqual(parse_manual_key_event("053"), 0x53)
+        self.assertEqual(parse_manual_key_event("05f"), 0x5F)
         with self.assertRaises(ValueError):
             parse_manual_key_event("0x100")
         data = {
@@ -240,6 +242,22 @@ class GuiLocaleTests(unittest.TestCase):
             Window._mouse_key_release(window, "OK")
         self.assertEqual(window.commands.get_nowait(), (5, True, 0x53))
         self.assertEqual(window.commands.get_nowait(), (5, False))
+
+    def test_manual_editor_accepts_log_style_hex_event(self) -> None:
+        window = Window.__new__(Window)
+        window.emulator = SimpleNamespace(
+            config=SimpleNamespace(firmware_sha256="a" * 64)
+        )
+        window.held = {}
+        window.root = None
+        window.ui_language = "en"
+        with (mock.patch.object(Window, "_manual_key_event", return_value=None),
+              mock.patch.object(Window, "_key_supported", return_value=True),
+              mock.patch.object(Window, "_save_manual_key_event") as save,
+              mock.patch("msm5xxx_emulator.gui.controls.simpledialog.askstring",
+                         return_value="053")):
+            self.assertEqual(Window._edit_key_mapping(window, "OK"), "break")
+        save.assert_called_once_with(5, 0x53)
 
     def test_rejected_manual_key_event_is_logged(self) -> None:
         window = Window.__new__(Window)

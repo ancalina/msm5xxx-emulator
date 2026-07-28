@@ -94,6 +94,9 @@ SAMSUNG_RAW_RECEIVER_TAIL = bytes.fromhex("071c00d0")
 SAMSUNG_RAW_R7_MOVE = bytes.fromhex("071c")
 SAMSUNG_RAW_CONSUMER_EVIDENCE = "samsung-byte-ring32-r0-receiver-v1"
 SAMSUNG_RAW_R7_CONSUMER_EVIDENCE = "samsung-byte-ring32-r7-task-dispatch-v1"
+_SAMSUNG_CONSUMER_ROUTE_EVENTS = (0x54, 0x55, 0x63, 0x64)
+_SAMSUNG_CONSUMER_ROUTE_EVIDENCE = "samsung-ring32-r7-route-v1"
+_SAMSUNG_CONSUMER_ROUTE_LIMIT = 0x1000
 N330_5X6_ENTRY = bytes.fromhex(
     "f0b501260024f1058bb0b04823f046fa002106224a43002000236a4400231354"
     "01300006000e0628f8d301310906090e0529eed3"
@@ -233,18 +236,8 @@ def classify_matrix_event_sink(
     family = UNCLASSIFIED
     if boundary == "linear-return":
         dual_plane_required = required_masks[SAMSUNG_DUAL_PLANE_RING32]
-        dual_plane_core = dual_plane_required & ~feature_bits["halfword_read_index"]
-        dual_plane_index = (
-            feature_bits["event_arg_r0_to_r4"]
-            | feature_bits["event_aux_r1_to_r5"]
-            | feature_bits["ring32_lsl27"]
-            | feature_bits["ring32_lsr27"]
-            | feature_bits["halfword_read_index"]
-        )
-        if (any(mask & dual_plane_core == dual_plane_core
-                for mask in return_masks)
-                and any(mask & dual_plane_index == dual_plane_index
-                        for mask in return_masks)):
+        if any(mask & dual_plane_required == dual_plane_required
+               for mask in return_masks):
             family = SAMSUNG_DUAL_PLANE_RING32
         else:
             family = next((
@@ -390,6 +383,118 @@ def _samsung_raw_r7_consumer_metadata(
         "raw_task_entry": load_address + task,
         "raw_task_register": 7,
         "raw_consumer_evidence": SAMSUNG_RAW_R7_CONSUMER_EVIDENCE,
+    }
+
+
+def _samsung_consumer_route_handler(
+        image: bytes, metadata: dict[str, object], load_address: int
+) -> tuple[int, str] | None:
+    """Recover the r7 handler already closed by Samsung raw-consumer evidence."""
+    entry = metadata.get("raw_task_entry")
+    register = metadata.get("raw_task_register")
+    evidence = metadata.get("raw_consumer_evidence")
+    if type(entry) is not int or type(register) is not int:
+        return None
+    entry -= load_address
+    if not 0 <= entry <= len(image) - 2 or entry & 1:
+        return None
+    if register == 7:
+        if evidence != SAMSUNG_RAW_R7_CONSUMER_EVIDENCE:
+            return None
+        return entry, evidence
+    if register != 0 or evidence != SAMSUNG_RAW_CONSUMER_EVIDENCE:
+        return None
+    if (entry + 6 > len(image)
+            or struct.unpack_from("<2H", image, entry) != (0x1C07, 0xD000)
+            or struct.unpack_from("<H", image, entry + 4)[0] & 0xF800
+            != 0xE000):
+        return None
+    targets = _thumb_successors(image, entry + 4, len(image))
+    if len(targets) != 1:
+        return None
+    handler = targets[0]
+    if not 0 <= handler <= len(image) - 2 or handler & 1:
+        return None
+    return handler, evidence
+
+
+def _samsung_route_match(
+        image: bytes, compare: int, end: int
+) -> tuple[str, int] | None:
+    """Follow r7 equality through an immediate conditional or one plain B."""
+    current = compare + 2
+    for hop in range(2):
+        if not 0 <= current <= end - 2:
+            return None
+        word = struct.unpack_from("<H", image, current)[0]
+        condition = word & 0xFF00
+        if condition in (0xD000, 0xD100):
+            successors = _thumb_successors(image, current, end)
+            fallthrough = current + 2
+            targets = [target for target in successors if target != fallthrough]
+            if len(successors) != 2 or len(targets) != 1:
+                return None
+            matched = targets[0] if condition == 0xD000 else fallthrough
+            if not 0 <= matched <= end - 2:
+                return None
+            return ("eq" if condition == 0xD000 else "ne"), matched
+        if hop or word & 0xF800 != 0xE000:
+            return None
+        targets = _thumb_successors(image, current, end)
+        if len(targets) != 1:
+            return None
+        current = targets[0]
+    return None
+
+
+def _samsung_consumer_route_metadata(
+        image: bytes, metadata: dict[str, object], load_address: int
+) -> dict[str, object]:
+    """Fingerprint closed r7 event routes without assigning key semantics."""
+    recovered = _samsung_consumer_route_handler(image, metadata, load_address)
+    if recovered is None:
+        return {
+            "consumer_route_status": "not-closed",
+            "consumer_route_reject_reason": "handler-unclosed",
+        }
+    handler, handoff = recovered
+    end = min(len(image), handler + _SAMSUNG_CONSUMER_ROUTE_LIMIT)
+    reachable = _thumb_reachable_preserving_register(image, handler, end, 7)
+    event_fingerprints: dict[str, str] = {}
+    for event in _SAMSUNG_CONSUMER_ROUTE_EVENTS:
+        occurrences: list[tuple[str, str, int, str]] = []
+        for compare in sorted(reachable):
+            if struct.unpack_from("<H", image, compare)[0] != (0x2F00 | event):
+                continue
+            match = _samsung_route_match(image, compare, end)
+            if match is None:
+                return {
+                    "consumer_route_status": "not-closed",
+                    "consumer_route_reject_reason": (
+                        f"event-{event:02x}-condition-unclosed"
+                    ),
+                }
+            condition, route = match
+            fingerprint, size, boundary = _thumb_fingerprint(image, route)
+            occurrences.append((condition, fingerprint, size, boundary))
+        if not occurrences:
+            return {
+                "consumer_route_status": "not-closed",
+                "consumer_route_reject_reason": f"event-{event:02x}-missing",
+            }
+        encoded = json.dumps(
+            sorted(occurrences), separators=(",", ":")
+        ).encode()
+        event_fingerprints[f"0x{event:02X}"] = hashlib.sha256(encoded).hexdigest()
+    encoded = json.dumps(
+        {"handoff": handoff, "events": event_fingerprints},
+        sort_keys=True, separators=(",", ":"),
+    ).encode()
+    return {
+        "consumer_route_status": "closed",
+        "consumer_route_evidence": _SAMSUNG_CONSUMER_ROUTE_EVIDENCE,
+        "consumer_route_fingerprint": hashlib.sha256(encoded).hexdigest(),
+        "consumer_route_event_fingerprints": event_fingerprints,
     }
 
 
@@ -703,6 +808,11 @@ def resolve_direct_matrix_input(
                     )
                 if metadata is not None:
                     scanner.update(metadata)
+                    scanner.update(_samsung_consumer_route_metadata(
+                        image, metadata, load_address,
+                    ))
+                else:
+                    scanner["consumer_route_status"] = "raw-consumer-not-closed"
             accepted.append(scanner)
     if len(accepted) == 1:
         return accepted[0], "accepted", rejected

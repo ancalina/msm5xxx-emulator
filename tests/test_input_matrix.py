@@ -11,6 +11,8 @@ from src.msm5xxx_emulator.detection.input_matrix import (
     LG_RING256,
     SAMSUNG_DUAL_PLANE_RING32,
     SAMSUNG_RING32,
+    _samsung_consumer_route_metadata,
+    classify_matrix_event_sink,
     find_direct_matrix_scanners,
     resolve_direct_matrix_input,
 )
@@ -30,6 +32,63 @@ def _test_firmware_root() -> Path | None:
 
 
 class DirectInputMatrixTests(unittest.TestCase):
+    def test_dual_plane_features_must_share_one_return_path(self) -> None:
+        image = bytearray(b"\xff" * 0x30)
+        struct.pack_into(
+            "<5H", image, 0,
+            0xB500, 0x1C04, 0x46C0, 0x1C0D, 0xD006,
+        )
+        struct.pack_into(
+            "<6H", image, 0x0A,
+            0x06C0, 0x0EC0, 0x7084, 0x7085, 0x7040, 0x4770,
+        )
+        struct.pack_into("<4H", image, 0x18,
+                         0x06C0, 0x0EC0, 0x8800, 0x4770)
+
+        classified = classify_matrix_event_sink(bytes(image), 0)
+
+        self.assertEqual(classified["family"], "unclassified")
+
+    def test_samsung_consumer_route_fingerprint_is_closed(self) -> None:
+        image = bytearray(b"\xff" * 0x300)
+        handler = 0x100
+        routes = (0x140, 0x150, 0x160, 0x170)
+        targets = (0x200, 0x200, 0x220, 0x220)
+
+        def branch(at: int, target: int) -> None:
+            displacement = target - (at + 4)
+            struct.pack_into("<H", image, at, 0xD000 | (displacement >> 1 & 0xFF))
+
+        def call(at: int, target: int) -> None:
+            displacement = target - (at + 4)
+            struct.pack_into(
+                "<2H", image, at,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        for index, (event, route) in enumerate(zip((0x54, 0x55, 0x63, 0x64), routes)):
+            struct.pack_into("<H", image, handler + index * 4, 0x2F00 | event)
+            branch(handler + index * 4 + 2, route)
+        struct.pack_into("<H", image, handler + 16, 0x4770)
+        for route, target in zip(routes, targets):
+            call(route, target)
+            struct.pack_into("<H", image, route + 4, 0x4770)
+        struct.pack_into("<2H", image, 0x200, 0xB500, 0xBD00)
+        struct.pack_into("<3H", image, 0x220, 0xB500, 0x2001, 0xBD00)
+
+        route = _samsung_consumer_route_metadata(bytes(image), {
+            "raw_task_entry": handler,
+            "raw_task_register": 7,
+            "raw_consumer_evidence": "samsung-byte-ring32-r7-task-dispatch-v1",
+        }, 0)
+
+        self.assertEqual(route["consumer_route_status"], "closed")
+        self.assertEqual(
+            set(route["consumer_route_event_fingerprints"]),
+            {"0x54", "0x55", "0x63", "0x64"},
+        )
+
     def test_n330_5x6_profile_requires_complete_release_grammar(self) -> None:
         image = bytearray(b"\xff" * 0x1300)
         scanner = 0x100
