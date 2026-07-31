@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from .chipset import detect_chipset
+
 
 MODEL_RE = re.compile(
     rb"(?:"
@@ -11,6 +13,16 @@ MODEL_RE = re.compile(
     rb"IM-\d{4}|(?:PG|PH|PT)-[A-Z]\d{3,4}[A-Z]?|C-\d{3,4}|"
     rb"CX-\d{3,4}[A-Z]?|KTFT-[A-Z]\d{3,4}"
     rb")(?![A-Z0-9])"
+)
+
+
+PRODUCT_TUPLE_RE = re.compile(
+    rb"(?<![A-Z0-9])([A-Z][A-Z0-9]{1,7})\x00{1,4}"
+    rb"([A-Z]\d{3,4})\x00{1,5}(MSM\d{4})\x00"
+)
+MOBILE_TYPE_RE = re.compile(
+    rb"m_MobileType:\s*([A-Z][A-Z0-9]{1,7})-([A-Z]\d{3,4});"
+    rb"([A-Z0-9]+)"
 )
 
 
@@ -67,8 +79,40 @@ def verified_embedded_model(
     return ranked[0][0] if ranked[0][1] - runner_up >= 3 else None
 
 
+def structured_mobiletype_model(
+        image: bytes, chipset: str | None = None) -> str | None:
+    """Return one product label closed by tuple and labelled MobileType data."""
+    tuples = []
+    start = 0
+    while (position := image.find(b"MSM", start)) >= 0:
+        for match in PRODUCT_TUPLE_RE.finditer(
+                image, max(0, position - 24), min(len(image), position + 9)):
+            if match.start(3) == position:
+                tuples.append((match.group(2), match.group(3)))
+        start = position + 3
+    if len(tuples) != 1:
+        return None
+    product, tuple_chipset = tuples[0]
+    if (chipset or detect_chipset(image, "")) != tuple_chipset.decode("ascii"):
+        return None
+    matches = []
+    start = 0
+    while (position := image.find(b"m_MobileType:", start)) >= 0:
+        match = MOBILE_TYPE_RE.match(
+            image, position, min(len(image), position + 64)
+        )
+        if match is not None and match.group(2) == product:
+            matches.append((match.group(1), match.group(2)))
+        start = position + 1
+    if len(matches) != 1:
+        return None
+    brand, mobile_product = matches[0]
+    return canonical_model(brand + b"-" + mobile_product)
+
+
 def detect_model(image: bytes, path: Path,
-                 scores: dict[str, int] | None = None) -> str:
+                 scores: dict[str, int] | None = None,
+                 chipset: str | None = None) -> str:
     """Prefer a coherent firmware identity record; use filename only as fallback."""
     stem = path.stem.upper()
     normalised_stem = re.sub(r"[_ ]+", "-", stem)
@@ -81,8 +125,14 @@ def detect_model(image: bytes, path: Path,
     filename_model = canonical_model(full_name.group(0)) if full_name else None
     scores = scores if scores is not None else embedded_model_scores(image)
     verified = verified_embedded_model(image, scores)
-    if verified is not None and filename_model in (None, verified):
-        return verified
+    if verified is not None:
+        if filename_model in (None, verified):
+            return verified
+        if filename_model:
+            return filename_model
+    structured = structured_mobiletype_model(image, chipset)
+    if structured is not None:
+        return structured
     if filename_model:
         return filename_model
     embedded = list(scores)

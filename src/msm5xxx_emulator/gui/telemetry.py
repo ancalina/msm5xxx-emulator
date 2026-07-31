@@ -253,6 +253,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
             "writes": _counter(state, "lcd_writes"),
             "protocol": state.get("lcd_protocol"),
             "frame_protocol": state.get("lcd_frame_protocol"),
+            "selector": _mapping(state, "lcd_selector"),
             "geometry_source": getattr(
                 config, "display_geometry_source", "external-config"
             ),
@@ -262,6 +263,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
             "ticks": _counter(state, "rex_ticks"),
             "elapsed_ms": _counter(state, "rex_elapsed_ms"),
             "irq_deliveries": _counter(state, "rex_irq_deliveries"),
+            "controller": _mapping(state, "rex_controller"),
         },
         "nor": {
             "primary": _mapping(state, "primary_flash_telemetry"),
@@ -318,7 +320,9 @@ def hydrate_host_checkpoint(state: dict[str, object]) -> dict[str, object]:
                                        or hydrated.get(target) == 0):
             hydrated[target] = value
 
-    for name in ("lcd_writes", "rex_idle_entries", "rex_ticks", "rex_elapsed_ms"):
+    for name in (
+            "lcd_writes", "rex_idle_entries", "rex_ticks", "rex_elapsed_ms",
+            "rex_irq_deliveries"):
         promote(name, counters)
     for name in ("frame_sequence", "firmware_frame_sequence"):
         promote(name, display)

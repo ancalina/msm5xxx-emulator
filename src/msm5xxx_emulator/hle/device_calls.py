@@ -6,10 +6,13 @@ from ..detection.boot import BUSY_DELAY_SIGNATURES
 from ..detection.boot import CRC16_SIGNATURE
 from ..detection.boot import DMD_DOWNLOAD_510X_SIGNATURE
 from ..detection.boot import DMD_DOWNLOAD_SIGNATURE
+from ..detection.boot import DMD_DOWNLOAD_5500_SIZE
 from ..detection.boot import FLASH_ID_SIGNATURE
+from ..detection.boot import is_dmd_download_5500
 from ..detection.boot import OPTIONAL_RAM_PROBE_SIGNATURE
 from ..detection.boot import PRIMARY_FLASH_PROBE_SIGNATURE
 from unicorn.arm_const import UC_ARM_REG_CPSR
+from unicorn.arm_const import UC_ARM_REG_PC
 from unicorn.arm_const import UC_ARM_REG_R0
 from unicorn.arm_const import UC_ARM_REG_R1
 from unicorn.arm_const import UC_ARM_REG_R2
@@ -20,6 +23,33 @@ import struct
 
 
 class DeviceCallsHleMixin:
+    def _dmd_5500_start(self, uc: Uc, access: int, address: int, size: int,
+                        value: int, user_data: object) -> None:
+        """Arm one DMD completion only after the exact guest start write."""
+        entry = self.config.dmd_download_address
+        if (entry is None or address != 0x030F0124 or size != 2 or value != 0
+                or (uc.reg_read(UC_ARM_REG_PC) & ~1) != entry + 0x20):
+            return
+        try:
+            routine = bytes(uc.mem_read(entry, DMD_DOWNLOAD_5500_SIZE))
+            first = struct.unpack("<H", uc.mem_read(0x030E0000, 2))[0]
+            completion = struct.unpack("<H", uc.mem_read(0x030E01AE, 2))[0]
+            start = struct.unpack("<H", uc.mem_read(0x030F0124, 2))[0]
+        except (UcError, struct.error):
+            return
+        if (is_dmd_download_5500(routine) and first == routine[16]
+                and completion == 0 and start == 0xFFFF):
+            self._dmd_5500_pending = True
+
+    def _dmd_5500_complete(self, uc: Uc, address: int, size: int,
+                           user_data: object) -> None:
+        """Expose completion after firmware's native 5000-unit wait."""
+        if not self._dmd_5500_pending:
+            return
+        uc.mem_write(0x030E01AE, b"\xff\xff")
+        self._dmd_5500_pending = False
+        self.fast_dmd_downloads += 1
+
     def _return_busy_delay(self, uc: Uc, address: int, size: int,
                            user_data: object) -> None:
         """Preserve the exact terminal R0/NZCV state of the delay loop."""

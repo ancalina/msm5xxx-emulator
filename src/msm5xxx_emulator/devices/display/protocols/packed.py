@@ -81,8 +81,36 @@ class PackedProtocolMixin:
                 self._pixel(y * self.config.width + x, rgb565)
             self._lcd_protocol = f"selector-{pixel_format}"
             self._publish_frame()
+            full_screen = (
+                x0 == 0 and y0 == 0
+                and x1 + 1 == self.config.width
+                and y1 + 1 == self.config.height
+            )
+            if full_screen:
+                self._lcd_selector_full_transfers += 1
+            else:
+                self._lcd_selector_partial_transfers += 1
+            self._lcd_selector_transfers.append({
+                "window": [x0, y0, x1, y1],
+                "format": pixel_format,
+                "words": len(words),
+                "full_screen": full_screen,
+                "instructions": getattr(self, "instructions", 0),
+                "frame_sequence": self.frame_sequence,
+            })
         self._lcd_selector_reset()
         return True
+
+    def _lcd_selector_telemetry(self) -> dict[str, object]:
+        return {
+            "full_transfers": getattr(
+                self, "_lcd_selector_full_transfers", 0
+            ),
+            "partial_transfers": getattr(
+                self, "_lcd_selector_partial_transfers", 0
+            ),
+            "recent": list(getattr(self, "_lcd_selector_transfers", ())),
+        }
 
     def _lcd_packed_begin_command(self, value: int) -> bool:
         """Handle the controller-proven +8/+C packed-RGB332 dialect.

@@ -4,7 +4,8 @@
 
 Unicorn 기반 Qualcomm MSM5000/MSM5100/MSM5500 피처폰 펌웨어 에뮬레이터입니다.
 실험적 프로젝트입니다.
-이 소스에는 펌웨어, 사용자 상태, 로그, 스크린샷, 오디오 asset이 없습니다.
+이 소스에는 펌웨어, 사용자 상태, 로그, 스크린샷이 없습니다. 오디오 asset은
+GPL-2.0-only TimGM6mb 하나만 검수하여 포함합니다.
 별도 빌드 과정은 필요 없습니다. GitHub 소스 archive를 압축 해제하고 아래
 플랫폼 launcher를 실행하면 됩니다.
 
@@ -20,7 +21,11 @@ sh ./run_linux.sh /path/to/firmware.bin
 run_windows.bat C:\path\to\firmware.bin
 ```
 
-launcher를 처음 실행하면 `.venv`를 만들고 `unicorn`과 `Pillow`를 설치할 수
+단일 runtime 증거만 있는 C80 timer/IRQ profile은 계속 opt-in입니다. 이
+profile을 시험할 때는 launcher 명령 끝에
+`--experimental-c80-controller`를 붙이십시오.
+
+launcher를 처음 실행하면 `.venv`를 만들고 `unicorn`, `Pillow`, `NumPy`를 설치할 수
 있습니다. 펌웨어 원본은 읽기 전용입니다. 영구 NOR/EEPROM/NAND 상태는 기본적으로
 `~/.msm5xxx-emulator/`에 저장됩니다. 위치를 바꾸려면 `MSM5XXX_STATE_DIR`과
 `MSM5XXX_LOG_DIR`을 설정하십시오. 인식된 legacy GEFS seed mismatch가 발생하면
@@ -68,6 +73,20 @@ Descriptor 입력 telemetry는 scanner-to-enqueue call edge와 실제 raw-ring s
 dequeue return, task receipt를 구분합니다. SV130과 SD810 After의 fresh 숫자키
 press/release는 fault 없이 네 단계를 모두 통과했습니다. 이는 firmware task 전달
 증명이며 visible UI 반응, handset idle, `OK` semantic 증명은 아닙니다.
+
+### 실험적 오디오
+
+Firmware audio driver는 그대로 실행됩니다. Detector가 닫은 MMIO site에서
+MA2/MA5 index, data, FIFO write를 관측합니다. 이는 write-side LLE이며 완전한
+sound-chip 구현은 아닙니다. Device status, FIFO consumption, clock, IRQ는
+합성하지 않습니다.
+
+MA2 FIFO snapshot과 유효한 MMF buffer는 번들 GPL-2.0-only TimGM6mb로 근사
+PCM을 만들 수 있습니다. MMF parsing과 PCM/SoundFont 합성은 HLE이며 Yamaha
+chip 출력과 같음을 보장하지 않습니다. MA5는 telemetry-only, MA3는
+비활성입니다. 설치된 `ffplay`를 우선 사용하고 Windows에서는 `winsound`로
+fallback합니다. 둘 다 없으면 render-only입니다. 오디오 실패는 guest
+emulation을 중단하지 않습니다.
 
 ### 업데이트
 
@@ -141,8 +160,8 @@ python3 -m py_compile $(find src -name '*.py' -print)
 
 대부분의 test는 synthetic byte sequence를 사용합니다. private local
 `firmwares/` directory가 없으면 corpus 의존 regression은 skip됩니다. 제조사
-firmware, 사용자 상태, 진단 bundle, screenshot, SoundFont, local path를 추가하지
-마십시오.
+firmware, 사용자 상태, 진단 bundle, screenshot, 검수되지 않은 SoundFont,
+local path를 추가하지 마십시오. 번들 TimGM6mb만 검수된 SoundFont 예외입니다.
 
 ## 라이선스
 

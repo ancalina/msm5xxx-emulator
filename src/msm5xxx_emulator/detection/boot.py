@@ -119,11 +119,50 @@ DMD_DOWNLOAD_SIGNATURE = bytes.fromhex("f0b5002701250024354901200870")
 DMD_DOWNLOAD_510X_SIGNATURE = bytes.fromhex(
     "f0b539480027006801250024002800d060e0"
 )
+DMD_DOWNLOAD_5500_LITERALS = struct.pack(
+    "<5I", 0x030E0000, 0x030F0120, 0x00001388, 0x030E01A0, 0x0000FFFF
+)
+DMD_DOWNLOAD_5500_SIZE = 0x54
 PRIMARY_FLASH_PROBE_SIGNATURE = bytes.fromhex(
     "16481749006b096840004018aa221101411881b04a81552215239b01c3189a82"
     "90224a81018800ab198041885980f02101800c480ce000abff3121311a888b88"
     "9a4204d100ab5a88c9888a4203d0043001680029efd1006801b07047"
 )
+
+
+def is_dmd_download_5500(image: bytes, entry: int = 0) -> bool:
+    """Match complete MSM5500 DMD start/wait/ack grammar at one entry."""
+    fixed = {
+        0: bytes.fromhex("b0b50020"),
+        8: bytes.fromhex("002803d10c480088"),
+        17: bytes.fromhex("2803d00020b0bc08bc1847094800248480"),
+        38: bytes.fromhex("084f084d02e0381c"),
+        50: bytes.fromhex("e889064b9842f8d1ec810120eae7"),
+        64: DMD_DOWNLOAD_5500_LITERALS,
+    }
+    if not 0 <= entry <= len(image) - DMD_DOWNLOAD_5500_SIZE:
+        return False
+    if not all(
+        image[entry + offset:entry + offset + len(value)] == value
+        for offset, value in fixed.items()
+    ):
+        return False
+    return all(
+        thumb_bl_target(image, entry + offset) is not None
+        for offset in (4, 34, 46)
+    )
+
+
+def detect_dmd_download_5500(image: bytes) -> int | None:
+    """Find one source-backed MSM5500 DMD download completion routine."""
+    if b"dmddown_5500.c" not in image:
+        return None
+    entries = [
+        literal - 64
+        for literal in find_all(image, DMD_DOWNLOAD_5500_LITERALS)
+        if is_dmd_download_5500(image, literal - 64)
+    ]
+    return entries[0] if len(entries) == 1 else None
 GUEST_OWNED_STATUS_72C_CONSUMER = bytes.fromhex(
     "0d48007b400907d3201c013c002803da0020f0bc08bc1847"
 )
@@ -132,6 +171,78 @@ GUEST_OWNED_STATUS_72C_POWERDOWN_TAIL = bytes.fromhex(
     "b9890123db029943b981b9893a681180002801d1"
 )
 GUEST_OWNED_STATUS_72C_CALL_GATE = bytes.fromhex("002801d1")
+MSM5500_REVISION_BLOCK = 0x03000740
+MSM5500_REVISION_REGISTER = MSM5500_REVISION_BLOCK + 0x1C
+MSM5500_REVISION_F025_RAW = 0x20F5
+MSM5500_REVISION_TRANSFORMER = bytes.fromhex(
+    "1087108f0f2109030140090af02303401b0219430007000f08431087108f7047"
+)
+MSM5500_REVISION_RAW_GETTER = bytes.fromhex("0248808b0005000d7047")
+MSM5500_REVISION_BOOT_COMPARE = bytes.fromhex("984202da")
+MSM5500_REVISION_BL = re.compile(rb".[\xf0-\xf7].[\xf8-\xff]", re.S)
+MSM5500_REVISION_LITERAL_LOAD = re.compile(rb".[\x48-\x4f]", re.S)
+
+
+def detect_msm5500_revision_f025(image: bytes) -> tuple[bool, str]:
+    """Recognise firmware whose complete revision consumers accept real F025."""
+    transformers = find_all(image, MSM5500_REVISION_TRANSFORMER)
+    getters = find_all(image, MSM5500_REVISION_RAW_GETTER)
+    if len(transformers) != 1 or len(getters) != 1:
+        return False, "revision transformer/raw-getter count is not unique"
+    transformer, getter = transformers[0], getters[0]
+    if (transformer < 4
+            or thumb_literal_value(image, transformer - 4, 0)
+            != MSM5500_REVISION_BLOCK
+            or thumb_literal_value(image, getter, 0)
+            != MSM5500_REVISION_BLOCK):
+        return False, "revision reader MMIO literal mismatch"
+    reads = []
+    for match in MSM5500_REVISION_LITERAL_LOAD.finditer(image):
+        site = match.start()
+        if site & 1 or site + 4 > len(image):
+            continue
+        load = struct.unpack_from("<H", image, site)[0]
+        base_register = load >> 8 & 7
+        if (thumb_literal_value(image, site, base_register)
+                != MSM5500_REVISION_BLOCK):
+            continue
+        read = struct.unpack_from("<H", image, site + 2)[0]
+        operation = read & 0xF800
+        scale = {0x6800: 4, 0x7800: 1, 0x8800: 2}.get(operation)
+        if (scale is not None
+                and read >> 3 & 7 == base_register
+                and (read >> 6 & 0x1F) * scale == 0x1C):
+            reads.append(site)
+    if set(reads) != {transformer - 4, getter}:
+        return False, "0x0300075C has unqualified or missing direct consumers"
+    callers = []
+    for match in MSM5500_REVISION_BL.finditer(image):
+        caller = match.start()
+        if not caller & 1 and thumb_bl_target(image, caller) == getter:
+            callers.append(caller)
+    stored_fields = set()
+    for caller in callers:
+        for offset in (4, 6):
+            if caller + offset + 2 > len(image):
+                continue
+            store = struct.unpack_from("<H", image, caller + offset)[0]
+            if store & 0xF807 == 0x7000 and store >> 3 & 7 == 7:
+                stored_fields.add(store >> 6 & 0x1F)
+    if len(callers) != 2 or stored_fields != {1, 3}:
+        return False, "raw revision getter is not byte-truncated at fields 1 and 3"
+    boot_gate = False
+    for compare in find_all(image, MSM5500_REVISION_BOOT_COMPARE):
+        load, call = compare - 2, compare - 6
+        if (call >= 0 and thumb_bl_target(image, call) is not None
+                and thumb_literal_value(image, load, 3) == 0xF022):
+            boot_gate = True
+            break
+    if not boot_gate or b" Unsupported MSM REV " not in image:
+        return False, "signed F022 boot gate/diagnostic relation absent"
+    return True, (
+        "closed MSM5500 revision class detected; supplying physical F025 "
+        "stepping through 16-bit 0x0300075C read"
+    )
 
 
 def detect_guest_owned_status_72c(image: bytes) -> tuple[bool, str | None]:

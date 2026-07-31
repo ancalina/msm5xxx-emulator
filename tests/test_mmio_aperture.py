@@ -445,6 +445,36 @@ class HardwarePollTests(unittest.TestCase):
                                      0x00C4)
                     self.assertEqual(emulator._poll_window_remaining, 100_000)
 
+    def test_poll_release_protects_accepted_audio_transport_only(self) -> None:
+        emulator, _uc, _service_calls = self._poll_harness()
+        address = 0x03000782
+        emulator.audio_transport = SimpleNamespace(
+            static_status="accepted", base=0x03000780, data_offset=2,
+        )
+        emulator.mmio_reads[(0x1000, address, 1)] = 1_000
+        emulator._infer_thumb_poll_value = Mock(return_value=(1, 0, True))
+
+        self.assertFalse(emulator._release_hardware_poll())
+        self.assertEqual(emulator.ready_bits, {})
+        emulator._infer_thumb_poll_value.assert_not_called()
+
+        emulator.audio_transport.static_status = "rejected"
+        self.assertFalse(emulator._release_hardware_poll())
+        self.assertTrue(emulator._release_hardware_poll())
+        self.assertEqual(emulator.ready_bits[(address, 1)], (1, 0))
+
+    def test_poll_release_protects_three_bank_irq_aperture(self) -> None:
+        emulator, _uc, _service_calls = self._poll_harness()
+        emulator.config.rex_irq_status_address = 0x03000C80
+        emulator.config.rex_irq_enable_address = 0x03000C94
+        emulator._rex_irq_controller_aperture = (0x03000C80, 0x03000CCE)
+        emulator.mmio_reads[(0x1000, 0x03000CB0, 2)] = 1_000
+        emulator._infer_thumb_poll_value = Mock(return_value=(1, 0, True))
+
+        self.assertFalse(emulator._release_hardware_poll())
+        self.assertEqual(emulator.ready_bits, {})
+        emulator._infer_thumb_poll_value.assert_not_called()
+
     def test_fast_boot_hle_uses_global_observation_windows(self) -> None:
         for partition in ([100_000] * 5, [250_000, 250_000]):
             for probe in (100_000, 25_000):

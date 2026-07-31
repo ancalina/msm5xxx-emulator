@@ -1,7 +1,8 @@
 # Contributing
 
 - Never commit firmware dumps, state sidecars, logs, screenshots, IDA databases,
-  SoundFonts, credentials, or absolute local paths.
+  unreviewed SoundFonts, credentials, or absolute local paths. Bundled
+  TimGM6mb is the sole audited SoundFont exception.
 - Add a synthetic regression test for behavior changes.
 - Preserve deterministic guest CPU, memory, device, timer, and storage behavior.
 - Describe firmware evidence by hash, offset, and minimal trace; do not attach

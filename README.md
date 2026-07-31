@@ -4,7 +4,8 @@
 
 Unicorn-based Qualcomm MSM5000/MSM5100/MSM5500 feature-phone firmware emulator.
 Experimental project. 
-This tree contains no firmware, user state, logs, screenshots, or audio asset.
+This tree contains no firmware, user state, logs, or screenshots. It includes
+only one audited audio asset: GPL-2.0-only TimGM6mb.
 No project build step is required: extract the GitHub source archive and use the
 platform launcher below.
 
@@ -20,7 +21,12 @@ sh ./run_linux.sh /path/to/firmware.bin
 run_windows.bat C:\path\to\firmware.bin
 ```
 
-First launcher run may create `.venv` and install `unicorn` and `Pillow`.
+The single-witness C80 timer/IRQ profile remains opt-in. Append
+`--experimental-c80-controller` to either launcher command when testing that
+profile.
+
+First launcher run may create `.venv` and install `unicorn`, `Pillow`, and
+`NumPy`.
 Firmware original is read-only. Persistent NOR/EEPROM/NAND state defaults to
 `~/.msm5xxx-emulator/`; set `MSM5XXX_STATE_DIR` and `MSM5XXX_LOG_DIR` to move it.
 On a recognized legacy GEFS seed mismatch, existing persistent MSM5000
@@ -73,6 +79,20 @@ from the actual raw-ring store, dequeue return, and task receipt. Fresh numeric
 press/release runs on SV130 and SD810 After reached all four stages without a
 fault. This proves firmware task delivery, not a visible UI response, handset
 idle, or `OK` semantics.
+
+### Experimental audio
+
+Firmware still executes its audio driver. Accepted MA2/MA5 index, data, and
+FIFO writes are observed at detector-closed MMIO sites. This is write-side LLE,
+not a complete sound-chip implementation: device status, FIFO consumption,
+clock, and IRQ remain native.
+
+MA2 FIFO snapshots and valid MMF buffers can be rendered to approximate PCM
+with bundled GPL-2.0-only TimGM6mb. MMF parsing and PCM/SoundFont synthesis are
+HLE and do not reproduce exact Yamaha chip output. MA5 remains telemetry-only
+and MA3 remains disabled. Playback uses `ffplay` when available, then Windows
+`winsound`; hosts with neither remain render-only. Audio failure never stops
+guest emulation.
 
 ### Updates
 
@@ -146,7 +166,8 @@ python3 -m py_compile $(find src -name '*.py' -print)
 
 Most tests use synthetic byte sequences. Corpus-dependent regressions skip
 unless a private local `firmwares/` directory exists. Do not add manufacturer
-firmware, user state, diagnostic bundles, screenshots, SoundFonts, or local paths.
+firmware, user state, diagnostic bundles, screenshots, unreviewed SoundFonts,
+or local paths. Bundled TimGM6mb is the sole audited SoundFont exception.
 
 ## License
 

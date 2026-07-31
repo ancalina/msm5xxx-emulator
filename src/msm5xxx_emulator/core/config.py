@@ -122,6 +122,11 @@ class FirmwareConfig:
     upper_flash_address: int | None = None
     upper_flash_size: int = 0
     upper_flash_state: str = ""
+    rex_static_controller_candidate: dict[str, object] | None = None
+    rex_static_c40_controller_observation: dict[str, object] | None = None
+    rex_static_controller_experimental: bool = False
+    audio_transport: dict[str, object] | None = None
+    eeprom_static_capacity: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)

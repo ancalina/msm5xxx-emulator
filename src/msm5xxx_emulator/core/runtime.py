@@ -69,6 +69,7 @@ class RuntimeMixin:
                                  json.dumps(host_backend_fault.diagnostic,
                                             ensure_ascii=False, sort_keys=True))
                     raise host_backend_fault from error
+                self._flush_audio_transport_renderer()
                 remaining -= count
                 if self.fault:
                     break
@@ -210,6 +211,7 @@ class RuntimeMixin:
             "lcd_writes": self.lcd_writes,
             "lcd_protocol": self._lcd_protocol,
             "lcd_frame_protocol": self._lcd_frame_protocol,
+            "lcd_selector": self._lcd_selector_telemetry(),
             "lcd_port_writes": [
                 {"address": f"0x{address:08X}", "size": size, "writes": writes}
                 for (address, size), writes in self.lcd_port_writes.most_common()
@@ -220,6 +222,8 @@ class RuntimeMixin:
             "rex_ticks": self.rex_ticks,
             "rex_elapsed_ms": self.rex_elapsed_ms,
             "rex_irq_deliveries": self.rex_irq_deliveries,
+            "rex_controller": self._rex_controller_telemetry(),
+            "sbi": self._sbi_telemetry(),
             "board_adc_reads": self.board_adc_reads,
             "flash_id_reads": self.flash_id_reads,
             "secondary_flash_reads": self.secondary_flash_reads,
@@ -357,6 +361,7 @@ class RuntimeMixin:
             "audio_backend": (self.audio_player.backend if self.audio_player is not None
                               else "disabled"),
             "audio_error": (self.audio_player.last_error if self.audio_player is not None else ""),
+            "audio_transport": self._audio_transport_telemetry(),
             "nand_commands": self.nand_commands,
             "nand_backing_size": len(self.nand_image),
             "nand_reads": self.nand_reads,
@@ -383,12 +388,15 @@ class RuntimeMixin:
             "lcd_writes": self.lcd_writes,
             "lcd_protocol": self._lcd_protocol,
             "lcd_frame_protocol": self._lcd_frame_protocol,
+            "lcd_selector": self._lcd_selector_telemetry(),
             "frame_sequence": self.frame_sequence,
             "firmware_frame_sequence": self.firmware_frame_sequence,
             "rex_idle_entries": self.rex_idle_entries,
             "rex_ticks": self.rex_ticks,
             "rex_elapsed_ms": self.rex_elapsed_ms,
             "rex_irq_deliveries": self.rex_irq_deliveries,
+            "rex_controller": self._rex_controller_telemetry(),
+            "sbi": self._sbi_telemetry(),
             "secondary_flash_reads": self.secondary_flash_reads,
             "secondary_flash_writes": self.secondary_flash_writes,
             "secondary_flash_changed_pages": (
@@ -412,5 +420,8 @@ class RuntimeMixin:
                               else "disabled"),
             "audio_error": (self.audio_player.last_error if self.audio_player is not None
                             else ""),
+            "audio_transport": self._audio_transport_telemetry(
+                include_events=False
+            ),
             "input_error": self.input_error,
         }

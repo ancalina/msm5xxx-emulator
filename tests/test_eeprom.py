@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import struct
 import tempfile
 import unittest
 
@@ -10,6 +11,10 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
                                UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2)
 
+from msm5xxx_emulator.detection.storage import (
+    EEPROM_24LC64_CLASS_B_READ_PREFIX,
+    EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+)
 from msm5xxx import (EEPROM_24LC64_CLASS_A_READ_PREFIX,
                      EEPROM_24LC64_CLASS_A_WRITE_PREFIX,
                      EEPROM_24LCXX_READ_SIGNATURE,
@@ -19,7 +24,8 @@ from msm5xxx import (EEPROM_24LC64_CLASS_A_READ_PREFIX,
                      EEPROM_24LCXX_X270_READ_PREFIX,
                      EEPROM_24LCXX_X270_WRITE_PREFIX,
                      EEPROM_24LCXX_X7700_READ_PREFIX,
-                     EEPROM_24LCXX_X7700_WRITE_PREFIX, GenericMSMEmulator)
+                     EEPROM_24LCXX_X7700_WRITE_PREFIX, GenericMSMEmulator,
+                     detect)
 
 
 class EEPROMTests(unittest.TestCase):
@@ -28,6 +34,7 @@ class EEPROMTests(unittest.TestCase):
                   write_signature: bytes = EEPROM_24LCXX_WRITE_PREFIX,
                   read_signature: bytes = EEPROM_24LCXX_READ_SIGNATURE,
                   geometry_descriptor: bytes = bytes.fromhex("00800100"),
+                  static_capacity: int | None = None,
                   ) -> tuple[GenericMSMEmulator, Uc, int, int, int]:
         write = 0x1000
         read = 0x1100
@@ -39,7 +46,9 @@ class EEPROMTests(unittest.TestCase):
 
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(
-            eeprom_geometry_address=geometry,
+            eeprom_geometry_address=(None if static_capacity is not None
+                                     else geometry),
+            eeprom_static_capacity=static_capacity,
             overlays=[], linker=None,
             load_address=write, flash_size=0x1000,
             ram_base=ram, ram_size=0x1000,
@@ -185,6 +194,125 @@ class EEPROMTests(unittest.TestCase):
             warm._eeprom_read_fast(warm_uc, warm_read, 2, None)
             self.assertEqual(bytes(warm_uc.mem_read(destination, 1)), b"\x5a")
             self.assertTrue(warm.eeprom_loaded_from_state)
+
+    def test_24lc64_class_b_static_capacity_and_warm_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "eeprom-class-b.bin"
+            emulator, uc, write, _read, ram = self._emulator(
+                state,
+                EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+                EEPROM_24LC64_CLASS_B_READ_PREFIX,
+                static_capacity=0x2000,
+            )
+            source = ram + 0x200
+            uc.mem_write(source, b"\x5a\x00")
+            uc.reg_write(UC_ARM_REG_R0, source)
+            uc.reg_write(UC_ARM_REG_R1, 0x1FFF)
+            uc.reg_write(UC_ARM_REG_R2, 1)
+            uc.reg_write(UC_ARM_REG_LR, 0x1501)
+            emulator._eeprom_write_fast(uc, write, 2, None)
+
+            self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 0)
+            self.assertEqual(emulator.eeprom_capacity, 0x2000)
+            self.assertEqual(emulator.eeprom_data[-1], 0x5A)
+            emulator._save_eeprom()
+            self.assertEqual(len(state.read_bytes()), 0x2000)
+
+            uc.reg_write(UC_ARM_REG_R0, source)
+            uc.reg_write(UC_ARM_REG_R1, 0x1FFF)
+            uc.reg_write(UC_ARM_REG_R2, 2)
+            emulator._eeprom_write_fast(uc, write, 2, None)
+            self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 6)
+            self.assertEqual(emulator.eeprom_writes, 1)
+
+            warm, warm_uc, _write, read, warm_ram = self._emulator(
+                state,
+                EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+                EEPROM_24LC64_CLASS_B_READ_PREFIX,
+                static_capacity=0x2000,
+            )
+            destination = warm_ram + 0x300
+            warm_uc.reg_write(UC_ARM_REG_R0, destination)
+            warm_uc.reg_write(UC_ARM_REG_R1, 0x1FFF)
+            warm_uc.reg_write(UC_ARM_REG_R2, 1)
+            warm_uc.reg_write(UC_ARM_REG_LR, 0x1601)
+            warm._eeprom_read_fast(warm_uc, read, 2, None)
+            self.assertEqual(bytes(warm_uc.mem_read(destination, 1)), b"\x5a")
+            self.assertEqual(warm_uc.reg_read(UC_ARM_REG_R0), 0)
+            self.assertTrue(warm.eeprom_loaded_from_state)
+
+    def test_24lc64_class_b_runtime_guard_falls_back_unchanged(self) -> None:
+        for kind in ("write", "read"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                emulator, uc, write, read, ram = self._emulator(
+                    Path(directory) / "eeprom.bin",
+                    EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+                    EEPROM_24LC64_CLASS_B_READ_PREFIX,
+                    static_capacity=0x2000,
+                )
+                entry = write if kind == "write" else read
+                callback = (emulator._eeprom_write_fast if kind == "write"
+                            else emulator._eeprom_read_fast)
+                uc.mem_write(entry, b"\0\0")
+                uc.reg_write(UC_ARM_REG_R0, ram + 0x200)
+                uc.reg_write(UC_ARM_REG_R1, 0x20)
+                uc.reg_write(UC_ARM_REG_R2, 1)
+                uc.reg_write(UC_ARM_REG_LR, 0x1701)
+                uc.reg_write(UC_ARM_REG_PC, entry)
+                registers = tuple(
+                    uc.reg_read(register) for register in (
+                        UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
+                        UC_ARM_REG_LR, UC_ARM_REG_PC,
+                    )
+                )
+                callback(uc, entry, 2, None)
+                self.assertEqual(
+                    tuple(uc.reg_read(register) for register in (
+                        UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
+                        UC_ARM_REG_LR, UC_ARM_REG_PC,
+                    )),
+                    registers,
+                )
+                self.assertFalse(emulator.eeprom_data)
+                self.assertEqual(emulator.eeprom_reads, 0)
+                self.assertEqual(emulator.eeprom_writes, 0)
+                self.assertFalse(Path(directory, "eeprom.bin").exists())
+
+    def test_24lc64_class_b_detection_installs_runtime_hooks(self) -> None:
+        image = bytearray(b"\xff" * 0x3000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", image, offset, 0xEA000000)
+        write = 0x100
+        read = 0x800
+        image[write:write + len(EEPROM_24LC64_CLASS_B_WRITE_PREFIX)] = (
+            EEPROM_24LC64_CLASS_B_WRITE_PREFIX
+        )
+        image[read:read + len(EEPROM_24LC64_CLASS_B_READ_PREFIX)] = (
+            EEPROM_24LC64_CLASS_B_READ_PREFIX
+        )
+        image[0x2F00:0x2F0B] = b"nv24lcxx.c\0"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            firmware = root / "class-b.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware)
+            config.flash_state = str(root / "flash.json")
+            config.secondary_flash_state = str(root / "secondary.json")
+            emulator = GenericMSMEmulator(config)
+            try:
+                source = config.ram_base + 0x200
+                emulator.uc.mem_write(source, b"\x5a")
+                emulator.uc.reg_write(UC_ARM_REG_R0, source)
+                emulator.uc.reg_write(UC_ARM_REG_R1, 0x20)
+                emulator.uc.reg_write(UC_ARM_REG_R2, 1)
+                emulator.uc.reg_write(UC_ARM_REG_LR, 0x1201)
+                emulator.uc.emu_start(write | 1, write + 2, count=1)
+                self.assertTrue(emulator.eeprom_enabled)
+                self.assertEqual(emulator.eeprom_writes, 1)
+                self.assertEqual(emulator.uc.reg_read(UC_ARM_REG_R0), 0)
+                self.assertEqual(emulator.uc.reg_read(UC_ARM_REG_PC), 0x1200)
+            finally:
+                emulator.close()
 
     def test_independent_sessions_merge_persistent_writes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

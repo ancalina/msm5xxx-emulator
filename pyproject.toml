@@ -16,6 +16,7 @@ classifiers = [
 dependencies = [
     "unicorn==2.1.4",
     "Pillow>=10,<13",
+    "numpy>=1.26,<3",
 ]
 
 [project.scripts]
@@ -31,3 +32,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+msm5xxx_emulator = ["gm.sf2"]

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from ...detection.storage import EEPROM_24LC64_CLASS_A_READ_PREFIX
+from ...detection.storage import EEPROM_24LC64_CLASS_B_READ_PREFIX
+from ...detection.storage import EEPROM_24LC64_CLASS_B_WRITE_PREFIX
 from ...detection.storage import EEPROM_24LCXX_READ_SIGNATURE
 from ...detection.storage import EEPROM_24LCXX_WRITE_PREFIX
 from ...detection.storage import EEPROM_24LCXX_X270_READ_PREFIX
@@ -28,19 +30,29 @@ class EepromMixin:
     def _ensure_eeprom(self, uc: Uc) -> bool:
         """Load the proven 24LCxx capacity and its persistent byte image."""
         geometry = self.config.eeprom_geometry_address
-        if not self.eeprom_enabled or geometry is None:
+        static_capacity = getattr(
+            self.config, "eeprom_static_capacity", None
+        )
+        if not self.eeprom_enabled:
             return False
-        try:
-            descriptor = bytes(uc.mem_read(geometry, 4))
-        except UcError:
-            return False
-        if descriptor == b"\xff\x1f\x00\x00":
-            capacity = 0x2000  # proven inclusive maximum from the old driver
-        elif descriptor == b"\x00\x80\x01\x00":
-            capacity = 0x8000
+        if static_capacity == 0x2000 and geometry is None:
+            capacity = static_capacity
         else:
-            self.eeprom_error = f"unsupported 24LCxx descriptor {descriptor.hex()}"
-            return False
+            if geometry is None or static_capacity is not None:
+                return False
+            try:
+                descriptor = bytes(uc.mem_read(geometry, 4))
+            except UcError:
+                return False
+            if descriptor == b"\xff\x1f\x00\x00":
+                capacity = 0x2000  # proven inclusive maximum from the old driver
+            elif descriptor == b"\x00\x80\x01\x00":
+                capacity = 0x8000
+            else:
+                self.eeprom_error = (
+                    f"unsupported 24LCxx descriptor {descriptor.hex()}"
+                )
+                return False
         if self.eeprom_data:
             if len(self.eeprom_data) != capacity:
                 self.eeprom_error = "24LCxx capacity changed during execution"
@@ -70,6 +82,7 @@ class EepromMixin:
     def _eeprom_read_fast(self, uc: Uc, address: int, size: int,
                           user_data: object) -> None:
         for signature in (EEPROM_24LC64_CLASS_A_READ_PREFIX,
+                          EEPROM_24LC64_CLASS_B_READ_PREFIX,
                           EEPROM_24LCXX_X430_READ_PREFIX,
                           EEPROM_24LCXX_X270_READ_PREFIX,
                           EEPROM_24LCXX_X7700_READ_PREFIX):
@@ -131,6 +144,7 @@ class EepromMixin:
                     EEPROM_24LCXX_X430_WRITE_PREFIX,
                     EEPROM_24LCXX_X270_WRITE_PREFIX,
                     EEPROM_24LCXX_X7700_WRITE_PREFIX,
+                    EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
                 ) if self._original_runtime_bytes(address, len(candidate))
                 == candidate),
                 None,

@@ -7,6 +7,8 @@ from ..detection.rex import REX_IRQ_WRAPPER_RUNTIME_SIZE
 from ..detection.rex import REX_LEGACY_5MS_CALLBACK_SIZE
 from ..core.constants import REX_TICK_INTERVAL
 from ..detection.rex import REX_TICK_SIGNATURE
+from unicorn import UC_HOOK_MEM_READ
+from unicorn import UC_HOOK_MEM_WRITE
 from unicorn.arm_const import UC_ARM_REG_CPSR
 from unicorn.arm_const import UC_ARM_REG_LR
 from unicorn.arm_const import UC_ARM_REG_PC
@@ -28,7 +30,32 @@ import struct
 
 
 class RexMixin:
-    def _rex_legacy_irq_route(self) -> dict[str, object] | None:
+    def _install_rex_irq_arm_hook(self, config: object) -> None:
+        arm = getattr(config, "rex_irq_arm_address", None)
+        route = (getattr(config, "rex_tick_ms", None) == 5
+                 and all(isinstance(getattr(config, field, None), int) for field in (
+                     "rex_tick_address", "rex_irq_wrapper_address", "rex_irq_handler_address",
+                     "rex_irq_status_address", "rex_irq_enable_address"))
+                 and bool(getattr(config, "rex_irq_mask", 0)))
+        self._rex_irq_arm_required = isinstance(arm, int) and route
+        self._rex_irq_armed = not self._rex_irq_arm_required
+        if self._rex_irq_arm_required:
+            self.uc.hook_add(UC_HOOK_MEM_WRITE, self._rex_irq_arm_write, begin=arm, end=arm)
+
+    def _rex_irq_arm_write(self, uc: Uc, access: int, address: int, size: int,
+                           value: int, user_data: object) -> None:
+        del uc, access, user_data
+        arm = getattr(self.config, "rex_irq_arm_address", None)
+        if address != arm:
+            return
+        self.rex_irq_arm_writes += 1
+        self.rex_irq_arm_last_value = value
+        if size == 1 and value == 0x02:
+            self._rex_irq_armed = True
+            self.rex_irq_arm_accepts += 1
+            self.rex_irq_arm_instruction = self.instructions
+
+    def _rex_direct_legacy_irq_route(self) -> dict[str, object] | None:
         profile = getattr(self, "direct_input_profile", None)
         bridge = (
             profile.get("timer_bridge")
@@ -47,6 +74,19 @@ class RexMixin:
                 "legacy-c80-three-bank-group14-v1",
             }
             and self._rex_legacy_irq_route_metadata_valid(route)
+            else None
+        )
+
+    def _rex_legacy_irq_route(self) -> dict[str, object] | None:
+        direct = self._rex_direct_legacy_irq_route()
+        if direct is not None:
+            return direct
+        candidate = getattr(self, "_rex_candidate_route", None)
+        return (
+            candidate if isinstance(candidate, dict)
+            and candidate.get("signature")
+            == "experimental-static-c80-controller-route-v1"
+            and self._rex_legacy_irq_route_metadata_valid(candidate)
             else None
         )
 
@@ -89,9 +129,11 @@ class RexMixin:
         route = self._rex_legacy_irq_route()
         if not self._rex_irq_shadow_access_allowed(uc, route):
             return
+        pending_before = self._rex_irq_pending[0]
         incoming = value.to_bytes(size, "little")
-        banks = route["clear_banks"] if route is not None else (
-            status, status + 4,
+        banks = (
+            route["clear_banks"] if route is not None
+            else (status, status + 4)
         )
         for index, bank in enumerate(banks):
             left = max(address, bank)
@@ -103,6 +145,11 @@ class RexMixin:
                 ) << ((left - bank) * 8)
                 if index < len(self._rex_irq_pending):
                     self._rex_irq_pending[index] &= ~clear & 0xFFFF
+        if (route is not None
+                and route is getattr(self, "_rex_candidate_route", None)
+                and pending_before & 0x0200
+                and not self._rex_irq_pending[0] & 0x0200):
+            self.rex_controller_pending_acks += 1
 
     def _rex_irq_status_read(self, uc: Uc, access: int, address: int,
                              size: int, value: int,
@@ -261,6 +308,327 @@ class RexMixin:
                 return False
         return True
 
+    def _rex_static_candidate_runtime_route(
+            self, uc: Uc,
+    ) -> tuple[dict[str, object] | None, str, bool]:
+        """Close one static C80 candidate against installed runtime state."""
+        candidate = getattr(
+            self.config, "rex_static_controller_candidate", None
+        )
+        if not isinstance(candidate, dict) or not candidate.get("accepted"):
+            return None, "static-candidate-unavailable", True
+        required = {
+            "signature": "static-c80-controller-callback-v1",
+            "controller_class":
+                "legacy-c80-index1e-delta5-controller-candidate-v1",
+            "active": False,
+            "vector": 0x18,
+            "mask": 0x0200,
+            "callback_delta": 5,
+            "callback_validation_size": REX_LEGACY_5MS_CALLBACK_SIZE,
+        }
+        if any(candidate.get(field) != value
+               for field, value in required.items()):
+            return None, "static-candidate-metadata-invalid", True
+        integer_fields = (
+            "vector_target", "status", "enable", "mask_table",
+            "handler_file_offset", "callback_file_offset",
+            "wrapper_file_offset", "handler_slot", "callback_slot",
+            "handler_validation_size", "wrapper_validation_size",
+        )
+        if any(type(candidate.get(field)) is not int
+               for field in integer_fields):
+            return None, "static-candidate-metadata-invalid", True
+        vector_target = int(candidate["vector_target"])
+        status = int(candidate["status"])
+        enable = int(candidate["enable"])
+        handler_slot = int(candidate["handler_slot"])
+        callback_slot = int(candidate["callback_slot"])
+        handler_size = int(candidate["handler_validation_size"])
+        wrapper_size = int(candidate["wrapper_validation_size"])
+        callback_size = int(candidate["callback_validation_size"])
+        ram_end = self.config.ram_base + self.config.ram_size
+
+        def metadata_tuple(field: str) -> tuple[object, ...]:
+            value = candidate.get(field)
+            return tuple(value) if isinstance(value, (list, tuple)) else ()
+
+        if (vector_target != self.config.ram_base
+                or enable != status + 0x14
+                or handler_size <= 0 or wrapper_size <= 0
+                or any(address & 3 or not self.config.ram_base <= address
+                       <= ram_end - 4
+                       for address in (handler_slot, callback_slot))
+                or metadata_tuple("status_banks")
+                   != (status, status + 4)
+                or metadata_tuple("clear_banks")
+                   != (status, status + 4)
+                or metadata_tuple("controller_write_banks")
+                   != (enable, enable + 4)
+                or metadata_tuple("controller_aperture")
+                   != (status, enable + 6)):
+            return None, "static-candidate-metadata-invalid", True
+
+        offsets = {
+            "wrapper": int(candidate["wrapper_file_offset"]),
+            "handler": int(candidate["handler_file_offset"]),
+            "callback": int(candidate["callback_file_offset"]),
+        }
+        lengths = {
+            "wrapper": wrapper_size,
+            "handler": handler_size,
+            "callback": callback_size,
+        }
+        expected: dict[str, bytes] = {}
+        for name, offset in offsets.items():
+            length = lengths[name]
+            if not 0 <= offset <= len(self.original_image) - length:
+                return None, "static-candidate-source-range-invalid", True
+            expected[name] = self.original_image[offset:offset + length]
+        try:
+            raw_vector = arm_b_word_target(
+                struct.unpack("<I", bytes(uc.mem_read(0x18, 4)))[0], 0x18
+            )
+            if raw_vector != vector_target:
+                return None, "runtime-vector-not-installed", False
+            wrapper = arm_b_word_target(
+                struct.unpack(
+                    "<I", bytes(uc.mem_read(vector_target, 4))
+                )[0],
+                vector_target,
+            )
+            installed_handler = struct.unpack(
+                "<I", bytes(uc.mem_read(handler_slot, 4))
+            )[0]
+            installed_callback = struct.unpack(
+                "<I", bytes(uc.mem_read(callback_slot, 4))
+            )[0]
+        except UcError:
+            return None, "runtime-route-state-unavailable", False
+        if wrapper is None or wrapper & 3:
+            return None, "runtime-wrapper-not-installed", False
+        if not installed_handler & 1:
+            return None, "runtime-handler-not-installed", False
+        if not installed_callback & 1:
+            return None, "runtime-callback-not-installed", False
+        handler = installed_handler & ~1
+        callback = installed_callback & ~1
+        runtime_addresses = {
+            "wrapper": wrapper, "handler": handler, "callback": callback,
+        }
+        try:
+            for name, runtime_address in runtime_addresses.items():
+                pristine = self._original_runtime_bytes(
+                    runtime_address, lengths[name]
+                )
+                if (pristine != expected[name]
+                        or bytes(uc.mem_read(
+                            runtime_address, lengths[name]
+                        )) != expected[name]):
+                    return None, f"runtime-{name}-bytes-mismatch", False
+        except UcError:
+            return None, "runtime-route-code-unavailable", False
+        callback_shape = rex_legacy_5ms_callback_shape_at(
+            expected["callback"], 0
+        )
+        if (callback_shape is None
+                or tuple(candidate.get("callback_validation_shape", ()))
+                != tuple(callback_shape)):
+            return None, "runtime-callback-shape-mismatch", True
+        route = {
+            "signature": "experimental-static-c80-controller-route-v1",
+            "controller_class": "legacy-c80-two-bank-group10-v1",
+            "index": 0x1E,
+            "status": status,
+            "enable": enable,
+            "mask": 0x0200,
+            "status_banks": (status, status + 4),
+            "clear_banks": (status, status + 4),
+            "controller_write_banks": (enable, enable + 4),
+            "controller_aperture": (status, enable + 6),
+            "status_bank_count": 2,
+            "group_row_size": 10,
+            "vector": 0x18,
+            "vector_target": vector_target,
+            "wrapper": wrapper,
+            "wrapper_validation_size": wrapper_size,
+            "handler": handler,
+            "handler_validation_size": handler_size,
+            "handler_slot": handler_slot,
+            "callback_slot": callback_slot,
+            "outer_callback": callback,
+        }
+        if not self._rex_legacy_irq_route_metadata_valid(route):
+            return None, "runtime-route-metadata-invalid", True
+        return route, "", False
+
+    def _rex_try_static_candidate_route(self, uc: Uc) -> bool:
+        """Promote a fully installed candidate without weakening fallback."""
+        if getattr(self, "_rex_candidate_route", None) is not None:
+            return True
+        if self._rex_direct_legacy_irq_route() is not None:
+            self.rex_controller_gate_reason = "direct-route-priority"
+            return False
+        if (getattr(self, "_rex_candidate_gate_terminal", False)
+                or self.instructions
+                < getattr(self, "_rex_candidate_gate_next_instruction", 0)):
+            return False
+        candidate = getattr(
+            self.config, "rex_static_controller_candidate", None
+        )
+        if not isinstance(candidate, dict) or not candidate.get("accepted"):
+            return False
+        if not getattr(
+                self.config, "rex_static_controller_experimental", False):
+            self.rex_controller_gate_reason = "experimental-opt-in-required"
+            return False
+        route_fields = (
+            "rex_tick_address", "rex_irq_wrapper_address",
+            "rex_irq_handler_address", "rex_irq_handler_slot",
+            "rex_irq_callback_slot", "rex_irq_status_address",
+            "rex_irq_enable_address",
+        )
+        if (any(getattr(self.config, field, None) is not None
+                for field in route_fields)
+                or getattr(self.config, "rex_irq_mask", 0)):
+            self.rex_controller_gate_reason = "existing-route-fields-priority"
+            self._rex_candidate_gate_terminal = True
+            return False
+        self.rex_controller_gate_attempts += 1
+        route, reason, terminal = self._rex_static_candidate_runtime_route(uc)
+        if route is None:
+            self.rex_controller_gate_reason = reason
+            self._rex_candidate_gate_terminal = terminal
+            self._rex_candidate_gate_next_instruction = (
+                self.instructions + REX_TICK_INTERVAL
+            )
+            return False
+
+        prior = {
+            field: getattr(self.config, field) for field in (
+                *route_fields, "rex_irq_mask", "rex_tick_ms",
+                "rex_irq_arm_address",
+            )
+        }
+        prior_aperture = self._rex_irq_controller_aperture
+
+        def restore() -> None:
+            for field, value in prior.items():
+                setattr(self.config, field, value)
+            self._rex_candidate_route = None
+            self._rex_irq_controller_aperture = prior_aperture
+
+        self.config.rex_tick_address = int(route["outer_callback"])
+        self.config.rex_irq_wrapper_address = int(route["wrapper"])
+        self.config.rex_irq_handler_address = int(route["handler"])
+        self.config.rex_irq_handler_slot = int(route["handler_slot"])
+        self.config.rex_irq_callback_slot = int(route["callback_slot"])
+        self.config.rex_irq_status_address = int(route["status"])
+        self.config.rex_irq_enable_address = int(route["enable"])
+        self.config.rex_irq_mask = int(route["mask"])
+        self.config.rex_tick_ms = 5
+        self.config.rex_irq_arm_address = None
+        self._rex_candidate_route = route
+        self._rex_irq_controller_aperture = tuple(
+            int(value) for value in route["controller_aperture"]
+        )
+        if not self._rex_irq_route_valid(uc, stack=True):
+            restore()
+            self.rex_controller_gate_reason = "runtime-route-validator-rejected"
+            self._rex_candidate_gate_next_instruction = (
+                self.instructions + REX_TICK_INTERVAL
+            )
+            return False
+        begin, end = self._rex_irq_controller_aperture
+        hooks: list[int] = []
+        try:
+            hooks.append(uc.hook_add(
+                UC_HOOK_MEM_WRITE, self._rex_irq_status_write,
+                begin=begin, end=end - 1,
+            ))
+            hooks.append(uc.hook_add(
+                UC_HOOK_MEM_READ, self._rex_irq_status_read,
+                begin=begin, end=end - 1,
+            ))
+        except UcError:
+            for hook in hooks:
+                uc.hook_del(hook)
+            restore()
+            self.rex_controller_gate_reason = "runtime-shadow-hook-failed"
+            self._rex_candidate_gate_terminal = True
+            return False
+        self._rex_candidate_shadow_hooks = hooks
+        self._rex_irq_pending = [0, 0]
+        self.rex_controller_gate_accepts += 1
+        self.rex_controller_gate_reason = None
+        self.rex_controller_activation_instruction = self.instructions
+        return True
+
+    def _rex_controller_telemetry(self) -> dict[str, object]:
+        candidate = getattr(
+            self.config, "rex_static_controller_candidate", None
+        )
+        direct = self._rex_direct_legacy_irq_route() is not None
+        active = getattr(self, "_rex_candidate_route", None) is not None
+        if active:
+            status = "active"
+        elif direct:
+            status = "direct-route-priority"
+        elif isinstance(candidate, dict) and candidate.get("accepted"):
+            if not getattr(
+                    self.config, "rex_static_controller_experimental", False):
+                status = "experimental-disabled"
+            else:
+                status = (
+                    "rejected"
+                    if self._rex_candidate_gate_terminal else "waiting"
+                )
+        elif isinstance(candidate, dict):
+            status = "static-rejected"
+        else:
+            status = "not-detected"
+        return {
+            "profile": (
+                "experimental-static-c80-controller-route-v1"
+                if active else None
+            ),
+            "status": status,
+            "experimental": active,
+            "scope": (
+                "single-runtime-witness-temporary"
+                if isinstance(candidate, dict) and candidate.get("accepted")
+                else None
+            ),
+            "cadence": (
+                "host-instruction-interval-assumption" if active else None
+            ),
+            "gate_attempts": getattr(
+                self, "rex_controller_gate_attempts", 0
+            ),
+            "gate_accepts": getattr(
+                self, "rex_controller_gate_accepts", 0
+            ),
+            "last_reason": getattr(
+                self, "rex_controller_gate_reason", None
+            ),
+            "activation_instruction":
+                getattr(self, "rex_controller_activation_instruction", None),
+            "pending_assertions": getattr(
+                self, "rex_controller_pending_assertions", 0
+            ),
+            "pending_acks": getattr(
+                self, "rex_controller_pending_acks", 0
+            ),
+            "arm": {
+                "required": getattr(self, "_rex_irq_arm_required", False),
+                "armed": getattr(self, "_rex_irq_armed", True),
+                "writes": getattr(self, "rex_irq_arm_writes", 0),
+                "accepts": getattr(self, "rex_irq_arm_accepts", 0),
+                "last_value": getattr(self, "rex_irq_arm_last_value", None),
+                "instruction": getattr(self, "rex_irq_arm_instruction", None),
+            },
+        }
+
     def _rex_irq_boundary(self, uc: Uc, address: int) -> bool:
         """Enter one latched, enabled IRQ at a firmware block boundary."""
         enable = getattr(self.config, "rex_irq_enable_address", None)
@@ -313,6 +681,9 @@ class RexMixin:
         if (not post_sleep
                 and not self._thumb_runtime_matches(uc, address, prefix_size=4)):
             return
+        if legacy is None:
+            self._rex_try_static_candidate_route(uc)
+            legacy = self._rex_legacy_irq_route()
         self.rex_idle_entries += 1
         tick_address = self.config.rex_tick_address
         tick_matches = (tick_address is not None
@@ -340,10 +711,17 @@ class RexMixin:
                     or getattr(self.config, "rex_irq_wrapper_address", None) is None
                     or not self._rex_irq_route_valid(uc, stack=True)):
                 return
+            if (getattr(self, "_rex_irq_arm_required", False)
+                    and not getattr(self, "_rex_irq_armed", False)):
+                return
         self.rex_next_instruction = self.instructions + REX_TICK_INTERVAL
         self.rex_ticks += 1
         self.rex_elapsed_ms += self.config.rex_tick_ms
         if self.config.rex_tick_ms == 5:
+            if (legacy is not None
+                    and legacy is getattr(self, "_rex_candidate_route", None)
+                    and not self._rex_irq_pending[0] & self.config.rex_irq_mask):
+                self.rex_controller_pending_assertions += 1
             self._rex_irq_pending[0] |= self.config.rex_irq_mask
             return
         if post_sleep:

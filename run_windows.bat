@@ -110,7 +110,7 @@ if errorlevel 1 (
     goto failed
 )
 
-"%PYTHON_CMD%" %PYTHON_ARGS% -c "import unicorn, PIL" >nul 2>nul
+"%PYTHON_CMD%" %PYTHON_ARGS% -c "import unicorn, PIL, numpy" >nul 2>nul
 if errorlevel 1 goto dependency_setup
 goto dependencies_ready
 
@@ -134,7 +134,7 @@ echo Installing Python dependencies. First setup may require network access...
 if errorlevel 1 goto failed
 
 :dependencies_ready
-"%PYTHON_CMD%" %PYTHON_ARGS% -c "import unicorn, PIL" >nul 2>nul
+"%PYTHON_CMD%" %PYTHON_ARGS% -c "import unicorn, PIL, numpy" >nul 2>nul
 if errorlevel 1 (
     echo Python dependencies are still unavailable after installation.
     goto failed

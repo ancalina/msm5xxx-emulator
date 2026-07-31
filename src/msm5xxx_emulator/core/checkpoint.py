@@ -168,6 +168,7 @@ class CheckpointMixin:
                 "rex_idle_entries": self.rex_idle_entries,
                 "rex_ticks": self.rex_ticks,
                 "rex_elapsed_ms": self.rex_elapsed_ms,
+                "rex_irq_deliveries": self.rex_irq_deliveries,
                 "storage": {
                     "eeprom_reads": self.eeprom_reads,
                     "eeprom_writes": self.eeprom_writes,
@@ -187,6 +188,8 @@ class CheckpointMixin:
                     "nand_commands": len(self.nand_commands),
                 },
             },
+            "rex_controller": self._rex_controller_telemetry(),
+            "sbi": self._sbi_telemetry(),
             "dynamic_pages": len(self.dynamic_pages),
             "last_unmapped": safe_unmapped,
             "unmapped_accesses": safe_unmapped_accesses,

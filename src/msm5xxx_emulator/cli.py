@@ -86,6 +86,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--rex-tick-address", type=integer)
     result.add_argument("--rex-irq-wrapper-address", type=integer)
     result.add_argument("--rex-tick-ms", type=integer)
+    result.add_argument(
+        "--experimental-c80-controller",
+        dest="rex_static_controller_experimental",
+        action="store_true",
+        help="enable the single-witness experimental C80 timer/IRQ profile",
+    )
     result.add_argument("--board-adc-address", type=integer)
     result.add_argument("--board-adc-value", type=integer)
     result.add_argument("--flash-id-address", type=integer)

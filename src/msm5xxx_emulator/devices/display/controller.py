@@ -141,21 +141,27 @@ class DisplayControllerMixin:
         pair = [value & 0xFF, value >> 8 & 0xFF]
         if command == 0x16:
             self._lcd_x[:] = pair
+            self._lcd_window_axis_mask |= 0x3
             return True
         if command == 0x17:
             self._lcd_y[:] = pair
+            self._lcd_window_axis_mask |= 0xC
             return True
         if command == 0x50:
             self._lcd_x[0] = value & 0xFF
+            self._lcd_window_axis_mask |= 0x1
             return True
         if command == 0x51:
             self._lcd_x[1] = value & 0xFF
+            self._lcd_window_axis_mask |= 0x2
             return True
         if command == 0x52:
             self._lcd_y[0] = value & 0xFF
+            self._lcd_window_axis_mask |= 0x4
             return True
         if command == 0x53:
             self._lcd_y[1] = value & 0xFF
+            self._lcd_window_axis_mask |= 0x8
             return True
         if command == 0x05:
             self._lcd_packed_21_state = int(
@@ -255,6 +261,9 @@ class DisplayControllerMixin:
                         self._lcd_args[2] << 8 | self._lcd_args[3]]
                 target = self._lcd_x if self._lcd_command in (0x15, 0x2A) else self._lcd_y
                 target[:] = pair
+                self._lcd_window_axis_mask |= (
+                    0x3 if target is self._lcd_x else 0xC
+                )
                 self._lcd_args.clear()
             return
         self._capture_raw_lcd_stream(address, size, value)
@@ -284,6 +293,8 @@ class DisplayControllerMixin:
 
     def _lcd_write(self, uc: Uc, access: int, address: int, size: int,
                    value: int, user_data: object) -> None:
+        if self._audio_transport_owns_write(uc, address, size):
+            return
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
         if self._lcd_split_port_write(address, size, value):
@@ -294,8 +305,79 @@ class DisplayControllerMixin:
             return
         self._lcd_route_write(uc, access, address, size, value, user_data)
 
+    def _lcd_selector_reacquire_replay(
+        self, protocol: str, words: tuple[int, ...]
+    ) -> None:
+        self._lcd_protocol = protocol
+        self._lcd_selector_reacquire_replaying = True
+        try:
+            self._lcd_route_write(None, 0, 0x02000000, 2, 0, None)
+            for word in words:
+                self._lcd_route_write(
+                    None, 0, 0x02000004, 2, word, None
+                )
+        finally:
+            self._lcd_selector_reacquire_replaying = False
+
+    def _lcd_selector_reacquire_finish(
+        self, *, replay: bool
+    ) -> tuple[tuple[int, ...], str]:
+        words = tuple(getattr(self, "_lcd_selector_reacquire_words", ()))
+        protocol = getattr(
+            self, "_lcd_selector_reacquire_protocol", "unknown"
+        )
+        self._lcd_selector_reacquire_index = None
+        self._lcd_selector_reacquire_words.clear()
+        self._lcd_selector_reacquire_protocol = "unknown"
+        if replay:
+            self._lcd_selector_reacquire_replay(protocol, words)
+        return words, protocol
+
     def _lcd_route_write(self, uc: Uc, access: int, address: int, size: int,
                          value: int, user_data: object) -> None:
+        selector_refresh_order = (0x02, 0x03, 0x04, 0x05, 0x15, 0x0E)
+        reacquire = getattr(self, "_lcd_selector_reacquire_index", None)
+        if not getattr(self, "_lcd_selector_reacquire_replaying", False):
+            if (reacquire is None
+                    and (address, size, value) == (0x02000000, 2, 0)
+                    and self._lcd_selector_full_transfers
+                    and not self._lcd_selector_expected
+                    and self._lcd_selector_registers.get(0x0D) in (0, 1)):
+                self._lcd_selector_reacquire_index = 0
+                self._lcd_selector_reacquire_words = []
+                self._lcd_selector_reacquire_protocol = self._lcd_protocol
+                return
+            if reacquire is not None:
+                if address == 0x02000004:
+                    register, argument = value >> 8 & 0xFF, value & 0xFF
+                    if (size == 2 and reacquire < len(selector_refresh_order)
+                            and register == selector_refresh_order[reacquire]
+                            and (reacquire != 4 or argument == 0)
+                            and (reacquire != len(selector_refresh_order) - 1
+                                 or argument == 0)):
+                        self._lcd_selector_reacquire_words.append(value & 0xFFFF)
+                        self._lcd_selector_reacquire_index = reacquire + 1
+                        return
+                    self._lcd_selector_reacquire_finish(replay=True)
+                elif (reacquire == len(selector_refresh_order)
+                      and (address, size, value) == (0x02000000, 2, 1)):
+                    words, protocol = self._lcd_selector_reacquire_finish(
+                        replay=False
+                    )
+                    registers = dict(self._lcd_selector_registers)
+                    accepted = False
+                    for command in words:
+                        accepted = self._lcd_selector_begin_command(2, command)
+                    if accepted:
+                        self._lcd_protocol = "selector-4"
+                        self._lcd_mode = 1
+                        return
+                    self._lcd_selector_registers.clear()
+                    self._lcd_selector_registers.update(registers)
+                    self._lcd_selector_reset()
+                    self._lcd_selector_reacquire_replay(protocol, words)
+                else:
+                    self._lcd_selector_reacquire_finish(replay=True)
         self._lcd_lowbyte_page_event(address, size, value)
         if address == 0x02000078:
             self._lcd_lgfa_register(size, value)

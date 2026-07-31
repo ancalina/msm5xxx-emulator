@@ -76,7 +76,7 @@ def _rex_5ms_registration_targets(
 
 
 def rex_timer_advance_at(image: bytes, position: int) -> bool:
-    """Validate the old REX delta-timer list walker used by MSM5000 BSPs."""
+    """Validate an MSM5000 REX active-timer list walker."""
     if position < 0 or position + REX_TIMER_ADVANCE_SIZE > len(image):
         return False
     words = struct.unpack_from("<35H", image, position)
@@ -112,7 +112,7 @@ def rex_timer_advance_at(image: bytes, position: int) -> bool:
 
 
 def legacy_rex_timer_advance_at(image: bytes, position: int) -> bool:
-    """Validate the older register-renamed REX delta-timer walker."""
+    """Validate the older register-renamed REX active-timer walker."""
     if position < 0 or position + 0x38 > len(image):
         return False
     return (
@@ -120,6 +120,556 @@ def legacy_rex_timer_advance_at(image: bytes, position: int) -> bool:
         and b"\xa0\x42" in image[position:position + 0x30]
         and b"\x00\x20\xb8\x60" in image[position:position + 0x38]
     )
+
+
+def _controller_timer_advance_at(image: bytes, position: int) -> bool:
+    """Close the legacy walker to its timer callback fanout call."""
+    if (not legacy_rex_timer_advance_at(image, position)
+            or position + 0x60 > len(image)):
+        return False
+    calls = [offset for offset in range(position, position + 0x58, 2)
+             if struct.unpack_from("<2H", image, offset)[:2] == (0x68F8, 0x6939)
+             and thumb_bl_target(image, offset + 4) is not None]
+    return len(calls) == 1
+
+
+def _controller_two_bank_handler_at(
+        image: bytes, position: int, masks: int, status: int,
+) -> bool:
+    """Validate the common C80 two-bank mask/dispatch controller shape."""
+    if position < 0 or position + 0x100 > len(image):
+        return False
+    words = struct.unpack_from("<28H", image, position)
+
+    def literal(index: int, register: int, value: int) -> bool:
+        return thumb_literal_value(image, position + index * 2, register) == value
+
+    if not (
+        words[0] == 0xB5F0
+        and words[1] & 0xFFF0 == 0xB080
+        and words[2] & 0xF800 == 0xF000
+        and words[3] & 0xF800 == 0xF800
+        and literal(4, 2, masks)
+        and words[5:9] == (0x88D1, 0x9102, 0x8911, 0x9101)
+        and literal(9, 7, status)
+        and words[10] == 0x8838
+        and literal(11, 2, masks)
+        and words[12:25] == (
+            0x8813, 0x9902, 0x4019, 0x4001, 0x9104, 0x88B8,
+            0x8853, 0x9901, 0x4019, 0x4008, 0x9904, 0x9003,
+            0x4308,
+        )
+        and words[25] & 0xFF00 == 0xD100
+        and thumb_bl_target(image, position + 26 * 2) is not None
+    ):
+        return False
+
+    # A second bank pass must consume both the same RAM masks and status.
+    later = range(position + 0x70, position + 0x100, 2)
+    if (not any(thumb_literal_value(image, offset, register) == masks
+                for offset in later for register in range(8))
+            or not any(thumb_literal_value(image, offset, register) == status
+                       for offset in later for register in range(8))):
+        return False
+
+    def callback_thunk(target: int | None) -> bool:
+        if target is None or target + 2 > len(image):
+            return False
+        if image[target:target + 2] == b"\x00\x47":
+            return True
+        if (target + 16 > len(image)
+                or struct.unpack_from("<6H", image, target)
+                != (0x4778, 0x46C0, 0xC000, 0xE59F, 0xFF1C, 0xE12F)):
+            return False
+        indirect = struct.unpack_from("<I", image, target + 12)[0]
+        return (indirect & 1
+                and indirect + 1 <= len(image)
+                and image[indirect & ~1:(indirect & ~1) + 2] == b"\x00\x47")
+
+    # Close descriptor callback loads to a BX R0 thunk, then require one
+    # handled-mask writeback through the same status literal.
+    dispatches = 0
+    for offset in later:
+        if struct.unpack_from("<H", image, offset)[0] != 0x6978:
+            continue
+        target = thumb_bl_target(image, offset + 2)
+        if callback_thunk(target):
+            dispatches += 1
+    if dispatches < 2:
+        return False
+    for load in later:
+        for register in range(8):
+            if thumb_literal_value(image, load, register) != status:
+                continue
+            for store in range(load + 2, min(position + 0x100, load + 0x12), 2):
+                word = struct.unpack_from("<H", image, store)[0]
+                if (word & 0xF800 == 0x8000
+                        and word >> 3 & 7 == register
+                        and (word >> 6 & 0x1F) * 2 in (0, 4)):
+                    return True
+    return False
+
+
+def _controller_registrar_at(
+        image: bytes, position: int, default: int,
+) -> int | None:
+    """Validate row-0x1c registration and return its descriptor-table base."""
+    if position < 0 or position + 0x44 > len(image):
+        return None
+    words = struct.unpack_from("<34H", image, position)
+    if not (
+        words[0] & 0xFFF0 == 0xB5F0
+        and words[1:3] == (0x1C04, 0x1C0F)
+        and words[3] & 0xF800 == 0xF000
+        and words[4] & 0xF800 == 0xF800
+        and words[5:7] == (0x1C05, 0x2F00)
+        and words[7] & 0xF800 == 0x4800
+        and words[7] >> 8 & 7 == 6
+        and words[8:13] == (0xD100, 0x1C37, 0x2C00, 0xDB01, 0x2C1F)
+        and words[13] & 0xFF00 == 0xDB00
+        and words[14] & 0xF800 == 0xF000
+        and words[15] & 0xF800 == 0xF800
+        and thumb_literal_value(image, position + 14, 6) == default
+    ):
+        return None
+    rows = [index for index in range(16, 25)
+            if (words[index] == 0x201C
+                and words[index + 1] & 0xF800 == 0x4800
+                and words[index + 1] >> 8 & 7 == 1
+                and words[index + 2:index + 10] == (
+                    0x4360, 0x1840, 0x2C00, 0xD102, words[index + 6],
+                    0x630F, 0xE000, 0x6147,
+                )
+                and words[index + 6] & 0xF800 == 0x4800
+                and words[index + 6] >> 8 & 7 == 1)]
+    if len(rows) != 1:
+        return None
+    descriptor = thumb_literal_value(image, position + (rows[0] + 6) * 2, 1)
+    return (descriptor if descriptor is not None
+            and 0x01000000 <= descriptor < 0x02000000 else None)
+
+
+def _controller_callback_advance(
+        image: bytes, position: int,
+) -> int | None:
+    """Return the unique direct 5-unit legacy timer advance from callback."""
+    if position < 0 or position + 0x40 > len(image):
+        return None
+    advances: list[int] = []
+    for offset in range(position, position + 0x38, 2):
+        if (struct.unpack_from("<3H", image, offset)
+                != (0x3805, 0x6008, 0x2005)):
+            continue
+        advance = thumb_bl_target(image, offset + 6)
+        if (advance is not None
+                and struct.unpack_from("<H", image, offset + 10)[0] == 0x2105
+                and _controller_timer_advance_at(image, advance)):
+            advances.append(advance)
+    return advances[0] if len(advances) == 1 else None
+
+
+def find_rex_static_controller_callback_candidate(
+        image: bytes,
+) -> dict[str, object] | None:
+    """Return a telemetry-only old-controller callback topology, if closed.
+
+    This proves only static descriptor, handler, registrar, and timer-list
+    topology.  It deliberately does not claim a pending-bit source, inject an
+    IRQ, or promote a handset phase.
+    """
+    if len(image) < 0x100:
+        return None
+    prefix = struct.pack("<3I", 0x03000C80, 0x03000C94, 0x200)
+    seeds: list[tuple[int, tuple[int, ...]]] = []
+    offset = 0
+    while (offset := image.find(prefix, offset)) >= 0:
+        if offset + 28 <= len(image):
+            seed = struct.unpack_from("<7I", image, offset)
+            if (seed[3] >= 0x01000000 and seed[4] == seed[3] + 6
+                    and seed[5] & 1 and (seed[5] & ~1) < len(image)
+                    and seed[6] == 0):
+                seeds.append((offset, seed))
+        offset += 1
+    if not seeds:
+        return None
+
+    semantic_limit = (
+        "static topology only; native pending, IRQ, and idle remain unproven"
+    )
+
+    def rejected(reason: str) -> dict[str, object]:
+        return {
+            "signature": "static-c80-controller-callback-v1",
+            "accepted": False,
+            "active": False,
+            "semantic_limit": semantic_limit,
+            "reject_reason": reason,
+        }
+
+    if (arm_b_word_target(struct.unpack_from("<I", image, 0x18)[0], 0x18)
+            != 0x01000000):
+        return rejected("raw-vector-not-01000000")
+    if len(seeds) != 1:
+        return rejected("descriptor-seed-ambiguous")
+    descriptor_file_offset, seed = seeds[0]
+    status, enable, mask, masks, _unused, default, _reserved = seed
+    handler = (default & ~1) + 0x68
+    if not _controller_two_bank_handler_at(image, handler, masks, status):
+        return rejected("two-bank-handler-not-closed")
+
+    registrations: list[tuple[int, int, int, int]] = []
+    registration_positions: list[int] = []
+    prefix = b"\x02\x20\x08\x70"
+    offset = 0
+    while (offset := image.find(prefix, offset)) >= 0:
+        registration = offset + len(prefix) + 2
+        if not registration & 1 and 8 <= registration <= len(image) - 6:
+            registration_positions.append(registration)
+        offset += 1
+    for registration in registration_positions:
+        if (struct.unpack_from("<H", image, registration)[0] != 0x201E
+                or thumb_literal_value(image, registration - 2, 1) is None
+                or thumb_literal_value(image, registration - 8, 1) != 0x030007A0
+                or struct.unpack_from("<2H", image, registration - 6)
+                != (0x2002, 0x7008)):
+            continue
+        callback_pointer = thumb_literal_value(image, registration - 2, 1)
+        registrar = thumb_bl_target(image, registration + 2)
+        if (callback_pointer is None or not callback_pointer & 1
+                or registrar is None):
+            continue
+        callback = callback_pointer & ~1
+        table = _controller_registrar_at(image, registrar, default)
+        advance = _controller_callback_advance(image, callback)
+        if table is not None and advance is not None:
+            registrations.append((registration, callback, registrar, advance))
+    if len(registrations) != 1:
+        return rejected("row1e-callback-route-not-unique")
+    registration, callback, registrar, advance = registrations[0]
+    table = _controller_registrar_at(image, registrar, default)
+    if table is None:
+        return rejected("registrar-not-closed")
+    wrapper_prefix = struct.pack("<4I", 0xE24EE004, 0xE92D540F,
+                                 0xE14F0000, 0xE92D0001)
+    wrappers: list[tuple[int, int, int]] = []
+    position = 0
+    while (position := image.find(wrapper_prefix, position)) >= 0:
+        if not position & 3 and position + 0x34 <= len(image):
+            instruction = struct.unpack_from("<I", image, position + 0x28)[0]
+            if instruction & 0xFFFFF000 == 0xE59F3000:
+                literal = position + 0x30 + (instruction & 0xFFF)
+                if literal + 4 <= len(image):
+                    wrappers.append((position, struct.unpack_from(
+                        "<I", image, literal)[0], literal + 4 - position))
+        position += 4
+    if len(wrappers) != 1:
+        return rejected("irq-wrapper-not-unique")
+    wrapper, handler_slot, wrapper_size = wrappers[0]
+    if not 0x01000000 <= handler_slot < 0x02000000:
+        return rejected("handler-slot-outside-ram")
+
+    def literal_loads(value: int, register: int) -> set[int]:
+        loads: set[int] = set()
+        literal = image.find(struct.pack("<I", value))
+        while literal >= 0:
+            for candidate in range(max(0, literal - 0x400) & ~1,
+                                   min(len(image) - 2, literal + 2), 2):
+                if thumb_literal_value(image, candidate, register) == value:
+                    loads.add(candidate)
+            literal = image.find(struct.pack("<I", value), literal + 1)
+        return loads
+
+    setters: list[tuple[int, int]] = []
+    for position in literal_loads(handler | 1, 1):
+        if struct.unpack_from("<H", image, position + 2)[0] != 0x2000:
+            continue
+        setter = thumb_bl_target(image, position + 4)
+        if (setter is not None and setter + 16 <= len(image)
+                and struct.unpack_from("<6H", image, setter)
+                == (0x4778, 0x46C0, 0xC000, 0xE59F, 0xFF1C, 0xE12F)):
+            setter = struct.unpack_from("<I", image, setter + 12)[0] & ~1
+        if setter is None or setter + 14 > len(image):
+            continue
+        words = struct.unpack_from("<7H", image, setter)
+        base = thumb_literal_value(image, setter, 2)
+        first = (words[3] >> 6 & 0x1F) * 4
+        second = (words[5] >> 6 & 0x1F) * 4
+        if (words[1:3] == (0x2800, 0xD101)
+                and words[3] & 0xF83F == 0x6011
+                and words[4] == 0x4770
+                and words[5] & 0xF83F == 0x6011
+                and words[6] == 0x4770
+                and base is not None and base + first == handler_slot
+                and second == first + 4):
+            setters.append((position, setter))
+    if len(setters) != 1:
+        return rejected("handler-setter-not-unique")
+    callback_slot = masks + 0x0C + 0x1E * 0x1C + 0x14
+    if not 0x01000000 <= callback_slot < 0x02000000:
+        return rejected("row1e-callback-slot-invalid")
+    callback_shape = rex_legacy_5ms_callback_shape_at(image, callback)
+    if callback_shape is None:
+        return rejected("legacy-callback-validator-not-closed")
+    return {
+        "signature": "static-c80-controller-callback-v1",
+        "accepted": True,
+        "active": False,
+        "semantic_limit": semantic_limit,
+        "controller_class": (
+            "legacy-c80-index1e-delta5-controller-candidate-v1"
+        ),
+        "descriptor_file_offset": descriptor_file_offset,
+        "status": status,
+        "status_banks": (status, status + 4),
+        "enable": enable,
+        "enable_banks": (enable, enable + 4),
+        "mask": mask,
+        "mask_table": masks,
+        "default_callback": default,
+        "handler_file_offset": handler,
+        "registration_file_offset": registration,
+        "callback_file_offset": callback,
+        "registrar_file_offset": registrar,
+        "descriptor_table": table,
+        "timer_advance_file_offset": advance,
+        "vector": 0x18,
+        "vector_target": 0x01000000,
+        "wrapper_file_offset": wrapper,
+        "handler_slot": handler_slot,
+        "handler_registration_file_offset": setters[0][0],
+        "handler_setter_file_offset": setters[0][1],
+        "callback_slot": callback_slot,
+        "clear_banks": (status, status + 4),
+        "controller_write_banks": (enable, enable + 4),
+        "controller_aperture": (status, enable + 6),
+        "handler_validation_size": 0x100,
+        "wrapper_validation_size": wrapper_size,
+        "callback_delta": 5,
+        "callback_validation_size": REX_LEGACY_5MS_CALLBACK_SIZE,
+        "callback_validation_shape": callback_shape,
+    }
+
+
+def find_rex_static_c40_controller_observation(
+        image: bytes,
+) -> dict[str, object] | None:
+    """Return one closed C40 TIME_TICK observation."""
+    status, enable, mask = 0x03000C40, 0x03000C54, 0x0200
+    prefix = struct.pack("<3I", status, enable, mask)
+    descriptors: list[tuple[int, int]] = []
+    offset = 0
+    while (offset := image.find(prefix, offset)) >= 0:
+        if offset + 16 <= len(image):
+            shadow = struct.unpack_from("<I", image, offset + 12)[0]
+            if 0x01000000 <= shadow < 0x02000000 and not shadow & 1:
+                descriptors.append((offset, shadow))
+        offset += 1
+    if not descriptors:
+        return None
+
+    limit = ("static controller and one-shot route only; native pending, "
+             "cadence, repeat IRQ, and idle remain unproven")
+
+    def rejected(reason: str, **details: object) -> dict[str, object]:
+        return {
+            "signature": "static-c40-selector0-delta5-controller-v1",
+            "accepted": False, "active": False, "promotion": "telemetry-only",
+            "semantic_limit": limit, "reject_reason": reason, **details,
+        }
+
+    if len(descriptors) != 1:
+        return rejected("c40-descriptor-not-unique", descriptor_count=len(descriptors))
+    descriptor, shadow = descriptors[0]
+    if len(image) < 0x1C or arm_b_word_target(
+            struct.unpack_from("<I", image, 0x18)[0], 0x18) != 0x01380000:
+        return rejected("runtime-vector-target-mismatch",
+                        descriptor_file_offset=descriptor, mask_shadow=shadow)
+    arms: list[int] = []
+    offset = 0
+    while (offset := image.find(b"\x02\x20\x08\x70", offset)) >= 0:
+        position = offset - 2
+        offset += 1
+        if (position < 0 or position & 1 or position + 6 > len(image)
+                or struct.unpack_from("<H", image, position)[0] & 0xF800 != 0x4800
+                or struct.unpack_from("<H", image, position)[0] & 0x0700 != 0x0100
+                or thumb_literal_value(image, position, 1) != 0x030006E0):
+            continue
+        arms.append(position)
+    if len(arms) != 1:
+        return rejected("time-tick-arm-not-unique", descriptor_file_offset=descriptor,
+                        arm_count=len(arms))
+
+    handlers: list[tuple[int, int, int, int]] = []
+    offset = 0
+    while (offset := image.find(b"\xf0\xb5", offset)) >= 0:
+        position = offset
+        offset += 1
+        if position & 1 or position + 0x3D0 > len(image):
+            continue
+        if (thumb_literal_value(image, position + 0x0A, 6) != shadow
+                or thumb_literal_value(image, position + 0x0C, 7) != status):
+            continue
+        tick, tail = position + 0x112, position + 0x396
+        if (struct.unpack_from("<2H", image, tick) != (0x0A8A, 0xD30A)
+                or thumb_literal_value(image, tick + 4, 0) is None
+                or struct.unpack_from("<H", image, tick + 6)[0] != 0x6980
+                or thumb_bl_target(image, tick + 8) != 0x1254
+                or struct.unpack_from("<2H", image, tick + 0x14)
+                != (0x2001, 0x0240)
+                or (branch := struct.unpack_from("<H", image, tick + 0x18)[0])
+                & 0xF800 != 0xE000
+                or tick + 0x1C + (((branch & 0x7FF) << 1)
+                                   - (0x1000 if branch & 0x400 else 0))
+                != position + 0x2BC
+                or thumb_literal_value(image, position + 0x2BC, 1) != status
+                or struct.unpack_from("<H", image, position + 0x2BE)[0] != 0x8008
+                or thumb_literal_value(image, tail, 2) != shadow
+                or thumb_literal_value(image, tail + 2, 1) != status
+                or struct.unpack_from("<8H", image, tail + 4)
+                != (0x8810, 0x880B, 0x4018, 0x0400,
+                    0x4E15, 0x0C00, 0x8430, 0x8852)
+                or struct.unpack_from("<H", image, position + 0x3CE)[0] != 0xBDF0):
+            continue
+        table = thumb_literal_value(image, tick + 4, 0)
+        assert table is not None
+        if 0x01000000 <= table < 0x02000000:
+            handlers.append((position, table, table + 0x18, position + 0x2BC))
+    if len(handlers) != 1:
+        return rejected("c40-handler-not-unique", descriptor_file_offset=descriptor,
+                        mask_shadow=shadow, handler_count=len(handlers))
+    handler, table, callback_slot, w1c = handlers[0]
+    if callback_slot - shadow != 0x208:
+        return rejected("callback-slot-mask-shadow-mismatch",
+                        descriptor_file_offset=descriptor, mask_shadow=shadow)
+
+    wrapper_prefix = struct.pack("<4I", 0xE24EE004, 0xE92D540F,
+                                 0xE14F0000, 0xE92D0001)
+    wrappers: list[tuple[int, int]] = []
+    offset = 0
+    while (offset := image.find(wrapper_prefix, offset)) >= 0:
+        if not offset & 3 and offset + 0x34 <= len(image):
+            instruction = struct.unpack_from("<I", image, offset + 0x28)[0]
+            if instruction & 0xFFFFF000 == 0xE59F3000:
+                literal = offset + 0x30 + (instruction & 0xFFF)
+                if literal + 4 <= len(image):
+                    slot = struct.unpack_from("<I", image, literal)[0]
+                    if 0x01000000 <= slot < 0x02000000 and not slot & 3:
+                        wrappers.append((offset, slot))
+        offset += 4
+    if len(wrappers) != 1:
+        return rejected("irq-wrapper-not-unique", descriptor_file_offset=descriptor,
+                        mask_shadow=shadow, wrapper_count=len(wrappers))
+
+    def dispatcher_at(position: int) -> bool:
+        if position < 0 or position + 0x66 > len(image):
+            return False
+        words = struct.unpack_from("<51H", image, position)
+        entry = words[0x12]
+        target = (position + 0x28 + ((entry & 0x7FF) << 1)
+                  - (0x1000 if entry & 0x400 else 0))
+        return (
+            words[:3] == (0xB5F0, 0x1C05, 0x1C0F)
+            and words[3] & 0xF800 == 0xF000
+            and words[4] & 0xF800 == 0xF800
+            and words[5:7] == (0x1C04, 0x2F00)
+            and words[7] & 0xF800 == 0x4800
+            and words[8:10] == (0xD100, 0x1C37)
+            and thumb_literal_value(image, position + 0x14, 1) == table + 0x7C
+            and entry & 0xF800 == 0xE000
+            and target == position + 0x64
+            and words[0x32] == 0x6187
+        )
+
+    registrations: list[tuple[int, int, int]] = []
+    offset = 0
+    while (offset := image.find(b"\x49", offset)) >= 0:
+        position = offset - 1
+        offset += 1
+        if position < 0 or position & 1 or position >= len(image) - 8:
+            continue
+        callback = thumb_literal_value(image, position, 1)
+        if (callback is None or not callback & 1
+                or struct.unpack_from("<H", image, position + 2)[0] != 0x2000):
+            continue
+        dispatcher = thumb_bl_target(image, position + 4)
+        if dispatcher is not None and dispatcher_at(dispatcher):
+            registrations.append((position, callback & ~1, dispatcher))
+    if not registrations or len({item[1] for item in registrations}) != 1 \
+            or len({item[2] for item in registrations}) != 1:
+        return rejected("selector0-registration-not-unique",
+                        descriptor_file_offset=descriptor, mask_shadow=shadow,
+                        registration_count=len(registrations))
+    registration, callback, dispatcher = registrations[0]
+
+    # The registered callback itself, not an unrelated global call, advances
+    # the same active timer list by five units.
+    def walker_at(position: int) -> bool:
+        if position < 0 or position + 0x24 > len(image):
+            return False
+        words = struct.unpack_from("<18H", image, position)
+        return (
+            words[:3] == (0xB5F8, 0x1C0C, 0x1C07)
+            and words[3] & 0xF800 == 0xF000
+            and words[4] & 0xF800 == 0xF800
+            and words[5:8] == (0x9000, 0x6878, 0x2800)
+            and words[8] & 0xFF00 == 0xD000
+            and words[9:12] == (0x6881, 0x1B09, 0x6081)
+            and words[12] & 0xF800 == 0xE000
+            and words[13:] == (0x6878, 0x1C04, 0x6900, 0x68A1, 0x1A45)
+        )
+
+    delta_call = callback + 0x32
+    walker = (
+        thumb_bl_target(image, delta_call)
+        if callback + 0x36 <= len(image) else None
+    )
+    if (callback + 0x36 > len(image)
+            or struct.unpack_from("<H", image, callback)[0] != 0xB590
+            or struct.unpack_from("<H", image, callback + 0x30)[0] != 0x2105
+            or walker is None or not walker_at(walker)):
+        walker_count = sum(
+            walker_at(position)
+            for position in range(0, len(image) - 0x24 + 1, 2)
+        )
+        return rejected("callback-delta5-walker-not-closed",
+                        descriptor_file_offset=descriptor, mask_shadow=shadow,
+                        callback_file_offset=callback, walker_count=walker_count)
+    clients: list[int] = []
+    client_prefix = struct.pack("<4H", 0x2201, 0x9200, 0x2219, 0x2319)
+    offset = 0
+    while (offset := image.find(client_prefix, offset)) >= 0:
+        position = offset
+        offset += 1
+        if (not position & 1 and position < len(image) - 14
+                and any(thumb_bl_target(image, call) is not None
+                        for call in range(position + 8, position + 14, 2))):
+            clients.append(position)
+    if len(clients) != 1:
+        return rejected("periodic-25-client-not-unique",
+                        descriptor_file_offset=descriptor, mask_shadow=shadow,
+                        periodic_25_count=len(clients))
+    wrapper, handler_slot = wrappers[0]
+    return {
+        "signature": "static-c40-selector0-delta5-controller-v1",
+        "accepted": True, "active": False, "promotion": "telemetry-only",
+        "semantic_limit": limit,
+        "controller_class": "c40-two-bank-selector0-delta5-v1",
+        "descriptor_file_offset": descriptor, "mask_shadow": shadow,
+        "status_banks": (status, status + 4), "enable_banks": (enable, enable + 4),
+        "mask": mask, "selector": 0, "callback_slot": callback_slot,
+        "descriptor_table": table, "registration_file_offset": registration,
+        "dispatcher_file_offset": dispatcher, "callback_file_offset": callback,
+        "handler_file_offset": handler, "w1c_file_offset": w1c,
+        "wrapper_file_offset": wrapper, "handler_slot": handler_slot,
+        "vector": 0x18, "vector_target": 0x01380000,
+        "timer_walker_file_offset": walker,
+        "delta5_call_file_offset": delta_call,
+        "periodic_25_client_file_offset": clients[0],
+        "time_tick_control_file_offset": arms[0],
+        "time_tick_control_address": 0x030006E0,
+        "time_tick_arm_value": 2,
+        "time_tick_period_ms": 5,
+    }
 
 
 def legacy_software_timer_advance_at(image: bytes, position: int) -> bool:

@@ -38,9 +38,7 @@ class LCDGeometryTests(unittest.TestCase):
                 raise AssertionError("same geometry must not scan framebuffer")
 
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.config = SimpleNamespace(
-            width=128, height=160, display_geometry_source="external-config"
-        )
+        emulator.config = SimpleNamespace(width=128, height=160)
         emulator.framebuffer = UnscannableFramebuffer()
         emulator._set_display_geometry(128, 160, source="runtime:test")
 
@@ -115,6 +113,13 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_selector_expected = 0
         emulator._lcd_selector_window = None
         emulator._lcd_selector_format = None
+        emulator._lcd_selector_reacquire_index = None
+        emulator._lcd_selector_reacquire_words = []
+        emulator._lcd_selector_reacquire_protocol = "unknown"
+        emulator._lcd_selector_reacquire_replaying = False
+        emulator._lcd_selector_transfers = deque(maxlen=32)
+        emulator._lcd_selector_full_transfers = 0
+        emulator._lcd_selector_partial_transfers = 0
         emulator._lcd_window_rgb565_header = []
         emulator._lcd_window_rgb565_window = None
         emulator._lcd_window_rgb565_pixels = []
@@ -176,6 +181,7 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_028_rgb332_probe = []
         emulator._lcd_028_rgb332_window = (0, 0, 0, 0)
         emulator._lcd_028_rgb332_qualified = False
+        emulator._lcd_028_window_fifo_qualified = False
         emulator._lg_pixels = []
         emulator._lcd_lgfa_window_order = []
         emulator._lcd_lgfa_window = None
@@ -185,6 +191,7 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_split_port_qualified = False
         emulator._lcd_x = [0, width - 1]
         emulator._lcd_y = [0, height - 1]
+        emulator._lcd_window_axis_mask = 0
         emulator._lcd_direct_cursor = [0, 0]
         emulator._lcd_direct_window = [width, height]
         emulator._lcd_direct_origin = [0, 0]
@@ -441,6 +448,62 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.display_frame[offset:offset + 6],
                          bytes((255, 0, 0, 0, 255, 0)))
         self.assertEqual(emulator._lcd_frame_protocol, "selector-rgb565")
+        self.assertEqual(emulator._lcd_selector_telemetry(), {
+            "full_transfers": 0,
+            "partial_transfers": 1,
+            "recent": [{
+                "window": [1, 2, 2, 2],
+                "format": "rgb565",
+                "words": 2,
+                "full_screen": False,
+                "instructions": 0,
+                "frame_sequence": emulator.frame_sequence,
+            }],
+        })
+
+    def test_proven_selector_reacquires_bus_after_parallel_traffic(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        emulator._lcd_selector_full_transfers = 1
+        emulator._lcd_selector_registers[0x0D] = 1
+        emulator._lcd_protocol = "direct"
+        port = (0x02000004, 2)
+        pixels = emulator.config.width * emulator.config.height
+        emulator._lcd_raw_streams[port] = deque([1] * (pixels - 1),
+                                                 maxlen=pixels)
+        emulator._lcd_raw_counts[port] = pixels - 1
+
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0, None)
+        for command in (0x0201, 0x0302, 0x0402, 0x0502, 0x1500, 0x0E00):
+            emulator._lcd_write(None, 0, 0x02000004, 2, command, None)
+        self.assertEqual(emulator._lcd_protocol, "direct")
+        self.assertEqual(emulator._lcd_selector_expected, 0)
+        self.assertEqual(emulator._lcd_raw_counts[port], pixels - 1)
+        self.assertFalse(emulator._lcd_raw_frames)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 1, None)
+        for pixel in (0xF800, 0x07E0):
+            emulator._lcd_write(None, 0, 0x02000004, 2, pixel, None)
+
+        offset = (2 * 128 + 1) * 3
+        self.assertEqual(
+            emulator.display_frame[offset:offset + 6],
+            bytes((255, 0, 0, 0, 255, 0)),
+        )
+        self.assertEqual(emulator._lcd_frame_protocol, "selector-rgb565")
+        self.assertFalse(emulator._lcd_raw_frames)
+
+    def test_proven_selector_does_not_capture_parallel_zero_command(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        emulator._lcd_selector_full_transfers = 1
+        emulator._lcd_protocol = "parallel-2"
+
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0, None)
+        emulator._lcd_write(None, 0, 0x02000004, 2, 0x1234, None)
+
+        self.assertEqual(emulator._lcd_protocol, "parallel-2")
+        self.assertIsNone(emulator._lcd_selector_reacquire_index)
+        self.assertEqual(
+            emulator._lcd_raw_counts[(0x02000004, 2)], 1
+        )
 
     def test_byte_window_rgb565_requires_exact_large_rectangle(self) -> None:
         emulator = self._routing_emulator(width=176, height=220)

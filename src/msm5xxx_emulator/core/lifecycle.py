@@ -17,8 +17,10 @@ from .errors import HostBackendFault
 from ..detection.boot import BUSY_DELAY_SIGNATURE
 from ..detection.boot import BUSY_DELAY_SIGNATURES
 from ..detection.boot import DELAY_SIGNATURE
+from ..detection.boot import DMD_DOWNLOAD_5500_SIZE
 from ..detection.boot import absent_optional_ram_probe_addresses
 from ..detection.boot import busy_delay_addresses
+from ..detection.boot import is_dmd_download_5500
 from ..detection.display import detect_lcd_width_hint
 from ..detection.firmware import ADDRESS_SPACE
 from ..detection.firmware import MAX_FLASH_SIZE
@@ -29,6 +31,7 @@ from ..detection.memory_layout import restore_sparse_nor_gap
 from ..detection.storage import flash_id_for_size
 from ..detection.storage import fujitsu_x16_flash_ids
 from ..detection.storage import qualcomm_efs_seed
+from ..devices.audio_lle import AudioTransport
 from ..devices.storage.nor import NORFlash
 from pathlib import Path
 from ..state_io import exclusive_path_lock
@@ -57,7 +60,7 @@ import logging
 LOGGER = logging.getLogger("msm5xxx")
 
 try:
-    from e170_gm_audio import ApproximateSmafPlayer
+    from ..e170_gm_audio import ApproximateSmafPlayer
 except ImportError:
     ApproximateSmafPlayer = None
 
@@ -85,6 +88,7 @@ class LifecycleMixin:
             config, secondary_base, ram_end, ram_seed
         )
         self._init_runtime_state(ram_seed)
+        self._init_sbi_state(config)
         self._init_display_capture_state(config)
         self._init_nand_state(config)
         self._init_display_protocol_state(config)
@@ -166,6 +170,21 @@ class LifecycleMixin:
             raise ValueError("secondary flash state path is empty")
         if config.upper_flash_address is not None and not config.upper_flash_state:
             raise ValueError("upper flash state path is empty")
+        eeprom_static_capacity = getattr(
+            config, "eeprom_static_capacity", None
+        )
+        if eeprom_static_capacity is not None:
+            if eeprom_static_capacity != 0x2000:
+                raise ValueError("unsupported static EEPROM capacity")
+            if config.eeprom_geometry_address is not None:
+                raise ValueError(
+                    "static EEPROM capacity conflicts with geometry descriptor"
+                )
+            if (config.eeprom_read_address is None
+                    or config.eeprom_write_address is None):
+                raise ValueError(
+                    "static EEPROM capacity requires read and write entries"
+                )
         return flash_end, ram_end, secondary_base
 
     def _prepare_state_paths(
@@ -181,10 +200,15 @@ class LifecycleMixin:
             ))
         if config.upper_flash_address is not None:
             config.upper_flash_state = str(resolved_path(config.upper_flash_state))
+        static_capacity = getattr(config, "eeprom_static_capacity", None)
         eeprom_enabled = (
-            config.eeprom_geometry_address is not None
-            and (config.eeprom_read_address is not None
-                 or config.eeprom_write_address is not None)
+            (config.eeprom_geometry_address is not None
+             and (config.eeprom_read_address is not None
+                  or config.eeprom_write_address is not None))
+            or (static_capacity == 0x2000
+                and config.eeprom_geometry_address is None
+                and config.eeprom_read_address is not None
+                and config.eeprom_write_address is not None)
         )
         eeprom_state_path = resolved_path(config.flash_state + ".eeprom.bin")
         persistent_outputs = [
@@ -551,7 +575,23 @@ class LifecycleMixin:
         self._rex_tick_context: tuple[tuple[int, int], ...] | None = None
         self._rex_irq_pending = [0, 0]
         self._rex_irq_controller_aperture: tuple[int, int] | None = None
+        self._rex_candidate_route: dict[str, object] | None = None
+        self._rex_candidate_shadow_hooks: list[int] = []
+        self._rex_candidate_gate_terminal = False
+        self._rex_candidate_gate_next_instruction = 0
+        self.rex_controller_gate_attempts = 0
+        self.rex_controller_gate_accepts = 0
+        self.rex_controller_gate_reason: str | None = None
+        self.rex_controller_activation_instruction: int | None = None
+        self.rex_controller_pending_assertions = 0
+        self.rex_controller_pending_acks = 0
         self.rex_irq_deliveries = 0
+        self._rex_irq_arm_required = False
+        self._rex_irq_armed = True
+        self.rex_irq_arm_writes = 0
+        self.rex_irq_arm_accepts = 0
+        self.rex_irq_arm_last_value: int | None = None
+        self.rex_irq_arm_instruction: int | None = None
         self.board_adc_reads = 0
         self._board_adc_reader_channel: int | None = None
         self._board_adc_reader_layout_cache: tuple[bytes | None, int | None] | None = None
@@ -643,6 +683,15 @@ class LifecycleMixin:
         self._lcd_selector_expected = 0
         self._lcd_selector_window: tuple[int, int, int, int] | None = None
         self._lcd_selector_format: str | None = None
+        self._lcd_selector_reacquire_index: int | None = None
+        self._lcd_selector_reacquire_words: list[int] = []
+        self._lcd_selector_reacquire_protocol = "unknown"
+        self._lcd_selector_reacquire_replaying = False
+        self._lcd_selector_transfers: deque[dict[str, object]] = deque(
+            maxlen=32
+        )
+        self._lcd_selector_full_transfers = 0
+        self._lcd_selector_partial_transfers = 0
         # An early 12-bit controller addresses one horizontal run with the
         # exact 0x03=x, 0x05=y, 0x0B=pixels command sequence.
         self._lcd_bgr444_command: int | None = None
@@ -716,6 +765,7 @@ class LifecycleMixin:
         self._lcd_args: list[int] = []
         self._lcd_x = [0, config.width - 1]
         self._lcd_y = [0, config.height - 1]
+        self._lcd_window_axis_mask = 0
         self._lcd_cursor = [0, 0]
         self._lcd_expected = 0
         self._lcd_streamed = 0
@@ -736,6 +786,7 @@ class LifecycleMixin:
         self._lcd_028_rgb332_probe: list[tuple[int, int, int]] = []
         self._lcd_028_rgb332_window = (0, 0, 0, 0)
         self._lcd_028_rgb332_qualified = False
+        self._lcd_028_window_fifo_qualified = False
         # Some byte-wide controllers send complete 128-pixel RGB565 rows as
         # 0/base-command/+2-high/+2-low packets.  Hold only this exact
         # grammar; a mismatch is replayed through the established decoders.
@@ -810,6 +861,7 @@ class LifecycleMixin:
 
     def _init_audio_state(self) -> None:
         self.audio_player = ApproximateSmafPlayer() if ApproximateSmafPlayer is not None else None
+        self.audio_transport = AudioTransport(self.config.audio_transport)
         self.audio_play_requests = 0
         self.audio_last_size = 0
         self.ma2_silent_boot_calls = 0
@@ -822,9 +874,20 @@ class LifecycleMixin:
             eeprom_enabled: bool) -> None:
         self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, self._unmapped)
         self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x03000000, end=0x03FFFFFF)
+        self._install_sbi_hooks()
         if self.upper_flash is None:
             self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x02800000, end=0x02800FFF)
             self.uc.hook_add(UC_HOOK_MEM_READ, self._read, begin=0x02C00000, end=0x02C00FFF)
+        if self.audio_transport.static_status == "accepted":
+            audio_end = self.audio_transport.base + self.audio_transport.data_offset
+            self.uc.hook_add(
+                UC_HOOK_MEM_WRITE, self._audio_transport_write,
+                begin=self.audio_transport.base, end=audio_end,
+            )
+            self.uc.hook_add(
+                UC_HOOK_MEM_READ, self._audio_transport_read,
+                begin=self.audio_transport.base, end=audio_end,
+            )
         flash_end = config.load_address + len(self.image)
         open_bus_exclusions = [
             *NAND_MMIO_RANGES,
@@ -998,6 +1061,7 @@ class LifecycleMixin:
                 UC_HOOK_MEM_READ, self._rex_irq_status_read,
                 begin=int(aperture[0]), end=int(aperture[1]) - 1,
             )
+        self._install_rex_irq_arm_hook(config)
         if config.board_adc_address is not None:
             self.uc.hook_add(UC_HOOK_CODE, self._board_adc,
                              begin=config.board_adc_address, end=config.board_adc_address)
@@ -1012,9 +1076,27 @@ class LifecycleMixin:
             self.uc.hook_add(UC_HOOK_CODE, self._crc16_fast,
                              begin=config.crc16_address, end=config.crc16_address)
         if config.dmd_download_address is not None:
-            self.uc.hook_add(UC_HOOK_CODE, self._dmd_download_fast,
-                             begin=config.dmd_download_address,
-                             end=config.dmd_download_address)
+            routine = (
+                self._original_runtime_bytes(
+                    config.dmd_download_address, DMD_DOWNLOAD_5500_SIZE
+                )
+                or b""
+            )
+            if is_dmd_download_5500(routine):
+                self._dmd_5500_pending = False
+                self.uc.hook_add(
+                    UC_HOOK_MEM_WRITE, self._dmd_5500_start,
+                    begin=0x030F0124, end=0x030F0125,
+                )
+                self.uc.hook_add(
+                    UC_HOOK_CODE, self._dmd_5500_complete,
+                    begin=config.dmd_download_address + 0x32,
+                    end=config.dmd_download_address + 0x32,
+                )
+            else:
+                self.uc.hook_add(UC_HOOK_CODE, self._dmd_download_fast,
+                                 begin=config.dmd_download_address,
+                                 end=config.dmd_download_address)
         for address in config.memory_clear_addresses:
             self.uc.hook_add(UC_HOOK_CODE, self._fast_memory_clear,
                              begin=address, end=address)

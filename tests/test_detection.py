@@ -12,6 +12,12 @@ from unittest.mock import patch
 
 import condition_report
 from msm5xxx_emulator.detection.memory_layout import infer_ram_base
+from msm5xxx_emulator.detection.storage import (
+    EEPROM_24LC64_CLASS_B_BOUND,
+    EEPROM_24LC64_CLASS_B_READ_PREFIX,
+    EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+    find_24lc64_class_b_driver,
+)
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
@@ -225,10 +231,13 @@ class DetectionTests(unittest.TestCase):
 
         self.assertIsNone(config.board_revision_register)
         self.assertIsNone(config.board_revision_value)
-        self.assertIn(
-            "MSM revision marker + 0x03000740 found; automatic register/value rejected "
-            "without verified MMIO readback", config.detection_notes,
-        )
+        self.assertTrue(any(
+            note.startswith(
+                "MSM revision marker + 0x03000740 found; automatic register/value "
+                "rejected without closed consumer class"
+            )
+            for note in config.detection_notes
+        ))
         self.assertEqual(explicit.board_revision_register, 0x0300075C)
         self.assertEqual(explicit.board_revision_value, 0x20F2)
 
@@ -620,6 +629,69 @@ class DetectionTests(unittest.TestCase):
         broken = bytearray(image)
         struct.pack_into("<2H", broken, call, 0xF000, 0xF800)
         self.assertIsNone(find_24lcxx_driver(bytes(broken)))
+
+    def test_24lc64_class_b_requires_unique_pair_marker_and_bounds(self) -> None:
+        image = bytearray(b"\xff" * 0x3000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", image, offset, 0xEA000000)
+        write = 0x100
+        read = 0x800
+        image[write:write + len(EEPROM_24LC64_CLASS_B_WRITE_PREFIX)] = (
+            EEPROM_24LC64_CLASS_B_WRITE_PREFIX
+        )
+        image[read:read + len(EEPROM_24LC64_CLASS_B_READ_PREFIX)] = (
+            EEPROM_24LC64_CLASS_B_READ_PREFIX
+        )
+        image[0x2F00:0x2F0B] = b"nv24lcxx.c\0"
+
+        self.assertEqual(
+            find_24lc64_class_b_driver(bytes(image)),
+            (read, write, 0x2000),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "class-b.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware)
+        self.assertEqual(config.eeprom_read_address, read)
+        self.assertEqual(config.eeprom_write_address, write)
+        self.assertEqual(config.eeprom_static_capacity, 0x2000)
+        self.assertIsNone(config.eeprom_geometry_address)
+
+        mutations = {
+            "duplicate marker": (0x2E00, b"NV24LCXX.C\0"),
+            "duplicate read": (0x1000, EEPROM_24LC64_CLASS_B_READ_PREFIX),
+            "duplicate write": (0x1800, EEPROM_24LC64_CLASS_B_WRITE_PREFIX),
+            "read bound": (read + 6, b"\0" * len(EEPROM_24LC64_CLASS_B_BOUND)),
+            "write bound": (write + 4, b"\0" * len(EEPROM_24LC64_CLASS_B_BOUND)),
+        }
+        for label, (position, replacement) in mutations.items():
+            with self.subTest(label=label):
+                broken = bytearray(image)
+                broken[position:position + len(replacement)] = replacement
+                self.assertIsNone(find_24lc64_class_b_driver(bytes(broken)))
+
+        odd = bytearray(image)
+        odd[read:read + len(EEPROM_24LC64_CLASS_B_READ_PREFIX) + 1] = (
+            b"\xff" * (len(EEPROM_24LC64_CLASS_B_READ_PREFIX) + 1)
+        )
+        odd[read + 1:read + 1 + len(EEPROM_24LC64_CLASS_B_READ_PREFIX)] = (
+            EEPROM_24LC64_CLASS_B_READ_PREFIX
+        )
+        self.assertIsNone(find_24lc64_class_b_driver(bytes(odd)))
+
+        near_match = bytearray(image)
+        near_match[read + 6] = 0
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "class-b-near-match.bin"
+            firmware.write_bytes(near_match)
+            rejected = detect(firmware)
+        self.assertIsNone(rejected.eeprom_static_capacity)
+        self.assertTrue(any(
+            note.startswith(
+                "24LC64 static-capacity EEPROM candidate rejected:"
+            )
+            for note in rejected.detection_notes
+        ))
 
     def test_24lcxx_x430_variant_requires_unique_pair_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x1800)

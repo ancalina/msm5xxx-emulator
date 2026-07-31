@@ -4,7 +4,8 @@ from __future__ import annotations
 import re
 import struct
 
-from .arm import arm_vector_score, thumb_bl_target
+from .arm import arm_vector_score, thumb_bl_target, thumb_literal_value
+from .boot import FLASH_ID_SIGNATURE
 from .signatures import find_all
 
 
@@ -53,6 +54,14 @@ EEPROM_24LC64_CLASS_A_READ_PREFIX = bytes.fromhex(
 EEPROM_24LC64_CLASS_A_SENTINEL = bytes.fromhex(
     "0649aa200f396118c873f0bc08bc1847"
 )
+# Older 8 KiB transport with capacity encoded directly in both entry guards.
+EEPROM_24LC64_CLASS_B_WRITE_PREFIX = bytes.fromhex(
+    "f7b5151c01235b03994283b0f64e02dbb078012802d100200f1c04e0f34af078"
+)
+EEPROM_24LC64_CLASS_B_READ_PREFIX = bytes.fromhex(
+    "f0b5141c051c01235b039942f74a02db9078012802d100260f1c04e0f448d678"
+)
+EEPROM_24LC64_CLASS_B_BOUND = bytes.fromhex("01235b039942")
 # Exact ADS variant observed at the X430/VE21 24LC256 transport entries.  The
 # short prefixes alone are never enough to enable HLE; find_24lcxx_driver()
 # also requires the unique marker, initializer, and three matching literals.
@@ -98,6 +107,96 @@ FLASH_IDS_BY_SIZE = {
     0x400000: 0x22500001,  # AMD AM29DL323DT
     0x800000: 0x227E0001,  # AMD AM29DL640G
 }
+
+FS_DEVICE_LOOKUP_TAIL = bytes.fromhex(
+    "07e080310a89498909041143b94203d0043001680029f4d1006890bd"
+)
+FS_DEVICE_OUTER_RESET = bytes.fromhex("002727606760")
+FS_DEVICE_LOOKUP_PREFIX = bytes.fromhex(
+    "90b5104810494069096840004718"
+)
+
+
+def find_fs_device_flash_id(
+        image: bytes, flash_id_address: int | None) -> int | None:
+    """Return the uniquely linked fs_dev NOR descriptor ID."""
+    signature_sites = find_all(image, FLASH_ID_SIGNATURE)
+    if flash_id_address is None or len(signature_sites) != 1:
+        return None
+    signature_site = signature_sites[0]
+    tails = find_all(image, FS_DEVICE_LOOKUP_TAIL)
+    if len(tails) != 1:
+        return None
+    lookup = tails[0] - 0x28
+    if (lookup < 0 or lookup & 1 or lookup + 0x54 > len(image)
+            or image[lookup:lookup + 0xE] != FS_DEVICE_LOOKUP_PREFIX
+            or image[lookup + 0x12:lookup + 0x18]
+            != bytes.fromhex("041c381c0d49")
+            or image[lookup + 0x1C:lookup + 0x22]
+            != bytes.fromhex("071c002c01d1")):
+        return None
+
+    descriptor = thumb_literal_value(image, lookup + 2, 0)
+    module_base = thumb_literal_value(image, lookup + 4, 1)
+    trampoline = thumb_literal_value(image, lookup + 0x16, 1)
+    table = thumb_literal_value(image, lookup + 0x26, 0)
+    if any(value is None for value in (
+            descriptor, module_base, trampoline, table)):
+        return None
+    assert descriptor is not None and module_base is not None
+    assert trampoline is not None and table is not None
+    veneer = thumb_bl_target(image, lookup + 0x18)
+    if (thumb_bl_target(image, lookup + 0x0E) is None
+            or veneer is None or not 0 <= veneer <= len(image) - 2
+            or image[veneer:veneer + 2] != b"\x08\x47"
+            or thumb_bl_target(image, lookup + 0x22) is None
+            or not 0x01000000 <= module_base < 0x02000000
+            or not 0x01000000 <= table < 0x02000000
+            or trampoline != table + 9
+            or trampoline & ~1 != flash_id_address
+            or len(find_all(image, struct.pack("<I", table))) != 1
+            or len(find_all(image, struct.pack("<I", trampoline))) != 1):
+        return None
+
+    entry = descriptor - 0x80
+    if (entry < 0 or descriptor + 0x1C > len(image)
+            or signature_site < 8
+            or struct.unpack_from("<2I", image, signature_site - 8)
+            != (entry, 0)):
+        return None
+    sector_count = struct.unpack_from("<I", image, entry + 4)[0]
+    if not 1 <= sector_count <= (0x80 - 8) // 4:
+        return None
+    sector_end = entry + 8 + sector_count * 4
+    if sector_end > descriptor:
+        return None
+    sectors = struct.unpack_from(f"<{sector_count}I", image, entry + 8)
+    device_id = struct.unpack_from("<I", image, descriptor + 8)[0]
+    banks = struct.unpack_from("<I", image, descriptor + 0x10)[0]
+    base_words = struct.unpack_from("<I", image, descriptor + 0x14)[0]
+    usable_words = struct.unpack_from("<I", image, descriptor + 0x18)[0]
+    manufacturer, device = device_id & 0xFFFF, device_id >> 16
+    if (manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)
+            or banks != 1 or base_words == 0 or usable_words == 0
+            or (base_words * 2) & (PAGE - 1)
+            or any(size < PAGE or size > 0x100000 or size & (PAGE - 1)
+                   for size in sectors)
+            or sum(sectors) != usable_words * 2):
+        return None
+
+    outers = []
+    for reset in find_all(image, FS_DEVICE_OUTER_RESET):
+        outer = reset - 4
+        if (outer >= 0
+                and image[outer:outer + 4] == b"\x90\xb5\x08\x4c"
+                and thumb_literal_value(image, outer + 2, 4) == module_base
+                and thumb_bl_target(image, outer + 10) == lookup
+                and image[outer + 0xE:outer + 0x12]
+                == b"\x60\x60\x00\x28"
+                and struct.unpack_from("<H", image, outer + 0x12)[0] & 0xFF00
+                == 0xD100):
+            outers.append(outer)
+    return device_id if len(outers) == 1 else None
 
 
 def flash_id_for_size(size: int) -> int | None:
@@ -180,6 +279,22 @@ def find_24lc64_class_a_driver(image: bytes) -> tuple[int, int, int] | None:
                     and literal == geometry):
                 bindings.append(geometry)
     return (read, write, bindings[0]) if len(bindings) == 1 else None
+
+
+def find_24lc64_class_b_driver(image: bytes) -> tuple[int, int, int] | None:
+    """Return the unique static-capacity 8 KiB transport class."""
+    writes = find_all(image, EEPROM_24LC64_CLASS_B_WRITE_PREFIX)
+    reads = find_all(image, EEPROM_24LC64_CLASS_B_READ_PREFIX)
+    if len(writes) != 1 or len(reads) != 1:
+        return None
+    if len(find_all(image.lower(), b"nv24lcxx.c\0")) != 1:
+        return None
+    write, read = writes[0], reads[0]
+    if (write & 1 or read & 1
+            or image[write + 4:write + 10] != EEPROM_24LC64_CLASS_B_BOUND
+            or image[read + 6:read + 12] != EEPROM_24LC64_CLASS_B_BOUND):
+        return None
+    return read, write, 0x2000
 
 
 def _eeprom_24lcxx_variant_geometry_at(image: bytes, position: int,

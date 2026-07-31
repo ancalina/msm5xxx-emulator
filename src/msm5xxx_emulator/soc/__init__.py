@@ -2,9 +2,10 @@
 
 from .adc import AdcMixin
 from .rex import RexMixin
+from .sbi import SbiMixin
 
 
-class SocMixin(RexMixin, AdcMixin):
+class SocMixin(RexMixin, AdcMixin, SbiMixin):
     """Complete SoC peripheral behavior."""
 
 

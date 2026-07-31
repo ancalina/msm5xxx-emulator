@@ -273,6 +273,12 @@ class MemoryBusMixin:
         register, reset_value = user_data
         response = reset_value
         direct = getattr(self, "direct_input_profile", None)
+        if (register == 0x03000694
+                and (direct is None
+                     or int(direct.get("register", -1)) != register)):
+            # Preserve guest/device state unless an exact matrix profile owns
+            # this sense register. It is not a fixed status latch.
+            return
         if (direct is not None
                 and direct.get("family") == LG_DESCRIPTOR_RAW
                 and register == int(direct["register"])
@@ -338,6 +344,13 @@ class MemoryBusMixin:
         upper = getattr(self.config, "upper_flash_address", None)
         if upper is not None:
             protected += ((upper, upper + self.config.upper_flash_size),)
+        sbi_aperture = getattr(self, "_sbi_poll_aperture", None)
+        if sbi_aperture is not None:
+            protected += (sbi_aperture,)
+        audio_transport = getattr(self, "audio_transport", None)
+        if getattr(audio_transport, "static_status", None) == "accepted":
+            protected += ((audio_transport.base,
+                           audio_transport.base + audio_transport.data_offset + 1),)
         status = getattr(self.config, "rex_irq_status_address", None)
         if status is not None:
             enable = getattr(self.config, "rex_irq_enable_address", None)

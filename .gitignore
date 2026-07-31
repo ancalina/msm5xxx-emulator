@@ -29,5 +29,6 @@ reports/
 *.dump
 *.img
 *.sf2
+!src/msm5xxx_emulator/gm.sf2
 *.idb
 *.i64

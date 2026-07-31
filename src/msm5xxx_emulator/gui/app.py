@@ -64,7 +64,8 @@ LAST_CONFIG = STATE_ROOT / "last_config.json"
 
 
 class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
-    def __init__(self, root: tk.Tk, firmware: Path) -> None:
+    def __init__(self, root: tk.Tk, firmware: Path, *,
+                 experimental_c80_controller: bool = False) -> None:
         LOGGER.info("window create firmware=%s build=%s", firmware.name, BUILD_CODENAME)
         self.root = root
         self.root.minsize(360, 640)
@@ -72,6 +73,8 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
         self.ui_language_preference = self._load_ui_language()
         self.ui_language = resolve_ui_language(self.ui_language_preference)
         self.overrides = self._load_config()
+        if experimental_c80_controller:
+            self.overrides["rex_static_controller_experimental"] = True
         self.emulator: GenericMSMEmulator | None = None
         self.worker: threading.Thread | None = None
         self.stop = threading.Event()
@@ -303,6 +306,11 @@ def main() -> int:
     session_log = install_runtime_logging("gui")
     parser = argparse.ArgumentParser()
     parser.add_argument("firmware", nargs="?", type=Path)
+    parser.add_argument(
+        "--experimental-c80-controller",
+        action="store_true",
+        help="enable the single-witness experimental C80 timer/IRQ profile",
+    )
     args = parser.parse_args()
     firmware = args.firmware
     if firmware is None:
@@ -325,7 +333,10 @@ def main() -> int:
         sys.__excepthook__(error_type, error, trace)
 
     root.report_callback_exception = callback_exception
-    window = Window(root, firmware.resolve())
+    window = Window(
+        root, firmware.resolve(),
+        experimental_c80_controller=args.experimental_c80_controller,
+    )
     LOGGER.info("GUI mainloop start firmware=%s log=%s", firmware.name, session_log.name)
 
     def close_from_signal(_number: int, _frame: object) -> None:

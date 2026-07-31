@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from unicorn.arm_const import UC_ARM_REG_CPSR
+from unicorn.arm_const import UC_ARM_REG_PC
 from unicorn.arm_const import UC_ARM_REG_R1
 from unicorn.arm_const import UC_ARM_REG_R2
 from unicorn import UC_HOOK_CODE
@@ -10,6 +11,63 @@ from unicorn import UcError
 
 
 class AudioMixin:
+    def _audio_transport_owns_write(
+            self, uc: Uc | None, address: int, size: int) -> bool:
+        transport = getattr(self, "audio_transport", None)
+        if (uc is None or transport is None
+                or transport.static_status != "accepted"
+                or size != 1
+                or not transport.base <= address
+                <= transport.base + transport.data_offset):
+            return False
+        pc = uc.reg_read(UC_ARM_REG_PC) & ~1
+        return transport.owns_write(pc, address, size)
+
+    def _audio_transport_telemetry(
+            self, *, include_events: bool = True) -> dict[str, object]:
+        transport = getattr(self, "audio_transport", None)
+        if transport is None:
+            return {
+                "family": "unknown", "grammar": None,
+                "static_status": "not-detected",
+                "runtime_status": "not-detected",
+                "reject_reason": "not-initialized", "counts": {},
+            }
+        return transport.telemetry(include_events=include_events)
+
+    def _audio_transport_write(
+            self, uc: Uc, access: int, address: int, size: int,
+            value: int, user_data: object) -> None:
+        pc = uc.reg_read(UC_ARM_REG_PC) & ~1
+        self.audio_transport.write(pc, address, size, value)
+
+    def _audio_transport_read(
+            self, uc: Uc, access: int, address: int, size: int,
+            value: int, user_data: object) -> None:
+        pc = uc.reg_read(UC_ARM_REG_PC) & ~1
+        self.audio_transport.read(pc, address, size)
+
+    def _flush_audio_transport_renderer(self) -> None:
+        transport = getattr(self, "audio_transport", None)
+        if transport is None:
+            return
+        snapshots = transport.drain_renderer_snapshots()
+        if not snapshots:
+            return
+        player = getattr(self, "audio_player", None)
+        if getattr(self, "fault", None) is not None:
+            transport.renderer_submission(False, "guest-fault")
+        elif player is None or not hasattr(player, "play_ma2_snapshots"):
+            transport.renderer_submission(False, "host-player-unavailable")
+        else:
+            accepted = bool(player.play_ma2_snapshots(snapshots))
+            transport.renderer_submission(
+                accepted,
+                None if accepted else getattr(
+                    player, "last_submit_error", None
+                ),
+            )
+
     def _audio_play(self, uc: Uc, address: int, size: int,
                     user_data: object) -> None:
         self._play_mmf_arguments(uc)

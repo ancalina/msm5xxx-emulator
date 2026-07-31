@@ -11,6 +11,7 @@ import struct
 from ..core.config import FirmwareConfig
 
 from .arm import arm_vector_score
+from .audio import find_audio_transport
 from .boot import (
     AUDIO_PLAY_SIGNATURE, BOARD_ADC_SIGNATURE, BUSY_DELAY_SIGNATURE,
     CRC16_SIGNATURE, DELAY_SIGNATURE, DMD_DOWNLOAD_510X_SIGNATURE,
@@ -19,9 +20,12 @@ from .boot import (
     LEGACY_SECONDARY_FLASH_WRITE_SIGNATURE, MEMORY_CLEAR_128_SIGNATURE,
     MEMORY_CLEAR_LOOP_SIGNATURE, MEMORY_COPY_LOOP_SIGNATURE,
     NAND_BAD_BLOCK_SIGNATURE, NAND_READ_SIGNATURE, NAND_WRITE_SIGNATURE,
+    MSM5500_REVISION_BLOCK, MSM5500_REVISION_F025_RAW,
+    MSM5500_REVISION_REGISTER,
     PRIMARY_FLASH_PROBE_SIGNATURE, REGISTER_RAMP_PREFIX,
     SECONDARY_FLASH_WRAPPER_PATTERN, find_ma2_silent_boot_wait,
-    detect_guest_owned_status_72c,
+    detect_dmd_download_5500, detect_guest_owned_status_72c,
+    detect_msm5500_revision_f025,
 )
 from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout
@@ -37,10 +41,16 @@ from .model import (detect_model, embedded_model_scores,
                     verified_embedded_model)
 from .rex import (REX_TICK_SIGNATURE, find_rex_5ms_irq_arm,
                   find_rex_5ms_irq_route, find_rex_5ms_sleep_timer,
-                  find_rex_idle_address)
+                  find_rex_idle_address,
+                  find_rex_static_c40_controller_observation,
+                  find_rex_static_controller_callback_candidate)
 from .signatures import find_all
-from .storage import (find_24lcxx_driver, find_compound_fujitsu_layout,
-                      find_fujitsu_x16_bulk_write, flash_id_for_size)
+from .storage import (EEPROM_24LC64_CLASS_B_READ_PREFIX,
+                      EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+                      find_24lc64_class_b_driver, find_24lcxx_driver,
+                      find_compound_fujitsu_layout,
+                      find_fujitsu_x16_bulk_write, find_fs_device_flash_id,
+                      flash_id_for_size)
 from .upper_nor import UPPER_FLASH_ADDRESS, UPPER_FLASH_SIZE, find_upper_nor
 
 
@@ -71,9 +81,6 @@ DISABLEABLE_ADDRESS_FIELDS = frozenset({
     "framebuffer_address", "framebuffer_flush_address",
     "framebuffer_rect_flush_address",
 })
-
-
-MSM_REVISION_BLOCK = 0x03000740
 
 
 DCC_LOADER_MARKERS = (b"DumpNow DCC Loader.", b"Compile flags:")
@@ -126,7 +133,8 @@ def _apply_overrides(
         required_flash_extent: int, auto_relative: set[str],
         clear_layout: list[tuple[int | None, bool]],
         copy_layout: list[tuple[int | None, bool]],
-        ramp_layout: list[tuple[int | None, bool]]) -> None:
+        ramp_layout: list[tuple[int | None, bool]],
+        descriptor_flash_id: int | None = None) -> None:
     for key in ("model", "chipset", "width", "height",
                 "framebuffer_address", "framebuffer_stride", "framebuffer_format",
                 "framebuffer_flush_address", "framebuffer_rect_flush_address",
@@ -149,7 +157,7 @@ def _apply_overrides(
                 "nand_pages_per_block", "nand_bus_width",
                 "rex_idle_address", "rex_tick_address",
                 "rex_irq_wrapper_address", "rex_irq_arm_address",
-                "rex_tick_ms",
+                "rex_tick_ms", "rex_static_controller_experimental",
                 "board_adc_address", "board_adc_value",
                 "flash_id_address", "flash_id_value", "crc16_address",
                 "dmd_download_address",
@@ -220,7 +228,11 @@ def _apply_overrides(
         config.secondary_flash_image_offset = None
     if (getattr(overrides, "flash_id_value", None) is None
             and config.flash_id_address is not None):
-        config.flash_id_value = flash_id_for_size(config.flash_size)
+        config.flash_id_value = (
+            descriptor_flash_id
+            if descriptor_flash_id is not None
+            else flash_id_for_size(config.flash_size)
+        )
     if config.load_address:
         for field in auto_relative:
             if getattr(overrides, field, None) is None:
@@ -243,7 +255,8 @@ def _apply_overrides(
 
 def _infer_secondary_nor(
         config: FirmwareConfig, image: bytes,
-        overrides: argparse.Namespace | None) -> None:
+        overrides: argparse.Namespace | None,
+        descriptor_flash_id: int | None = None) -> None:
     # These MSM5500 boards use a second AMD NOR for EFS/NV between boot ROM
     # and SDRAM.  It is not a mirror of the firmware chip.
     secondary_nor_detected = (
@@ -287,6 +300,7 @@ def _infer_secondary_nor(
                 "secondary AMD NOR inferred from MSM5500 8+8 MiB layout and GEFS driver"
             )
     if (config.flash_id_address is not None
+            and descriptor_flash_id is None
             and (overrides is None or getattr(overrides, "flash_id_value", None) is None)):
         detected_size = (config.secondary_flash_size
                          if config.secondary_flash_address not in (None, 0)
@@ -404,13 +418,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     if not 0 <= requested_load_address < ADDRESS_SPACE:
         raise ValueError("load address outside 32-bit address space")
     model_scores = _embedded_model_scores(image)
-    model = detect_model(image, path, model_scores)
+    chipset = detect_chipset(image, "")
+    model = detect_model(image, path, model_scores, chipset)
     verified_model = _verified_embedded_model(image, model_scores)
     if verified_model != model:
         verified_model = None
     override_model = (getattr(overrides, "model", None) if overrides else None)
     hardware_model = override_model or verified_model
-    chipset = detect_chipset(image, hardware_model or "")
     confidence = chipset_confidence(image, chipset)
     vector_score = arm_vector_score(image)
     image_kind = "firmware" if vector_score >= 2 else "data/non-bootable"
@@ -465,6 +479,34 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             raise ValueError("flash size must be positive")
         scan_flash_size = requested_flash_size
     primary_image = image[:min(len(image), scan_flash_size)]
+    rex_static_controller_candidate = (
+        find_rex_static_controller_callback_candidate(primary_image)
+    )
+    rex_static_c40_controller_observation = (
+        find_rex_static_c40_controller_observation(primary_image)
+    )
+    if rex_static_controller_candidate is not None:
+        if rex_static_controller_candidate["accepted"]:
+            detection_notes.append(
+                "static C80 index-0x1E delta-5 controller candidate detected; "
+                "native pending, IRQ, and idle remain unproven"
+            )
+        else:
+            detection_notes.append(
+                "static C80 controller candidate rejected: "
+                f"{rex_static_controller_candidate['reject_reason']}"
+            )
+    if rex_static_c40_controller_observation is not None:
+        if rex_static_c40_controller_observation["accepted"]:
+            detection_notes.append(
+                "static C40 selector-0 delta-5 controller observation detected; "
+                "native pending, cadence, repeat IRQ, and idle remain unproven"
+            )
+        else:
+            detection_notes.append(
+                "static C40 controller observation rejected: "
+                f"{rex_static_c40_controller_observation['reject_reason']}"
+            )
     guest_owned_status_72c, status_72c_note = detect_guest_owned_status_72c(
         primary_image
     )
@@ -532,6 +574,34 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             address += requested_load_address
         return address
 
+    audio_transport = find_audio_transport(primary_image)
+    if audio_transport["static_status"] == "accepted":
+        audio_transport = {
+            **audio_transport,
+            "sites": {
+                kind: [
+                    runtime
+                    for position in positions
+                    if (runtime := mapped_runtime(position)) is not None
+                ]
+                for kind, positions in audio_transport["sites"].items()
+            },
+            "block_write_offsets": [
+                runtime
+                for position in audio_transport["block_write_offsets"]
+                if (runtime := mapped_runtime(position)) is not None
+            ],
+        }
+        detection_notes.append(
+            f"Yamaha {audio_transport['family'].upper()} "
+            f"{audio_transport['grammar']} audio transport detected"
+        )
+    elif audio_transport["static_status"] == "rejected":
+        detection_notes.append(
+            "Yamaha audio transport rejected: "
+            f"{audio_transport['reject_reason']}"
+        )
+
     board_adc_reader_address = (
         runtime_position("board_adc_reader_address", board_adc_reader_position)
         if board_adc_reader_position is not None else None
@@ -597,6 +667,14 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     nand_read_address = runtime_signature("nand_read_address", NAND_READ_SIGNATURE)
     nand_write_address = runtime_signature("nand_write_address", NAND_WRITE_SIGNATURE)
     flash_id_address = runtime_signature("flash_id_address", FLASH_ID_SIGNATURE)
+    descriptor_flash_id = find_fs_device_flash_id(
+        primary_image, flash_id_address
+    )
+    if descriptor_flash_id is not None:
+        detection_notes.append(
+            f"flash ID 0x{descriptor_flash_id:08X} selected from unique "
+            "fs_dev descriptor/table/trampoline linkage"
+        )
     crc16_address = runtime_signature("crc16_address", CRC16_SIGNATURE)
     dmd_download_address = runtime_signature("dmd_download_address",
                                              DMD_DOWNLOAD_SIGNATURE)
@@ -604,6 +682,12 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         dmd_download_address = runtime_signature(
             "dmd_download_address", DMD_DOWNLOAD_510X_SIGNATURE
         )
+    if dmd_download_address is None:
+        dmd_5500_position = detect_dmd_download_5500(primary_image)
+        if dmd_5500_position is not None:
+            dmd_download_address = runtime_position(
+                "dmd_download_address", dmd_5500_position
+            )
     primary_flash_probe_address = runtime_signature(
         "primary_flash_probe_address", PRIMARY_FLASH_PROBE_SIGNATURE
     )
@@ -652,6 +736,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     eeprom_read_address = None
     eeprom_write_address = None
     eeprom_geometry_address = None
+    eeprom_static_capacity = None
     eeprom_driver = find_24lcxx_driver(primary_image)
     if eeprom_driver is not None:
         eeprom_read, eeprom_write, eeprom_geometry_address = eeprom_driver
@@ -664,6 +749,29 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             "24LCxx EEPROM read/write driver and geometry descriptor detected"
         )
+    else:
+        static_eeprom_driver = find_24lc64_class_b_driver(primary_image)
+        if static_eeprom_driver is not None:
+            eeprom_read, eeprom_write, eeprom_static_capacity = (
+                static_eeprom_driver
+            )
+            eeprom_read_address = runtime_position(
+                "eeprom_read_address", eeprom_read
+            )
+            eeprom_write_address = runtime_position(
+                "eeprom_write_address", eeprom_write
+            )
+            detection_notes.append(
+                "24LC64 EEPROM read/write driver and static 0x2000-byte "
+                "capacity guards detected"
+            )
+        elif ((EEPROM_24LC64_CLASS_B_READ_PREFIX[:6] in primary_image
+               or EEPROM_24LC64_CLASS_B_WRITE_PREFIX[:4] in primary_image)
+              and b"nv24lcxx.c\0" in primary_image.lower()):
+            detection_notes.append(
+                "24LC64 static-capacity EEPROM candidate rejected: "
+                "marker, read/write pair, or bound guards are incomplete"
+            )
     clear_positions = [
         *find_all(primary_image, MEMORY_CLEAR_LOOP_SIGNATURE),
         *find_all(primary_image, MEMORY_CLEAR_128_SIGNATURE),
@@ -703,12 +811,19 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         )
     unresolved_msm_revision = (
         b" Unsupported MSM REV " in primary_image
-        and struct.pack("<I", MSM_REVISION_BLOCK) in primary_image
+        and struct.pack("<I", MSM5500_REVISION_BLOCK) in primary_image
     )
-    if unresolved_msm_revision:
+    revision_profile, revision_note = (
+        detect_msm5500_revision_f025(primary_image)
+        if unresolved_msm_revision and scan_chipset == "MSM5500"
+        else (False, "chipset is not MSM5500")
+    )
+    if revision_profile:
+        detection_notes.append(revision_note)
+    elif unresolved_msm_revision:
         detection_notes.append(
             "MSM revision marker + 0x03000740 found; automatic register/value rejected "
-            "without verified MMIO readback"
+            f"without closed consumer class ({revision_note})"
         )
     ram_base = infer_ram_base(linker, chipset, primary_image)
     requested_ram_base = (getattr(overrides, "ram_base", None)
@@ -745,8 +860,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         framebuffer_format=framebuffer_format,
         framebuffer_flush_address=framebuffer_flush_address,
         framebuffer_rect_flush_address=framebuffer_rect_flush_address,
-        board_revision_register=None,
-        board_revision_value=None,
+        board_revision_register=(MSM5500_REVISION_REGISTER
+                                 if revision_profile else None),
+        board_revision_value=(MSM5500_REVISION_F025_RAW
+                              if revision_profile else None),
         board_status_input=board_status_input,
         image_offset=image_offset, load_address=0,
         flash_size=flash_size,
@@ -762,6 +879,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         eeprom_read_address=eeprom_read_address,
         eeprom_write_address=eeprom_write_address,
         eeprom_geometry_address=eeprom_geometry_address,
+        eeprom_static_capacity=eeprom_static_capacity,
         ram_base=ram_base,
         ram_size=0x00800000,
         ram_image_offset=(compound_secondary_offset + compound_secondary_size
@@ -802,8 +920,12 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         board_adc_reader_address=board_adc_reader_address,
         board_adc_value=0xC2,
         flash_id_address=flash_id_address,
-        flash_id_value=(flash_id_for_size(flash_size)
-                        if flash_id_address is not None else None),
+        flash_id_value=(
+            descriptor_flash_id
+            if descriptor_flash_id is not None
+            else (flash_id_for_size(flash_size)
+                  if flash_id_address is not None else None)
+        ),
         crc16_address=crc16_address,
         dmd_download_address=dmd_download_address,
         primary_flash_probe_address=primary_flash_probe_address,
@@ -813,8 +935,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         arm_memory_copy_addresses=arm_memory_copy_addresses,
         flash_state=default_flash_state,
         linker=linker, overlays=overlays, missing_overlays=[], runtime_overlays=[],
+        audio_transport=audio_transport,
         verified_model=hardware_model,
         guest_owned_status_72c=guest_owned_status_72c,
+        rex_static_controller_candidate=rex_static_controller_candidate,
+        rex_static_c40_controller_observation=rex_static_c40_controller_observation,
     )
     if overrides is not None:
         _apply_overrides(
@@ -823,8 +948,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             required_flash_extent=required_flash_extent,
             auto_relative=auto_relative, clear_layout=clear_layout,
             copy_layout=copy_layout, ramp_layout=ramp_layout,
+            descriptor_flash_id=descriptor_flash_id,
         )
-    _infer_secondary_nor(config, image, overrides)
+    _infer_secondary_nor(
+        config, image, overrides, descriptor_flash_id
+    )
     internal_secondary_seed = _configure_state_paths(
         config, path, image, overrides
     )
