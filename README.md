@@ -163,9 +163,6 @@ Track model, chipset, display, input, boot, and runtime results in the
 
 You may also contact Ancalina directly.
 
-Do not submit manufacturer firmware, user state, local paths, or unreviewed
-copyrighted assets.
-
 ## Package
 
 Source checkout is the primary distribution method. Local package installation
