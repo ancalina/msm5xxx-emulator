@@ -2,113 +2,101 @@
 
 [한국어](README.ko.md)
 
-Unicorn-based Qualcomm MSM5000/MSM5100/MSM5500 feature-phone firmware emulator.
-Experimental project. 
-This tree contains no firmware, user state, logs, or screenshots. It includes
-only one audited audio asset: GPL-2.0-only TimGM6mb.
-No project build step is required: extract the GitHub source archive and use the
-platform launcher below.
+Experimental Qualcomm MSM5000/MSM5100/MSM5500 feature-phone firmware emulator
+built on Unicorn.
+
+The project focuses on preservation and reproducible research of undocumented,
+obsolete mobile hardware. It contains no manufacturer firmware, user state,
+logs, or screenshots. The only bundled audio asset is the audited
+GPL-2.0-only TimGM6mb SoundFont.
+
+No build step is required. Clone or extract the source tree and run the platform
+launcher.
 
 ## Run
 
-Python 3.10+ and Tk are required.
+Requirements:
+
+- Python 3.10+
+- Tk
+- Git, or a downloaded source archive
+
+Linux:
 
 ```sh
+git clone https://github.com/ancalina/msm5xxx-emulator.git
+cd msm5xxx-emulator
 sh ./run_linux.sh /path/to/firmware.bin
 ```
 
+Windows:
+
 ```bat
+git clone https://github.com/ancalina/msm5xxx-emulator.git
+cd msm5xxx-emulator
 run_windows.bat C:\path\to\firmware.bin
 ```
 
-The single-witness C80 timer/IRQ profile remains opt-in. Append
-`--experimental-c80-controller` to either launcher command when testing that
-profile.
+The first run may create `.venv` and install `unicorn`, `Pillow`, and `NumPy`.
 
-First launcher run may create `.venv` and install `unicorn`, `Pillow`, and
-`NumPy`.
-Firmware original is read-only. Persistent NOR/EEPROM/NAND state defaults to
-`~/.msm5xxx-emulator/`; set `MSM5XXX_STATE_DIR` and `MSM5XXX_LOG_DIR` to move it.
-On a recognized legacy GEFS seed mismatch, existing persistent MSM5000
-secondary-NOR state is reused in place; its data and path are preserved.
-Diagnostic JSON uses additive `schema: 1`; `runtime.sources` contains path-free
-SHA-256 identities for CLI, GUI, boot probe, and runtime logger modules.
+The single-witness C80 timer/IRQ profile remains opt-in:
 
-Raw binaries, strict Intel HEX (`.hex`), and HXB (`.hxb`) can be selected
-directly. HXB is decoded in memory only when it contains exactly one top-level
-HEX member matching the archive stem. No embedded loader is run and no file is
-extracted; invalid checksum, EOF, address, overlap, or size is rejected.
+```text
+--experimental-c80-controller
+```
 
-When firmware closes the relocatable catalog, address materializer, translator,
-native AMD writer, and caller grammar, an independent 8 MiB NOR is mapped at
-`0x02800000..0x02FFFFFF`. Its state is persisted separately and that range is
-not decoded as LCD traffic. Every incomplete or ambiguous match keeps native
-fallback behavior and records its rejection reason. This storage admission is
-not by itself a handset-idle claim.
+## Project status
 
-Automatic keypad input is enabled only when firmware structure closes an exact
-direct matrix with a recognized queue sink. An LG descriptor 6x5 path is also
-enabled when its legacy 5 ms timer, detector-closed two- or three-bank controller
-route, IRQ wrapper, handler slots, and queue drain all close. Three-bank
-pending/status access is limited to its validated IRQ handler. Detection uses no
-model- or filename-specific rules. Every automatic position is a unique,
-non-filler matrix cell in firmware table order and is explicitly logged as
-experimental: event bytes are never assigned to GUI key labels by a Samsung,
-LG, KEYEMUL, model, or filename map. Unknown transports, ambiguous cells, and
-multi-key input remain disabled.
+The emulator is under active development and does not yet provide complete
+handset emulation.
 
-Right-click any button to override its event byte. Clicking a control with no
-usable automatic cell opens the same editor. `0x53` and log-style hex such as
-`053` or `05f` are accepted only when the value occurs exactly once in the
-detected firmware matrix table;
-`0x00`, `0xFF`, and matrix no-key values are rejected. The emulator drives that
-physical row and column through normal scanner/debounce—it never injects the
-byte into a firmware queue. Mappings are stored per firmware SHA-256; an empty
-value removes the mapping.
+Current work includes:
 
-Every accepted or rejected edge logs requested source, mapping source
-(`automatic-experimental` or `manual`), rule, and
-reason. Accepted edges also record detector family/fingerprint, firmware
-event, row/column, fallback rank, and scanner/queue/task counters. Manual
-mapping edits log their accepted/rejected decision and sanitized requested
-value. These fields distinguish a wrong experimental label from a transport
-failure.
+- ARM firmware execution
+- firmware-derived memory and device detection
+- display and keypad emulation
+- persistent NOR, EEPROM, and NAND state
+- REX, timer, IRQ, and storage research
+- experimental Yamaha MA-2 and MA-5 handling
+- reproducible diagnostics and compatibility tracking
 
-For descriptor input, telemetry distinguishes the scanner-to-enqueue call edge
-from the actual raw-ring store, dequeue return, and task receipt. Fresh numeric
-press/release runs on SV130 and SD810 After reached all four stages without a
-fault. This proves firmware task delivery, not a visible UI response, handset
-idle, or `OK` semantics.
+Detection does not depend on handset model names or firmware filenames.
+Incomplete or ambiguous matches remain disabled or use native fallback
+behavior.
 
-### Experimental audio
+## Firmware and state
 
-Firmware still executes its audio driver. Accepted MA2/MA5 index, data, and
-FIFO writes are observed at detector-closed MMIO sites. This is write-side LLE,
-not a complete sound-chip implementation: device status, FIFO consumption,
-clock, and IRQ remain native.
+Firmware input remains read-only. Persistent state defaults to:
 
-MA2 FIFO snapshots and valid MMF buffers can be rendered to approximate PCM
-with bundled GPL-2.0-only TimGM6mb. MMF parsing and PCM/SoundFont synthesis are
-HLE and do not reproduce exact Yamaha chip output. MA5 remains telemetry-only
-and MA3 remains disabled. Playback uses `ffplay` when available, then Windows
-`winsound`; hosts with neither remain render-only. Audio failure never stops
-guest emulation.
+```text
+~/.msm5xxx-emulator/
+```
 
-### Updates
+Override state and log locations with:
 
-The GUI checks GitHub `main` in the background. When it sees a commit not yet
-seen by this install, it asks before downloading it. Accepting downloads a
-verified copy into `~/.msm5xxx-emulator/updates/`, replaces only manifest-owned
-runtime files in the extracted folder, and restarts the GUI. Firmware and files
-outside the manifest remain untouched; replacing modified distributed source
-requires explicit confirmation. Declining suppresses that commit only; a later
-commit prompts again. Failed/offline checks are silent and do not affect emulation.
+```text
+MSM5XXX_STATE_DIR
+MSM5XXX_LOG_DIR
+```
 
-### Attach a separate NAND dump
+Supported input formats:
 
-A NAND dump is data, not boot firmware. Run its matching NOR dump and attach NAND
-separately. For a RIFF-style raw dump with 16 MiB main data plus 16 spare bytes per
-512-byte page:
+- raw binary
+- strict Intel HEX (`.hex`)
+- HXB (`.hxb`)
+
+HXB files are decoded in memory only when they contain one valid matching HEX
+member. Embedded loaders are never executed.
+
+Diagnostic reports use an additive JSON schema and path-free SHA-256 source
+identities.
+
+## Storage
+
+The emulator can provide persistent NOR, secondary NOR, EEPROM, and NAND state
+when the required firmware structures are detected.
+
+A NAND dump must be attached separately from its matching NOR firmware:
 
 ```sh
 python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
@@ -116,36 +104,72 @@ python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
   --nand-pages-per-block 32 --nand-bus-width 2
 ```
 
-That interleaved main+spare layout is `0x1080000` bytes
-(`32768 × (512 + 16)`). The input dump stays read-only; persistent NAND changes
-are stored separately. Do not guess different geometry—submit its log and size.
+The original dump remains read-only. Persistent changes are stored separately.
+Do not guess unknown NAND geometry; provide the exact dump size and a diagnostic
+log when requesting support.
 
-## Help Improve the Emulator
+## Keypad input
 
-### Community Firmware Status
+Automatic keypad input is enabled only when a supported firmware matrix and
+queue path are detected.
 
-Track firmware model, chipset, display, input, boot, and runtime status in the
+Detection uses firmware structure rather than manufacturer, model, KEYEMUL, or
+filename maps. Unknown transports, ambiguous cells, and unsupported multi-key
+paths remain disabled.
+
+Right-click a GUI button to set a per-firmware manual event-byte mapping. The
+emulator drives the detected physical row and column through the firmware's
+normal scanner path instead of injecting events directly into a queue.
+
+## Experimental audio
+
+Firmware continues to execute its own audio driver.
+
+Current status:
+
+- MA-2: approximate MMF/PCM rendering
+- MA-5: write telemetry only
+- MA-3: disabled
+
+MA-2 FIFO snapshots and valid MMF buffers can be rendered with the bundled
+TimGM6mb SoundFont. Output is approximate and does not reproduce exact Yamaha
+hardware.
+
+Playback uses `ffplay`, then Windows `winsound`. Hosts with neither remain
+render-only. Audio failure does not stop guest emulation.
+
+## Updates
+
+The GUI can check GitHub `main` for updates.
+
+Updates require confirmation, replace only verified manifest-owned runtime
+files, and do not modify firmware or unrelated files. Offline or failed checks
+do not affect emulation.
+
+## Help improve the emulator
+
+### Compatibility status
+
+Track model, chipset, display, input, boot, and runtime results in the
 [community compatibility sheet](docs/COMMUNITY_COMPATIBILITY_SHEET.md).
-Its document contains the single canonical sheet URL for future changes.
 
-### Submit a Test Log
+### Submit a test log
 
-1. Run the emulator with your firmware.
-2. Compress the generated `logs/` directory as `logs.zip` and submit it through
-   [the test log form](https://forms.gle/8ThEtrJgZceiAE3HA).
-3. State the GUI button, expected action, and action the firmware actually took.
+1. Run the emulator.
+2. Compress the generated `logs/` directory as `logs.zip`.
+3. Submit it through the
+   [test log form](https://forms.gle/8ThEtrJgZceiAE3HA).
+4. Include the expected action and actual result.
 
-...or find Ancalina somewhere and send the archive directly.
+You may also contact Ancalina directly.
 
-CLI JSON records a completed direct primary-NOR `0x90`, `+0/+2`, `0xFF` ID
-probe without changing mapped NOR data. Captured words are dump bytes, not
-claimed physical IDs.
-
-Terminal diagnostics retain the latest 16 unmapped accesses with PC, address,
-size, value, and outcome. This records device evidence; it does not infer a
-device response or map unknown hardware.
+Do not submit manufacturer firmware, user state, local paths, or unreviewed
+copyrighted assets.
 
 ## Package
+
+Source checkout is the primary distribution method. Local package installation
+is also supported:
 
 ```sh
 python3 -m pip install .
@@ -153,8 +177,15 @@ msm5xxx-emulator /path/to/firmware.bin --detect-only
 msm5xxx-boot-probe /path/to/firmware.bin
 ```
 
-Existing source-checkout commands remain supported: `python msm5xxx.py`,
-`python boot_probe.py`, `python gui.py`, `run_linux.sh`, and `run_windows.bat`.
+Existing source commands remain supported:
+
+```text
+python msm5xxx.py
+python boot_probe.py
+python gui.py
+run_linux.sh
+run_windows.bat
+```
 
 ## Development
 
@@ -164,15 +195,21 @@ python3 -m py_compile _compat.py msm5xxx.py gui.py boot_probe.py
 python3 -m py_compile $(find src -name '*.py' -print)
 ```
 
-Most tests use synthetic byte sequences. Corpus-dependent regressions skip
-unless a private local `firmwares/` directory exists. Do not add manufacturer
-firmware, user state, diagnostic bundles, screenshots, unreviewed SoundFonts,
-or local paths. Bundled TimGM6mb is the sole audited SoundFont exception.
+Most tests use synthetic byte sequences. Corpus-dependent tests require a
+private local `firmwares/` directory.
+
+Do not add manufacturer firmware, user state, diagnostic bundles, screenshots,
+unreviewed SoundFonts, or local paths to the repository.
 
 ## License
 
-Copyright © 2026 Ancalina. Licensed under `GPL-2.0-or-later`.
+Copyright © 2026 Ancalina.
 
-Unicorn is GPLv2-only. Any emulator distribution that includes or combines
-with Unicorn must use this project's GPLv2 option; do not combine it with
-GPLv3-only or AGPL code. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+Licensed under `GPL-2.0-or-later`.
+
+Unicorn is `GPL-2.0-only`. Distributions that include or combine with Unicorn
+must use this project's GPLv2 option and must not include GPLv3-only or AGPL
+code.
+
+See [`LICENSE`](LICENSE) and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
