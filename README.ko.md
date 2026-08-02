@@ -3,106 +3,98 @@
 [English](README.md)
 
 Unicorn 기반 Qualcomm MSM5000/MSM5100/MSM5500 피처폰 펌웨어 에뮬레이터입니다.
-실험적 프로젝트입니다.
-이 소스에는 펌웨어, 사용자 상태, 로그, 스크린샷이 없습니다. 오디오 asset은
-GPL-2.0-only TimGM6mb 하나만 검수하여 포함합니다.
-별도 빌드 과정은 필요 없습니다. GitHub 소스 archive를 압축 해제하고 아래
-플랫폼 launcher를 실행하면 됩니다.
+
+문서화되지 않은 구형 모바일 하드웨어의 보존과 재현 가능한 연구를 목적으로 하는
+실험적 프로젝트입니다. 제조사 펌웨어, 사용자 상태, 로그, 스크린샷은 포함하지
+않습니다. 오디오 자산은 검수된 GPL-2.0-only TimGM6mb SoundFont 하나만
+포함합니다.
+
+별도 빌드 과정 없이 소스를 clone하거나 압축 해제한 뒤 플랫폼 launcher를
+실행하면 됩니다.
 
 ## 실행
 
-Python 3.10 이상과 Tk가 필요합니다.
+요구 사항:
+
+- Python 3.10 이상
+- Tk
+- Git 또는 다운로드한 소스 archive
+
+Linux:
 
 ```sh
+git clone https://github.com/ancalina/msm5xxx-emulator.git
+cd msm5xxx-emulator
 sh ./run_linux.sh /path/to/firmware.bin
 ```
 
+Windows:
+
 ```bat
+git clone https://github.com/ancalina/msm5xxx-emulator.git
+cd msm5xxx-emulator
 run_windows.bat C:\path\to\firmware.bin
 ```
 
-단일 runtime 증거만 있는 C80 timer/IRQ profile은 계속 opt-in입니다. 이
-profile을 시험할 때는 launcher 명령 끝에
-`--experimental-c80-controller`를 붙이십시오.
+처음 실행할 때 `.venv`를 만들고 `unicorn`, `Pillow`, `NumPy`를 설치할 수
+있습니다.
 
-launcher를 처음 실행하면 `.venv`를 만들고 `unicorn`, `Pillow`, `NumPy`를 설치할 수
-있습니다. 펌웨어 원본은 읽기 전용입니다. 영구 NOR/EEPROM/NAND 상태는 기본적으로
-`~/.msm5xxx-emulator/`에 저장됩니다. 위치를 바꾸려면 `MSM5XXX_STATE_DIR`과
-`MSM5XXX_LOG_DIR`을 설정하십시오. 인식된 legacy GEFS seed mismatch가 발생하면
-기존 영구 MSM5000 secondary NOR state를 제자리에서 재사용하며 data와 path를
-보존합니다. 진단 JSON은 확장 가능한 `schema: 1`을 사용합니다.
-`runtime.sources`에는 CLI, GUI, boot probe, runtime logger module의 로컬 경로
-없는 SHA-256 식별자가 기록됩니다.
+단일 runtime 증거만 있는 C80 timer/IRQ profile은 opt-in입니다.
 
-Raw binary, strict Intel HEX (`.hex`), HXB (`.hxb`)를 직접 선택할 수 있습니다.
-HXB는 archive stem과 같은 top-level HEX member가 정확히 하나일 때만 memory에서
-decode합니다. Embedded loader를 실행하거나 파일을 추출하지 않으며 checksum,
-EOF, address, overlap, size가 잘못되면 거부합니다.
+```text
+--experimental-c80-controller
+```
 
-펌웨어의 relocatable catalog, address materializer, translator, native AMD
-writer, caller grammar가 모두 닫히면 `0x02800000..0x02FFFFFF`에 독립 8 MiB
-NOR를 mapping합니다. 상태는 별도로 영속 저장하며 이 범위는 LCD traffic으로
-decode하지 않습니다. 불완전하거나 ambiguous한 일치는 native fallback을 유지하고
-reject 이유를 기록합니다. 이 storage 판정만으로 handset idle을 주장하지 않습니다.
+## 프로젝트 상태
 
-자동 keypad 입력은 exact direct matrix와 recognized queue sink가 닫힌 경우만
-활성화됩니다. LG descriptor 6x5 경로도 legacy 5 ms timer, detector-closed two-
-또는 three-bank controller route, IRQ wrapper, handler slot, queue drain이 모두
-닫힌 경우 활성화됩니다. Three-bank pending/status access는 검증된 IRQ handler
-안으로 제한됩니다. 모델명·파일명별 규칙은 쓰지 않습니다. 모든 자동 위치는
-firmware table 순서의 unique non-filler matrix cell이며 명시적으로 experimental로
-기록합니다. Samsung, LG, KEYEMUL, 모델명, 파일명 map으로 event byte를 GUI key
-label에 배정하지 않습니다. 미검출 transport, ambiguous cell, multi-key 입력은
-계속 비활성입니다.
+현재 활발히 개발 중이며 아직 완전한 단말 에뮬레이션을 제공하지 않습니다.
 
-모든 버튼은 우클릭으로 event byte를 override할 수 있습니다. 사용할 수 있는
-자동 cell이 없는 버튼을 누르면 같은 편집창이 열립니다. `0x53`, log 형식
-`053`, `05f`는 검출된 firmware matrix table에 정확히 한 번 있을 때만 허용하며 `0x00`,
-`0xFF`, matrix no-key 값은 거절합니다. 그 row와 column을 정상
-scanner/debounce 경로로 누르며 firmware queue에 byte를 직접 주입하지
-않습니다. Mapping은 firmware SHA-256별로 저장되고 빈 값으로 삭제합니다.
+현재 연구 범위:
 
-모든 accepted/rejected edge는 requested source, mapping source
-(`automatic-experimental`, `manual`), rule, reason을
-기록합니다. Accepted edge는 detector family/fingerprint, firmware event,
-row/column, fallback rank, scanner/queue/task counter도 기록합니다. 수동
-mapping 편집은 accept/reject 결정과 정리된 requested value를 남깁니다. 이를
-이용해 experimental label 오탐과 transport 실패를 구분합니다.
+- ARM 펌웨어 실행
+- 펌웨어 구조 기반 메모리 및 장치 탐지
+- 화면과 keypad emulation
+- 영구 NOR, EEPROM, NAND 상태
+- REX, timer, IRQ, storage 연구
+- 실험적 Yamaha MA-2 및 MA-5 처리
+- 재현 가능한 진단과 호환성 추적
 
-Descriptor 입력 telemetry는 scanner-to-enqueue call edge와 실제 raw-ring store,
-dequeue return, task receipt를 구분합니다. SV130과 SD810 After의 fresh 숫자키
-press/release는 fault 없이 네 단계를 모두 통과했습니다. 이는 firmware task 전달
-증명이며 visible UI 반응, handset idle, `OK` semantic 증명은 아닙니다.
+장치 탐지는 제조사, 모델명, KEYEMUL, 펌웨어 파일명에 의존하지 않습니다.
+불완전하거나 모호한 경로는 비활성화하거나 native fallback을 유지합니다.
 
-### 실험적 오디오
+## 펌웨어와 상태
 
-Firmware audio driver는 그대로 실행됩니다. Detector가 닫은 MMIO site에서
-MA2/MA5 index, data, FIFO write를 관측합니다. 이는 write-side LLE이며 완전한
-sound-chip 구현은 아닙니다. Device status, FIFO consumption, clock, IRQ는
-합성하지 않습니다.
+펌웨어 원본은 읽기 전용으로 처리합니다. 영구 상태의 기본 위치는 다음과 같습니다.
 
-MA2 FIFO snapshot과 유효한 MMF buffer는 번들 GPL-2.0-only TimGM6mb로 근사
-PCM을 만들 수 있습니다. MMF parsing과 PCM/SoundFont 합성은 HLE이며 Yamaha
-chip 출력과 같음을 보장하지 않습니다. MA5는 telemetry-only, MA3는
-비활성입니다. 설치된 `ffplay`를 우선 사용하고 Windows에서는 `winsound`로
-fallback합니다. 둘 다 없으면 render-only입니다. 오디오 실패는 guest
-emulation을 중단하지 않습니다.
+```text
+~/.msm5xxx-emulator/
+```
 
-### 업데이트
+상태와 로그 위치는 다음 환경 변수로 변경할 수 있습니다.
 
-GUI는 백그라운드에서 GitHub `main`을 확인합니다. 현재 설치에서 아직 확인하지
-않은 commit이 있으면 다운로드 전에 묻습니다. 수락하면 검증된 복사본을
-`~/.msm5xxx-emulator/updates/`에 받은 뒤, 압축 해제된 폴더에서 manifest 소유
-runtime file만 교체하고 GUI를 다시 시작합니다. 펌웨어와 manifest 외부 file은
-건드리지 않습니다. 수정된 배포 source를 교체할 때는 별도 확인을 요구합니다.
-거절하면 해당 commit만 다시 묻지 않으며, 이후 새 commit은 다시 알립니다.
-실패하거나 offline이면 조용히 건너뛰며 emulation에 영향을 주지 않습니다.
+```text
+MSM5XXX_STATE_DIR
+MSM5XXX_LOG_DIR
+```
 
-### 별도 NAND dump 연결
+지원 입력 형식:
 
-NAND dump는 data이며 boot firmware가 아닙니다. 대응하는 NOR dump를 실행하고
-NAND를 별도로 연결하십시오. 512-byte page마다 16-byte spare가 붙은 16 MiB main
-data의 RIFF 형식 raw dump 예시는 다음과 같습니다.
+- raw binary
+- strict Intel HEX (`.hex`)
+- HXB (`.hxb`)
+
+HXB는 유효한 일치 HEX member가 하나만 있을 때 memory에서 decode합니다.
+Embedded loader는 실행하지 않습니다.
+
+진단 report는 확장 가능한 JSON schema와 로컬 경로가 제거된 SHA-256 source
+식별자를 사용합니다.
+
+## Storage
+
+필요한 펌웨어 구조가 검출되면 NOR, secondary NOR, EEPROM, NAND 상태를
+별도로 영속 저장할 수 있습니다.
+
+NAND dump는 대응하는 NOR 펌웨어와 별도로 연결해야 합니다.
 
 ```sh
 python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
@@ -110,36 +102,67 @@ python msm5xxx.py phone-nor.bin --nand-image phone-nand.bin \
   --nand-pages-per-block 32 --nand-bus-width 2
 ```
 
-이 main+spare interleaved layout은 `0x1080000` byte
-(`32768 × (512 + 16)`)입니다. 입력 dump는 읽기 전용이며 영구 NAND 변경은
-별도로 저장됩니다. 다른 geometry를 추측하지 말고 log와 file size를 제출하십시오.
+원본 dump는 읽기 전용이며 변경 사항은 별도 저장됩니다. 알 수 없는 NAND
+geometry를 추측하지 말고 지원을 요청할 때 정확한 file size와 진단 log를 함께
+제출하십시오.
+
+## Keypad 입력
+
+지원되는 firmware matrix와 queue 경로가 검출된 경우에만 자동 keypad 입력을
+활성화합니다.
+
+알 수 없는 transport, 모호한 cell, 지원되지 않는 multi-key 경로는 비활성으로
+유지합니다.
+
+GUI 버튼을 우클릭하면 펌웨어별 수동 event-byte mapping을 설정할 수 있습니다.
+이때 queue에 event를 직접 주입하지 않고 검출된 physical row와 column을
+펌웨어의 정상 scanner 경로로 입력합니다.
+
+## 실험적 오디오
+
+펌웨어의 audio driver는 그대로 실행됩니다.
+
+현재 상태:
+
+- MA-2: 근사 MMF/PCM rendering
+- MA-5: write telemetry만 지원
+- MA-3: 비활성
+
+MA-2 FIFO snapshot과 유효한 MMF buffer는 번들 TimGM6mb SoundFont로
+render할 수 있습니다. 출력은 근사치이며 실제 Yamaha hardware와 같음을
+보장하지 않습니다.
+
+재생은 `ffplay`, 그다음 Windows `winsound`를 사용합니다. 둘 다 없으면
+render-only로 동작합니다. 오디오 실패는 guest emulation을 중단하지 않습니다.
+
+## 업데이트
+
+GUI에서 GitHub `main`의 업데이트를 확인할 수 있습니다.
+
+업데이트는 사용자 확인 후 검증된 manifest 소유 runtime file만 교체합니다.
+펌웨어와 관련 없는 파일은 수정하지 않으며, offline 또는 확인 실패가 emulation에
+영향을 주지 않습니다.
 
 ## 에뮬레이터 개선 참여
 
-### 커뮤니티 펌웨어 상태표
+### 호환성 상태
 
-[커뮤니티 호환성 시트](docs/COMMUNITY_COMPATIBILITY_SHEET.md)에서
-펌웨어 모델, 칩셋, 화면, 입력, 부팅, runtime 상태를 기록할 수 있습니다.
-시트 URL 변경은 이 문서 한 곳에서만 수정합니다.
+[커뮤니티 호환성 시트](docs/COMMUNITY_COMPATIBILITY_SHEET.md)에서 모델, 칩셋,
+화면, 입력, 부팅, runtime 상태를 기록할 수 있습니다.
 
 ### 테스트 로그 제출
 
-1. 펌웨어로 에뮬레이터를 실행합니다.
-2. 생성된 `logs/` directory를 `logs.zip`으로 압축해
-   [테스트 로그 제출 양식](https://forms.gle/8ThEtrJgZceiAE3HA)으로 보냅니다.
-3. 누른 GUI 버튼, 기대 동작, firmware에서 실제 발생한 동작을 함께 적습니다.
+1. 에뮬레이터를 실행합니다.
+2. 생성된 `logs/` directory를 `logs.zip`으로 압축합니다.
+3. [테스트 로그 제출 양식](https://forms.gle/8ThEtrJgZceiAE3HA)으로 보냅니다.
+4. 기대 동작과 실제 결과를 함께 적습니다.
 
-...또는 Ancalina를 찾아 archive를 직접 보내도 됩니다.
+Ancalina에게 archive를 직접 전달해도 됩니다.
 
-CLI JSON은 mapping된 NOR data를 바꾸지 않고 완료된 primary NOR 직접
-`0x90`, `+0/+2`, `0xFF` ID probe를 기록합니다. 캡처된 word는 dump byte이며
-실제 physical ID라고 주장하지 않습니다.
-
-terminal 진단은 최근 unmapped access 16개를 PC, address, size, value, outcome과
-함께 보존합니다. 이는 device evidence를 기록할 뿐, device response를 추론하거나
-알 수 없는 hardware를 mapping하지 않습니다.
 
 ## 패키지 설치
+
+Source checkout이 기본 배포 방식이며 local package 설치도 지원합니다.
 
 ```sh
 python3 -m pip install .
@@ -147,8 +170,15 @@ msm5xxx-emulator /path/to/firmware.bin --detect-only
 msm5xxx-boot-probe /path/to/firmware.bin
 ```
 
-기존 source checkout 명령도 계속 지원합니다: `python msm5xxx.py`,
-`python boot_probe.py`, `python gui.py`, `run_linux.sh`, `run_windows.bat`.
+기존 source 실행 명령도 계속 지원합니다.
+
+```text
+python msm5xxx.py
+python boot_probe.py
+python gui.py
+run_linux.sh
+run_windows.bat
+```
 
 ## 개발
 
@@ -158,15 +188,21 @@ python3 -m py_compile _compat.py msm5xxx.py gui.py boot_probe.py
 python3 -m py_compile $(find src -name '*.py' -print)
 ```
 
-대부분의 test는 synthetic byte sequence를 사용합니다. private local
-`firmwares/` directory가 없으면 corpus 의존 regression은 skip됩니다. 제조사
-firmware, 사용자 상태, 진단 bundle, screenshot, 검수되지 않은 SoundFont,
-local path를 추가하지 마십시오. 번들 TimGM6mb만 검수된 SoundFont 예외입니다.
+대부분의 test는 synthetic byte sequence를 사용합니다. Corpus 의존 test에는
+private local `firmwares/` directory가 필요합니다.
+
+제조사 펌웨어, 사용자 상태, 진단 bundle, screenshot, 검수되지 않은 SoundFont,
+local path를 repository에 추가하지 마십시오.
 
 ## 라이선스
 
-Copyright © 2026 Ancalina. `GPL-2.0-or-later`로 배포됩니다.
+Copyright © 2026 Ancalina.
 
-Unicorn은 GPLv2-only입니다. Unicorn을 포함하거나 결합한 에뮬레이터 배포판은 이
-프로젝트의 GPLv2 option을 사용해야 합니다. GPLv3-only 또는 AGPL code와 결합하지
-마십시오. `LICENSE`와 `THIRD_PARTY_NOTICES.md`를 확인하십시오.
+`GPL-2.0-or-later`로 배포됩니다.
+
+Unicorn은 `GPL-2.0-only`입니다. Unicorn을 포함하거나 결합한 배포판은 이
+프로젝트의 GPLv2 option을 사용해야 하며 GPLv3-only 또는 AGPL code를 포함해서는
+안 됩니다.
+
+[`LICENSE`](LICENSE)와
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를 확인하십시오.
