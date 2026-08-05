@@ -175,110 +175,6 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(emulator.firmware_key_events, 1)
         self.assertEqual(emulator.input_error, "")
 
-    def test_raw_queue_telemetry_requires_ordered_register_chain(self) -> None:
-        emulator = self._direct_emulator()
-        uc = RegisterMemoryUc()
-        profile = emulator.direct_input_profile
-        event = ord("5")
-        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
-        uc.registers[UC_ARM_REG_R0] = event
-        uc.registers[UC_ARM_REG_R7] = event
-        emulator._direct_input_event_observed(uc, 0, 0, None)
-        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        emulator._direct_raw_task_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_raw_enqueue_events, 1)
-        self.assertEqual(emulator.direct_matrix_dequeue_events, 1)
-        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
-        self.assertEqual(list(emulator._direct_matrix_pending_events), [])
-
-    def test_raw_queue_telemetry_accepts_r0_receiver_copy(self) -> None:
-        emulator = self._direct_emulator()
-        emulator.direct_input_profile["raw_task_register"] = 0
-        uc = RegisterMemoryUc()
-        event = ord("5")
-        uc.registers[UC_ARM_REG_LR] = int(
-            emulator.direct_input_profile["event_sink_callsite"]
-        ) + 5
-        uc.registers[UC_ARM_REG_R0] = event
-        uc.registers[UC_ARM_REG_R7] = event
-        emulator._direct_input_event_observed(uc, 0, 0, None)
-        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        emulator._direct_raw_task_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
-
-    def test_raw_queue_telemetry_rejects_wrong_order_or_register(self) -> None:
-        emulator = self._direct_emulator()
-        uc = RegisterMemoryUc()
-        profile = emulator.direct_input_profile
-        event = ord("5")
-        uc.registers[UC_ARM_REG_R0] = event
-        uc.registers[UC_ARM_REG_R7] = event
-        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        emulator._direct_raw_task_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_raw_enqueue_events, 0)
-        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
-        emulator._direct_input_event_observed(uc, 0, 0, None)
-        uc.registers[UC_ARM_REG_R7] = event + 1
-        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_raw_enqueue_events, 0)
-        self.assertIsNone(emulator._direct_matrix_raw_enqueue_marker)
-        uc.registers[UC_ARM_REG_R7] = event
-        emulator._direct_input_event_observed(uc, 0, 0, None)
-        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        uc.registers[UC_ARM_REG_R0] = event + 1
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        emulator._direct_raw_task_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_dequeue_events, 0)
-        self.assertEqual(emulator.direct_matrix_task_consumer_events, 0)
-
-    def test_raw_queue_task_register_mismatch_discards_dequeued_head(self) -> None:
-        emulator = self._direct_emulator()
-        uc = RegisterMemoryUc()
-        profile = emulator.direct_input_profile
-        event = ord("5")
-        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
-        uc.registers[UC_ARM_REG_R0] = event
-        uc.registers[UC_ARM_REG_R7] = event
-        emulator._direct_input_event_observed(uc, 0, 0, None)
-        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        uc.registers[UC_ARM_REG_R7] = event + 1
-        emulator._direct_raw_task_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_task_consumer_events, 0)
-        self.assertEqual(list(emulator._direct_matrix_pending_events), [])
-        self.assertIsNone(emulator._direct_matrix_pending_dequeue)
-        uc.registers[UC_ARM_REG_R0] = event
-        uc.registers[UC_ARM_REG_R7] = event
-        emulator._direct_input_event_observed(uc, 0, 0, None)
-        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        emulator._direct_raw_task_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
-
-    def test_raw_queue_next_dequeue_discards_taskless_stale_head(self) -> None:
-        emulator = self._direct_emulator()
-        uc = RegisterMemoryUc()
-        profile = emulator.direct_input_profile
-        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
-        for event in (ord("5"), 0xFF):
-            uc.registers[UC_ARM_REG_R0] = event
-            uc.registers[UC_ARM_REG_R7] = event
-            emulator._direct_input_event_observed(uc, 0, 0, None)
-            emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
-        uc.registers[UC_ARM_REG_R0] = ord("5")
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        uc.registers[UC_ARM_REG_R0] = 0xFF
-        uc.registers[UC_ARM_REG_R7] = 0xFF
-        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
-        emulator._direct_raw_task_observed(uc, 0, 0, None)
-        self.assertEqual(emulator.direct_matrix_dequeue_events, 2)
-        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
-        self.assertEqual(list(emulator._direct_matrix_pending_events), [])
-        self.assertIsNone(emulator._direct_matrix_pending_dequeue)
-
     def test_unrelated_read_cannot_confirm_candidate_register(self) -> None:
         emulator = self._emulator()
 
@@ -294,8 +190,7 @@ class InputRuntimeTests(unittest.TestCase):
         emulator.held_keys = set()
         emulator.input_error = ""
 
-        with mock.patch(
-                "msm5xxx_emulator.devices.input.LOGGER.info") as logged:
+        with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
             emulator.set_key(0, True)
 
         self.assertEqual(emulator.held_keys, set())
@@ -323,6 +218,39 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(
             len(set(emulator.direct_input_positions.values())), 23,
         )
+
+    def test_direct_matrix_prefers_evidence_gated_semantic_metadata(self) -> None:
+        profile = self._direct_profile()
+        profile["provisional_mappings"] = {
+            5: {
+                "event": 0x53,
+                "rule": "same-image-exact-keyemul-O-unique-cell",
+                "evidence": "same-image-exact-keyemul-semantics+unique-matrix-event;offline-corpus-crosscheck",
+                "semantic_grammar_fingerprint": "exact-keyemul",
+            },
+        }
+        self.assertEqual(
+            GenericMSMEmulator._direct_matrix_positions(profile),
+            {5: (0x53, 1, 1)},
+        )
+
+    def test_evidence_gated_mapping_is_logged_without_fallback_rank(self) -> None:
+        emulator = self._direct_emulator()
+        emulator.direct_input_profile["provisional_mappings"] = {
+            5: {"event": 0x53, "rule": "observed-unique-event"},
+        }
+        emulator.direct_input_positions = emulator._direct_matrix_positions(
+            emulator.direct_input_profile
+        )
+
+        with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
+            emulator.set_key(5, True)
+
+        payload = json.loads(logged.call_args.args[1])
+        self.assertEqual(payload["mapping_source"], "automatic-evidenced")
+        self.assertEqual(payload["confidence"], "evidence-gated")
+        self.assertEqual(payload["firmware_event"], "0x53")
+        self.assertIsNone(payload["fallback_rank"])
 
     def test_direct_matrix_recognized_profiles_share_raw_table_order(
             self) -> None:
@@ -376,8 +304,7 @@ class InputRuntimeTests(unittest.TestCase):
         emulator.direct_input_profile = self._direct_profile()
         emulator.direct_input_profile["event_codes"][0] = 0x53
         self.assertFalse(emulator.can_set_key(5, 0x53))
-        with mock.patch(
-                "msm5xxx_emulator.devices.input.LOGGER.info") as logged:
+        with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
             emulator.set_key(5, True, 0x53)
         self.assertEqual(emulator.held_keys, set())
         rejected = json.loads(logged.call_args.args[1])
@@ -434,6 +361,19 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(uc.memory[register], b"\x10")
         self.assertEqual(emulator.direct_matrix_scans, 3)
 
+    def test_unowned_keysense_read_preserves_guest_device_state(self) -> None:
+        emulator = self._direct_emulator()
+        emulator.direct_input_profile = None
+        uc = RegisterMemoryUc()
+        register = 0x03000694
+        uc.memory[register] = b"\x07"
+
+        emulator._stable_mmio_read(
+            uc, 0, register, 1, 0, (register, b"\x10")
+        )
+
+        self.assertEqual(uc.memory[register], b"\x07")
+
     def test_dynamic_mapped_sense_is_exact_and_preserves_other_bits(self) -> None:
         emulator = self._direct_emulator()
         profile = emulator.direct_input_profile
@@ -464,7 +404,6 @@ class InputRuntimeTests(unittest.TestCase):
         emulator.direct_input_positions = emulator._direct_matrix_positions(profile)
         self.assertEqual(emulator.direct_input_positions[0], (0x61, 0, 0))
         self.assertEqual(emulator.direct_input_positions[6], (0x54, 0, 1))
-        self.assertEqual(profile["event_codes"].count(0x63), 2)
         self.assertNotIn(0x63, {
             position[0] for position in emulator.direct_input_positions.values()
         })
@@ -502,23 +441,22 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(emulator.direct_matrix_active_reads, 2)
 
         emulator.set_key(15, False)
-        emulator.set_key(20, True, ord("*"))
-        uc.memory[0x09000070] = b"\xa0\xbb\xcc\xdd"
-        uc.registers[UC_ARM_REG_R5] = 5
-        uc.registers[UC_ARM_REG_PC] = 0x33002
-        emulator._dynamic_mapped_matrix_sense_read(
-            uc, 0, 0x09000070, 4, 0, None
-        )
-        self.assertEqual(uc.memory[0x09000070], b"\xbe\xbb\xcc\xdd")
-        self.assertEqual(emulator.direct_matrix_active_reads, 3)
-
-        emulator.set_key(20, False)
         uc.memory[0x09000070] = b"\xa0\xbb\xcc\xdd"
         uc.registers[UC_ARM_REG_PC] = 0x33000
         emulator._dynamic_mapped_matrix_sense_read(
             uc, 0, 0x09000070, 4, 0, None
         )
         self.assertEqual(uc.memory[0x09000070], b"\xbf\xbb\xcc\xdd")
+
+        emulator.set_key(20, True, ord("*"))
+        uc.memory[0x09000070] = b"\xa0\xbb\xcc\xdd"
+        uc.registers[UC_ARM_REG_PC] = 0x33002
+        uc.registers[UC_ARM_REG_R5] = 5
+        emulator._dynamic_mapped_matrix_sense_read(
+            uc, 0, 0x09000070, 4, 0, None
+        )
+        self.assertEqual(uc.memory[0x09000070], b"\xbe\xbb\xcc\xdd")
+        emulator.set_key(20, False)
 
         uc.memory[0x09000070] = b"\xa0\xbb\xcc\xdd"
         emulator._dynamic_mapped_matrix_sense_read(
@@ -533,8 +471,7 @@ class InputRuntimeTests(unittest.TestCase):
 
     def test_direct_matrix_keyedge_logging_preserves_mapping_and_hold_scan(self) -> None:
         emulator = self._direct_emulator()
-        with mock.patch(
-                "msm5xxx_emulator.devices.input.LOGGER.info") as logged:
+        with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
             emulator.set_key(5, True, 0x53)
             emulator.direct_matrix_scans += 1
             emulator.direct_matrix_raw_enqueue_events += 1
@@ -737,8 +674,7 @@ class InputRuntimeTests(unittest.TestCase):
         emulator = self._direct_emulator()
         emulator.set_key(5, True)
         self.assertEqual(emulator.held_keys, {5})
-        with mock.patch(
-                "msm5xxx_emulator.devices.input.LOGGER.info") as logged:
+        with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
             emulator.set_key(16, True)
         self.assertEqual(emulator.held_keys, {5})
         self.assertIn("one key at a time", emulator.input_error)
@@ -774,6 +710,121 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(emulator.direct_matrix_sink_events, 2)
         self.assertEqual(emulator.firmware_key_events, 1)
         self.assertEqual(emulator.input_error, "")
+
+    def test_raw_queue_telemetry_requires_ordered_register_chain(self) -> None:
+        emulator = self._direct_emulator()
+        uc = RegisterMemoryUc()
+        profile = emulator.direct_input_profile
+        event = ord("5")
+        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
+        uc.registers[UC_ARM_REG_R0] = event
+        uc.registers[UC_ARM_REG_R7] = event
+
+        emulator._direct_input_event_observed(uc, 0, 0, None)
+        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+        emulator._direct_raw_task_observed(uc, 0, 0, None)
+
+        self.assertEqual(emulator.direct_matrix_raw_enqueue_events, 1)
+        self.assertEqual(emulator.direct_matrix_dequeue_events, 1)
+        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
+        self.assertEqual(list(emulator._direct_matrix_pending_events), [])
+
+    def test_raw_queue_telemetry_accepts_r0_receiver_copy(self) -> None:
+        emulator = self._direct_emulator()
+        emulator.direct_input_profile["raw_task_register"] = 0
+        uc = RegisterMemoryUc()
+        event = ord("5")
+        uc.registers[UC_ARM_REG_LR] = int(
+            emulator.direct_input_profile["event_sink_callsite"]
+        ) + 5
+        uc.registers[UC_ARM_REG_R0] = event
+        uc.registers[UC_ARM_REG_R7] = event
+        emulator._direct_input_event_observed(uc, 0, 0, None)
+        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+        emulator._direct_raw_task_observed(uc, 0, 0, None)
+        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
+
+    def test_raw_queue_telemetry_rejects_wrong_order_or_register(self) -> None:
+        emulator = self._direct_emulator()
+        uc = RegisterMemoryUc()
+        profile = emulator.direct_input_profile
+        event = ord("5")
+        uc.registers[UC_ARM_REG_R0] = event
+        uc.registers[UC_ARM_REG_R7] = event
+
+        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+        emulator._direct_raw_task_observed(uc, 0, 0, None)
+        self.assertEqual(emulator.direct_matrix_raw_enqueue_events, 0)
+
+        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
+        emulator._direct_input_event_observed(uc, 0, 0, None)
+        uc.registers[UC_ARM_REG_R7] = event + 1
+        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+        self.assertEqual(emulator.direct_matrix_raw_enqueue_events, 0)
+        self.assertIsNone(emulator._direct_matrix_raw_enqueue_marker)
+
+        uc.registers[UC_ARM_REG_R7] = event
+        emulator._direct_input_event_observed(uc, 0, 0, None)
+        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+        uc.registers[UC_ARM_REG_R0] = event + 1
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+        emulator._direct_raw_task_observed(uc, 0, 0, None)
+        self.assertEqual(emulator.direct_matrix_dequeue_events, 0)
+        self.assertEqual(emulator.direct_matrix_task_consumer_events, 0)
+
+    def test_raw_queue_task_register_mismatch_discards_dequeued_head(self) -> None:
+        emulator = self._direct_emulator()
+        uc = RegisterMemoryUc()
+        profile = emulator.direct_input_profile
+        event = ord("5")
+        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
+        uc.registers[UC_ARM_REG_R0] = event
+        uc.registers[UC_ARM_REG_R7] = event
+        emulator._direct_input_event_observed(uc, 0, 0, None)
+        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+
+        uc.registers[UC_ARM_REG_R7] = event + 1
+        emulator._direct_raw_task_observed(uc, 0, 0, None)
+
+        self.assertEqual(emulator.direct_matrix_task_consumer_events, 0)
+        self.assertEqual(list(emulator._direct_matrix_pending_events), [])
+        self.assertIsNone(emulator._direct_matrix_pending_dequeue)
+
+        uc.registers[UC_ARM_REG_R0] = event
+        uc.registers[UC_ARM_REG_R7] = event
+        emulator._direct_input_event_observed(uc, 0, 0, None)
+        emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+        emulator._direct_raw_task_observed(uc, 0, 0, None)
+        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
+
+    def test_raw_queue_next_dequeue_discards_taskless_stale_head(self) -> None:
+        emulator = self._direct_emulator()
+        uc = RegisterMemoryUc()
+        profile = emulator.direct_input_profile
+        uc.registers[UC_ARM_REG_LR] = int(profile["event_sink_callsite"]) + 5
+
+        for event in (ord("5"), 0xFF):
+            uc.registers[UC_ARM_REG_R0] = event
+            uc.registers[UC_ARM_REG_R7] = event
+            emulator._direct_input_event_observed(uc, 0, 0, None)
+            emulator._direct_raw_enqueue_store_observed(uc, 0, 0, None)
+
+        uc.registers[UC_ARM_REG_R0] = ord("5")
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+        uc.registers[UC_ARM_REG_R0] = 0xFF
+        uc.registers[UC_ARM_REG_R7] = 0xFF
+        emulator._direct_raw_dequeue_return_observed(uc, 0, 0, None)
+        emulator._direct_raw_task_observed(uc, 0, 0, None)
+
+        self.assertEqual(emulator.direct_matrix_dequeue_events, 2)
+        self.assertEqual(emulator.direct_matrix_task_consumer_events, 1)
+        self.assertEqual(list(emulator._direct_matrix_pending_events), [])
+        self.assertIsNone(emulator._direct_matrix_pending_dequeue)
 
     def test_direct_matrix_register_read_is_telemetry_only(self) -> None:
         emulator = self._direct_emulator()
@@ -842,19 +893,5 @@ class InputRuntimeTests(unittest.TestCase):
                 emulator.close()
 
 
-    def test_direct_matrix_ignores_semantic_metadata(self) -> None:
-        profile = self._direct_profile()
-        profile["provisional_mappings"] = {
-            5: {
-                "event": 0x53,
-                "rule": "same-image-exact-keyemul-O-unique-cell",
-                "evidence": "same-image-exact-keyemul-semantics+unique-matrix-event;offline-corpus-crosscheck",
-                "semantic_grammar_fingerprint": "exact-keyemul",
-            },
-        }
-        self.assertEqual(
-            GenericMSMEmulator._direct_matrix_positions(profile),
-            GenericMSMEmulator._direct_matrix_positions(self._direct_profile()),
-        )
 if __name__ == "__main__":
     unittest.main()

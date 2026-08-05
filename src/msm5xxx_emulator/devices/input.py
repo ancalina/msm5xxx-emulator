@@ -7,8 +7,8 @@ from ..core.config import FirmwareConfig
 from ..core.constants import HANDSET_KEY_COUNT
 from ..core.constants import THUMB_LOW_REGISTERS
 from ..detection.input import detect_input_profile
-from ..detection.input_descriptor import resolve_lg_descriptor_input
 from ..detection.input_descriptor import LG_DESCRIPTOR_RAW
+from ..detection.input_descriptor import resolve_lg_descriptor_input
 from ..detection.input_matrix import UNCLASSIFIED
 from ..detection.input_matrix import resolve_direct_matrix_input
 from ..detection.rex import find_rex_legacy_5ms_irq_route
@@ -372,7 +372,10 @@ class InputMixin:
                 )
                 return
             requested_source = (
-                "manual" if event_code is not None else "automatic-experimental"
+                "manual" if event_code is not None else
+                "automatic-evidenced" if bit in direct.get(
+                    "provisional_mappings", {}
+                ) else "automatic-experimental"
             )
             if pressed and self.held_keys:
                 self.input_error = (
@@ -417,9 +420,14 @@ class InputMixin:
                 position[0] if mapping_source == "manual" else None,
                 reason={
                     "manual": "manual-event-override",
+                    "automatic-evidenced": "evidence-gated-event-semantic",
                     "automatic-experimental": "experimental-remaining-unique-cell",
                 }[mapping_source],
                 mapping_source=mapping_source,
+                mapping_evidence=(
+                    direct.get("provisional_mappings", {}).get(bit)
+                    if mapping_source == "automatic-evidenced" else None
+                ),
                 position=position,
                 event_unique=True,
                 fallback_rank=(
@@ -525,6 +533,7 @@ class InputMixin:
             "mapping_source": mapping_source,
             "mapping_rule": mapping_rule or {
                 "manual": "manual-unique-event",
+                "automatic-evidenced": "evidence-gated-unique-event",
                 "automatic-experimental":
                     "remaining-unique-cell-table-order",
             }.get(mapping_source),
@@ -576,6 +585,7 @@ class InputMixin:
             "evidence": evidence,
             "confidence": {
                 "manual": "user-override",
+                "automatic-evidenced": "evidence-gated",
                 "automatic-experimental": "experimental",
             }.get(mapping_source, "rejected"),
             "scanner_active_during_hold": scanner_active_during_hold,
@@ -630,6 +640,20 @@ class InputMixin:
         cells = events[:cell_limit]
         event_counts = Counter(cells)
         fillers = {0, 0xFF, int(profile["no_key"]) & 0xFF}
+        mappings = profile.get("provisional_mappings")
+        if isinstance(mappings, dict) and mappings:
+            positions: dict[int, tuple[int, int, int]] = {}
+            for raw_bit, mapping in mappings.items():
+                bit = int(raw_bit)
+                if (not 0 <= bit < HANDSET_KEY_COUNT
+                        or not isinstance(mapping, dict)):
+                    continue
+                event = int(mapping.get("event", -1))
+                if event_counts[event] != 1 or event in fillers:
+                    continue
+                index = cells.index(event)
+                positions[bit] = (event, index % rows, index // rows)
+            return positions
         candidates = (
             (int(event), index % rows, index // rows)
             for index, event in enumerate(cells)

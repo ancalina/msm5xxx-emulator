@@ -15,6 +15,14 @@ from .input_matrix import ASCII_KEY_EVENTS, _thumb_inbound_entries
 LG_DESCRIPTOR_RAW = "lg-descriptor-raw-keypad-v1"
 LG_DESCRIPTOR_RAW_FINGERPRINT = "lg-descriptor-low5-6x5-raw-v1"
 RAW_CONSUMER_EVIDENCE = "shared-byte-ring32-r0-task-dispatch-v1"
+LG_OBSERVED_SEMANTIC_FINGERPRINT = "lg-6x5-unique-event-semantics-v1"
+LG_OBSERVED_KEY_EVENTS = {
+    0: 0x09, 1: 0x85, 2: 0x52, 3: 0x50, 4: 0x87,
+    5: 0x8D, 6: 0x88, 8: 0x8C, 9: 0x86, 10: 0x8B,
+    11: 0x31, 12: 0x32, 13: 0x33, 14: 0x34, 15: 0x35,
+    16: 0x36, 17: 0x37, 18: 0x38, 19: 0x39, 20: 0x2A,
+    21: 0x30, 22: 0x23,
+}
 RAW_RING_STORE = re.compile(
     rb".\x4a\x04\x04\x50\x78\x24\x0c\x13\x78\x41\x1c"
     rb"\xc9\x06\xc9\x0e\x99\x42.{0,12}\x80\x18(?P<store>\x87\x70)"
@@ -75,6 +83,37 @@ def _last_literal(image: bytes, start: int, position: int, register: int) -> int
             if value is not None:
                 return value
     return None
+
+
+def _descriptor_pointer(image: bytes, start: int,
+                        sense_sites: list[int]) -> int | None:
+    """Recover one RAM descriptor even when later senses use a register alias."""
+    pointers = {
+        value
+        for site in sense_sites
+        if (value := _last_literal(
+            image, start, site,
+            struct.unpack_from("<H", image, site)[0] >> 3 & 7,
+        )) is not None and 0x01000000 <= value < 0x02000000
+    }
+    return next(iter(pointers)) if len(pointers) == 1 else None
+
+
+def _observed_lg_mappings(events: list[int]) -> dict[int, dict[str, object]]:
+    """Publish semantics only when complete observed event set is unique."""
+    if any(events.count(event) != 1
+           for event in LG_OBSERVED_KEY_EVENTS.values()):
+        return {}
+    return {
+        bit: {
+            "event": event,
+            "rule": "temporary-evidence-gated-unique-event-set",
+            "evidence": "firmware-table-unique-events+observed-key-semantics",
+            "semantic_grammar_fingerprint":
+                LG_OBSERVED_SEMANTIC_FINGERPRINT,
+        }
+        for bit, event in LG_OBSERVED_KEY_EVENTS.items()
+    }
 
 
 def _raw_consumer_metadata(image: bytes, enqueue: int,
@@ -148,18 +187,33 @@ def _descriptor_mmio_provenance(image: bytes, descriptor: int) -> dict[str, obje
     def roles(offset: int) -> bool:
         return all(offset + field + 4 <= len(image) and struct.unpack_from("<I", image, offset + field)[0] == value
                    for field, value in DESCRIPTOR_MMIO_ROLES.items())
-    if descriptor < len(image) and roles(descriptor):
-        return {"kind": "ROM-offset", "source": descriptor}
-    for offset in range(0, min(len(image) - 20, 0x40000) + 1, 4):
+    def scatter(offset: int) -> dict[str, object] | None:
         source, target, size, bss, bss_size = struct.unpack_from("<5I", image, offset)
         if not (0 <= source < len(image) and 0 < size <= 0x800000 and source + size <= len(image)
                 and 0x01000000 <= target < 0x02000000 and target + size == bss
                 and 0 < bss_size <= 0x2000000 and bss + bss_size <= 0x04000000
                 and target <= descriptor < target + size):
-            continue
+            return None
         descriptor_source = source + descriptor - target
-        if roles(descriptor_source):
-            return {"kind": "validated-scatter", "source": descriptor_source, "scatter": offset}
+        return ({"kind": "validated-scatter", "source": descriptor_source,
+                 "scatter": offset} if roles(descriptor_source) else None)
+
+    if descriptor < len(image) and roles(descriptor):
+        return {"kind": "ROM-offset", "source": descriptor}
+    for offset in range(0, min(len(image) - 20, 0x40000) + 1, 4):
+        if (provenance := scatter(offset)) is not None:
+            return provenance
+    # Some images place the same startup copy/BSS descriptor after a large
+    # boot region.  Its following instruction signature closes the search
+    # without scanning every aligned word in the image.
+    tail = struct.pack("<3I", 0x43192301, 0x43996001, 0x46F7C006)
+    position = image.find(tail, 20)
+    while position >= 0:
+        offset = position - 20
+        if (not offset & 3
+                and (provenance := scatter(offset)) is not None):
+            return provenance
+        position = image.find(tail, position + 1)
     return None
 
 
@@ -222,6 +276,54 @@ def _row_bounds(image: bytes, start: int, end: int) -> list[int]:
                    and 5 <= (word & 0xFF) <= 8})
 
 
+def _descending_row_register(
+        image: bytes, start: int, end: int, sense_site: int | None = None,
+) -> int | None:
+    """Recover an exact 5..0 row loop whose register indexes decoded events."""
+    found: list[int] = []
+    for register in range(8):
+        normalize = (
+            0x0600 | register << 3 | register,
+            0x0E00 | register << 3 | register,
+        )
+        for decrement in range(start, end - 7, 2):
+            words = struct.unpack_from("<4H", image, decrement)
+            if (words[:3] != (0x3801 | register << 8, *normalize)
+                    or words[3] & 0xFF00 != 0xD500):
+                continue
+            branch = decrement + 6
+            targets = [target for target in _thumb_successors(
+                image, branch, end) if target != branch + 2]
+            if len(targets) != 1:
+                continue
+            loop_start = targets[0]
+            if (loop_start < start + 2
+                    or struct.unpack_from("<H", image, loop_start - 2)[0]
+                    != 0x2005 | register << 8):
+                continue
+            reachable = _thumb_reachable(image, loop_start, branch + 2)
+            senses = ([sense_site] if sense_site is not None else [
+                current for current in reachable
+                if current + 3 < len(image)
+                and (load := struct.unpack_from("<H", image, current)[0])
+                & 0xF800 == 0x6800
+                and (load >> 6 & 0x1F) * 4 == 0x34
+                and struct.unpack_from("<H", image, current + 2)[0]
+                & 0xF800 == 0x8800
+            ])
+            if not senses or not all(site in reachable for site in senses):
+                continue
+            if not any(
+                    struct.unpack_from("<H", image, current)[0] & 0xFE00
+                    == 0x5C00
+                    and struct.unpack_from("<H", image, current)[0] >> 6 & 7
+                    == register for current in reachable):
+                continue
+            found.append(register)
+            break
+    return found[0] if len(found) == 1 else None
+
+
 def find_descriptor_ram_scan_shapes(
         image: bytes, load_address: int = 0,
         _anchors: tuple[dict[str, object], ...] | None = None,
@@ -232,18 +334,28 @@ def find_descriptor_ram_scan_shapes(
                    else find_descriptor_scan_anchors(image, load_address)):
         start, site = int(anchor["function"]) - load_address, int(anchor["anchor"]) - load_address
         end = min(start + int(anchor["fingerprint_size"]), len(image))
-        descriptor = _last_literal(image, start, site, struct.unpack_from("<H", image, site)[0] >> 3 & 7)
-        senses = _descriptor_senses(image, start, end, descriptor)
-        senses.extend((site, 5, 0x1F) for site, _ in _low5_senses(image, start, end, descriptor)
+        senses = _descriptor_senses(image, start, end)
+        senses.extend((site, 5, 0x1F) for site, _ in _low5_senses(image, start, end)
                       if site not in {known for known, _, _ in senses})
+        descriptor = _descriptor_pointer(
+            image, start, [sense_site for sense_site, _, _ in senses],
+        )
         bounds = _row_bounds(image, start, end)
-        if descriptor is None or not 0x01000000 <= descriptor < 0x02000000 or not senses or 5 not in bounds or not any(value > 5 for value in bounds):
+        if (descriptor is None
+                or not 0x01000000 <= descriptor < 0x02000000
+                or not senses):
             continue
         provenance = _descriptor_mmio_provenance(image, descriptor)
         for sense_site, sense_bits, no_key in senses:
+            descending = _descending_row_register(
+                image, start, end, sense_site,
+            )
+            bounded = 5 in bounds and any(value > 5 for value in bounds)
+            if not bounded and descending is None:
+                continue
             if not any(struct.unpack_from("<H", image, current)[0] & 0xFE00 == 0x5C00 for current in range(sense_site + 4, end - 1, 2)):
                 continue
-            found.append({
+            shape = {
             "grammar": "descriptor-ram-bounded-scan-v1", "evidence": "static-structural",
             "function": load_address + start, "anchor": load_address + site,
             "descriptor_pointer": descriptor, "descriptor_pointer_provenance": "ROM literal to RAM descriptor",
@@ -255,7 +367,11 @@ def find_descriptor_ram_scan_shapes(
             "semantic_limit": "event transport and runtime press/consumer/release remain unresolved" if provenance else "RAM descriptor initializer to physical MMIO, event transport, and runtime press/consumer/release remain unresolved",
             "fingerprint": anchor["fingerprint"], "fingerprint_size": anchor["fingerprint_size"],
             "fingerprint_scope": "linear-prefix", "fingerprint_boundary": anchor["fingerprint_boundary"],
-            })
+            }
+            if descending is not None:
+                shape.update({"row_order": list(range(6)),
+                              "row_order_evidence": "direct-descending-loop"})
+            found.append(shape)
     return found
 
 
@@ -332,7 +448,8 @@ def _event_table(image: bytes, start: int, end: int) -> tuple[int, list[int]] | 
     return None
 
 
-def _row_order(image: bytes, start: int, end: int) -> tuple[list[int], str] | None:
+def _row_order(image: bytes, start: int, end: int,
+               sense_site: int | None = None) -> tuple[list[int], str] | None:
     # Compiler stack-copy: literal six-byte order, then MOV r0, sp and BL copy.
     for current in range(start, end - 7, 2):
         word = struct.unpack_from("<H", image, current)[0]
@@ -354,6 +471,8 @@ def _row_order(image: bytes, start: int, end: int) -> tuple[list[int], str] | No
         bound = any(struct.unpack_from("<H", image, current)[0] == 0x2806 | register << 8 for current in range(start, end - 1, 2))
         if zero and increment and bound:
             return list(range(6)), "direct-identity-loop"
+    if _descending_row_register(image, start, end, sense_site) is not None:
+        return list(range(6)), "direct-descending-loop"
     # A literal six-byte permutation is useful only when this scanner loads it by byte.
     for current in range(start, end - 1, 2):
         word = struct.unpack_from("<H", image, current)[0]
@@ -396,8 +515,22 @@ def _sense_roles(image: bytes, start: int, end: int, descriptor: int, row_site: 
     """Separate a pre-loop no-key guard from D+34 reads inside the six-row loop."""
     global_sites: list[int] = []
     row_sites: list[int] = []
+    senses = [
+        current for current in range(start, end - 3, 2)
+        if ((load := struct.unpack_from("<H", image, current)[0]) & 0xF800
+            == 0x6800
+            and (load >> 6 & 0x1F) * 4 == 0x34
+            and (halfword := struct.unpack_from(
+                "<H", image, current + 2,
+            )[0]) & 0xF800 == 0x8800
+            and halfword >> 3 & 7 == load & 7)
+    ]
+    if _descriptor_pointer(image, start, senses) != descriptor:
+        return global_sites, row_sites
 
     def closes_six_row_loop(sense: int) -> bool:
+        if _descending_row_register(image, start, end, sense) is not None:
+            return True
         for compare in range(sense + 4, min(sense + 0x80, end), 2):
             word = struct.unpack_from("<H", image, compare)[0]
             if word & 0xF800 != 0x2800 or word & 0xFF != 6:
@@ -414,13 +547,8 @@ def _sense_roles(image: bytes, start: int, end: int, descriptor: int, row_site: 
                         return True
         return False
 
-    for current in range(start, end - 3, 2):
+    for current in senses:
         load = struct.unpack_from("<H", image, current)[0]
-        halfword = struct.unpack_from("<H", image, current + 2)[0]
-        if (load & 0xF800 != 0x6800 or (load >> 6 & 0x1F) * 4 != 0x34
-                or _last_literal(image, start, current, load >> 3 & 7) != descriptor
-                or halfword & 0xF800 != 0x8800 or halfword >> 3 & 7 != load & 7):
-            continue
         value = load & 7
         no_key_guard = any(struct.unpack_from("<H", image, probe)[0] == 0x2800 | value << 8 | 0x1F
                            for probe in range(current + 4, min(current + 0x30, end), 2))
@@ -435,6 +563,9 @@ def _row_register(image: bytes, start: int, end: int, row_sites: list[int]) -> i
     """Require one local counter to index and close the exact six-row loop."""
     if not row_sites:
         return None
+    if (register := _descending_row_register(
+            image, start, end, min(row_sites))) is not None:
+        return register
     candidates: list[int] = []
     first = min(row_sites)
     for register in range(8):
@@ -506,8 +637,10 @@ def find_lg_descriptor_keypad_candidates(
                    else find_descriptor_scan_anchors(image, load_address)):
         prologue = int(anchor["function"]) - load_address
         end = min(prologue + 0x900, len(image) - 3)
-        descriptor = _last_literal(image, prologue, int(anchor["anchor"]) - load_address, struct.unpack_from("<H", image, int(anchor["anchor"]) - load_address)[0] >> 3 & 7)
-        senses = _low5_senses(image, prologue, end, descriptor)
+        senses = _low5_senses(image, prologue, end)
+        descriptor = _descriptor_pointer(
+            image, prologue, [sense_site for sense_site, _ in senses],
+        )
         if descriptor is None or not senses or not {5, 6}.issubset(_row_bounds(image, prologue, end)):
             continue
         columns = [(site, register, _table_base(image, prologue, end, register)) for site, register in senses]
@@ -534,7 +667,7 @@ def find_lg_descriptor_keypad_candidates(
         inverted = [next(value for value in active_senses if table[value] == column) for column in range(5)]
         events_address, events = event_table
         provenance = _descriptor_mmio_provenance(image, descriptor)
-        found.append({
+        candidate = {
             "grammar": LG_DESCRIPTOR_RAW_FINGERPRINT, "grammar_fingerprint": LG_DESCRIPTOR_RAW_FINGERPRINT,
             "evidence": "static-scan-to-raw-enqueue",
             "function": load_address + entry, "prologue": load_address + prologue,
@@ -552,7 +685,11 @@ def find_lg_descriptor_keypad_candidates(
             "absolute_roles": ({"control": DESCRIPTOR_MMIO_ROLES[0], "row_drive": DESCRIPTOR_MMIO_ROLES[0x20], "sense": DESCRIPTOR_MMIO_ROLES[0x34]} if provenance else None),
             "descriptor_mmio_provenance": provenance["kind"] if provenance else None,
             "semantic_limit": "static candidate only; physical transport remains unproven",
-        })
+        }
+        mappings = _observed_lg_mappings(events)
+        if mappings:
+            candidate["provisional_mappings"] = mappings
+        found.append(candidate)
     return found
 
 
@@ -564,7 +701,8 @@ def resolve_lg_descriptor_input(image: bytes, load_address: int = 0) -> tuple[di
     for candidate in find_lg_descriptor_keypad_candidates(
             image, load_address, anchors):
         reasons: list[str] = []
-        matching = [shape for shape in shapes if shape["row_bounds"] == [5, 6]
+        matching = [shape for shape in shapes if (shape["row_bounds"] == [5, 6]
+                    or shape.get("row_order_evidence") == "direct-descending-loop")
                     and shape["descriptor_pointer"] == candidate["descriptor_pointer"]
                     and shape["sense_site"] == candidate["sense_site"]
                     and abs(int(shape["function"]) - int(candidate["prologue"])) <= 2]
@@ -575,7 +713,10 @@ def resolve_lg_descriptor_input(image: bytes, load_address: int = 0) -> tuple[di
             row_order = None
         else:
             start = int(matching[0]["function"]) - load_address
-            row_order = _row_order(image, start, start + int(matching[0]["fingerprint_size"]))
+            row_order = _row_order(
+                image, start, start + int(matching[0]["fingerprint_size"]),
+                int(candidate["sense_site"]) - load_address,
+            )
             if row_order is None:
                 reasons.append("row-order-not-proven")
         events = candidate["event_codes"]
@@ -604,6 +745,8 @@ def resolve_lg_descriptor_input(image: bytes, load_address: int = 0) -> tuple[di
             if row_register is not None:
                 candidate["row_register"] = row_register
                 candidate["row_register_evidence"] = (
+                    "five-indexed-descending-ldrb-six-row-backedge"
+                    if row_order[1] == "direct-descending-loop" else
                     "zero-indexed-ldrb-six-row-backedge"
                 )
             state = _row_state(image, start, start + int(matching[0]["fingerprint_size"]))

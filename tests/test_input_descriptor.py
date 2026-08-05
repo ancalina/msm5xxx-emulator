@@ -1,18 +1,52 @@
 from __future__ import annotations
 
+import struct
 import unittest
 from unittest.mock import patch
 
 from msm5xxx_emulator.detection import input_descriptor
-from msm5xxx_emulator.detection.input_descriptor import (
-    _raw_consumer_metadata,
-    _row_register,
-    _sense_roles,
-    _table_base,
-)
+from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance, _descriptor_pointer, _raw_consumer_metadata, _row_order, _row_register, _sense_roles, _table_base
 
 
 class DescriptorColumnTableTests(unittest.TestCase):
+    def test_descriptor_provenance_accepts_late_signed_scatter(self) -> None:
+        image = bytearray(b"\xff" * 0x60000)
+        scatter, source, target, descriptor = (
+            0x50000, 0x58000, 0x01000000, 0x01000100,
+        )
+        struct.pack_into(
+            "<8I", image, scatter,
+            source, target, 0x1000, target + 0x1000, 0x2000,
+            0x43192301, 0x43996001, 0x46F7C006,
+        )
+        for field, value in input_descriptor.DESCRIPTOR_MMIO_ROLES.items():
+            struct.pack_into("<I", image, source + 0x100 + field, value)
+
+        self.assertEqual(
+            _descriptor_mmio_provenance(bytes(image), descriptor),
+            {"kind": "validated-scatter", "source": source + 0x100,
+             "scatter": scatter},
+        )
+        image[scatter + 20] ^= 1
+        self.assertIsNone(
+            _descriptor_mmio_provenance(bytes(image), descriptor)
+        )
+
+    def test_descriptor_pointer_survives_later_register_alias(self) -> None:
+        image = bytearray(b"\xff" * 8)
+        image[0:2] = (0x6B60).to_bytes(2, "little")  # ldr r0, [r4, #0x34]
+        image[2:4] = (0x6B70).to_bytes(2, "little")  # ldr r0, [r6, #0x34]
+
+        with patch.object(
+            input_descriptor, "_last_literal",
+            side_effect=lambda _image, _start, _site, register:
+                0x01123400 if register == 4 else None,
+        ):
+            self.assertEqual(
+                _descriptor_pointer(bytes(image), 0, [0, 2]),
+                0x01123400,
+            )
+
     def test_resolver_reuses_one_immutable_anchor_snapshot(self) -> None:
         seen: list[tuple[dict[str, object], ...]] = []
 
@@ -47,24 +81,22 @@ class DescriptorColumnTableTests(unittest.TestCase):
     def test_raw_consumer_metadata_requires_all_shared_edges(self) -> None:
         ring, load, enqueue, dequeue, task, dispatch = 0x018B0CE4, 0x10000000, 0x20, 0x100, 0x200, 0x300
         image = bytearray(b"\xff" * 0x500)
+        # Exact regex bodies; literal/BL resolution is isolated below.
         image[enqueue:enqueue + 36] = bytes.fromhex(
             "004a04045078240c1378411cc906c90e99428018877050780130c006c00e5070")
         image[dequeue:dequeue + 40] = bytes.fromhex(
             "f0b5004c86b060782178884200000a199778000000381c06b0f0bc08bc1847")
-        image[task:task + 12] = bytes.fromhex("00f000f8071c00d000f000f8")
+        image[task:task + 12] = bytes.fromhex(
+            "00f000f8071c00d000f000f8"
+        )
         for offset, value in enumerate(b"1259"):
-            image[dispatch + offset * 2:dispatch + offset * 2 + 2] = (
-                0x2F00 | value
-            ).to_bytes(2, "little")
+            image[dispatch + offset * 2:dispatch + offset * 2 + 2] = (0x2F00 | value).to_bytes(2, "little")
 
         def literal(_image, site, register):
             return ring if (site, register) in ((enqueue, 2), (dequeue + 2, 4)) else None
-
         def branch(_image, site):
             return dequeue if site in (task, task + 0x20) else dispatch if site in (task + 8, task + 0x28) else None
-
-        with (patch.object(input_descriptor, "thumb_literal_value", literal),
-              patch.object(input_descriptor, "thumb_bl_target", branch)):
+        with patch.object(input_descriptor, "thumb_literal_value", literal), patch.object(input_descriptor, "thumb_bl_target", branch):
             positive = _raw_consumer_metadata(bytes(image), load + enqueue, list(b"1259"), load)
             self.assertEqual(positive, {
                 "raw_ring": ring, "raw_ring_capacity": 32,
@@ -91,6 +123,7 @@ class DescriptorColumnTableTests(unittest.TestCase):
             0x018B0CE4, 0x10000000, 0x20, 0x40, 0x100, 0x200, 0x300,
         )
         image = bytearray(b"\xff" * 0x500)
+        # enqueue branches over a nearby lookalike store function.
         image[enqueue:enqueue + 4] = bytes.fromhex("00b520e0")
         image[0x66:0x68] = bytes.fromhex("7047")
         image[store:store + 36] = bytes.fromhex(
@@ -116,7 +149,6 @@ class DescriptorColumnTableTests(unittest.TestCase):
             self.assertIsNone(_raw_consumer_metadata(
                 bytes(image), load + enqueue, list(b"1259"), load,
             ))
-
     def test_low5_table_inverts_firmware_columns(self) -> None:
         image = bytearray(b"\xff" * 0x100)
         # ldr r2, literal; ldrb r0, [r2, r1].  The scanner's r1 is sense.
@@ -153,6 +185,20 @@ class DescriptorColumnTableTests(unittest.TestCase):
 
         image[2:4] = bytes((0x48, 0x5C))
         self.assertIsNone(_row_register(bytes(image), 0, 16, [4]))
+
+    def test_row_order_accepts_exact_descending_index_loop(self) -> None:
+        image = bytearray(b"\xff" * 0x20)
+        # MOV r5,#5; loop; D+34 read; table[r5]; decrement; BPL loop.
+        image[0:18] = bytes.fromhex(
+            "0525052d686b0088445d013d2d062d0ef7d5"
+        )
+
+        self.assertEqual(
+            _row_order(bytes(image), 0, 18, 4),
+            (list(range(6)), "direct-descending-loop"),
+        )
+        image[16:18] = (0xD0F7).to_bytes(2, "little")
+        self.assertIsNone(_row_order(bytes(image), 0, 18, 4))
 
     def test_row_sense_accepts_late_six_row_bound(self) -> None:
         image = bytearray(b"\xff" * 0x120)

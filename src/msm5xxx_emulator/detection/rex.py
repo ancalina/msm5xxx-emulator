@@ -700,6 +700,19 @@ def _legacy_rex_timer_target(image: bytes, position: int) -> int | None:
     )
 
 
+def _legacy_software_timer_target(image: bytes, position: int) -> int | None:
+    """Resolve an old software-timer walker through one exact ARM veneer."""
+    if legacy_software_timer_advance_at(image, position):
+        return position
+    if (position < 0 or position + 16 > len(image)
+            or struct.unpack_from("<6H", image, position)
+            != (0x4778, 0x46C0, 0xC000, 0xE59F, 0xFF1C, 0xE12F)):
+        return None
+    walker = struct.unpack_from("<I", image, position + 12)[0] & ~1
+    return (walker if legacy_software_timer_advance_at(image, walker)
+            else None)
+
+
 def rex_legacy_5ms_callback_shape_at(
         image: bytes, position: int
 ) -> tuple[int, int] | None:
@@ -749,9 +762,10 @@ def rex_legacy_5ms_callback_at(
         return None
     rex = thumb_bl_target(image, position + calls[0] * 2)
     software = thumb_bl_target(image, position + calls[1] * 2)
+    software = (_legacy_software_timer_target(image, software)
+                if software is not None else None)
     if (rex is None or software is None
-            or _legacy_rex_timer_target(image, rex) is None
-            or not legacy_software_timer_advance_at(image, software)):
+            or _legacy_rex_timer_target(image, rex) is None):
         return None
     return rex, software
 
@@ -1526,19 +1540,26 @@ def find_rex_legacy_5ms_irq_route(
         return None
     words = struct.unpack_from("<56H", image, registrar)
     if not (
-        words[:3] == (0xB5F0, 0x1C04, 0x1C0F)
-        and words[5:14] == (0x1C05, 0x2F00, words[7], 0xD100,
-                             0x1C37, 0x2C00, 0xDB01,
-                             0x2C00 | (0x1F if index == 0x1E else 0x2C),
-                             words[13])
-        and words[21:25] == (0x201C, words[22], 0x4360, 0x1840)
-        and words[28:31] == (
-            0x630F if index == 0x1E else 0x620F,
-            0xE000, 0x6147,
-        )
-    ):
+            words[:3] == (0xB5F0, 0x1C04, 0x1C0F)
+            and words[5:14] == (
+                0x1C05, 0x2F00, words[7], 0xD100, 0x1C37, 0x2C00,
+                0xDB01, 0x2C00 | (0x1F if index == 0x1E else 0x2C),
+                words[13],
+            )):
         return None
-    descriptor_base = thumb_literal_value(image, registrar + 44, 1)
+    store = 0x630F if index == 0x1E else 0x620F
+    layouts = [
+        (multiply, descriptor_load)
+        for multiply, descriptor_load, stores in (
+            (21, 44, 28), (20, 42, 27),
+        )
+        if words[multiply:multiply + 4]
+        == (0x201C, words[multiply + 1], 0x4360, 0x1840)
+        and words[stores:stores + 3] == (store, 0xE000, 0x6147)
+    ]
+    if len(layouts) != 1:
+        return None
+    descriptor_base = thumb_literal_value(image, registrar + layouts[0][1], 1)
     if descriptor_base is None:
         return None
 
@@ -1574,8 +1595,11 @@ def find_rex_legacy_5ms_irq_route(
         return None
 
     handlers: list[int] = []
-    variant = ((0x17E, 0xB087) if index == 0x1E else (0x214, 0xB08A))
-    for delta, prologue in (variant,):
+    variants = (
+        ((0x17E, 0xB087), (0x150, 0xB086))
+        if index == 0x1E else ((0x214, 0xB08A),)
+    )
+    for delta, prologue in variants:
         handler = loop - delta
         if (handler < 0 or handler + REX_IRQ_HANDLER_RUNTIME_SIZE > len(image)
                 or runtime(handler) is None

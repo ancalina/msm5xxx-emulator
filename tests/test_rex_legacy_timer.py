@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from msm5xxx_emulator.detection.rex import (
+    _legacy_software_timer_target,
     _legacy_timer_registration_at,
     find_rex_legacy_5ms_irq_route,
     find_rex_legacy_5ms_timer_bridge,
@@ -22,6 +23,30 @@ def _bl(source: int, target: int) -> bytes:
 
 
 class LegacyTimerRegistrationTests(unittest.TestCase):
+    def test_legacy_software_timer_accepts_exact_arm_veneer(self) -> None:
+        image = bytearray(0x100)
+        veneer, walker = 0x20, 0x60
+        struct.pack_into(
+            "<6HI", image, veneer,
+            0x4778, 0x46C0, 0xC000, 0xE59F, 0xFF1C, 0xE12F,
+            walker | 1,
+        )
+        words = [0] * 28
+        words[:3] = (0xB5F8, 0x1C04, 0x1C0F)
+        words[8:12] = (0x6860, 0x2800, 0xD025, 0x6881)
+        words[12:16] = (0x1BC9, 0x6081, 0xE01E, 0x6867)
+        words[16:20] = (0x6938, 0x68B9, 0x1A46, 0x1C38)
+        words[24:28] = (0x2800, 0xD008, 0x6138, 0x60B8)
+        struct.pack_into("<28H", image, walker, *words)
+
+        self.assertEqual(
+            _legacy_software_timer_target(bytes(image), veneer), walker
+        )
+        image[veneer] ^= 1
+        self.assertIsNone(
+            _legacy_software_timer_target(bytes(image), veneer)
+        )
+
     def test_legacy_callback_runtime_shape_does_not_follow_sliced_bl(self) -> None:
         words = [0] * 34
         fixed = {
@@ -48,8 +73,7 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
     def test_legacy_irq_route_requires_each_static_edge(self) -> None:
         image = bytearray(0x4000)
         outer, registrar, loop, drain = 0x100, 0x300, 0x1000, 0x1100
-        handler, wrapper = loop - 0x17E, 0x2000
-        seed_at, base, slot = 0x2800, 0x24B8, 0x01003600
+        handler, wrapper, seed_at, base, slot = loop - 0x17E, 0x2000, 0x2800, 0x24B8, 0x01003600
         index = 0x1E
         struct.pack_into("<7I", image, seed_at, 0x03000C80, 0x03000C94,
                          0x200, base - 0xC, base - 6, 0x701, 0)
@@ -66,9 +90,7 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
         struct.pack_into("<56H", image, registrar, *words)
         struct.pack_into("<2H", image, handler, 0xB5F0, 0xB087)
         struct.pack_into("<H", image, handler + 0x40, 0x6978)
-        image[handler + 0x42:handler + 0x46] = _bl(
-            handler + 0x42, 0x180
-        )
+        image[handler + 0x42:handler + 0x46] = _bl(handler + 0x42, 0x180)
         image[0x180:0x182] = b"\x00\x47"
         handler_registration, setter = 0x1300, 0x1400
         struct.pack_into("<H", image, handler_registration + 2, 0x2000)
@@ -81,13 +103,10 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
         struct.pack_into("<I", image, wrapper + 0x28, 0xE59F3000)
         struct.pack_into("<I", image, wrapper + 0x30, slot)
         struct.pack_into("<I", image, 0x18, 0xEA000000)
-        bridge = {
-            "outer_callback_file_offset": outer,
-            "drain_loop_caller_file_offset": loop,
-            "drain_file_offset": drain,
-        }
+        bridge = {"outer_callback_file_offset": outer,
+                  "drain_loop_caller_file_offset": loop,
+                  "drain_file_offset": drain}
         registrations = {0x200, 0x220, 0x240}
-
         def literals(_image, position, register):
             if register == 1 and position in registrations:
                 return outer | 1
@@ -104,7 +123,6 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
             if position == handler + 4:
                 return base
             return None
-
         def targets(_image, position):
             if position in {site + 4 for site in registrations}:
                 return registrar
@@ -115,7 +133,6 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
             if position == loop:
                 return drain
             return None
-
         for site in registrations:
             struct.pack_into("<H", image, site + 2, 0x201E)
         struct.pack_into("<I", image, 0x250, outer | 1)
@@ -123,23 +140,14 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
         class FullAddressSpaceImage(bytearray):
             def __len__(self) -> int:
                 return 0x02000000
-        with (
-            patch(
-                "msm5xxx_emulator.detection.rex.thumb_literal_value",
-                side_effect=literals,
-            ),
-            patch(
-                "msm5xxx_emulator.detection.rex.thumb_bl_target",
-                side_effect=targets,
-            ),
-        ):
+        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value", side_effect=literals),
+              patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
             result = find_rex_legacy_5ms_irq_route(
                 FullAddressSpaceImage(image), bridge
             )
         self.assertIsNotNone(result)
         self.assertEqual(result["handler"], handler)
-        self.assertEqual(result["callback_slot"],
-                         base + index * 0x1C + 0x14)
+        self.assertEqual(result["callback_slot"], base + index * 0x1C + 0x14)
         self.assertEqual(result["enable"], 0x03000C94)
         self.assertEqual(
             result["controller_class"],
@@ -154,6 +162,68 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
             result["controller_write_banks"], (0x03000C94, 0x03000C98)
         )
 
+        compact = bytearray(image)
+        compact_words = list(struct.unpack_from("<56H", compact, registrar))
+        compact_words[20:25] = (0x201C, 0x4916, 0x4360, 0x1840, 0)
+        compact_words[27:31] = (0x630F, 0xE000, 0x6147, 0)
+        struct.pack_into("<56H", compact, registrar, *compact_words)
+
+        def compact_literals(_image, position, register):
+            if register == 1 and position == registrar + 42:
+                return base
+            if register == 1 and position == registrar + 44:
+                return None
+            return literals(_image, position, register)
+
+        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
+                    side_effect=compact_literals),
+              patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
+            self.assertIsNotNone(find_rex_legacy_5ms_irq_route(
+                compact, bridge
+            ))
+
+        newer = bytearray(compact)
+        newer_handler = loop - 0x150
+        struct.pack_into("<2H", newer, handler, 0, 0)
+        struct.pack_into("<3H", newer, handler + 0x40, 0, 0, 0)
+        struct.pack_into("<2H", newer, newer_handler, 0xB5F0, 0xB086)
+        struct.pack_into("<H", newer, newer_handler + 0x40, 0x6978)
+        newer[newer_handler + 0x42:newer_handler + 0x46] = _bl(
+            newer_handler + 0x42, 0x180
+        )
+        struct.pack_into("<I", newer, 0x1350, newer_handler | 1)
+
+        def newer_literals(_image, position, register):
+            if register == 1 and position == handler_registration:
+                return newer_handler | 1
+            if position == newer_handler + 2:
+                return 0x03000C80
+            if position == newer_handler + 4:
+                return base
+            if handler <= position < handler + 6:
+                return None
+            return compact_literals(_image, position, register)
+
+        def newer_targets(_image, position):
+            if position == newer_handler + 0x42:
+                return 0x180
+            return targets(_image, position)
+
+        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
+                    side_effect=newer_literals),
+              patch("msm5xxx_emulator.detection.rex.thumb_bl_target",
+                    side_effect=newer_targets)):
+            result = find_rex_legacy_5ms_irq_route(newer, bridge)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["handler"], newer_handler)
+
+        struct.pack_into("<H", newer, newer_handler + 2, 0xB085)
+        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
+                    side_effect=newer_literals),
+              patch("msm5xxx_emulator.detection.rex.thumb_bl_target",
+                    side_effect=newer_targets)):
+            self.assertIsNone(find_rex_legacy_5ms_irq_route(newer, bridge))
+
         for offset, value, width in ((registrar + 60, 0, 2),
                                      (handler + 0x40, 0, 2),
                                      (setter + 6, 0, 2),
@@ -165,20 +235,9 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
                 struct.pack_into("<H", changed, offset, value)
             else:
                 struct.pack_into("<I", changed, offset, value)
-            with (
-                patch(
-                    "msm5xxx_emulator.detection.rex.thumb_literal_value",
-                    side_effect=literals,
-                ),
-                patch(
-                    "msm5xxx_emulator.detection.rex.thumb_bl_target",
-                    side_effect=targets,
-                ),
-            ):
-                self.assertIsNone(
-                    find_rex_legacy_5ms_irq_route(changed, bridge)
-                )
-
+            with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value", side_effect=literals),
+                  patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
+                self.assertIsNone(find_rex_legacy_5ms_irq_route(changed, bridge))
     def test_idle_loop_accepts_backward_branch_displacement(self) -> None:
         words = [0] * 30
         fixed = {
