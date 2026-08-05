@@ -169,6 +169,13 @@ class CheckpointMixin:
                 "rex_ticks": self.rex_ticks,
                 "rex_elapsed_ms": self.rex_elapsed_ms,
                 "rex_irq_deliveries": self.rex_irq_deliveries,
+                "board_adc_reads": getattr(self, "board_adc_reads", 0),
+                "board_adc_channels": [
+                    {"channel": channel, "entries": entries}
+                    for channel, entries in sorted(
+                        getattr(self, "board_adc_channel_entries", {}).items()
+                    )
+                ],
                 "storage": {
                     "eeprom_reads": self.eeprom_reads,
                     "eeprom_writes": self.eeprom_writes,

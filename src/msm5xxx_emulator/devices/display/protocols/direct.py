@@ -247,16 +247,19 @@ class DirectProtocolMixin:
         # generic 176x220 fallback used for unknown handset names.  Do this
         # only before any frame and never turn a small rectangle update into a
         # new screen size.
-        if (self._lcd_full_window_geometry(self._lcd_x, self._lcd_y) is not None
+        axes_programmed = self._lcd_window_axis_mask == 0xF
+        if (axes_programmed
+                and self._lcd_full_window_geometry(self._lcd_x, self._lcd_y) is not None
                 and spans[0] <= self.config.width and spans[1] <= self.config.height):
             self._set_display_geometry(*spans, source="runtime:direct-window")
         screen = (self.config.width, self.config.height)
         for axis, (start, span, visible) in enumerate(zip(
                 (self._lcd_x[0], self._lcd_y[0]), spans, screen)):
-            if span == visible:
+            if axes_programmed and span == visible:
                 self._lcd_direct_origin[axis] = start
                 self._lcd_direct_calibrated[axis] = True
-            elif span > visible and not self._lcd_direct_calibrated[axis]:
+            elif (axes_programmed and span > visible
+                  and not self._lcd_direct_calibrated[axis]):
                 self._lcd_direct_origin[axis] = (start + (span - visible) // 2) & 0xFF
         self._lcd_direct_window = spans
         self._lcd_direct_cursor = [0, 0]
@@ -273,6 +276,9 @@ class DirectProtocolMixin:
             pair = self._lcd_args[:2]
         target = self._lcd_x if self._lcd_command == 0x15 else self._lcd_y
         target[:] = pair
+        self._lcd_window_axis_mask |= (
+            0x3 if target is self._lcd_x else 0xC
+        )
 
     def _lcd_finish_direct_frame(self) -> None:
         if (self._lcd_command in LCD_MEMORY_WRITE_COMMANDS

@@ -577,6 +577,11 @@ class LifecycleMixin:
         self._rex_irq_controller_aperture: tuple[int, int] | None = None
         self._rex_candidate_route: dict[str, object] | None = None
         self._rex_candidate_shadow_hooks: list[int] = []
+        self._rex_copied_c40_route: dict[str, object] | None = None
+        self._rex_copied_c40_shadow_hooks: list[int] = []
+        self._rex_copied_c40_gate_pending = False
+        self._rex_copied_c40_gate_terminal = False
+        self._rex_copied_c40_gate_next_instruction = 0
         self._rex_candidate_gate_terminal = False
         self._rex_candidate_gate_next_instruction = 0
         self.rex_controller_gate_attempts = 0
@@ -593,6 +598,7 @@ class LifecycleMixin:
         self.rex_irq_arm_last_value: int | None = None
         self.rex_irq_arm_instruction: int | None = None
         self.board_adc_reads = 0
+        self.board_adc_channel_entries: Counter[int] = Counter()
         self._board_adc_reader_channel: int | None = None
         self._board_adc_reader_layout_cache: tuple[bytes | None, int | None] | None = None
         self.flash_id_reads = 0

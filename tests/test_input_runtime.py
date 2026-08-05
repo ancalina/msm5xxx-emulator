@@ -208,16 +208,14 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertIsNone(payload["family"])
         self.assertIsNone(payload["grammar_fingerprint"])
 
-    def test_direct_matrix_uses_unique_cells_in_table_order(self) -> None:
+    def test_samsung_matrix_uses_evidenced_events_not_table_order(self) -> None:
         emulator = self._direct_emulator()
 
-        self.assertEqual(len(emulator.direct_input_positions), 23)
-        self.assertEqual(emulator.direct_input_positions[0], (0x63, 0, 0))
-        self.assertEqual(emulator.direct_input_positions[7], (0x53, 1, 1))
-        self.assertEqual(emulator.direct_input_positions[22], (0x55, 5, 3))
-        self.assertEqual(
-            len(set(emulator.direct_input_positions.values())), 23,
-        )
+        self.assertEqual(len(emulator.direct_input_positions), 19)
+        self.assertEqual(emulator.direct_input_positions[0], (0x5B, 0, 1))
+        self.assertEqual(emulator.direct_input_positions[2], (0x52, 2, 3))
+        self.assertEqual(emulator.direct_input_positions[14], (0x34, 3, 0))
+        self.assertNotIn(5, emulator.direct_input_positions)
 
     def test_direct_matrix_prefers_evidence_gated_semantic_metadata(self) -> None:
         profile = self._direct_profile()
@@ -229,10 +227,10 @@ class InputRuntimeTests(unittest.TestCase):
                 "semantic_grammar_fingerprint": "exact-keyemul",
             },
         }
-        self.assertEqual(
-            GenericMSMEmulator._direct_matrix_positions(profile),
-            {5: (0x53, 1, 1)},
-        )
+        positions = GenericMSMEmulator._direct_matrix_positions(profile)
+        self.assertEqual(positions[5], (0x53, 1, 1))
+        self.assertEqual(positions[14], (0x34, 3, 0))
+        self.assertEqual(len(positions), 20)
 
     def test_evidence_gated_mapping_is_logged_without_fallback_rank(self) -> None:
         emulator = self._direct_emulator()
@@ -267,6 +265,7 @@ class InputRuntimeTests(unittest.TestCase):
     def test_direct_matrix_experimental_fallback_is_stable_and_filtered(
             self) -> None:
         profile = self._direct_profile()
+        profile["event_sink_family"] = "lg-ring256-event-queue-v1"
 
         first = GenericMSMEmulator._direct_matrix_positions(profile)
         second = GenericMSMEmulator._direct_matrix_positions(profile)
@@ -290,7 +289,7 @@ class InputRuntimeTests(unittest.TestCase):
     def test_manual_event_uses_unique_detected_matrix_cell_only(self) -> None:
         emulator = self._direct_emulator()
 
-        self.assertTrue(emulator.can_set_key(5))
+        self.assertFalse(emulator.can_set_key(5))
         self.assertTrue(emulator.can_set_key(5, 0x53))
         self.assertFalse(emulator.can_set_key(5, 0x7F))
         self.assertFalse(emulator.can_set_key(5, 0))
@@ -319,7 +318,7 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertFalse(rejected["accepted"])
         emulator.direct_input_profile = self._direct_profile()
 
-        self.assertTrue(emulator.can_set_key(5))
+        self.assertFalse(emulator.can_set_key(5))
         emulator.set_key(5, True, 0x53)
         self.assertEqual(emulator.direct_key_positions[5], (0x53, 1, 1))
         self.assertEqual(emulator.held_keys, {5})
@@ -478,6 +477,12 @@ class InputRuntimeTests(unittest.TestCase):
             emulator.set_key(5, False)
             emulator.set_key(15, True)
             emulator.set_key(15, False)
+            emulator.direct_input_profile["event_sink_family"] = (
+                "lg-ring256-event-queue-v1"
+            )
+            emulator.direct_input_positions = emulator._direct_matrix_positions(
+                emulator.direct_input_profile
+            )
             emulator.set_key(5, True)
             emulator.set_key(5, False)
 
@@ -504,7 +509,7 @@ class InputRuntimeTests(unittest.TestCase):
             (automatic_press["mapping_source"],
              automatic_release["mapping_source"],
              automatic_release["scanner_active_during_hold"]),
-            ("automatic-experimental", "automatic-experimental", False),
+            ("automatic-evidenced", "automatic-evidenced", False),
         )
         self.assertEqual(
             (fallback_press["mapping_source"],
@@ -672,20 +677,20 @@ class InputRuntimeTests(unittest.TestCase):
     def test_direct_matrix_experimental_key_rejects_simultaneous_key(
             self) -> None:
         emulator = self._direct_emulator()
-        emulator.set_key(5, True)
-        self.assertEqual(emulator.held_keys, {5})
+        emulator.set_key(15, True)
+        self.assertEqual(emulator.held_keys, {15})
         with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
             emulator.set_key(16, True)
-        self.assertEqual(emulator.held_keys, {5})
+        self.assertEqual(emulator.held_keys, {15})
         self.assertIn("one key at a time", emulator.input_error)
         rejected = json.loads(logged.call_args.args[1])
         self.assertFalse(rejected["accepted"])
         self.assertEqual(rejected["reason"], "simultaneous-key-unsupported")
         self.assertEqual(
-            rejected["mapping_source"], "automatic-experimental"
+            rejected["mapping_source"], "automatic-evidenced"
         )
 
-        emulator.set_key(5, False)
+        emulator.set_key(15, False)
         self.assertEqual(emulator.held_keys, set())
 
     def test_direct_matrix_consumer_requires_matching_edge_after_scan(self) -> None:

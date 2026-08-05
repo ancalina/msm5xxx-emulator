@@ -44,9 +44,10 @@ BOARD_ADC_READER_DATA_ADDRESS = BOARD_ADC_READER_LITERAL + 0x0C
 BOARD_ADC_READER_VARIANT_SIZE = BOARD_ADC_READER_SIZE + 4
 BOARD_ADC_READER_VARIANT_BL_OFFSETS = (0x04, 0x0C, 0x12, 0x4E, 0x52,
                                        0x56, 0x68, 0x6C, 0x72, 0x76, 0x86)
+BOARD_ADC_READER_ANCHOR = bytes.fromhex("0404240c")
 BOARD_ADC_READER_VARIANT_FIXED = (
     (0, BOARD_ADC_READER_PREFIX),
-    (8, bytes.fromhex("0404240c")),
+    (8, BOARD_ADC_READER_ANCHOR),
     (0x10, bytes.fromhex("2a20")),
     (0x16, bytes.fromhex(
         "1f48802201781143017001789f2319400170022f02d10178202208e0"
@@ -56,9 +57,41 @@ BOARD_ADC_READER_VARIANT_FIXED = (
     (0x7A, bytes.fromhex("0748808907063f0e002c01d1")),
     (0x8A, bytes.fromhex("381c90bc08bc1847")),
 )
+BOARD_ADC_READER_REORDERED_FIXED = (
+    (0x2E, b"\x40"),
+    (0x42, b"\x20"),
+    (0, BOARD_ADC_READER_PREFIX),
+    (8, BOARD_ADC_READER_ANCHOR),
+    (0x10, bytes.fromhex("2a20")),
+    (0x16, bytes.fromhex(
+        "1f48802201781143017001789f2319400170022f02d10178402208e0"
+        "032f02d10178602203e0002f03d10178202211430170071c01780a20")),
+    (0x5A, bytes.fromhex("3878802398430106090e38700a20")),
+    (0x70, bytes.fromhex("0b20")),
+    (0x7A, bytes.fromhex("0748808907063f0e002c01d1")),
+    (0x8A, bytes.fromhex("381c90bc08bc1847")),
+)
+BOARD_ADC_READER_EXTENDED_SIZE = BOARD_ADC_READER_VARIANT_SIZE + 12
+BOARD_ADC_READER_EXTENDED_BL_OFFSETS = (
+    0x04, 0x0C, 0x12, 0x4E, 0x52, 0x56, 0x68,
+    0x6C, 0x74, 0x78, 0x7E, 0x82, 0x92,
+)
+BOARD_ADC_READER_EXTENDED_FIXED = (
+    (0, BOARD_ADC_READER_PREFIX),
+    (8, BOARD_ADC_READER_ANCHOR),
+    (0x10, bytes.fromhex("2a20")),
+    (0x16, bytes.fromhex(
+        "2248802201781143017001789f2319400170022f02d10178202208e0"
+        "032f02d10178602203e0002f03d10178402211430170071c01780a20")),
+    (0x5A, bytes.fromhex("3878802398430106090e38700a20")),
+    (0x70, bytes.fromhex("80210c20")),
+    (0x7C, bytes.fromhex("0b20")),
+    (0x86, bytes.fromhex("0748808907063f0e002c01d1")),
+    (0x96, bytes.fromhex("381c90bc08bc1847")),
+)
 BOARD_ADC_READER_FIXED = (
     (0, BOARD_ADC_READER_PREFIX),
-    (8, bytes.fromhex("0404240c")),
+    (8, BOARD_ADC_READER_ANCHOR),
     (0x10, bytes.fromhex("2a20")),
     (0x16, BOARD_ADC_READER_BODY),
     (0x5E, BOARD_ADC_READER_MID_BODY),
@@ -89,17 +122,32 @@ def board_adc_reader_read_offset_at(image: bytes, position: int) -> int | None:
             and struct.unpack_from("<I", image, position + 0x98)[0]
             == BOARD_ADC_READER_LITERAL):
         return 0x7C
+    if (position + BOARD_ADC_READER_VARIANT_SIZE <= len(image)
+            and not any(image[position + offset:position + offset + len(expected)] != expected
+                        for offset, expected in BOARD_ADC_READER_REORDERED_FIXED)
+            and struct.unpack_from("<I", image, position + 0x98)[0]
+            == BOARD_ADC_READER_LITERAL):
+        return 0x7C
+    if (position + BOARD_ADC_READER_EXTENDED_SIZE <= len(image)
+            and not any(image[position + offset:position + offset + len(expected)]
+                        != expected
+                        for offset, expected in BOARD_ADC_READER_EXTENDED_FIXED)
+            and struct.unpack_from("<I", image, position + 0xA4)[0]
+            == BOARD_ADC_READER_LITERAL):
+        return 0x88
     return None
 
 
 def board_adc_reader_at(image: bytes, position: int) -> bool:
     """Validate one shared ADC reader without matching unrelated MMIO users."""
     offset = board_adc_reader_read_offset_at(image, position)
-    return (offset is not None
-            and _reader_targets_in_image(
-                image, position,
-                (BOARD_ADC_READER_BL_OFFSETS if offset == 0x7E
-                 else BOARD_ADC_READER_VARIANT_BL_OFFSETS)))
+    offsets = {
+        0x7E: BOARD_ADC_READER_BL_OFFSETS,
+        0x7C: BOARD_ADC_READER_VARIANT_BL_OFFSETS,
+        0x88: BOARD_ADC_READER_EXTENDED_BL_OFFSETS,
+    }.get(offset)
+    return (offsets is not None
+            and _reader_targets_in_image(image, position, offsets))
 
 
 def _reader_targets_in_image(image: bytes, position: int,
@@ -110,8 +158,8 @@ def _reader_targets_in_image(image: bytes, position: int,
 
 def find_board_adc_reader(image: bytes) -> int | None:
     """Return unique shared Thumb ADC reader, never loose ADC MMIO literal hits."""
-    matches = [position for position in find_all(image, BOARD_ADC_READER_PREFIX)
-               if board_adc_reader_at(image, position)]
+    matches = [anchor - 8 for anchor in find_all(image, BOARD_ADC_READER_ANCHOR)
+               if anchor >= 8 and board_adc_reader_at(image, anchor - 8)]
     return matches[0] if len(matches) == 1 else None
 
 

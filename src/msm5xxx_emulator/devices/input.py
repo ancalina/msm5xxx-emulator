@@ -10,6 +10,7 @@ from ..detection.input import detect_input_profile
 from ..detection.input_descriptor import LG_DESCRIPTOR_RAW
 from ..detection.input_descriptor import resolve_lg_descriptor_input
 from ..detection.input_matrix import UNCLASSIFIED
+from ..detection.input_matrix import SAMSUNG_RING32
 from ..detection.input_matrix import resolve_direct_matrix_input
 from ..detection.rex import find_rex_legacy_5ms_irq_route
 from ..detection.rex import find_rex_legacy_5ms_timer_bridge
@@ -26,6 +27,10 @@ import struct
 import logging
 
 LOGGER = logging.getLogger("msm5xxx")
+SAMSUNG_RING32_KEY_EVENTS = {
+    0: 0x5B, 1: 0x54, 2: 0x52, 3: 0x50, 4: 0x65, 6: 0x66, 9: 0x55,
+    **dict(zip(range(11, 23), b"123456789*0#")),
+}
 
 
 class InputMixin:
@@ -373,8 +378,12 @@ class InputMixin:
                 return
             requested_source = (
                 "manual" if event_code is not None else
-                "automatic-evidenced" if bit in direct.get(
-                    "provisional_mappings", {}
+                "automatic-evidenced" if (
+                    bit in direct.get("provisional_mappings", {})
+                    or (
+                        direct.get("event_sink_family") == SAMSUNG_RING32
+                        and SAMSUNG_RING32_KEY_EVENTS.get(bit) == position[0]
+                    )
                 ) else "automatic-experimental"
             )
             if pressed and self.held_keys:
@@ -640,9 +649,15 @@ class InputMixin:
         cells = events[:cell_limit]
         event_counts = Counter(cells)
         fillers = {0, 0xFF, int(profile["no_key"]) & 0xFF}
+        positions: dict[int, tuple[int, int, int]] = {}
+        if family == SAMSUNG_RING32:
+            for bit, event in SAMSUNG_RING32_KEY_EVENTS.items():
+                if event_counts[event] != 1 or event in fillers:
+                    continue
+                index = cells.index(event)
+                positions[bit] = (event, index % rows, index // rows)
         mappings = profile.get("provisional_mappings")
         if isinstance(mappings, dict) and mappings:
-            positions: dict[int, tuple[int, int, int]] = {}
             for raw_bit, mapping in mappings.items():
                 bit = int(raw_bit)
                 if (not 0 <= bit < HANDSET_KEY_COUNT
@@ -653,6 +668,8 @@ class InputMixin:
                     continue
                 index = cells.index(event)
                 positions[bit] = (event, index % rows, index // rows)
+            return positions
+        if positions:
             return positions
         candidates = (
             (int(event), index % rows, index // rows)

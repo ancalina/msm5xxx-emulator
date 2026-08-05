@@ -17,6 +17,49 @@ def _bl(source: int, target: int) -> bytes:
                        0xF800 | (delta >> 1 & 0x7FF))
 
 
+def _arm_b(source: int, target: int) -> int:
+    return 0xEA000000 | ((target - source - 8) >> 2 & 0xFFFFFF)
+
+
+def _copied_image() -> tuple[bytearray, dict[str, int]]:
+    image = bytearray(0x5000)
+    source, wrapper, descriptor = 0x1000, 0x800, 0x1200
+    handler_table, handler = 0x1400, 0x1800
+    callback, registrar, arm = 0x2000, 0x2400, 0x3000
+    callback_base = 0x01000400
+    struct.pack_into("<I", image, 0x18, _arm_b(0x18, 0x01000000))
+    struct.pack_into("<4I", image, 0x40, source, 0x01000000,
+                     0x400, 0x01000400)
+    struct.pack_into("<I", image, source, _arm_b(0x01000000, wrapper))
+    struct.pack_into("<6I", image, wrapper,
+                     0xE59F3010, 0xE5933000, 0xE12FFF13,
+                     0xE59F3008, 0xE5933000, 0xE12FFF13)
+    struct.pack_into("<2I", image, wrapper + 0x18,
+                     0x01000100, 0x01000104)
+    descriptor_runtime = 0x01000000 + descriptor - source
+    struct.pack_into("<4I", image, descriptor,
+                     0x03000C40, 0x03000C54, 0x0200,
+                     descriptor_runtime - 8)
+    struct.pack_into("<4I", image, handler_table, descriptor_runtime,
+                     0x03000C60, 0x03000FD0, handler | 1)
+    struct.pack_into("<H", image, handler, 0xB5F0)
+    struct.pack_into("<6H", image, callback,
+                     0xB590, 0x2105, 0x2005, 0x3905, 0x6001, 0x2105)
+    struct.pack_into("<10H", image, registrar,
+                     0xB5F0, 0x1C05, 0x1C0F, 0xF000, 0xF800,
+                     0x1C04, 0, 0x2F00, 0xD100, 0x1C37)
+    _literal(image, registrar + 0x0C, 6, handler | 1, registrar + 0xF8)
+    _literal(image, registrar + 0x14, 0, callback_base, registrar + 0xFC)
+    struct.pack_into("<H", image, registrar + 0x46, 0x664F)
+    _literal(image, arm, 1, 0x030006E0, arm + 0x40)
+    struct.pack_into("<2H", image, arm + 2, 0x2002, 0x7008)
+    _literal(image, arm + 6, 1, callback | 1, arm + 0x44)
+    struct.pack_into("<H", image, arm + 8, 0x2000)
+    image[arm + 10:arm + 14] = _bl(arm + 10, registrar)
+    return image, {"callback": callback, "arm": arm,
+                   "callback_slot": callback_base - 0x18}
+
+
 def _literal(image: bytearray, at: int, register: int, value: int, pool: int) -> None:
     base = (at + 4) & ~3
     struct.pack_into("<H", image, at, 0x4800 | register << 8 | (pool - base) // 4)
@@ -82,6 +125,28 @@ def _image(revision: int) -> tuple[bytearray, dict[str, int]]:
 
 
 class C40ObservationTests(unittest.TestCase):
+    def test_copied_vector_selector0_delta5_accepts_and_fails_closed(self) -> None:
+        image, offsets = _copied_image()
+        result = find_rex_static_c40_controller_observation(image)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["controller_class"],
+                         "c40-copied-vector-selector0-delta5-v1")
+        self.assertEqual(result["vector_target"], 0x01000000)
+        self.assertEqual(result["callback_slot"], offsets["callback_slot"])
+        self.assertEqual(result["callback_file_offset"], offsets["callback"])
+        self.assertEqual(result["time_tick_control_file_offset"], offsets["arm"])
+
+        changed = bytearray(image)
+        struct.pack_into("<H", changed, offsets["callback"] + 6, 0)
+        rejected = find_rex_static_c40_controller_observation(changed)
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reject_reason"],
+                         "selector0-time-tick-registration-not-unique")
+
     def test_two_relocated_fixtures_accept_and_mutations_reject(self) -> None:
         for revision in (0, 4):
             image, offsets = _image(revision)

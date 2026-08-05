@@ -494,7 +494,8 @@ class GuiTelemetryTests(unittest.TestCase):
             "display": {"frame_sequence": 8, "firmware_frame_sequence": 7},
             "counters": {
                 "lcd_writes": 6, "rex_idle_entries": 5, "rex_ticks": 4,
-                "rex_elapsed_ms": 3,
+                "rex_elapsed_ms": 3, "board_adc_reads": 20,
+                "board_adc_channels": [{"channel": 2, "entries": 20}],
                 "storage": {
                     "eeprom_reads": 2, "eeprom_writes": 1,
                     "eeprom_changed_bytes": 9, "secondary_nor_reads": 8,
@@ -504,8 +505,10 @@ class GuiTelemetryTests(unittest.TestCase):
             },
         })
         self.assertEqual((state["lcd_writes"], state["frame_sequence"],
-                          state["eeprom_reads"], state["nand_writes"]),
-                         (6, 8, 2, 4))
+                          state["eeprom_reads"], state["nand_writes"],
+                          state["board_adc_reads"], state["board_adc_channels"]),
+                         (6, 8, 2, 4, 20,
+                          [{"channel": 2, "entries": 20}]))
 
 
 if __name__ == "__main__":

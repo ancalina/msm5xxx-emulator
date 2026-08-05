@@ -323,6 +323,42 @@ class PageProtocolMixin:
             stream.clear()
             self._lcd_raw_counts[port] = 0
             return
+        if (port == (0x02800004, 2) and len(commands) >= 6
+                and commands[-6] == 0x43 and commands[-3] == 0x42):
+            x0, x1 = commands[-5:-3]
+            y0, y1 = commands[-2:]
+            width, height = x1 - x0 + 1, y1 - y0 + 1
+            expected = width * height
+            if width > 0 and height > 0 and count == expected:
+                geometry = self._lcd_full_window_geometry(
+                    [x0, x1], [y0, y1]
+                )
+                source = getattr(
+                    self.config, "display_geometry_source", "external-config"
+                )
+                if (geometry is not None
+                        and (geometry == (self.config.width, self.config.height)
+                             or source == "auto-default")):
+                    self._set_display_geometry(
+                        *geometry, source="runtime:window-fifo"
+                    )
+                    self._lcd_028_window_fifo_qualified = (
+                        geometry == (self.config.width, self.config.height)
+                    )
+                if (self._lcd_028_window_fifo_qualified
+                        and x1 < self.config.width
+                        and y1 < self.config.height):
+                    for index, pixel in enumerate(stream):
+                        x = x0 + index % width
+                        y = y0 + index // width
+                        self._pixel(y * self.config.width + x, pixel)
+                    self._lcd_raw_frames[port] += 1
+                    self._lcd_raw_port = port
+                    self._lcd_protocol = "window-fifo-rgb565"
+                    self._publish_frame()
+                    stream.clear()
+                    self._lcd_raw_counts[port] = 0
+                    return
         # A 128x160 RGB565 scanout is common on the unknown-name Samsung/KTF
         # dumps.  When an otherwise unclassified +4 FIFO reaches *exactly*
         # that full raster before the generic 176x220 threshold, it is stronger
@@ -346,26 +382,6 @@ class PageProtocolMixin:
                 self._set_display_geometry(
                     160, 240, source="runtime:raw-fifo"
                 )
-            # SCH-E135-class panels issue a command-delimited, exact 128x128
-            # RGB565 transfer through the indexed +4 FIFO.  The preceding
-            # 0x51/0x43/0x42 programming sequence distinguishes it from a
-            # 128x160 panel's first 16K rectangle update.
-            elif (getattr(self.config, "display_geometry_source", "external-config")
-                  == "auto-default"
-                  and address == 0x02800004 and count == 128 * 128
-                  and tuple(self._lcd_recent_commands)[-7:]
-                  == (0x51, 0x43, 0x00, 0x7F, 0x42, 0x00, 0x7F)):
-                values = tuple(stream)
-                self._set_display_geometry(
-                    128, 128, source="runtime:raw-fifo"
-                )
-                for index, pixel in enumerate(values):
-                    self._pixel(index, pixel)
-                self._lcd_raw_frames[port] += 1
-                self._lcd_raw_port = port
-                self._lcd_protocol = f"raw-fifo@0x{address:08X}"
-                self._publish_frame()
-                return
         pixels = self.config.width * self.config.height
         # A partial transfer is often a command table or a rectangle update;
         # require a complete scanout before treating it as a framebuffer.

@@ -4,7 +4,10 @@ from __future__ import annotations
 class Bgr444ProtocolMixin:
     @staticmethod
     def _lcd_bgr444_rgb565(value: int) -> int:
-        blue, green, red = value >> 8 & 0xF, value >> 4 & 0xF, value & 0xF
+        # The proven cursor grammar carries 0x0RGB words.  Keep the legacy
+        # method/protocol name because it is telemetry-facing compatibility,
+        # not a claim about the wire nibble order.
+        red, green, blue = value >> 8 & 0xF, value >> 4 & 0xF, value & 0xF
         return (((red << 1 | red >> 3) << 11)
                 | ((green << 2 | green >> 2) << 5)
                 | (blue << 1 | blue >> 3))
@@ -38,9 +41,13 @@ class Bgr444ProtocolMixin:
             return
         self._lcd_bgr444_finish_run()
         geometry = self._lcd_bgr444_raster_geometry()
+        geometry_source = getattr(
+            self.config, "display_geometry_source", "external-config"
+        )
         if (geometry is not None
                 and geometry != (self.config.width, self.config.height)
-                and self.frame_sequence == 0):
+                and (self.frame_sequence == 0
+                     or geometry_source in {"auto-default", "runtime:gram"})):
             self._set_display_geometry(
                 *geometry, source="runtime:cursor-bgr444", force=True
             )
@@ -57,7 +64,7 @@ class Bgr444ProtocolMixin:
         self._lcd_bgr444_runs.clear()
 
     def _lcd_bgr444_begin_command(self, size: int, value: int) -> bool:
-        """Qualify the cursor-addressed BGR444 command sequence."""
+        """Qualify the cursor-addressed 12-bit RGB command sequence."""
         if size != 2:
             return False
         command = value & 0xFFFF
@@ -82,7 +89,7 @@ class Bgr444ProtocolMixin:
         return False
 
     def _lcd_bgr444_feed(self, size: int, value: int) -> bool:
-        """Consume one register or pixel word from the proven BGR444 bus."""
+        """Consume one register or pixel word from the proven 12-bit RGB bus."""
         command = self._lcd_bgr444_command
         if size != 2 or command is None:
             return False

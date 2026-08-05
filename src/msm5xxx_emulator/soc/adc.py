@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from ..detection.input import (
-    BOARD_ADC_READER_DATA_ADDRESS, BOARD_ADC_READER_SIZE,
+    BOARD_ADC_READER_DATA_ADDRESS, BOARD_ADC_READER_EXTENDED_SIZE,
+    BOARD_ADC_READER_SIZE,
     BOARD_ADC_READER_VARIANT_SIZE, board_adc_reader_read_offset_at,
 )
 from unicorn.arm_const import UC_ARM_REG_PC
@@ -18,13 +19,18 @@ class AdcMixin:
                 uc, address, prefix_size=BOARD_ADC_READER_SIZE):
             self._board_adc_reader_channel = None
             return
-        self._board_adc_reader_channel = uc.reg_read(UC_ARM_REG_R0)
+        channel = uc.reg_read(UC_ARM_REG_R0)
+        self._board_adc_reader_channel = channel
+        self.board_adc_channel_entries[channel] += 1
 
     def _board_adc_reader_data_read(self, uc: Uc, address: int,
                                     size: int) -> None:
         reader = self.config.board_adc_reader_address
         original = (self._original_runtime_bytes(
-            reader, BOARD_ADC_READER_VARIANT_SIZE) if reader is not None else None)
+            reader, BOARD_ADC_READER_EXTENDED_SIZE) if reader is not None else None)
+        if original is None and reader is not None:
+            original = self._original_runtime_bytes(
+                reader, BOARD_ADC_READER_VARIANT_SIZE)
         if original is None and reader is not None:
             original = self._original_runtime_bytes(reader, BOARD_ADC_READER_SIZE)
         cache = getattr(self, "_board_adc_reader_layout_cache", None)

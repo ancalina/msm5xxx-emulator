@@ -265,6 +265,10 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
             "irq_deliveries": _counter(state, "rex_irq_deliveries"),
             "controller": _mapping(state, "rex_controller"),
         },
+        "board": {
+            "adc_reads": _counter(state, "board_adc_reads"),
+            "adc_channels": state.get("board_adc_channels", []),
+        },
         "nor": {
             "primary": _mapping(state, "primary_flash_telemetry"),
             "primary_parallel_nor_direct_id_probes": state.get(
@@ -322,8 +326,11 @@ def hydrate_host_checkpoint(state: dict[str, object]) -> dict[str, object]:
 
     for name in (
             "lcd_writes", "rex_idle_entries", "rex_ticks", "rex_elapsed_ms",
-            "rex_irq_deliveries"):
+            "rex_irq_deliveries", "board_adc_reads"):
         promote(name, counters)
+    if (not isinstance(hydrated.get("board_adc_channels"), list)
+            and isinstance(counters.get("board_adc_channels"), list)):
+        hydrated["board_adc_channels"] = counters["board_adc_channels"]
     for name in ("frame_sequence", "firmware_frame_sequence"):
         promote(name, display)
     for target, source in (

@@ -116,6 +116,9 @@ class MemoryBusMixin:
     def _trace(self, uc: Uc, address: int, size: int, user_data: object) -> None:
         if self._flash_restore:
             self._restore_flash_once(uc, address, size, user_data)
+        if (self._rex_copied_c40_gate_pending
+                or self._rex_copied_c40_route is not None):
+            self._rex_copied_c40_timer_source(uc)
         if self._rex_irq_pending[0] and self._rex_irq_boundary(uc, address):
             return
         self.tail.append(address)
@@ -629,7 +632,7 @@ class MemoryBusMixin:
                             and move >> 3 & 7 == read_register
                             and pop & 0xFE00 == 0xBC00
                             and not (pop & 0x0100)
-                            and return_instruction == 0x4770):
+                            and return_instruction in (0x4770, 0x46F7)):
                         retry_exit = target + 0x20
             if (target > fallthrough and retry_exit is not None
                     and retry_exit > target and retry_exit - target <= 0x40):

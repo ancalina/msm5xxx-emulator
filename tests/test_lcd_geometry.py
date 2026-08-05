@@ -626,7 +626,7 @@ class LCDGeometryTests(unittest.TestCase):
             self.assertTrue(emulator._lcd_bgr444_begin_command(2, command))
             self.assertTrue(emulator._lcd_bgr444_feed(2, argument))
         self.assertTrue(emulator._lcd_bgr444_begin_command(2, 0x0B))
-        self.assertTrue(emulator._lcd_bgr444_feed(2, 0x0FF0))
+        self.assertTrue(emulator._lcd_bgr444_feed(2, 0x00FF))
         self.assertTrue(emulator._lcd_bgr444_feed(2, 0x0000))
         self.assertFalse(emulator._lcd_bgr444_begin_command(2, 0x2B))
 
@@ -644,11 +644,41 @@ class LCDGeometryTests(unittest.TestCase):
                 self.assertTrue(emulator._lcd_bgr444_feed(2, argument))
             self.assertTrue(emulator._lcd_bgr444_begin_command(2, 0x0B))
             for _ in range(128):
-                self.assertTrue(emulator._lcd_bgr444_feed(2, 0x0FF0))
+                self.assertTrue(emulator._lcd_bgr444_feed(2, 0x00FF))
         self.assertFalse(emulator._lcd_bgr444_begin_command(2, 0x2B))
 
         self.assertEqual((emulator.config.width, emulator.config.height), (128, 160))
         self.assertEqual(emulator.display_frame[:3], bytes((0, 255, 255)))
+
+    def test_cursor_bgr444_replaces_chunk_flushed_gram_fallback(self) -> None:
+        emulator = self._blank_emulator(
+            visible=True, geometry_source="runtime:gram"
+        )
+        for y in range(160):
+            for command, argument in ((0x03, 0), (0x05, y)):
+                self.assertTrue(
+                    emulator._lcd_bgr444_begin_command(2, command)
+                )
+                self.assertTrue(emulator._lcd_bgr444_feed(2, argument))
+            self.assertTrue(emulator._lcd_bgr444_begin_command(2, 0x0B))
+            for _ in range(128):
+                self.assertTrue(emulator._lcd_bgr444_feed(2, 0x00FF))
+        self.assertFalse(emulator._lcd_bgr444_begin_command(2, 0x2B))
+
+        self.assertEqual(
+            (emulator.config.width, emulator.config.height), (128, 160)
+        )
+        self.assertEqual(
+            emulator.config.display_geometry_source,
+            "runtime:cursor-bgr444",
+        )
+        self.assertEqual(emulator.display_frame[:3], bytes((0, 255, 255)))
+
+    def test_cursor_bgr444_uses_rgb_nibble_order(self) -> None:
+        emulator = self._blank_emulator(visible=False)
+
+        self.assertEqual(emulator._lcd_bgr444_rgb565(0x0F00), 0xF800)
+        self.assertEqual(emulator._lcd_bgr444_rgb565(0x000F), 0x001F)
 
     def test_page_lcd_publish_records_proven_protocol(self) -> None:
         emulator = self._blank_emulator(visible=False)

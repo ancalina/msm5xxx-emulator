@@ -676,17 +676,17 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             "fs_dev descriptor/table/trampoline linkage"
         )
     crc16_address = runtime_signature("crc16_address", CRC16_SIGNATURE)
-    dmd_download_address = runtime_signature("dmd_download_address",
-                                             DMD_DOWNLOAD_SIGNATURE)
-    if dmd_download_address is None:
-        dmd_download_address = runtime_signature(
-            "dmd_download_address", DMD_DOWNLOAD_510X_SIGNATURE
+    dmd_5500_position = detect_dmd_download_5500(primary_image)
+    if dmd_5500_position is not None:
+        dmd_download_address = runtime_position(
+            "dmd_download_address", dmd_5500_position
         )
-    if dmd_download_address is None:
-        dmd_5500_position = detect_dmd_download_5500(primary_image)
-        if dmd_5500_position is not None:
-            dmd_download_address = runtime_position(
-                "dmd_download_address", dmd_5500_position
+    else:
+        dmd_download_address = runtime_signature("dmd_download_address",
+                                                 DMD_DOWNLOAD_SIGNATURE)
+        if dmd_download_address is None:
+            dmd_download_address = runtime_signature(
+                "dmd_download_address", DMD_DOWNLOAD_510X_SIGNATURE
             )
     primary_flash_probe_address = runtime_signature(
         "primary_flash_probe_address", PRIMARY_FLASH_PROBE_SIGNATURE

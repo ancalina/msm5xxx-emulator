@@ -225,6 +225,12 @@ class RuntimeMixin:
             "rex_controller": self._rex_controller_telemetry(),
             "sbi": self._sbi_telemetry(),
             "board_adc_reads": self.board_adc_reads,
+            "board_adc_channels": [
+                {"channel": channel, "entries": entries}
+                for channel, entries in sorted(
+                    getattr(self, "board_adc_channel_entries", {}).items()
+                )
+            ],
             "flash_id_reads": self.flash_id_reads,
             "secondary_flash_reads": self.secondary_flash_reads,
             "secondary_flash_writes": self.secondary_flash_writes,

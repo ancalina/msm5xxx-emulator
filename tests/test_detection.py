@@ -12,6 +12,12 @@ from unittest.mock import patch
 
 import condition_report
 from msm5xxx_emulator.detection.memory_layout import infer_ram_base
+from msm5xxx_emulator.detection.boot import (
+    DMD_DOWNLOAD_SIGNATURE,
+    DMD_DOWNLOAD_5500_LITERALS,
+    DMD_DOWNLOAD_5500_SIZE,
+    detect_dmd_download_5500,
+)
 from msm5xxx_emulator.detection.storage import (
     EEPROM_24LC64_CLASS_B_BOUND,
     EEPROM_24LC64_CLASS_B_READ_PREFIX,
@@ -76,6 +82,34 @@ from msm5xxx_emulator.detection.rex import (
 
 
 class DetectionTests(unittest.TestCase):
+    def test_5500_dmd_precedes_legacy_and_falls_back(self) -> None:
+        routine = bytearray(b"\xff" * DMD_DOWNLOAD_5500_SIZE)
+        for offset, value in {
+            0: bytes.fromhex("b0b50020"),
+            4: bytes.fromhex("00f000f8"),
+            8: bytes.fromhex("002803d10c480088"),
+            16: bytes.fromhex("6c2803d00020b0bc08bc1847094800248480"),
+            34: bytes.fromhex("00f000f8"),
+            38: bytes.fromhex("084f084d02e0381c"),
+            46: bytes.fromhex("00f000f8"),
+            50: bytes.fromhex("e889064b9842f8d1ec810120eae7"),
+            64: DMD_DOWNLOAD_5500_LITERALS,
+        }.items():
+            routine[offset:offset + len(value)] = value
+
+        image = bytearray(b"\xff" * 0x400)
+        image[0x20:0x20 + len(DMD_DOWNLOAD_SIGNATURE)] = DMD_DOWNLOAD_SIGNATURE
+        image[0x100:0x100 + len(routine)] = routine
+        image[0x300:0x310] = b"dmddown_5500.c\0"
+        self.assertEqual(detect_dmd_download_5500(bytes(image)), 0x100)
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "dmd-collision.bin"
+            firmware.write_bytes(image)
+            self.assertEqual(detect(firmware).dmd_download_address, 0x100)
+            image[0x100 + 17] ^= 1
+            firmware.write_bytes(image)
+            self.assertEqual(detect(firmware).dmd_download_address, 0x20)
+
     def test_rex_5ms_prefilters_preserve_exclusive_eof_bounds(self) -> None:
         registration = struct.pack(
             "<4H", 0x4900, 0x201C, 0xF7FF, 0xFFFC

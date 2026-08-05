@@ -450,7 +450,7 @@ def find_rex_static_controller_callback_candidate(
     }
 
 
-def find_rex_static_c40_controller_observation(
+def _find_rex_direct_c40_controller_observation(
         image: bytes,
 ) -> dict[str, object] | None:
     """Return one closed C40 TIME_TICK observation."""
@@ -670,6 +670,206 @@ def find_rex_static_c40_controller_observation(
         "time_tick_arm_value": 2,
         "time_tick_period_ms": 5,
     }
+
+
+def _copied_c40_handler_slots(image: bytes, wrapper: int) -> tuple[int, ...]:
+    """Return adjacent RAM slots dereferenced by one ARM IRQ wrapper."""
+    found: set[int] = set()
+    for pc in range(wrapper, min(len(image) - 4, wrapper + 0x300), 4):
+        word = struct.unpack_from("<I", image, pc)[0]
+        if (word >> 28 != 0xE or word & 0x0E5F0000 != 0x041F0000
+                or not word & 1 << 20 or word & (1 << 22 | 1 << 21)):
+            continue
+        register = word >> 12 & 15
+        literal = pc + 8 + ((word & 0xFFF) if word & 1 << 23
+                            else -(word & 0xFFF))
+        if not 0 <= literal <= len(image) - 4:
+            continue
+        slot = struct.unpack_from("<I", image, literal)[0]
+        if not 0x01000000 <= slot < 0x01800000:
+            continue
+        dereference = branch = False
+        for at in range(pc + 4, min(len(image) - 4, pc + 0x30), 4):
+            instruction = struct.unpack_from("<I", image, at)[0]
+            dereference |= ((instruction & 0x0FFF0FFF)
+                            == (0x05900000 | register << 16))
+            if (instruction & 0x0FFFFFF0 == 0x012FFF10
+                    and instruction & 15 == register):
+                branch = True
+                break
+        if dereference and branch:
+            found.add(slot)
+    slots = tuple(sorted(found))
+    return slots if len(slots) == 2 and slots[1] == slots[0] + 4 else ()
+
+
+def _copied_c40_delta5_callback_at(image: bytes, position: int) -> bool:
+    """Validate shared five-unit callback semantics without fixing layout."""
+    if position < 0 or position + 0x80 > len(image):
+        return False
+    words = struct.unpack_from("<64H", image, position)
+    return (
+        words[0] & 0xFF00 == 0xB500
+        and words.count(0x2105) >= 2
+        and 0x2005 in words
+        and any(words[index:index + 2] == (0x3905, 0x6001)
+                for index in range(len(words) - 1))
+    )
+
+
+def _copied_c40_time_tick_registrations(
+        image: bytes,
+) -> list[tuple[int, int, int, int, int]]:
+    """Return arm, callback, registrar, callback base, selector-0 slot."""
+    found: list[tuple[int, int, int, int, int]] = []
+    offset = 0
+    while (offset := image.find(b"\x02\x20\x08\x70", offset)) >= 0:
+        arm = offset - 2
+        offset += 1
+        if (arm < 0 or arm & 1 or arm + 14 > len(image)
+                or thumb_literal_value(image, arm, 1) != 0x030006E0
+                or struct.unpack_from("<H", image, arm + 6)[0] & 0xFF00
+                   != 0x4900
+                or struct.unpack_from("<H", image, arm + 8)[0] != 0x2000):
+            continue
+        callback_pointer = thumb_literal_value(image, arm + 6, 1)
+        registrar = thumb_bl_target(image, arm + 10)
+        if (callback_pointer is None or not callback_pointer & 1
+                or registrar is None or registrar + 0x48 > len(image)):
+            continue
+        callback = callback_pointer & ~1
+        words = struct.unpack_from("<10H", image, registrar)
+        if (words[:3] != (0xB5F0, 0x1C05, 0x1C0F)
+                or words[5] != 0x1C04
+                or words[6] & 0xF800 != 0x4800
+                or words[6] >> 8 & 7 != 6
+                or words[7:10] != (0x2F00, 0xD100, 0x1C37)
+                or struct.unpack_from("<H", image, registrar + 0x46)[0]
+                   != 0x664F):
+            continue
+        callback_base = thumb_literal_value(image, registrar + 0x14, 0)
+        if (callback_base is None
+                or not 0x01000018 <= callback_base < 0x01800000
+                or not _copied_c40_delta5_callback_at(image, callback)):
+            continue
+        found.append((arm, callback, registrar, callback_base,
+                      callback_base - 0x18))
+    return found
+
+
+def _find_rex_copied_c40_controller_observation(
+        image: bytes,
+) -> dict[str, object] | None:
+    """Close copied-vector C40 topology while keeping runtime disabled."""
+    if (len(image) < 0x100
+            or arm_b_word_target(struct.unpack_from("<I", image, 0x18)[0], 0x18)
+            != 0x01000000):
+        return None
+    status, enable, mask = 0x03000C40, 0x03000C54, 0x0200
+    prefix = struct.pack("<3I", status, enable, mask)
+    descriptors: list[tuple[int, int]] = []
+    offset = 0
+    while (offset := image.find(prefix, offset)) >= 0:
+        if offset + 16 <= len(image):
+            shadow = struct.unpack_from("<I", image, offset + 12)[0]
+            if 0x01000000 <= shadow < 0x01800000 and not shadow & 3:
+                descriptors.append((offset, shadow))
+        offset += 1
+    if not descriptors:
+        return None
+
+    limit = ("static copied-vector topology only; native pending, cadence, "
+             "repeat IRQ, and idle remain unproven")
+
+    def rejected(reason: str, **details: object) -> dict[str, object]:
+        return {
+            "signature": "static-c40-copied-vector-selector0-v1",
+            "accepted": False, "active": False, "promotion": "telemetry-only",
+            "semantic_limit": limit, "reject_reason": reason, **details,
+        }
+
+    if len(descriptors) != 1:
+        return rejected("c40-descriptor-not-unique",
+                        descriptor_count=len(descriptors))
+    descriptor, shadow = descriptors[0]
+    copies: list[tuple[int, int]] = []
+    for at in range(0, min(len(image) - 16, 0x20000) + 1, 4):
+        source, target, size, bss = struct.unpack_from("<4I", image, at)
+        if (target == 0x01000000 and 0x100 <= size <= 0x200000
+                and bss == target + size and source > at + 0x20
+                and source + size <= len(image)):
+            copies.append((source, size))
+    if len(copies) != 1:
+        return rejected("copied-vector-source-not-unique",
+                        copy_count=len(copies))
+    source, copy_size = copies[0]
+    if not source <= descriptor < source + copy_size:
+        return rejected("descriptor-outside-vector-copy")
+    descriptor_runtime = 0x01000000 + descriptor - source
+    if descriptor_runtime != shadow + 8:
+        return rejected("descriptor-shadow-relation-mismatch",
+                        descriptor_runtime=descriptor_runtime, mask_shadow=shadow)
+    wrapper = arm_b_word_target(
+        struct.unpack_from("<I", image, source)[0], 0x01000000
+    )
+    if wrapper is None or not 0 <= wrapper <= len(image) - 4:
+        return rejected("copied-vector-target-not-in-image")
+    slots = _copied_c40_handler_slots(image, wrapper)
+    if not slots:
+        return rejected("handler-slot-not-unique")
+    anchor = struct.pack("<3I", descriptor_runtime, 0x03000C60, 0x03000FD0)
+    handler_tables: list[tuple[int, int]] = []
+    offset = 0
+    while (offset := image.find(anchor, offset)) >= 0:
+        if offset + 16 <= len(image):
+            handler = struct.unpack_from("<I", image, offset + 12)[0]
+            if (handler & 1 and handler < len(image)
+                    and image[handler & ~1:(handler & ~1) + 2] == b"\xF0\xB5"):
+                handler_tables.append((offset, handler & ~1))
+        offset += 1
+    if len(handler_tables) != 1:
+        return rejected("c40-handler-table-not-unique",
+                        handler_table_count=len(handler_tables))
+    registrations = _copied_c40_time_tick_registrations(image)
+    if len(registrations) != 1:
+        return rejected("selector0-time-tick-registration-not-unique",
+                        registration_count=len(registrations))
+    arm, callback, registrar, callback_base, callback_slot = registrations[0]
+    return {
+        "signature": "static-c40-copied-vector-selector0-v1",
+        "accepted": True, "active": False, "promotion": "telemetry-only",
+        "semantic_limit": limit,
+        "controller_class": "c40-copied-vector-selector0-delta5-v1",
+        "descriptor_file_offset": descriptor,
+        "descriptor_runtime_address": descriptor_runtime,
+        "mask_shadow": shadow,
+        "status_banks": (status, status + 4),
+        "enable_banks": (enable, enable + 4),
+        "mask": mask, "selector": 0,
+        "vector": 0x18, "vector_target": 0x01000000,
+        "vector_copy_source": source, "vector_copy_size": copy_size,
+        "wrapper_file_offset": wrapper, "handler_slot": slots[0],
+        "handler_file_offset": handler_tables[0][1],
+        "handler_table_file_offset": handler_tables[0][0],
+        "callback_base": callback_base, "callback_slot": callback_slot,
+        "callback_file_offset": callback,
+        "registrar_file_offset": registrar,
+        "time_tick_control_file_offset": arm,
+        "time_tick_control_address": 0x030006E0,
+        "time_tick_arm_value": 2, "time_tick_period_ms": 5,
+    }
+
+
+def find_rex_static_c40_controller_observation(
+        image: bytes,
+) -> dict[str, object] | None:
+    """Return direct or copied-vector C40 telemetry, failing closed."""
+    direct = _find_rex_direct_c40_controller_observation(image)
+    if (direct is None or direct.get("accepted")
+            or direct.get("reject_reason") != "runtime-vector-target-mismatch"):
+        return direct
+    copied = _find_rex_copied_c40_controller_observation(image)
+    return copied if copied is not None else direct
 
 
 def legacy_software_timer_advance_at(image: bytes, position: int) -> bool:
