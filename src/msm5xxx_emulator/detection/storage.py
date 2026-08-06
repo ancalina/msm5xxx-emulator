@@ -1,6 +1,7 @@
 """Firmware storage-driver detection."""
 from __future__ import annotations
 
+import hashlib
 import re
 import struct
 
@@ -10,6 +11,16 @@ from .signatures import find_all
 
 
 FUJITSU_MB84VD2219X_IDS = (0x0004, 0x005F)
+FUJITSU_X16_BULK_WRITE_MAX_SIZE = 0x118
+FUJITSU_X16_BULK_WRITE_F8_PREFIX = bytes.fromhex(
+    "f8b5041c8818171c3c4a1268ff32c132936b5b00984205d8"
+)
+FUJITSU_X16_BULK_WRITE_F8_BODY_HASH = (
+    "0d6ec61f9c5574193e392fa98e95219cd1b7897993fb9a96f9f8488cf49bc62f"
+)
+FUJITSU_X16_BULK_WRITE_F8_CALLS = (
+    0x4A, 0x64, 0x6C, 0xA2, 0xBE, 0xC6, 0xD4, 0xE8, 0xF2,
+)
 
 
 PAGE = 0x1000
@@ -81,10 +92,23 @@ EEPROM_24LCXX_X270_WRITE_PREFIX = bytes.fromhex(
     "f7b5161c93b0149901235b039942f74a02db"
 )
 EEPROM_24LCXX_X270_READ_PREFIX = bytes.fromhex(
-    "f0b5041c151c01235b039942f74802db8278"
+    "f0b5041c151c01235b039942f74802db8278012a02d100270e1c04e0f44ac778"
+    "89180e04360c011c0088f14bd84202d08978022909d1700b400703d17019400b"
+    "40071fd0eb49ec4816e001239b0398420ad1b00b800703d17019800b800711d0"
+    "e548e449083007e0300c02d27019000c08d3e148df490e30"
 )
 EEPROM_24LCXX_X270_INIT_SIGNATURE = bytes.fromhex(
     "01200449c0030880012088700020c8707047"
+)
+# Same paired transport grammar with the writer geometry literal four bytes
+# earlier than the X270 class.  Admission still requires the common read,
+# initializer, marker, and one shared RAM geometry global.
+EEPROM_24LCXX_F6F7_WRITE_PREFIX = bytes.fromhex(
+    "f7b5161c93b0149901235b039942f64a02db9078012802d10020149c05e0d078"
+    "1499f24bc9180c04240c1188ef4bd94202d09278022a09d1610b490703d1a119"
+    "490b490716d0ea49ea481de001239b0399420ad1a10b890703d1a119890b8907"
+    "08d0e448e24908300ee0210c09d2a119090c06d20e231840a0210843129000f0"
+    "00fbdc48da490e30"
 )
 # SPH-X7700 has a separately compiled 24LC256 transport.  Its duplicated
 # source-name string is not a uniqueness signal, so discovery below requires
@@ -364,6 +388,63 @@ def find_24lcxx_x270_driver(image: bytes) -> tuple[int, int, int] | None:
     return read, write, geometry
 
 
+def find_24lcxx_f6f7_driver(image: bytes) -> tuple[int, int, int] | None:
+    """Return the uniquely paired F6-writer/F7-reader compiler class."""
+    marker = b"nv24lcxx.c\0"
+    if len(find_all(image.lower(), marker)) != 1:
+        return None
+    writes = find_all(image, EEPROM_24LCXX_F6F7_WRITE_PREFIX)
+    reads = find_all(image, EEPROM_24LCXX_X270_READ_PREFIX)
+    initializers = find_all(image, EEPROM_24LCXX_X270_INIT_SIGNATURE)
+    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
+        return None
+    write, read, initializer = writes[0], reads[0], initializers[0]
+    literal = initializer + 0x14
+    if literal + 4 > len(image):
+        return None
+    geometry = struct.unpack_from("<I", image, literal)[0]
+    if geometry & 3 or not 0x00800000 <= geometry < 0x02000000:
+        return None
+    if not (_eeprom_24lcxx_variant_geometry_at(
+            image, write, 0xE, 0x3E8, geometry
+    ) and _eeprom_24lcxx_variant_geometry_at(
+            image, read, 0xC, 0x3EC, geometry
+    ) and _eeprom_f6f7_gpio_shape(image, write, read)):
+        return None
+    return read, write, geometry
+
+
+def _eeprom_f6f7_gpio_shape(image: bytes, write: int, read: int) -> bool:
+    """Require the paired byte-level GPIO leaves and their local call shape."""
+    start = max(0, write - 0x400)
+    end = min(len(image) - 4, read + 0x1000)
+    calls: dict[int, int] = {}
+    for position in range(start, end, 2):
+        target = thumb_bl_target(image, position)
+        if target is not None and 0 <= target <= len(image) - 4:
+            calls[target] = calls.get(target, 0) + 1
+
+    def literals(target: int) -> set[int]:
+        values = set()
+        for position in range(target, min(len(image) - 2, target + 0x100), 2):
+            word = struct.unpack_from("<H", image, position)[0]
+            register = word >> 8 & 7
+            value = thumb_literal_value(image, position, register)
+            if word & 0xF800 == 0x4800 and value is not None:
+                values.add(value)
+        return values
+
+    writers = [target for target, count in calls.items()
+               if count == 16
+               and image[target:target + 4] == b"\xf0\xb5\x07\x1c"
+               and {0x03000660, 0x03000668} <= literals(target)]
+    readers = [target for target, count in calls.items()
+               if count == 2
+               and image[target:target + 4] == b"\xf0\xb5\x00\x27"
+               and 0x03000668 in literals(target)]
+    return len(writers) == len(readers) == 1
+
+
 def find_24lcxx_x7700_driver(image: bytes) -> tuple[int, int, int] | None:
     """Return the uniquely paired X7700 24LC256 compiler variant."""
     if b"nv24lcxx.c\0" not in image.lower():
@@ -417,29 +498,60 @@ def find_24lcxx_driver(image: bytes) -> tuple[int, int, int] | None:
     return (find_24lc64_class_a_driver(image)
             or find_24lcxx_x430_driver(image)
             or find_24lcxx_x270_driver(image)
+            or find_24lcxx_f6f7_driver(image)
             or find_24lcxx_x7700_driver(image))
 
 
-def fujitsu_x16_bulk_write_at(image: bytes, position: int,
-                              secondary_base: int) -> bool:
+def fujitsu_x16_bulk_write_mode_at(
+        image: bytes, position: int, secondary_base: int,
+) -> str | None:
     for pattern, literal_offset, unlock_offset in FUJITSU_X16_BULK_WRITE_PATTERNS:
         if (pattern.match(image, position) is not None
                 and position + literal_offset + 4 <= len(image)
                 and struct.unpack_from("<I", image, position + literal_offset)[0]
                 == secondary_base + unlock_offset):
-            return True
-    return False
+            return "unlock-bypass"
+    if (position < 0
+            or position + FUJITSU_X16_BULK_WRITE_MAX_SIZE > len(image)
+            or image[position:position + len(FUJITSU_X16_BULK_WRITE_F8_PREFIX)]
+               != FUJITSU_X16_BULK_WRITE_F8_PREFIX
+            or struct.unpack_from("<2I", image, position + 0x104)
+               != (secondary_base + 0xAAA0, secondary_base + 0x5540)):
+        return None
+    body = bytearray(image[position:position + 0xFC])
+    calls: list[int] = []
+    for offset in range(0, len(body) - 3, 2):
+        if thumb_bl_target(image, position + offset) is None:
+            continue
+        calls.append(offset)
+        body[offset:offset + 4] = b"\0" * 4
+    return ("per-word-unlock" if (
+        tuple(calls) == FUJITSU_X16_BULK_WRITE_F8_CALLS
+        and hashlib.sha256(body).hexdigest()
+        == FUJITSU_X16_BULK_WRITE_F8_BODY_HASH
+    ) else None)
+
+
+def fujitsu_x16_bulk_write_at(image: bytes, position: int,
+                              secondary_base: int) -> bool:
+    return fujitsu_x16_bulk_write_mode_at(
+        image, position, secondary_base
+    ) is not None
 
 
 def find_fujitsu_x16_bulk_write(image: bytes, secondary_base: int) -> int | None:
     if b"fs_fujitsu.c\0" not in image:
         return None
-    matches = [
+    candidates = {
         match.start()
         for pattern, _literal_offset, _unlock_offset in FUJITSU_X16_BULK_WRITE_PATTERNS
         for match in pattern.finditer(image)
-        if fujitsu_x16_bulk_write_at(image, match.start(), secondary_base)
-    ]
+    }
+    candidates.update(find_all(image, FUJITSU_X16_BULK_WRITE_F8_PREFIX))
+    matches = [position for position in sorted(candidates)
+               if fujitsu_x16_bulk_write_at(
+                   image, position, secondary_base
+               )]
     return matches[0] if len(matches) == 1 else None
 
 

@@ -18,6 +18,12 @@ from .arm import (
     thumb_literal_value,
 )
 from .signatures import find_all
+from .input_semantics import (
+    KEYEMU_GRAMMAR_FINGERPRINT,
+    KEYEMU_PASSTHROUGH,
+    KeyemuSemantics,
+    detect_keyemu_semantics,
+)
 
 
 DIRECT_MATRIX_TAIL = re.compile(
@@ -94,6 +100,9 @@ SAMSUNG_RAW_RECEIVER_TAIL = bytes.fromhex("071c00d0")
 SAMSUNG_RAW_R7_MOVE = bytes.fromhex("071c")
 SAMSUNG_RAW_CONSUMER_EVIDENCE = "samsung-byte-ring32-r0-receiver-v1"
 SAMSUNG_RAW_R7_CONSUMER_EVIDENCE = "samsung-byte-ring32-r7-task-dispatch-v1"
+SAMSUNG_RAW_SAVED_CONSUMER_EVIDENCE = (
+    "samsung-byte-ring32-saved-task-dispatch-v1"
+)
 _SAMSUNG_CONSUMER_ROUTE_EVENTS = (0x54, 0x55, 0x63, 0x64)
 _SAMSUNG_CONSUMER_ROUTE_EVIDENCE = "samsung-ring32-r7-route-v1"
 _SAMSUNG_CONSUMER_ROUTE_LIMIT = 0x1000
@@ -122,6 +131,107 @@ N330_5X6_SEMANTICS = {
 N330_5X6_FINGERPRINT = hashlib.sha256(
     json.dumps(N330_5X6_SEMANTICS, sort_keys=True, separators=(",", ":")).encode()
 ).hexdigest()
+
+
+def _matches_relocated_thumb_bl(
+        image: bytes, position: int, template: bytes, bl_offset: int) -> bool:
+    """Match fixed code around one relocation-sensitive Thumb BL."""
+    end = position + len(template)
+    return (
+        0 <= position <= len(image) - len(template)
+        and image[position:position + bl_offset] == template[:bl_offset]
+        and thumb_bl_target(image, position + bl_offset) is not None
+        and image[position + bl_offset + 4:end] == template[bl_offset + 4:]
+    )
+
+
+SAMSUNG_SIDEBAND_51_WORDS = {
+    0x26: 0x7900, 0x28: 0x2210, 0x2A: 0x4002, 0x36: 0x2A00,
+    0x42: 0x2A05, 0x50: 0x2A05, 0x56: 0x2A0A, 0x7E: 0x2A0A,
+    0xC6: 0x2751, 0x294: 0x7BD8, 0x29E: 0x2803, 0x2A2: 0x2F00,
+    0x2AE: 0x20FF, 0x2C0: 0x722F, 0x2C6: 0x2002, 0x2C8: 0x73D8,
+    0x2D4: 0x7A28, 0x2D6: 0x4287, 0x2DA: 0x2003, 0x2DC: 0x73D8,
+    0x2F8: 0x1C38,
+}
+
+
+def _samsung_sideband_51_metadata(
+        image: bytes, scanner: int, event_sink: int, load_address: int
+) -> dict[str, object]:
+    """Describe one closed sideband event producer without owning its MMIO."""
+    if scanner < 0 or scanner + 0x330 > len(image):
+        return {}
+    if (thumb_literal_value(image, scanner + 0x24, 0) != 0x03000690
+            or struct.unpack_from("<H", image, scanner + 0xC6)[0] != 0x2751):
+        return {}
+    reasons = [f"shape-word-0x{offset:03x}-mismatch"
+               for offset, word in SAMSUNG_SIDEBAND_51_WORDS.items()
+               if struct.unpack_from("<H", image, scanner + offset)[0]
+               != word]
+    if set(_thumb_successors(
+            image, scanner + 0x3A, scanner + 0x330
+    )) != {scanner + 0x3C, scanner + 0x60}:
+        reasons.append("active-low-branch-not-closed")
+    if tuple(_thumb_successors(
+            image, scanner + 0xC8, scanner + 0x330
+    )) != (scanner + 0x27C,):
+        reasons.append("event-state-branch-not-closed")
+    if thumb_bl_target(image, scanner + 0x2B0) != event_sink:
+        reasons.append("release-sink-mismatch")
+    if thumb_bl_target(image, scanner + 0x2FA) != event_sink:
+        reasons.append("press-sink-mismatch")
+    if reasons:
+        return {
+            "sideband_detection_status": "rejected",
+            "sideband_detection_reject_reasons": reasons,
+        }
+    return {
+        "sideband_detection_status": "accepted",
+        "sideband_detection_reject_reasons": [],
+        "sideband_producers": [{
+            "grammar": "active-low-mmio-bit-debounced-event-v1",
+            "evidence": "literal+mask+local-state+shared-queue",
+            "semantic_status": "temporary-evidence-gated",
+            "semantic_key": 7,
+            "semantic_name": "END",
+            "semantic_evidence": "event-0x51-independent-keyemu-maps",
+            "event": 0x51,
+            "event_register": 7,
+            "register": 0x03000694,
+            "register_width": 1,
+            "mask": 0x10,
+            "polarity": "active-low",
+            "press_callsite": load_address + scanner + 0x2FA,
+            "release_event": 0xFF,
+            "release_callsite": load_address + scanner + 0x2B0,
+            "event_sink": load_address + event_sink,
+        }],
+    }
+
+
+def _same_image_keyemu_ok_mapping(
+        profile: dict[str, object], semantics: KeyemuSemantics,
+) -> dict[int, dict[str, object]]:
+    """Bind OK only when matrix and exact native KEYEMUL share event ABI."""
+    if (semantics.confidence != "exact-native"
+            or semantics.grammar_fingerprint != KEYEMU_GRAMMAR_FINGERPRINT):
+        return {}
+    semantic_events = dict(semantics.event_map)
+    if (semantic_events.get("O") != (0x53,)
+            or semantic_events.get("release") != (0xFF,)):
+        return {}
+    events = list(profile.get("event_codes", ()))
+    shared = (*map(ord, KEYEMU_PASSTHROUGH), 0x53)
+    if any(events.count(event) != 1 for event in shared):
+        return {}
+    return {5: {
+        "event": 0x53,
+        "rule": "same-image-exact-keyemul-O-unique-cell",
+        "evidence": (
+            "exact-keyemul-semantics+unique-matrix-event-namespace"
+        ),
+        "semantic_grammar_fingerprint": KEYEMU_GRAMMAR_FINGERPRINT,
+    }}
 
 
 def _producer_feature_names(word: int) -> tuple[str, ...]:
@@ -386,6 +496,94 @@ def _samsung_raw_r7_consumer_metadata(
     }
 
 
+def _samsung_raw_saved_consumer_metadata(
+        image: bytes, event_sink: int, event_codes: list[int],
+        load_address: int,
+) -> dict[str, object] | None:
+    """Recover semantic ring32 variants using r4/r7 across the task call."""
+    end = min(len(image), event_sink + 0x100)
+    reachable = _thumb_reachable(image, event_sink, end)
+    stores = [
+        current for current in reachable
+        if current >= event_sink + 2
+        and struct.unpack_from("<2H", image, current - 2)
+        == (0x1880, 0x7087)
+    ]
+    pairs: list[tuple[int, int]] = []
+    for store in stores:
+        rings = [
+            value for current in range(max(event_sink, store - 0x80), store, 2)
+            if struct.unpack_from("<H", image, current)[0] & 0xFF00 == 0x4A00
+            and (value := thumb_literal_value(image, current, 2)) is not None
+            and 0x01000000 <= value < 0x04000000
+        ]
+        if len(rings) == 1:
+            pairs.append((store, rings[0]))
+    if len(pairs) != 1:
+        return None
+    store, ring = pairs[0]
+
+    dequeues = []
+    for body in find_all(image, bytes.fromhex("50781178884201d10020")):
+        dequeue = body - 2
+        if dequeue < 0 or dequeue & 1 or dequeue + 28 > len(image):
+            continue
+        words = struct.unpack_from("<14H", image, dequeue)
+        if (thumb_literal_value(image, dequeue, 2) == ring
+                and words[1:6] == (0x7850, 0x7811, 0x4288, 0xD101, 0x2000)
+                and words[6] in (0x46F7, 0x4770)
+                and words[7:13]
+                == (0x1888, 0x3101, 0x06C9, 0x0EC9, 0x7880, 0x7011)
+                and words[13] in (0x46F7, 0x4770)):
+            dequeues.append(dequeue)
+    if len(dequeues) != 1:
+        return None
+    dequeue = dequeues[0]
+
+    tasks: list[tuple[int, int, int]] = []
+    for register, move in ((4, 0x1C04), (7, 0x1C07)):
+        for position in find_all(image, struct.pack("<H", move)):
+            call = position - 4
+            if (call < 0 or call & 1 or call + 12 > len(image)
+                    or thumb_bl_target(image, call) != dequeue
+                    or struct.unpack_from("<H", image, call + 6)[0] & 0xFF00
+                    != 0xD000):
+                continue
+            task = thumb_bl_target(image, call + 8)
+            if task is None or not 0 <= task <= len(image) - 2 or task & 1:
+                continue
+            branches = _thumb_successors(image, call + 6, len(image))
+            if set(branches) != {call + 8, call + 12}:
+                continue
+            compare_base = 0x2800 | register << 8
+            compared = {
+                struct.unpack_from("<H", image, current)[0] & 0xFF
+                for current in _thumb_reachable_preserving_register(
+                    image, task, min(len(image), task + 0x1000), register
+                )
+                if struct.unpack_from("<H", image, current)[0] & 0xFF00
+                == compare_base
+                and struct.unpack_from("<H", image, current)[0] & 0xFF
+                in event_codes
+            }
+            if len(compared) >= 3:
+                tasks.append((call, task, register))
+    if len(tasks) != 1:
+        return None
+    call, task, register = tasks[0]
+    return {
+        "raw_ring": ring,
+        "raw_ring_capacity": 32,
+        "raw_enqueue_store": load_address + store,
+        "raw_enqueue_register": 7,
+        "raw_dequeue": load_address + dequeue,
+        "raw_dequeue_return": load_address + call + 4,
+        "raw_task_entry": load_address + task,
+        "raw_task_register": register,
+        "raw_consumer_evidence": SAMSUNG_RAW_SAVED_CONSUMER_EVIDENCE,
+    }
+
+
 def _samsung_consumer_route_handler(
         image: bytes, metadata: dict[str, object], load_address: int
 ) -> tuple[int, str] | None:
@@ -529,7 +727,7 @@ def _find_n330_5x6_scanners(
     found: list[dict[str, object]] = []
     start = 0
     while True:
-        scanner = image.find(N330_5X6_ENTRY, start)
+        scanner = image.find(N330_5X6_ENTRY[:12], start)
         if scanner < 0:
             return found
         start = scanner + 1
@@ -537,18 +735,24 @@ def _find_n330_5x6_scanners(
         release = scanner + 0x472
         press_call = press + len(N330_PRESS_PREFIX)
         release_call = release + len(N330_RELEASE_PREFIX)
-        if (image[scanner + 0x6A:scanner + 0x6A + len(N330_GLOBAL_SENSE)]
+        if (not _matches_relocated_thumb_bl(
+                    image, scanner, N330_5X6_ENTRY, 0x0C)
+                or image[scanner + 0x6A:scanner + 0x6A + len(N330_GLOBAL_SENSE)]
                 != N330_GLOBAL_SENSE
                 or image[scanner + 0xF8:scanner + 0xF8 + len(N330_ROW_SENSE)]
                 != N330_ROW_SENSE
-                or image[press:press_call] != N330_PRESS_PREFIX
+                or not _matches_relocated_thumb_bl(
+                    image, press, N330_PRESS_PREFIX, 0x1A)
                 or image[release:release_call] != N330_RELEASE_PREFIX):
             continue
         queue = thumb_bl_target(image, press_call)
         if queue is None or thumb_bl_target(image, release_call) != queue:
             continue
         producer = classify_matrix_event_sink(image, queue)
-        if producer["family"] != SAMSUNG_DUAL_PLANE_RING32:
+        if (producer["family"] != SAMSUNG_DUAL_PLANE_RING32
+                and not all(producer.get("features", {}).get(feature)
+                            for feature in PRODUCER_FEATURES[
+                                SAMSUNG_DUAL_PLANE_RING32])):
             continue
         literals = (scanner + 0x6A0, scanner + 0x90C)
         if any(literal + 4 > len(image) for literal in literals):
@@ -564,7 +768,7 @@ def _find_n330_5x6_scanners(
         found.append({
             "grammar": "n330-5x6-dual-plane-ring32-v1",
             "grammar_fingerprint": N330_5X6_FINGERPRINT,
-            "evidence": "exact-entry+press-release+table-xrefs",
+            "evidence": "relocation-normalized-entry+press-release+table-xrefs",
             "function": load_address + scanner,
             "sense_site": load_address + scanner + 0xFC,
             "global_sense_sites": [load_address + scanner + 0x6E],
@@ -768,6 +972,9 @@ def find_direct_matrix_scanners(
             "fingerprint_scope": "linear-prefix",
             "fingerprint_boundary": boundary,
         }
+        found[start].update(_samsung_sideband_51_metadata(
+            image, start, sink, load_address
+        ))
     return ([_ for _ in _find_n330_5x6_scanners(image, load_address)]
             + [found[start] for start in sorted(found)])
 
@@ -806,6 +1013,11 @@ def resolve_direct_matrix_input(
                         image, int(scanner["event_sink"]) - load_address,
                         list(events), load_address,
                     )
+                if metadata is None:
+                    metadata = _samsung_raw_saved_consumer_metadata(
+                        image, int(scanner["event_sink"]) - load_address,
+                        list(events), load_address,
+                    )
                 if metadata is not None:
                     scanner.update(metadata)
                     scanner.update(_samsung_consumer_route_metadata(
@@ -815,7 +1027,13 @@ def resolve_direct_matrix_input(
                     scanner["consumer_route_status"] = "raw-consumer-not-closed"
             accepted.append(scanner)
     if len(accepted) == 1:
-        return accepted[0], "accepted", rejected
+        profile = accepted[0]
+        mappings = _same_image_keyemu_ok_mapping(
+            profile, detect_keyemu_semantics(image, load_address)
+        )
+        if mappings:
+            profile["provisional_mappings"] = mappings
+        return profile, "accepted", rejected
     if len(accepted) > 1:
         rejected.extend({
             "function": scanner["function"],

@@ -31,8 +31,8 @@ from ..detection.memory_layout import restore_sparse_nor_gap
 from ..detection.storage import flash_id_for_size
 from ..detection.storage import fujitsu_x16_flash_ids
 from ..detection.storage import qualcomm_efs_seed
-from ..devices.audio_lle import AudioTransport
 from ..devices.storage.nor import NORFlash
+from ..devices.audio_lle import AudioTransport
 from pathlib import Path
 from ..state_io import exclusive_path_lock
 from ..state_io import lock_path
@@ -60,7 +60,7 @@ import logging
 LOGGER = logging.getLogger("msm5xxx")
 
 try:
-    from ..e170_gm_audio import ApproximateSmafPlayer
+    from e170_gm_audio import ApproximateSmafPlayer
 except ImportError:
     ApproximateSmafPlayer = None
 
@@ -577,6 +577,7 @@ class LifecycleMixin:
         self._rex_irq_controller_aperture: tuple[int, int] | None = None
         self._rex_candidate_route: dict[str, object] | None = None
         self._rex_candidate_shadow_hooks: list[int] = []
+        self._rex_candidate_gate_pending = False
         self._rex_copied_c40_route: dict[str, object] | None = None
         self._rex_copied_c40_shadow_hooks: list[int] = []
         self._rex_copied_c40_gate_pending = False

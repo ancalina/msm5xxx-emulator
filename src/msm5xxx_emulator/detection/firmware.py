@@ -45,12 +45,12 @@ from .rex import (REX_TICK_SIGNATURE, find_rex_5ms_irq_arm,
                   find_rex_static_c40_controller_observation,
                   find_rex_static_controller_callback_candidate)
 from .signatures import find_all
-from .storage import (EEPROM_24LC64_CLASS_B_READ_PREFIX,
-                      EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
-                      find_24lc64_class_b_driver, find_24lcxx_driver,
-                      find_compound_fujitsu_layout,
-                      find_fujitsu_x16_bulk_write, find_fs_device_flash_id,
-                      flash_id_for_size)
+from .storage import (
+    EEPROM_24LC64_CLASS_B_READ_PREFIX, EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+    find_24lc64_class_b_driver, find_24lcxx_driver,
+    find_compound_fujitsu_layout, find_fujitsu_x16_bulk_write,
+    find_fs_device_flash_id, flash_id_for_size,
+)
 from .upper_nor import UPPER_FLASH_ADDRESS, UPPER_FLASH_SIZE, find_upper_nor
 
 
@@ -288,9 +288,16 @@ def _infer_secondary_nor(
         and config.chipset == "MSM5500"
         and config.flash_size == 0x800000
     )
+    fujitsu_secondary_nor_detected = (
+        config.secondary_flash_write_address is not None
+        and find_fujitsu_x16_bulk_write(
+            image, config.load_address + config.flash_size
+        ) is not None
+    )
     if (config.secondary_flash_address is None
             and (secondary_nor_detected or legacy_secondary_nor_detected
-                 or family_secondary_nor_detected)
+                 or family_secondary_nor_detected
+                 or fujitsu_secondary_nor_detected)
             and config.ram_base - (config.load_address + config.flash_size)
             == config.secondary_flash_size):
         config.secondary_flash_address = config.load_address + config.flash_size
@@ -487,10 +494,18 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     )
     if rex_static_controller_candidate is not None:
         if rex_static_controller_candidate["accepted"]:
-            detection_notes.append(
-                "static C80 index-0x1E delta-5 controller candidate detected; "
-                "native pending, IRQ, and idle remain unproven"
-            )
+            if (rex_static_controller_candidate.get("signature")
+                    == "static-msm5000-620-controller-callback-v1"):
+                detection_notes.append(
+                    "static MSM5000 0x620 two-bank delta-5 controller "
+                    "candidate detected; native pending cadence and idle "
+                    "remain unproven"
+                )
+            else:
+                detection_notes.append(
+                    "static C80 index-0x1E delta-5 controller candidate "
+                    "detected; native pending, IRQ, and idle remain unproven"
+                )
         else:
             detection_notes.append(
                 "static C80 controller candidate rejected: "

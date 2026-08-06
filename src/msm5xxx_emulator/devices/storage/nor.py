@@ -19,8 +19,10 @@ import binascii
 from ...state_io import durable_unlink
 from ...state_io import exclusive_path_lock
 from ...detection.firmware import MAX_FLASH_SIZE
-from ...detection.storage import (FUJITSU_MB84VD2219X_IDS, flash_id_for_size,
-                               fujitsu_x16_bulk_write_at,
+from ...detection.storage import (FUJITSU_MB84VD2219X_IDS,
+                               FUJITSU_X16_BULK_WRITE_MAX_SIZE,
+                               flash_id_for_size,
+                               fujitsu_x16_bulk_write_mode_at,
                                fujitsu_x16_flash_ids, qualcomm_efs_seed)
 import hashlib
 import json
@@ -346,6 +348,8 @@ class NORFlash:
             data[start:start + len(page)] = page
         return data
 
+
+
 class NorStorageMixin:
     def _attach_lazy_secondary_nor(self, uc: Uc, access: int, address: int,
                                    size: int, value: int) -> bool:
@@ -575,9 +579,15 @@ class NorStorageMixin:
                                     user_data: object) -> None:
         known = LEGACY_SECONDARY_FLASH_WRITE_SIGNATURE
         base = self.config.secondary_flash_address
-        original = self._original_runtime_bytes(address, 0x90)
-        bulk = (base not in (None, 0) and original is not None
-                and fujitsu_x16_bulk_write_at(original, 0, int(base)))
+        original = self._original_runtime_bytes(
+            address, FUJITSU_X16_BULK_WRITE_MAX_SIZE
+        )
+        bulk_mode = (fujitsu_x16_bulk_write_mode_at(
+            original, 0, int(base)
+        ) if base not in (None, 0) and original is not None else None)
+        bulk = bulk_mode == "unlock-bypass"
+        if bulk_mode is not None and not bulk:
+            return
         signature = (original if bulk else known
                      if self._original_runtime_bytes(address, len(known)) == known
                      else None)
@@ -599,7 +609,7 @@ class NorStorageMixin:
         if not self._hle_source_is_safe(source, length):
             return
         offset = destination
-        if bulk:
+        if bulk_mode == "unlock-bypass":
             if not (int(base) <= destination
                     <= int(base) + len(self.secondary_flash.data) - length):
                 return

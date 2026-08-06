@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import struct
 import tempfile
 import unittest
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MEM_READ_UNMAPPED, UC_MODE_ARM
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2
@@ -376,6 +377,38 @@ class NORTelemetryTests(unittest.TestCase):
             self.assertEqual(emulator.secondary_flash_writes, 1)
             self.assertEqual(flash.telemetry()["program_bytes"], 4)
             self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 0)
+            self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x3000)
+
+            flash.phase = "idle"
+            per_word = bytearray(0x118)
+            root_slot = ram + 0x300
+            bank_offset_slot = ram + 0x304
+            descriptor_root = ram + 0x400
+            struct.pack_into(
+                "<2I", per_word, 0xFC, root_slot, bank_offset_slot
+            )
+            uc.mem_write(root_slot, struct.pack("<I", descriptor_root))
+            uc.mem_write(bank_offset_slot, struct.pack("<I", 0x20))
+            uc.mem_write(
+                descriptor_root + 0x1C0 + 0x34,
+                struct.pack("<I", base + 0x100),
+            )
+            emulator._original_runtime_bytes = (
+                lambda _address, length: bytes(per_word[:length])
+            )
+            uc.reg_write(UC_ARM_REG_R0, ram)
+            uc.reg_write(UC_ARM_REG_R1, 0x200)
+            uc.reg_write(UC_ARM_REG_R2, len(incoming))
+            uc.reg_write(UC_ARM_REG_LR, 0x3001)
+            with patch(
+                "msm5xxx_emulator.devices.storage.nor.fujitsu_x16_bulk_write_mode_at",
+                return_value="per-word-unlock",
+            ):
+                emulator._secondary_flash_write_fast(
+                    uc, 0x112378, 2, None
+                )
+            self.assertEqual(bytes(flash.data[0x320:0x324]), b"\xff" * 4)
+            self.assertEqual(emulator.secondary_flash_writes, 1)
             self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x3000)
 
 

@@ -137,6 +137,94 @@ def _candidate_image() -> tuple[bytearray, dict[str, int]]:
 
 
 class StaticControllerCandidateTests(unittest.TestCase):
+    def test_620_pending_reads_consume_only_addressed_bank(self) -> None:
+        status, enable = 0x03000620, 0x03000628
+        route = {
+            "signature":
+                "experimental-static-msm5000-620-controller-route-v1",
+            "controller_class":
+                "legacy-msm5000-620-two-bank-read-consume-v1",
+            "status": status,
+            "enable": enable,
+            "status_banks": (status, status + 4),
+            "mask_set_banks": (status, status + 4),
+            "mask_output_banks": (enable, enable + 4),
+            "controller_aperture": (status, enable + 8),
+            "status_bank_count": 2,
+            "group_row_size": 12,
+            "pending_read_semantics": "consume-on-read",
+        }
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator.config = SimpleNamespace(rex_irq_status_address=status)
+        emulator.direct_input_profile = None
+        emulator._rex_candidate_route = route
+        emulator._rex_irq_pending = [0x0200, 0x0040]
+        emulator.rex_controller_pending_acks = 0
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0x03000000, 0x10000)
+
+        emulator._rex_irq_status_write(
+            uc, 0, status, 2, 0xFFFF, None
+        )
+        self.assertEqual(emulator._rex_irq_pending, [0x0200, 0x0040])
+        emulator._rex_irq_status_read(uc, 0, enable, 2, 0, None)
+        self.assertEqual(emulator._rex_irq_pending, [0x0200, 0x0040])
+        emulator._rex_irq_status_read(uc, 0, status, 2, 0, None)
+        self.assertEqual(
+            struct.unpack("<H", uc.mem_read(status, 2))[0], 0x0200
+        )
+        self.assertEqual(emulator._rex_irq_pending, [0, 0x0040])
+        emulator._rex_irq_status_read(uc, 0, status + 4, 2, 0, None)
+        self.assertEqual(
+            struct.unpack("<H", uc.mem_read(status + 4, 2))[0], 0x0040
+        )
+        self.assertEqual(emulator._rex_irq_pending, [0, 0])
+        self.assertEqual(emulator.rex_controller_pending_acks, 2)
+
+    def test_620_two_peer_topology_is_telemetry_only(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares"
+        expected = {
+            "SPH-X7509.bin": (0x92320, 0x92520, 0x1A128, 0x926BC,
+                               0x20CC04, 0x010C892C, 0x010035EC),
+            "SPH-X7500-X75.00-WD01.bin": (
+                0x8D948, 0x8DB48, 0x16CAC, 0x8DCE4,
+                0x1FEAD4, 0x010BCD9C, 0x01003304,
+            ),
+        }
+        for name, addresses in expected.items():
+            image = (root / name).read_bytes()
+            candidate = find_rex_static_controller_callback_candidate(image)
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            self.assertTrue(candidate["accepted"])
+            self.assertFalse(candidate["active"])
+            self.assertEqual(
+                candidate["signature"],
+                "static-msm5000-620-controller-callback-v1",
+            )
+            self.assertEqual(
+                candidate["controller_class"],
+                "legacy-msm5000-620-two-bank-read-consume-v1",
+            )
+            self.assertEqual(candidate["pending_read_semantics"],
+                             "consume-on-read")
+            self.assertEqual(tuple(candidate[field] for field in (
+                "handler_file_offset", "registrar_file_offset",
+                "callback_file_offset", "timer_advance_file_offset",
+                "wrapper_file_offset", "handler_slot", "callback_slot",
+            )), addresses)
+
+            changed = bytearray(image)
+            changed[addresses[0] + 0x20] ^= 1
+            rejected = find_rex_static_controller_callback_candidate(changed)
+            self.assertIsNotNone(rejected)
+            assert rejected is not None
+            self.assertFalse(rejected["accepted"])
+            self.assertEqual(
+                rejected["reject_reason"],
+                "two-bank-read-consume-handler-not-closed",
+            )
+
     def test_closed_static_candidate_accepts_and_mutations_reject(self) -> None:
         image, offsets = _candidate_image()
         result = find_rex_static_controller_callback_candidate(image)

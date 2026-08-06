@@ -11,10 +11,17 @@ from src.msm5xxx_emulator.detection.input_matrix import (
     LG_RING256,
     SAMSUNG_DUAL_PLANE_RING32,
     SAMSUNG_RING32,
+    _same_image_keyemu_ok_mapping,
     _samsung_consumer_route_metadata,
+    _samsung_raw_saved_consumer_metadata,
     classify_matrix_event_sink,
     find_direct_matrix_scanners,
     resolve_direct_matrix_input,
+)
+from src.msm5xxx_emulator.detection.input_semantics import (
+    KEYEMU_GRAMMAR_FINGERPRINT,
+    KEYEMU_PASSTHROUGH,
+    KeyemuSemantics,
 )
 
 
@@ -32,6 +39,74 @@ def _test_firmware_root() -> Path | None:
 
 
 class DirectInputMatrixTests(unittest.TestCase):
+    def test_saved_register_ring32_consumer_requires_complete_chain(self) -> None:
+        image = bytearray(b"\xff" * 0x400)
+        sink, ring, dequeue, receiver, task = (
+            0x100, 0x01002000, 0x200, 0x280, 0x300
+        )
+
+        def call(at: int, target: int) -> None:
+            displacement = target - (at + 4)
+            struct.pack_into(
+                "<2H", image, at,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        struct.pack_into("<H", image, sink, 0xB500)
+        struct.pack_into("<H", image, sink + 4, 0x4A1E)
+        for current in range(sink + 6, sink + 0x5E, 2):
+            struct.pack_into("<H", image, current, 0x46C0)
+        struct.pack_into(
+            "<3H", image, sink + 0x5E, 0x1880, 0x7087, 0x4770
+        )
+        struct.pack_into("<I", image, 0x180, ring)
+        struct.pack_into(
+            "<14H", image, dequeue,
+            0x4A06, 0x7850, 0x7811, 0x4288, 0xD101, 0x2000, 0x4770,
+            0x1888, 0x3101, 0x06C9, 0x0EC9, 0x7880, 0x7011, 0x4770,
+        )
+        struct.pack_into("<I", image, dequeue + 28, ring)
+        call(receiver, dequeue)
+        struct.pack_into("<2H", image, receiver + 4, 0x1C04, 0xD001)
+        call(receiver + 8, task)
+        struct.pack_into("<H", image, receiver + 12, 0x4770)
+        struct.pack_into(
+            "<7H", image, task,
+            0x2C51, 0x46C0, 0x2C54, 0x46C0, 0x2C55, 0x46C0, 0x4770,
+        )
+
+        metadata = _samsung_raw_saved_consumer_metadata(
+            bytes(image), sink, [0x51, 0x54, 0x55], 0x100000
+        )
+        self.assertEqual(metadata["raw_task_register"], 4)
+        self.assertEqual(metadata["raw_ring"], ring)
+        struct.pack_into("<I", image, dequeue + 28, ring + 4)
+        self.assertIsNone(_samsung_raw_saved_consumer_metadata(
+            bytes(image), sink, [0x51, 0x54, 0x55], 0x100000
+        ))
+
+    def test_exact_keyemu_binds_only_unique_shared_ok_namespace(self) -> None:
+        event_map = tuple(
+            (character, (ord(character),))
+            for character in KEYEMU_PASSTHROUGH
+        ) + (("O", (0x53,)), ("release", (0xFF,)))
+        semantics = KeyemuSemantics(
+            "test", (), event_map, "exact-native", (),
+            KEYEMU_GRAMMAR_FINGERPRINT, None,
+        )
+        profile = {
+            "event_codes": [
+                *map(ord, KEYEMU_PASSTHROUGH), 0x53, 0x65,
+            ],
+        }
+
+        mapping = _same_image_keyemu_ok_mapping(profile, semantics)
+
+        self.assertEqual(mapping[5]["event"], 0x53)
+        profile["event_codes"].append(0x53)
+        self.assertEqual(_same_image_keyemu_ok_mapping(profile, semantics), {})
+
     def test_dual_plane_features_must_share_one_return_path(self) -> None:
         image = bytearray(b"\xff" * 0x30)
         struct.pack_into(
@@ -125,9 +200,16 @@ class DirectInputMatrixTests(unittest.TestCase):
         call(press + len(press_prefix), 0x80)
         call(release + len(release_prefix), 0x80)
         struct.pack_into(
-            "<11H", image, 0x80,
-            0xB500, 0x1C04, 0x46C0, 0x1C0D, 0x06C0, 0x0EC0,
-            0x7084, 0x7085, 0x7040, 0x8800, 0x4770,
+            "<5H", image, 0x80,
+            0xB500, 0x1C04, 0x46C0, 0x1C0D, 0xD006,
+        )
+        struct.pack_into(
+            "<6H", image, 0x8A,
+            0x06C0, 0x0EC0, 0x7084, 0x7085, 0x7040, 0x4770,
+        )
+        struct.pack_into(
+            "<4H", image, 0x98,
+            0x06C0, 0x0EC0, 0x8800, 0x4770,
         )
         load_address = 0x1000
         table = 0x1200
@@ -139,6 +221,10 @@ class DirectInputMatrixTests(unittest.TestCase):
             0x5B, 0x52, ord("3"), ord("6"), ord("9"), ord("#"),
             0x53, 0x65, 0x66, 0x64, 0x63, 0x63, 0x62, 0, 0, 0, 0, 0,
         ))
+        self.assertEqual(
+            classify_matrix_event_sink(bytes(image), 0x80)["family"],
+            "unclassified",
+        )
 
         profile, status, rejected = resolve_direct_matrix_input(
             bytes(image), load_address
@@ -165,6 +251,21 @@ class DirectInputMatrixTests(unittest.TestCase):
         self.assertEqual(profile["release_grammar"],
                          "event-plus-0x80; invalid fallback=0x80")
 
+        image[scanner + 0x0E] ^= 1
+        image[press + 0x1C] ^= 1
+        self.assertEqual(
+            resolve_direct_matrix_input(bytes(image), load_address)[1],
+            "accepted",
+        )
+        image[scanner + 0x0E] ^= 1
+        image[press + 0x1C] ^= 1
+        image[scanner + 0x0D] = 0xE0
+        self.assertEqual(
+            resolve_direct_matrix_input(bytes(image), load_address)[1],
+            "not-found",
+        )
+        image[scanner + 0x0D] = 0xF0
+
         image[release] ^= 1
         self.assertEqual(
             resolve_direct_matrix_input(bytes(image), load_address)[1],
@@ -177,7 +278,7 @@ class DirectInputMatrixTests(unittest.TestCase):
             "not-found",
         )
         image[scanner + 0xFC] ^= 1
-        image[0x8E] ^= 1
+        image[0x90] ^= 1
         self.assertEqual(
             resolve_direct_matrix_input(bytes(image), load_address)[1],
             "not-found",
@@ -262,6 +363,48 @@ class DirectInputMatrixTests(unittest.TestCase):
             self.assertEqual((status, rejected), ("accepted", []))
             assert profile is not None
             self.assertNotIn("raw_ring", profile)
+
+    def test_samsung_sideband_event_metadata_requires_complete_shape(self) -> None:
+        root = _test_firmware_root()
+        path = root / "SPH-X7509.bin" if root is not None else None
+        if path is None or not path.is_file():
+            self.skipTest(
+                "firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT"
+            )
+        image = path.read_bytes()
+        profile, status, rejected = resolve_direct_matrix_input(image)
+        self.assertEqual((status, rejected), ("accepted", []))
+        assert profile is not None
+        self.assertEqual(profile["sideband_producers"], [{
+            "grammar": "active-low-mmio-bit-debounced-event-v1",
+            "evidence": "literal+mask+local-state+shared-queue",
+            "semantic_status": "temporary-evidence-gated",
+            "semantic_key": 7,
+            "semantic_name": "END",
+            "semantic_evidence": "event-0x51-independent-keyemu-maps",
+            "event": 0x51,
+            "event_register": 7,
+            "register": 0x03000694,
+            "register_width": 1,
+            "mask": 0x10,
+            "polarity": "active-low",
+            "press_callsite": 0x0007FA66,
+            "release_event": 0xFF,
+            "release_callsite": 0x0007FA1C,
+            "event_sink": 0x0007F3F0,
+        }])
+
+        near_miss = bytearray(image)
+        near_miss[int(profile["function"]) + 0x28] ^= 1
+        changed, status, rejected = resolve_direct_matrix_input(bytes(near_miss))
+        self.assertEqual((status, rejected), ("accepted", []))
+        assert changed is not None
+        self.assertNotIn("sideband_producers", changed)
+        self.assertEqual(changed["sideband_detection_status"], "rejected")
+        self.assertEqual(
+            changed["sideband_detection_reject_reasons"],
+            ["shape-word-0x028-mismatch"],
+        )
 
     def test_samsung_r7_raw_telemetry_requires_closed_task_dispatch(self) -> None:
         expected = {

@@ -114,6 +114,9 @@ class InputRuntimeTests(unittest.TestCase):
         emulator.key_register_reads = 0
         emulator.key_register_read_pcs = Counter()
         emulator.held_keys = set()
+        emulator.direct_sideband_held_keys = set()
+        emulator.direct_sideband_baselines = {}
+        emulator.direct_sideband_scan_epochs = {}
         emulator.input_events = 0
         emulator.firmware_key_events = 0
         emulator.input_error = ""
@@ -216,6 +219,81 @@ class InputRuntimeTests(unittest.TestCase):
         self.assertEqual(emulator.direct_input_positions[2], (0x52, 2, 3))
         self.assertEqual(emulator.direct_input_positions[14], (0x34, 3, 0))
         self.assertNotIn(5, emulator.direct_input_positions)
+
+    def test_evidenced_sideband_end_owns_only_its_mmio_bit(self) -> None:
+        emulator = self._direct_emulator()
+        emulator.direct_input_profile["sideband_producers"] = [{
+            "grammar": "active-low-mmio-bit-debounced-event-v1",
+            "evidence": "literal+mask+local-state+shared-queue",
+            "semantic_status": "temporary-evidence-gated",
+            "semantic_key": 7,
+            "semantic_name": "END",
+            "semantic_evidence": "event-0x51-independent-keyemu-maps",
+            "event": 0x51,
+            "register": 0x03000694,
+            "register_width": 1,
+            "mask": 0x10,
+            "polarity": "active-low",
+        }]
+        emulator.uc = RegisterMemoryUc()
+        emulator.uc.memory[0x03000694] = b"\xB7"
+        emulator._install_direct_sideband_reads()
+
+        self.assertTrue(emulator.can_set_key(7))
+        self.assertTrue(emulator.can_set_key(5, 0x51))
+        self.assertFalse(emulator.can_set_key(5, 0x7F))
+        with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
+            emulator.set_key(7, True)
+            self.assertEqual(emulator.uc.memory[0x03000694], b"\xA7")
+            self.assertEqual(emulator.direct_sideband_held_keys, {7})
+            self.assertEqual(emulator.held_keys, set())
+            emulator.uc.memory[0x03000694] = b"\xF7"
+            emulator._direct_sideband_read(
+                emulator.uc, 0, 0x03000694, 1, 0, None
+            )
+            self.assertEqual(emulator.uc.memory[0x03000694], b"\xE7")
+            emulator.set_key(7, False)
+        self.assertEqual(emulator.uc.memory[0x03000694], b"\xF7")
+        self.assertEqual(emulator.direct_sideband_held_keys, set())
+        payload = json.loads(logged.call_args.args[1])
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["firmware_event"], "0x51")
+        self.assertEqual(payload["sideband"], {
+            "register": "0x03000694", "mask": "0x10",
+            "polarity": "active-low", "semantic": "END",
+        })
+
+    def test_invalid_or_overlapping_sideband_metadata_fails_closed(self) -> None:
+        producer = {
+            "semantic_status": "temporary-evidence-gated",
+            "semantic_key": 5,
+            "semantic_name": "OK",
+            "semantic_evidence": "test-evidence",
+            "event": 0x53,
+            "register": 0x03000694,
+            "register_width": 1,
+            "mask": 0x10,
+            "polarity": "active-low",
+        }
+        cases = (
+            [{**producer, "mask": 0x100}],
+            [producer, {**producer, "semantic_key": 7, "event": 0x51}],
+        )
+        for producers in cases:
+            with self.subTest(producers=producers):
+                emulator = self._direct_emulator()
+                emulator.direct_input_profile["sideband_producers"] = producers
+                emulator.uc = RegisterMemoryUc()
+                emulator.uc.memory[0x03000694] = b"\xB7"
+
+                emulator._install_direct_sideband_reads()
+                self.assertEqual(emulator.uc.hooks, [])
+                self.assertFalse(emulator.can_set_key(5))
+                with mock.patch(
+                    "msm5xxx_emulator.devices.input.LOGGER.info"
+                ):
+                    emulator.set_key(5, True)
+                self.assertEqual(emulator.uc.memory[0x03000694], b"\xB7")
 
     def test_direct_matrix_prefers_evidence_gated_semantic_metadata(self) -> None:
         profile = self._direct_profile()
@@ -378,6 +456,7 @@ class InputRuntimeTests(unittest.TestCase):
         profile = emulator.direct_input_profile
         profile.update({
             "event_sink_family": "samsung-dual-plane-ring32-event-queue-v1",
+            "grammar": "n330-5x6-dual-plane-ring32-v1",
             "event_codes": [
                 0x61, 0x50, 0x31, 0x34, 0x37, 0x2A,
                 0x54, 0x55, 0x32, 0x35, 0x38, 0x30,
@@ -401,11 +480,15 @@ class InputRuntimeTests(unittest.TestCase):
             "no_key": 0x1F,
         })
         emulator.direct_input_positions = emulator._direct_matrix_positions(profile)
-        self.assertEqual(emulator.direct_input_positions[0], (0x61, 0, 0))
-        self.assertEqual(emulator.direct_input_positions[6], (0x54, 0, 1))
-        self.assertNotIn(0x63, {
-            position[0] for position in emulator.direct_input_positions.values()
-        })
+        self.assertEqual(len(emulator.direct_input_positions), 20)
+        self.assertEqual(emulator.direct_input_positions[0], (0x5B, 0, 2))
+        self.assertEqual(emulator.direct_input_positions[6], (0x66, 2, 3))
+        self.assertEqual(emulator.direct_input_positions[8], (0x55, 1, 1))
+        self.assertEqual(emulator.direct_input_positions[9], (0x64, 3, 3))
+        self.assertEqual(emulator.direct_input_positions[10], (0x54, 0, 1))
+        self.assertNotIn(1, emulator.direct_input_positions)
+        self.assertNotIn(5, emulator.direct_input_positions)
+        self.assertNotIn(7, emulator.direct_input_positions)
 
         uc = RegisterMemoryUc()
         emulator.uc = uc
@@ -511,6 +594,11 @@ class InputRuntimeTests(unittest.TestCase):
              automatic_release["scanner_active_during_hold"]),
             ("automatic-evidenced", "automatic-evidenced", False),
         )
+        self.assertEqual(automatic_press["mapping_evidence"], {
+            "event": ord("5"),
+            "rule": "samsung-ring32-cross-firmware-key-events-v1",
+            "evidence": "4x6-scanner+ring32-queue+cross-firmware-runtime",
+        })
         self.assertEqual(
             (fallback_press["mapping_source"],
              fallback_release["mapping_source"],

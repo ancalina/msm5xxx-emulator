@@ -14,6 +14,7 @@ from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
 from msm5xxx_emulator.detection.storage import (
     EEPROM_24LC64_CLASS_B_READ_PREFIX,
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+    EEPROM_24LCXX_F6F7_WRITE_PREFIX,
 )
 from msm5xxx import (EEPROM_24LC64_CLASS_A_READ_PREFIX,
                      EEPROM_24LC64_CLASS_A_WRITE_PREFIX,
@@ -53,6 +54,7 @@ class EEPROMTests(unittest.TestCase):
             load_address=write, flash_size=0x1000,
             ram_base=ram, ram_size=0x1000,
             secondary_flash_address=None, secondary_flash_size=0,
+            eeprom_read_address=read, eeprom_write_address=write,
         )
         emulator.original_image = bytes(original)
         emulator.flash = SimpleNamespace(phase="idle")
@@ -142,6 +144,34 @@ class EEPROMTests(unittest.TestCase):
 
             self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 6)
             self.assertEqual(emulator.eeprom_writes, 1)
+
+    def test_f6f7_strict_capacity_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            emulator, uc, write, read, ram = self._emulator(
+                Path(directory) / "eeprom.bin",
+                EEPROM_24LCXX_F6F7_WRITE_PREFIX,
+                EEPROM_24LCXX_X270_READ_PREFIX,
+            )
+            source = ram + 0x200
+            destination = ram + 0x300
+            uc.mem_write(source, b"\x5a")
+            for entry, pointer, callback in (
+                (write, source, emulator._eeprom_write_fast),
+                (read, destination, emulator._eeprom_read_fast),
+            ):
+                uc.reg_write(UC_ARM_REG_R0, pointer)
+                uc.reg_write(UC_ARM_REG_R1, 0x7FFF)
+                uc.reg_write(UC_ARM_REG_R2, 1)
+                uc.reg_write(UC_ARM_REG_LR, 0x1501)
+                callback(uc, entry, 2, None)
+                self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 6)
+
+                uc.reg_write(UC_ARM_REG_R0, pointer)
+                uc.reg_write(UC_ARM_REG_R1, 0x7FFE)
+                uc.reg_write(UC_ARM_REG_R2, 1)
+                uc.reg_write(UC_ARM_REG_LR, 0x1501)
+                callback(uc, entry, 2, None)
+                self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 0)
 
     def test_24lc64_boundary_persistence_and_runtime_guard(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -378,6 +408,8 @@ class EEPROMTests(unittest.TestCase):
                 (EEPROM_24LCXX_X430_WRITE_PREFIX,
                  EEPROM_24LCXX_X430_READ_PREFIX),
                 (EEPROM_24LCXX_X270_WRITE_PREFIX,
+                 EEPROM_24LCXX_X270_READ_PREFIX),
+                (EEPROM_24LCXX_F6F7_WRITE_PREFIX,
                  EEPROM_24LCXX_X270_READ_PREFIX),
                 (EEPROM_24LCXX_X7700_WRITE_PREFIX,
                  EEPROM_24LCXX_X7700_READ_PREFIX)):

@@ -119,6 +119,9 @@ class MemoryBusMixin:
         if (self._rex_copied_c40_gate_pending
                 or self._rex_copied_c40_route is not None):
             self._rex_copied_c40_timer_source(uc)
+        if (getattr(self, "_rex_candidate_gate_pending", False)
+                or getattr(self, "_rex_candidate_route", None) is not None):
+            self._rex_candidate_timer_source(uc)
         if self._rex_irq_pending[0] and self._rex_irq_boundary(uc, address):
             return
         self.tail.append(address)
@@ -611,7 +614,7 @@ class MemoryBusMixin:
             except UcError:
                 pass
             # The complementary form has a forward conditional edge into a
-            # retry body and either an immediate forward B or MOV/POP/BX LR
+            # retry body and either an immediate forward B or MOV/POP/return
             # as its non-taken return.  In that CFG carry=1 enters the busy
             # body, while carry=0 reaches the caller.  Require the complete
             # local graph before reversing it: the taken body must branch

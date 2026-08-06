@@ -10,6 +10,7 @@ from ..detection.input import detect_input_profile
 from ..detection.input_descriptor import LG_DESCRIPTOR_RAW
 from ..detection.input_descriptor import resolve_lg_descriptor_input
 from ..detection.input_matrix import UNCLASSIFIED
+from ..detection.input_matrix import SAMSUNG_DUAL_PLANE_RING32
 from ..detection.input_matrix import SAMSUNG_RING32
 from ..detection.input_matrix import resolve_direct_matrix_input
 from ..detection.rex import find_rex_legacy_5ms_irq_route
@@ -31,11 +32,49 @@ SAMSUNG_RING32_KEY_EVENTS = {
     0: 0x5B, 1: 0x54, 2: 0x52, 3: 0x50, 4: 0x65, 6: 0x66, 9: 0x55,
     **dict(zip(range(11, 23), b"123456789*0#")),
 }
+DUAL_PLANE_5X6_KEY_EVENTS = {
+    0: 0x5B, 2: 0x52, 3: 0x50, 4: 0x65, 6: 0x66,
+    8: 0x55, 9: 0x64, 10: 0x54,
+    **dict(zip(range(11, 23), b"123456789*0#")),
+}
+
+
+def _evidenced_key_events(profile: dict[str, object]) -> dict[int, int]:
+    family = profile.get("event_sink_family", profile.get("family"))
+    if family == SAMSUNG_RING32:
+        return SAMSUNG_RING32_KEY_EVENTS
+    if (family == SAMSUNG_DUAL_PLANE_RING32
+            and profile.get("grammar") == "n330-5x6-dual-plane-ring32-v1"):
+        return DUAL_PLANE_5X6_KEY_EVENTS
+    return {}
+
+
+def _evidenced_key_mapping(
+        profile: dict[str, object], bit: int,
+) -> dict[str, object] | None:
+    event = _evidenced_key_events(profile).get(bit)
+    if event is None:
+        return None
+    family = profile.get("event_sink_family", profile.get("family"))
+    if family == SAMSUNG_RING32:
+        semantic_class = "samsung-ring32-cross-firmware-key-events-v1"
+        evidence = "4x6-scanner+ring32-queue+cross-firmware-runtime"
+    else:
+        semantic_class = "n330-5x6-native-enum-release-v1"
+        evidence = "5x6-scanner+dual-plane-queue+event-plus-0x80-release"
+    return {
+        "event": event,
+        "rule": semantic_class,
+        "evidence": evidence,
+    }
 
 
 class InputMixin:
     def _init_input_state(self, config: FirmwareConfig) -> None:
         self.held_keys: set[int] = set()
+        self.direct_sideband_held_keys: set[int] = set()
+        self.direct_sideband_baselines: dict[int, int] = {}
+        self.direct_sideband_scan_epochs: dict[int, int] = {}
         self.key_baselines: dict[int, int] = {}
         self.key_press_read_epochs: dict[int, int] = {}
         self.key_read_epoch = 0
@@ -234,6 +273,7 @@ class InputMixin:
         self.firmware_key_events = 0
         if self.direct_input_profile is not None:
             self._install_dynamic_mapped_matrix_sense()
+            self._install_direct_sideband_reads()
             self.uc.hook_add(
                 UC_HOOK_CODE,
                 self._direct_input_event_observed,
@@ -322,23 +362,109 @@ class InputMixin:
         if (sense & mask) != (int(profile["no_key"]) & mask):
             self.direct_matrix_active_reads += 1
 
+    def _install_direct_sideband_reads(self) -> None:
+        """Keep accepted physical input bits asserted across guest writes."""
+        grouped: dict[tuple[int, int], list[dict[str, object]]] = {}
+        for producer in self._validated_direct_sideband_producers():
+            register = int(producer["register"])
+            width = int(producer["register_width"])
+            grouped.setdefault((register, width), []).append(producer)
+        self._direct_sideband_read_profiles = {
+            key: tuple(value) for key, value in grouped.items()
+        }
+        for register, width in self._direct_sideband_read_profiles:
+            self.uc.hook_add(
+                UC_HOOK_MEM_READ, self._direct_sideband_read,
+                begin=register, end=register + width - 1,
+            )
+
+    def _direct_sideband_read(
+            self, uc: Uc, access: int, address: int, size: int,
+            value: int, user_data: object) -> None:
+        del access, value, user_data
+        producers = getattr(
+            self, "_direct_sideband_read_profiles", {}
+        ).get((address, size), ())
+        if not producers:
+            return
+        current = int.from_bytes(uc.mem_read(address, size), "little")
+        response = current
+        for producer in producers:
+            bit = int(producer["semantic_key"])
+            if bit not in self.direct_sideband_held_keys:
+                continue
+            mask = int(producer["mask"])
+            response = (response & ~mask
+                        if producer["polarity"] == "active-low"
+                        else response | mask)
+        if response != current:
+            uc.mem_write(address, response.to_bytes(size, "little"))
+
     def can_set_key(self, bit: int, event_code: int | None = None) -> bool:
         """Report whether one GUI key can use an evidenced physical path."""
         if not 0 <= bit < HANDSET_KEY_COUNT:
             return False
         if self.config.key_register is not None:
             return event_code is None
-        return self._direct_matrix_position(bit, event_code) is not None
+        return (self._direct_sideband_producer(bit, event_code) is not None
+                or self._direct_matrix_position(bit, event_code) is not None)
 
     def set_key(self, bit: int, pressed: bool,
                 event_code: int | None = None) -> None:
         """Change one physical key bit; firmware owns debounce and hold timing."""
         if not 0 <= bit < HANDSET_KEY_COUNT:
             raise ValueError("key bit has no handset mapping")
-        if pressed == (bit in self.held_keys):
+        sideband = self._direct_sideband_producer(bit, event_code)
+        held = (bit in self.direct_sideband_held_keys
+                if sideband is not None else bit in self.held_keys)
+        if pressed == held:
             return
         key_start = self.config.key_register
         direct = getattr(self, "direct_input_profile", None)
+        if key_start is None and direct is not None and sideband is not None:
+            register = int(sideband["register"])
+            width = int(sideband["register_width"])
+            mask = int(sideband["mask"])
+            current = int.from_bytes(
+                self.uc.mem_read(register, width), "little"
+            )
+            if pressed:
+                self.direct_sideband_held_keys.add(bit)
+                self.direct_sideband_baselines[bit] = current & mask
+                self.direct_sideband_scan_epochs[bit] = (
+                    self.direct_matrix_scans
+                )
+                value = (current & ~mask if sideband["polarity"]
+                         == "active-low" else current | mask)
+            else:
+                self.direct_sideband_held_keys.remove(bit)
+                baseline = self.direct_sideband_baselines.pop(bit)
+                value = current & ~mask | baseline
+            self.uc.mem_write(register, value.to_bytes(width, "little"))
+            scan_epoch = self.direct_sideband_scan_epochs.get(bit)
+            if not pressed:
+                self.direct_sideband_scan_epochs.pop(bit, None)
+            self.input_error = ""
+            self._log_direct_key(
+                bit, pressed,
+                int(sideband["event"]) if event_code is not None else None,
+                reason=("manual-sideband-event-override"
+                        if event_code is not None else
+                        "evidence-gated-sideband-semantic"),
+                mapping_source=("manual" if event_code is not None
+                                else "automatic-evidenced"),
+                mapping_rule=str(sideband["semantic_evidence"]),
+                mapping_evidence=sideband,
+                event_unique=True,
+                scanner_active_during_hold=(
+                    None if pressed else (
+                        scan_epoch is not None
+                        and self.direct_matrix_scans > scan_epoch
+                    )
+                ),
+                sideband=sideband,
+            )
+            return
         position = (
             self._direct_matrix_position(bit, event_code)
             if pressed else
@@ -380,10 +506,9 @@ class InputMixin:
                 "manual" if event_code is not None else
                 "automatic-evidenced" if (
                     bit in direct.get("provisional_mappings", {})
-                    or (
-                        direct.get("event_sink_family") == SAMSUNG_RING32
-                        and SAMSUNG_RING32_KEY_EVENTS.get(bit) == position[0]
-                    )
+                    or (_evidenced_key_mapping(direct, bit) or {}).get(
+                        "event"
+                    ) == position[0]
                 ) else "automatic-experimental"
             )
             if pressed and self.held_keys:
@@ -434,7 +559,8 @@ class InputMixin:
                 }[mapping_source],
                 mapping_source=mapping_source,
                 mapping_evidence=(
-                    direct.get("provisional_mappings", {}).get(bit)
+                    (direct.get("provisional_mappings", {}).get(bit)
+                     or _evidenced_key_mapping(direct, bit))
                     if mapping_source == "automatic-evidenced" else None
                 ),
                 position=position,
@@ -507,6 +633,7 @@ class InputMixin:
             event_unique: bool | None = None,
             fallback_rank: int | None = None,
             scanner_active_during_hold: bool | None = None,
+            sideband: dict[str, object] | None = None,
     ) -> None:
         profile = getattr(self, "direct_input_profile", None)
         family = (
@@ -526,7 +653,7 @@ class InputMixin:
             if profile is not None else None
         )
         payload = {
-            "accepted": position is not None
+            "accepted": (position is not None or sideband is not None)
                         and reason != "simultaneous-key-unsupported",
             "bit": bit,
             "pressed": pressed,
@@ -551,12 +678,20 @@ class InputMixin:
             "event_unique": event_unique,
             "fallback_rank": fallback_rank,
             "firmware_event": (
-                f"0x{position[0]:02X}" if position is not None else None
+                f"0x{position[0]:02X}" if position is not None else
+                f"0x{int(sideband['event']):02X}"
+                if sideband is not None else None
             ),
             "matrix": (
                 {"row": position[1], "column": position[2]}
                 if position is not None else None
             ),
+            "sideband": ({
+                "register": f"0x{int(sideband['register']):08X}",
+                "mask": f"0x{int(sideband['mask']):X}",
+                "polarity": sideband["polarity"],
+                "semantic": sideband["semantic_name"],
+            } if sideband is not None else None),
             "detection": getattr(
                 self, "direct_input_detection",
                 "accepted" if profile is not None else "not-found",
@@ -650,8 +785,9 @@ class InputMixin:
         event_counts = Counter(cells)
         fillers = {0, 0xFF, int(profile["no_key"]) & 0xFF}
         positions: dict[int, tuple[int, int, int]] = {}
-        if family == SAMSUNG_RING32:
-            for bit, event in SAMSUNG_RING32_KEY_EVENTS.items():
+        evidenced_events = _evidenced_key_events(profile)
+        if evidenced_events:
+            for bit, event in evidenced_events.items():
                 if event_counts[event] != 1 or event in fillers:
                     continue
                 index = cells.index(event)
@@ -705,6 +841,70 @@ class InputMixin:
         ))
         return ((event_code, row, column)
                 if column < len(senses) else None)
+
+    def _direct_sideband_producer(
+            self, bit: int, event_code: int | None,
+    ) -> dict[str, object] | None:
+        matches = [producer
+                   for producer in self._validated_direct_sideband_producers()
+                   if ((event_code is None
+                         and producer.get("semantic_key") == bit)
+                        or (event_code is not None
+                            and producer.get("event") == event_code))]
+        return matches[0] if len(matches) == 1 else None
+
+    def _validated_direct_sideband_producers(
+            self,
+    ) -> tuple[dict[str, object], ...]:
+        """Reject incomplete or mutually conflicting physical producers."""
+        profile = getattr(self, "direct_input_profile", None)
+        raw = (profile.get("sideband_producers", ())
+               if isinstance(profile, dict) else ())
+        candidates: list[dict[str, object]] = []
+        for producer in raw:
+            if not isinstance(producer, dict):
+                continue
+            bit = producer.get("semantic_key")
+            event = producer.get("event")
+            register = producer.get("register")
+            width = producer.get("register_width")
+            mask = producer.get("mask")
+            if (producer.get("semantic_status")
+                    != "temporary-evidence-gated"
+                    or type(bit) is not int
+                    or not 0 <= bit < HANDSET_KEY_COUNT
+                    or type(event) is not int or not 0 <= event <= 0xFF
+                    or type(register) is not int or register < 0
+                    or type(width) is not int or width not in (1, 2, 4)
+                    or type(mask) is not int
+                    or not 0 < mask < 1 << (width * 8)
+                    or producer.get("polarity") not in {
+                        "active-low", "active-high"
+                    }
+                    or not isinstance(producer.get("semantic_name"), str)
+                    or not producer["semantic_name"]
+                    or not isinstance(
+                        producer.get("semantic_evidence"), str
+                    )
+                    or not producer["semantic_evidence"]):
+                continue
+            candidates.append(producer)
+        conflicts: set[int] = set()
+        for index, producer in enumerate(candidates):
+            start = int(producer["register"])
+            end = start + int(producer["register_width"])
+            for other_index, other in enumerate(candidates[:index]):
+                other_start = int(other["register"])
+                other_end = other_start + int(other["register_width"])
+                same_range = start == other_start and end == other_end
+                overlap = max(start, other_start) < min(end, other_end)
+                if (producer["semantic_key"] == other["semantic_key"]
+                        or producer["event"] == other["event"]
+                        or (overlap and (not same_range or int(producer["mask"])
+                                        & int(other["mask"])))):
+                    conflicts.update((index, other_index))
+        return tuple(producer for index, producer in enumerate(candidates)
+                     if index not in conflicts)
 
     def _direct_matrix_nibble(self, uc: Uc) -> int | None:
         profile = getattr(self, "direct_input_profile", None)
@@ -813,6 +1013,13 @@ class InputMixin:
                 self.firmware_key_events += 1
                 self.input_error = ""
                 break
+        else:
+            for bit in self.direct_sideband_held_keys:
+                producer = self._direct_sideband_producer(bit, None)
+                if producer is not None and event == producer["event"]:
+                    self.firmware_key_events += 1
+                    self.input_error = ""
+                    break
 
     def _direct_raw_enqueue_store_observed(
             self, uc: Uc, address: int, size: int, user_data: object) -> None:

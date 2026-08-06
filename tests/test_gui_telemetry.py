@@ -286,6 +286,13 @@ class GuiTelemetryTests(unittest.TestCase):
             "function": 0x1234, "grammar_fingerprint": "ignored",
             "reasons": ["numeric-event-missing", "/private/dumps/leak"],
         }] * 9
+        sideband = {
+            "grammar": "active-low-mmio-bit-debounced-event-v1",
+            "evidence": "literal+mask+local-state+shared-queue",
+            "semantic_status": "unclassified",
+            "event": 0x51, "register": 0x03000694,
+            "mask": 0x10, "polarity": "active-low",
+        }
         payload = runtime_telemetry(
             config, self._state(
                 direct_matrix_detection="accepted",
@@ -294,6 +301,14 @@ class GuiTelemetryTests(unittest.TestCase):
                 direct_matrix_consumer_evidence="raw-ring-consumer",
                 direct_matrix_grammar_fingerprint="direct-6x4-v1",
                 direct_matrix_rejections=rejections,
+                direct_matrix_sideband_producers=[
+                    sideband, {**sideband, "grammar": "/private/dumps/leak"},
+                    sideband, sideband, sideband,
+                ],
+                direct_matrix_sideband_detection="rejected",
+                direct_matrix_sideband_rejections=[
+                    "shape-word-0x028-mismatch", "/private/dumps/leak"
+                ],
                 input_profile="direct-low-nibble-6-row-v1",
                 input_mode="firmware-consumed", input_error="",
                 input_events=8, firmware_key_events=7, input_register_reads=6,
@@ -318,6 +333,20 @@ class GuiTelemetryTests(unittest.TestCase):
         self.assertEqual(matrix["rejection_count"], 9)
         self.assertEqual(len(matrix["rejections"]), 8)
         self.assertEqual(matrix["rejections"][0], ["numeric-event-missing"])
+        self.assertEqual(matrix["sideband_producer_count"], 5)
+        self.assertEqual(len(matrix["sideband_producers"]), 3)
+        self.assertEqual(matrix["sideband_detection"], "rejected")
+        self.assertEqual(
+            matrix["sideband_rejections"],
+            ["shape-word-0x028-mismatch"],
+        )
+        self.assertEqual(matrix["sideband_producers"][0], {
+            "grammar": "active-low-mmio-bit-debounced-event-v1",
+            "evidence": "literal+mask+local-state+shared-queue",
+            "semantic_status": "unclassified",
+            "event": "0x51", "register": "0x03000694",
+            "mask": "0x10", "polarity": "active-low",
+        })
         self.assertEqual(matrix["transport"], "direct-matrix+task-consumer")
         self.assertEqual(
             (matrix["scans"], matrix["active_reads"], matrix["call_edges"],

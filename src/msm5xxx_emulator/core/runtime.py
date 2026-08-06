@@ -308,6 +308,19 @@ class RuntimeMixin:
                 direct_input_profile["grammar_fingerprint"]
                 if direct_input_profile is not None else None
             ),
+            "direct_matrix_sideband_producers": (
+                list(direct_input_profile.get("sideband_producers", ()))
+                if direct_input_profile is not None else []
+            ),
+            "direct_matrix_sideband_detection": (
+                direct_input_profile.get("sideband_detection_status")
+                if direct_input_profile is not None else None
+            ),
+            "direct_matrix_sideband_rejections": (
+                list(direct_input_profile.get(
+                    "sideband_detection_reject_reasons", ()
+                )) if direct_input_profile is not None else []
+            ),
             "direct_matrix_rejections": list(getattr(
                 self, "direct_input_rejections", ()
             )),

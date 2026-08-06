@@ -33,6 +33,9 @@ TELEMETRY_MATRIX_REJECTION_CAP = 8
 TELEMETRY_MATRIX_REASON_CAP = 4
 
 
+TELEMETRY_MATRIX_SIDEBAND_CAP = 4
+
+
 def _frame_metrics(frame: bytes, previous_frame: bytes, previous_hash: str,
                    previous_nonblack: int) -> tuple[str, int]:
     """Reuse metrics when a publish returns the same immutable frame contents."""
@@ -83,9 +86,49 @@ def _matrix_rejections(state: dict[str, object]) -> tuple[int, list[list[str]]]:
     return len(raw_rejections), rejections
 
 
+def _matrix_sideband_producers(
+        state: dict[str, object]
+) -> tuple[int, list[dict[str, object]]]:
+    raw_producers = state.get("direct_matrix_sideband_producers")
+    if not isinstance(raw_producers, list):
+        return 0, []
+    producers: list[dict[str, object]] = []
+    for raw in raw_producers[:TELEMETRY_MATRIX_SIDEBAND_CAP]:
+        if not isinstance(raw, dict):
+            continue
+        event = raw.get("event")
+        register = raw.get("register")
+        mask = raw.get("mask")
+        grammar = _matrix_label(raw.get("grammar"))
+        evidence = _matrix_label(raw.get("evidence"))
+        polarity = _matrix_label(raw.get("polarity"))
+        semantic_status = _matrix_label(raw.get("semantic_status"))
+        if (type(event) is not int or not 0 <= event <= 0xFF
+                or type(register) is not int or not 0 <= register <= 0xFFFFFFFF
+                or type(mask) is not int or not 0 < mask <= 0xFFFFFFFF
+                or None in (grammar, evidence, polarity, semantic_status)):
+            continue
+        producers.append({
+            "grammar": grammar,
+            "evidence": evidence,
+            "semantic_status": semantic_status,
+            "event": f"0x{event:02X}",
+            "register": f"0x{register:08X}",
+            "mask": f"0x{mask:X}",
+            "polarity": polarity,
+        })
+    return len(raw_producers), producers
+
+
 def _matrix_input_telemetry(state: dict[str, object]) -> dict[str, object]:
     """Return detector status plus aggregate scanner-to-task progress."""
     rejection_count, rejections = _matrix_rejections(state)
+    sideband_count, sideband_producers = _matrix_sideband_producers(state)
+    raw_sideband_rejections = state.get("direct_matrix_sideband_rejections")
+    sideband_rejections = [label for reason in (
+        raw_sideband_rejections[:TELEMETRY_MATRIX_REASON_CAP]
+        if isinstance(raw_sideband_rejections, list) else []
+    ) if (label := _matrix_label(reason)) is not None]
     return {
         "profile": _matrix_label(state.get("input_profile")),
         "mode": _matrix_label(state.get("input_mode")),
@@ -108,6 +151,12 @@ def _matrix_input_telemetry(state: dict[str, object]) -> dict[str, object]:
         ),
         "rejection_count": rejection_count,
         "rejections": rejections,
+        "sideband_producer_count": sideband_count,
+        "sideband_producers": sideband_producers,
+        "sideband_detection": _matrix_label(
+            state.get("direct_matrix_sideband_detection")
+        ),
+        "sideband_rejections": sideband_rejections,
         "transport": _matrix_label(state.get("input_transport")),
         "scans": _nonnegative_counter(state, "direct_matrix_scans"),
         "active_reads": _nonnegative_counter(

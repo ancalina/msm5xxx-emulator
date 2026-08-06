@@ -35,15 +35,34 @@ class RexMixin:
 
     def _install_rex_irq_arm_hook(self, config: object) -> None:
         arm = getattr(config, "rex_irq_arm_address", None)
-        route = (getattr(config, "rex_tick_ms", None) == 5
-                 and all(isinstance(getattr(config, field, None), int) for field in (
-                     "rex_tick_address", "rex_irq_wrapper_address", "rex_irq_handler_address",
-                     "rex_irq_status_address", "rex_irq_enable_address"))
-                 and bool(getattr(config, "rex_irq_mask", 0)))
+        route = (
+            getattr(config, "rex_tick_ms", None) == 5
+            and all(isinstance(getattr(config, field, None), int) for field in (
+                "rex_tick_address", "rex_irq_wrapper_address",
+                "rex_irq_handler_address", "rex_irq_status_address",
+                "rex_irq_enable_address",
+            ))
+            and bool(getattr(config, "rex_irq_mask", 0))
+        )
         self._rex_irq_arm_required = isinstance(arm, int) and route
         self._rex_irq_armed = not self._rex_irq_arm_required
         if self._rex_irq_arm_required:
-            self.uc.hook_add(UC_HOOK_MEM_WRITE, self._rex_irq_arm_write, begin=arm, end=arm)
+            self.uc.hook_add(
+                UC_HOOK_MEM_WRITE, self._rex_irq_arm_write,
+                begin=arm, end=arm,
+            )
+            return
+        candidate = getattr(config, "rex_static_controller_candidate", None)
+        if (isinstance(candidate, dict) and candidate.get("accepted")
+                and candidate.get("signature")
+                == "static-msm5000-620-controller-callback-v1"
+                and candidate.get("time_tick_control_address")
+                == 0x030006E0):
+            self._rex_irq_armed = False
+            self.uc.hook_add(
+                UC_HOOK_MEM_WRITE, self._rex_candidate_arm_write,
+                begin=0x030006E0, end=0x030006E0,
+            )
             return
         observation = getattr(
             config, "rex_static_c40_controller_observation", None
@@ -58,8 +77,9 @@ class RexMixin:
                 begin=0x030006E0, end=0x030006E0,
             )
 
-    def _rex_irq_arm_write(self, uc: Uc, access: int, address: int, size: int,
-                           value: int, user_data: object) -> None:
+    def _rex_irq_arm_write(self, uc: Uc, access: int, address: int,
+                           size: int, value: int,
+                           user_data: object) -> None:
         del uc, access, user_data
         arm = getattr(self.config, "rex_irq_arm_address", None)
         if address != arm:
@@ -82,6 +102,22 @@ class RexMixin:
         if address == 0x030006E0 and size == 1 and value == 0x02:
             self._rex_irq_armed = True
             self._rex_copied_c40_gate_pending = True
+            self.rex_irq_arm_accepts += 1
+            self.rex_irq_arm_instruction = self.instructions
+
+    def _rex_candidate_arm_write(
+            self, uc: Uc, access: int, address: int, size: int, value: int,
+            user_data: object,
+    ) -> None:
+        """Latch one exact arm write for a telemetry-closed candidate."""
+        del uc, access, user_data
+        self.rex_irq_arm_writes += 1
+        self.rex_irq_arm_last_value = value
+        if address == 0x030006E0 and size == 1 and value == 0x02:
+            self._rex_irq_armed = True
+            self._rex_candidate_gate_pending = bool(getattr(
+                self.config, "rex_static_controller_experimental", False
+            ))
             self.rex_irq_arm_accepts += 1
             self.rex_irq_arm_instruction = self.instructions
 
@@ -114,8 +150,10 @@ class RexMixin:
         candidate = getattr(self, "_rex_candidate_route", None)
         return (
             candidate if isinstance(candidate, dict)
-            and candidate.get("signature")
-            == "experimental-static-c80-controller-route-v1"
+            and candidate.get("signature") in {
+                "experimental-static-c80-controller-route-v1",
+                "experimental-static-msm5000-620-controller-route-v1",
+            }
             and self._rex_legacy_irq_route_metadata_valid(candidate)
             else None
         )
@@ -147,6 +185,22 @@ class RexMixin:
             clear_banks = (status, status + 4, enable + 0x38)
             writes = (enable, enable + 4, enable + 0x30)
             count, row_size, aperture = 3, 14, (status, enable + 0x3A)
+        elif (controller_class
+              == "legacy-msm5000-620-two-bank-read-consume-v1"):
+            banks = (status, status + 4)
+            count, row_size, aperture = 2, 12, (status, enable + 8)
+            return (
+                enable == status + 8
+                and route.get("status_banks") == banks
+                and route.get("mask_set_banks") == banks
+                and route.get("mask_output_banks")
+                == (enable, enable + 4)
+                and route.get("controller_aperture") == aperture
+                and route.get("status_bank_count") == count
+                and route.get("group_row_size") == row_size
+                and route.get("pending_read_semantics")
+                == "consume-on-read"
+            )
         else:
             return False
         return (
@@ -167,6 +221,9 @@ class RexMixin:
             return
         route = self._rex_legacy_irq_route()
         if not self._rex_irq_shadow_access_allowed(uc, route):
+            return
+        if (route is not None and route.get("pending_read_semantics")
+                == "consume-on-read"):
             return
         pending_before = self._rex_irq_pending[0]
         incoming = value.to_bytes(size, "little")
@@ -200,6 +257,22 @@ class RexMixin:
             return
         route = self._rex_legacy_irq_route()
         if not self._rex_irq_shadow_access_allowed(uc, route):
+            return
+        if (route is not None and route.get("pending_read_semantics")
+                == "consume-on-read"):
+            banks = route["status_banks"]
+            consumed = False
+            for index, bank in enumerate(banks):
+                if max(address, bank) >= min(address + size, bank + 2):
+                    continue
+                pending = (self._rex_irq_pending[index]
+                           if index < len(self._rex_irq_pending) else 0)
+                uc.mem_write(bank, struct.pack("<I", pending))
+                consumed = consumed or bool(pending)
+                if index < len(self._rex_irq_pending):
+                    self._rex_irq_pending[index] = 0
+            if consumed:
+                self.rex_controller_pending_acks += 1
             return
         if route is None or route["status_bank_count"] == 2:
             uc.mem_write(status, struct.pack("<I", self._rex_irq_pending[0]))
@@ -496,11 +569,16 @@ class RexMixin:
                 "enable": enable,
                 "mask": mask,
             }
+            expected_enable = (
+                status + 8
+                if legacy.get("pending_read_semantics") == "consume-on-read"
+                else status + 0x14
+            )
             valid_firmware = (
                 all(value == legacy.get(field)
                     for field, value in route_fields.items())
                 and status is not None
-                and enable == status + 0x14
+                and enable == expected_enable
                 and self._rex_firmware_matches(
                     uc, wrapper, wrapper_size
                 )
@@ -559,16 +637,28 @@ class RexMixin:
     def _rex_static_candidate_runtime_route(
             self, uc: Uc,
     ) -> tuple[dict[str, object] | None, str, bool]:
-        """Close one static C80 candidate against installed runtime state."""
+        """Close one static controller candidate against installed state."""
         candidate = getattr(
             self.config, "rex_static_controller_candidate", None
         )
         if not isinstance(candidate, dict) or not candidate.get("accepted"):
             return None, "static-candidate-unavailable", True
+        signature = candidate.get("signature")
+        if signature == "static-c80-controller-callback-v1":
+            required_class = (
+                "legacy-c80-index1e-delta5-controller-candidate-v1"
+            )
+            runtime_class = "legacy-c80-two-bank-group10-v1"
+        elif signature == "static-msm5000-620-controller-callback-v1":
+            required_class = (
+                "legacy-msm5000-620-two-bank-read-consume-v1"
+            )
+            runtime_class = required_class
+        else:
+            return None, "static-candidate-metadata-invalid", True
         required = {
-            "signature": "static-c80-controller-callback-v1",
-            "controller_class":
-                "legacy-c80-index1e-delta5-controller-candidate-v1",
+            "signature": signature,
+            "controller_class": required_class,
             "active": False,
             "vector": 0x18,
             "mask": 0x0200,
@@ -601,20 +691,39 @@ class RexMixin:
             value = candidate.get(field)
             return tuple(value) if isinstance(value, (list, tuple)) else ()
 
-        if (vector_target != self.config.ram_base
-                or enable != status + 0x14
+        common_invalid = (
+                vector_target != self.config.ram_base
                 or handler_size <= 0 or wrapper_size <= 0
                 or any(address & 3 or not self.config.ram_base <= address
                        <= ram_end - 4
                        for address in (handler_slot, callback_slot))
                 or metadata_tuple("status_banks")
                    != (status, status + 4)
-                or metadata_tuple("clear_banks")
-                   != (status, status + 4)
+        )
+        if signature == "static-c80-controller-callback-v1":
+            class_invalid = (
+                enable != status + 0x14
+                or metadata_tuple("clear_banks") != (status, status + 4)
                 or metadata_tuple("controller_write_banks")
                    != (enable, enable + 4)
                 or metadata_tuple("controller_aperture")
-                   != (status, enable + 6)):
+                   != (status, enable + 6)
+            )
+        else:
+            class_invalid = (
+                enable != status + 8
+                or metadata_tuple("mask_set_banks")
+                   != (status, status + 4)
+                or metadata_tuple("mask_output_banks")
+                   != (enable, enable + 4)
+                or metadata_tuple("controller_aperture")
+                   != (status, enable + 8)
+                or candidate.get("pending_read_semantics")
+                   != "consume-on-read"
+                or candidate.get("time_tick_control_address")
+                   != 0x030006E0
+            )
+        if common_invalid or class_invalid:
             return None, "static-candidate-metadata-invalid", True
 
         offsets = {
@@ -684,18 +793,33 @@ class RexMixin:
                 != tuple(callback_shape)):
             return None, "runtime-callback-shape-mismatch", True
         route = {
-            "signature": "experimental-static-c80-controller-route-v1",
-            "controller_class": "legacy-c80-two-bank-group10-v1",
-            "index": 0x1E,
+            "signature": (
+                "experimental-static-c80-controller-route-v1"
+                if signature == "static-c80-controller-callback-v1" else
+                "experimental-static-msm5000-620-controller-route-v1"
+            ),
+            "controller_class": runtime_class,
+            "index": 0x1E if signature == "static-c80-controller-callback-v1"
+                     else 0x1C,
             "status": status,
             "enable": enable,
             "mask": 0x0200,
             "status_banks": (status, status + 4),
-            "clear_banks": (status, status + 4),
-            "controller_write_banks": (enable, enable + 4),
-            "controller_aperture": (status, enable + 6),
+            **({
+                "clear_banks": (status, status + 4),
+                "controller_write_banks": (enable, enable + 4),
+                "controller_aperture": (status, enable + 6),
+            } if signature == "static-c80-controller-callback-v1" else {
+                "mask_set_banks": (status, status + 4),
+                "mask_output_banks": (enable, enable + 4),
+                "controller_aperture": (status, enable + 8),
+                "pending_read_semantics": "consume-on-read",
+            }),
             "status_bank_count": 2,
-            "group_row_size": 10,
+            "group_row_size": (10
+                               if signature
+                               == "static-c80-controller-callback-v1"
+                               else 12),
             "vector": 0x18,
             "vector_target": vector_target,
             "wrapper": wrapper,
@@ -807,10 +931,28 @@ class RexMixin:
             return False
         self._rex_candidate_shadow_hooks = hooks
         self._rex_irq_pending = [0, 0]
+        self._rex_candidate_gate_pending = False
+        self.rex_next_instruction = self.instructions + REX_TICK_INTERVAL
         self.rex_controller_gate_accepts += 1
         self.rex_controller_gate_reason = None
         self.rex_controller_activation_instruction = self.instructions
         return True
+
+    def _rex_candidate_timer_source(self, uc: Uc) -> None:
+        """Assert deterministic ticks only after experimental runtime gate."""
+        if not self._rex_try_static_candidate_route(uc):
+            if self._rex_candidate_gate_terminal:
+                self._rex_candidate_gate_pending = False
+            return
+        if (not self._rex_irq_armed
+                or self.instructions < self.rex_next_instruction
+                or self._rex_irq_pending[0] & self.config.rex_irq_mask):
+            return
+        self.rex_next_instruction = self.instructions + REX_TICK_INTERVAL
+        self._rex_irq_pending[0] |= self.config.rex_irq_mask
+        self.rex_ticks += 1
+        self.rex_elapsed_ms += 5
+        self.rex_controller_pending_assertions += 1
 
     def _rex_controller_telemetry(self) -> dict[str, object]:
         candidate = getattr(
@@ -820,7 +962,8 @@ class RexMixin:
             self.config, "rex_static_c40_controller_observation", None
         )
         direct = self._rex_direct_legacy_irq_route() is not None
-        c80_active = getattr(self, "_rex_candidate_route", None) is not None
+        candidate_route = getattr(self, "_rex_candidate_route", None)
+        c80_active = candidate_route is not None
         copied_active = self._rex_copied_c40_irq_route() is not None
         active = c80_active or copied_active
         if copied_active:
@@ -853,7 +996,7 @@ class RexMixin:
             "profile": (
                 "runtime-c40-copied-vector-selector0-v1"
                 if copied_active else
-                "experimental-static-c80-controller-route-v1"
+                candidate_route.get("signature")
                 if c80_active else None
             ),
             "status": status,
@@ -893,7 +1036,9 @@ class RexMixin:
                 "writes": getattr(self, "rex_irq_arm_writes", 0),
                 "accepts": getattr(self, "rex_irq_arm_accepts", 0),
                 "last_value": getattr(self, "rex_irq_arm_last_value", None),
-                "instruction": getattr(self, "rex_irq_arm_instruction", None),
+                "instruction": getattr(
+                    self, "rex_irq_arm_instruction", None
+                ),
             },
         }
 

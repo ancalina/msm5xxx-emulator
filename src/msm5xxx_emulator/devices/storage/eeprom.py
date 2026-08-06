@@ -6,6 +6,7 @@ from ...detection.storage import EEPROM_24LC64_CLASS_B_READ_PREFIX
 from ...detection.storage import EEPROM_24LC64_CLASS_B_WRITE_PREFIX
 from ...detection.storage import EEPROM_24LCXX_READ_SIGNATURE
 from ...detection.storage import EEPROM_24LCXX_WRITE_PREFIX
+from ...detection.storage import EEPROM_24LCXX_F6F7_WRITE_PREFIX
 from ...detection.storage import EEPROM_24LCXX_X270_READ_PREFIX
 from ...detection.storage import EEPROM_24LCXX_X270_WRITE_PREFIX
 from ...detection.storage import EEPROM_24LCXX_X430_READ_PREFIX
@@ -27,6 +28,22 @@ import logging
 LOGGER = logging.getLogger("msm5xxx")
 
 class EepromMixin:
+    def _eeprom_range_valid(self, offset: int, length: int) -> bool:
+        """Match the admitted transport class's native range guard."""
+        if length == 0:
+            return 0 <= offset < self.eeprom_capacity
+        write = getattr(self.config, "eeprom_write_address", None)
+        strict_end = (
+            write is not None
+            and self._original_runtime_bytes(
+                write, len(EEPROM_24LCXX_F6F7_WRITE_PREFIX)
+            ) == EEPROM_24LCXX_F6F7_WRITE_PREFIX
+        )
+        end = offset + length
+        return (0 < length <= self.eeprom_capacity and 0 <= offset
+                and (end < self.eeprom_capacity if strict_end
+                     else end <= self.eeprom_capacity))
+
     def _ensure_eeprom(self, uc: Uc) -> bool:
         """Load the proven 24LCxx capacity and its persistent byte image."""
         geometry = self.config.eeprom_geometry_address
@@ -101,15 +118,14 @@ class EepromMixin:
         if not self._ensure_eeprom(uc):
             return
         if length == 0:
-            valid = 0 <= offset < self.eeprom_capacity
+            valid = self._eeprom_range_valid(offset, length)
             self.eeprom_reads += int(valid)
             uc.reg_write(UC_ARM_REG_R0, 0 if valid else 6)
             self._return_to_lr(uc, address, size, user_data)
             return
         if not self._hle_destination_is_ram(destination, length):
             return
-        valid = (0 < length <= self.eeprom_capacity
-                 and 0 <= offset <= self.eeprom_capacity - length)
+        valid = self._eeprom_range_valid(offset, length)
         try:
             if not valid:
                 raise ValueError
@@ -143,6 +159,7 @@ class EepromMixin:
                 (candidate for candidate in (
                     EEPROM_24LCXX_X430_WRITE_PREFIX,
                     EEPROM_24LCXX_X270_WRITE_PREFIX,
+                    EEPROM_24LCXX_F6F7_WRITE_PREFIX,
                     EEPROM_24LCXX_X7700_WRITE_PREFIX,
                     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
                 ) if self._original_runtime_bytes(address, len(candidate))
@@ -157,15 +174,14 @@ class EepromMixin:
         if not self._ensure_eeprom(uc):
             return
         if length == 0:
-            valid = 0 <= offset < self.eeprom_capacity
+            valid = self._eeprom_range_valid(offset, length)
             self.eeprom_writes += int(valid)
             uc.reg_write(UC_ARM_REG_R0, 0 if valid else 6)
             self._return_to_lr(uc, address, size, user_data)
             return
         if not self._hle_source_is_safe(source, length):
             return
-        valid = (0 < length <= self.eeprom_capacity
-                 and 0 <= offset <= self.eeprom_capacity - length)
+        valid = self._eeprom_range_valid(offset, length)
         try:
             if not valid:
                 raise ValueError

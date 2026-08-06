@@ -22,6 +22,7 @@ from msm5xxx_emulator.detection.storage import (
     EEPROM_24LC64_CLASS_B_BOUND,
     EEPROM_24LC64_CLASS_B_READ_PREFIX,
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+    EEPROM_24LCXX_F6F7_WRITE_PREFIX,
     find_24lc64_class_b_driver,
 )
 
@@ -791,6 +792,58 @@ class DetectionTests(unittest.TestCase):
         duplicate_marker = bytearray(image)
         duplicate_marker[0x1F00:0x1F0B] = b"NV24LCXX.C\0"
         self.assertIsNone(find_24lcxx_driver(bytes(duplicate_marker)))
+
+    def test_24lcxx_f6f7_variant_requires_paired_geometry(self) -> None:
+        image = bytearray(b"\xff" * 0x2000)
+        write = 0x40
+        read = 0x800
+        initializer = 0xC00
+        geometry = 0x010BC7B8
+        image[write:write + len(EEPROM_24LCXX_F6F7_WRITE_PREFIX)] = (
+            EEPROM_24LCXX_F6F7_WRITE_PREFIX
+        )
+        image[read:read + len(EEPROM_24LCXX_X270_READ_PREFIX)] = (
+            EEPROM_24LCXX_X270_READ_PREFIX
+        )
+        image[initializer:initializer + len(EEPROM_24LCXX_X270_INIT_SIGNATURE)] = (
+            EEPROM_24LCXX_X270_INIT_SIGNATURE
+        )
+        struct.pack_into("<I", image, write + 0x3E8, geometry)
+        struct.pack_into("<I", image, read + 0x3EC, geometry)
+        struct.pack_into("<I", image, initializer + 0x14, geometry)
+        image[0x1E00:0x1E0B] = b"nv24lcxx.c\0"
+
+        low_write, low_read = 0x1200, 0x1300
+        image[low_write:low_write + 8] = bytes.fromhex(
+            "f0b5071c1e481f49"
+        )
+        struct.pack_into("<2I", image, low_write + 0x80,
+                         0x03000660, 0x03000668)
+        image[low_read:low_read + 6] = bytes.fromhex("f0b500271e48")
+        struct.pack_into("<I", image, low_read + 0x80, 0x03000668)
+
+        def call(position: int, target: int) -> None:
+            displacement = target - (position + 4)
+            struct.pack_into(
+                "<2H", image, position,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        for index in range(16):
+            call(0x1400 + index * 4, low_write)
+        for index in range(2):
+            call(0x1480 + index * 4, low_read)
+
+        self.assertEqual(find_24lcxx_driver(bytes(image)),
+                         (read, write, geometry))
+
+        struct.pack_into("<I", image, read + 0x3EC, geometry + 4)
+        self.assertIsNone(find_24lcxx_driver(bytes(image)))
+
+        struct.pack_into("<I", image, read + 0x3EC, geometry)
+        struct.pack_into("<I", image, low_write + 0x80, 0x03000728)
+        self.assertIsNone(find_24lcxx_driver(bytes(image)))
 
     def test_24lcxx_x7700_variant_requires_full_pair_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x2200)
