@@ -318,6 +318,7 @@ def runtime_telemetry(config: object, state: dict[str, object], *, generation: i
             "adc_reads": _counter(state, "board_adc_reads"),
             "adc_channels": state.get("board_adc_channels", []),
         },
+        "dc0_transport": _mapping(state, "dc0_transport"),
         "nor": {
             "primary": _mapping(state, "primary_flash_telemetry"),
             "primary_parallel_nor_direct_id_probes": state.get(
@@ -439,7 +440,8 @@ def _compact_telemetry(payload: dict[str, object]) -> dict[str, object]:
         name: payload[name] for name in (
             "generation", "firmware", "model", "chipset", "dump_status",
             "instructions", "pc", "lr", "cpsr", "phase", "event", "frame",
-            "lcd", "rex", "nor", "eeprom", "nand", "control_sink",
+            "lcd", "rex", "dc0_transport", "nor", "eeprom", "nand",
+            "control_sink",
             "input",
             "host_hle", "last_unmapped", "unmapped_accesses",
             "dynamic_page_first_accesses", "fault",

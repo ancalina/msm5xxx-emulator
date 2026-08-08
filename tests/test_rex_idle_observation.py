@@ -60,6 +60,7 @@ class RexIdleObservationTests(unittest.TestCase):
             "controller_write_banks": (enable, enable + 4),
             "controller_aperture": (status, enable + 6),
             "status_bank_count": 2, "group_row_size": 10,
+            "handler": 0x2000, "handler_validation_size": 0x200,
         }
 
     def test_audio_probe_caches_static_non_prologue(self) -> None:
@@ -630,6 +631,36 @@ class RexIdleObservationTests(unittest.TestCase):
             struct.unpack("<H", uc.mem_read(0x03000C84, 2))[0], 1
         )
         self.assertEqual(emulator._rex_irq_pending, [0x1234, 0xABCD, 0x0F0F])
+
+    def test_two_bank_status_shadow_ignores_non_handler_transport(self) -> None:
+        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        route = self._legacy_route()
+        emulator.config = SimpleNamespace(rex_irq_status_address=0x03000C80)
+        emulator.direct_input_profile = {"timer_bridge": {
+            "signature": "legacy-rex-5ms-scanner-timer-v1",
+            "irq_route": route,
+        }}
+        emulator._rex_irq_pending = [0x1234, 0xABCD]
+        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        uc.mem_map(0x03000000, 0x1000)
+        uc.mem_write(0x03000C84, struct.pack("<H", 1))
+        uc.reg_write(UC_ARM_REG_PC, 0x000962FE)
+
+        emulator._rex_irq_status_read(uc, 0, 0x03000C84, 2, 0, None)
+        emulator._rex_irq_status_write(
+            uc, 0, 0x03000C84, 2, 0xFFFF, None
+        )
+
+        self.assertEqual(
+            struct.unpack("<H", uc.mem_read(0x03000C84, 2))[0], 1
+        )
+        self.assertEqual(emulator._rex_irq_pending, [0x1234, 0xABCD])
+
+        uc.reg_write(UC_ARM_REG_PC, 0x2002)
+        emulator._rex_irq_status_read(uc, 0, 0x03000C84, 2, 0, None)
+        self.assertEqual(
+            struct.unpack("<H", uc.mem_read(0x03000C84, 2))[0], 0xABCD
+        )
 
     def test_three_bank_route_rejects_malformed_metadata(self) -> None:
         route = self._legacy_route("legacy-c80-three-bank-group14-v1")

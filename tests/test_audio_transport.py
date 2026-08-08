@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from msm5xxx_emulator.detection.audio import _marker_families
 from msm5xxx_emulator.detection.audio import find_audio_transport
+from msm5xxx_emulator.core.lifecycle import ApproximateSmafPlayer as LifecycleAudioPlayer
 from msm5xxx_emulator.devices.audio import AudioMixin
 from msm5xxx_emulator.devices.audio_lle import AudioTransport
 from msm5xxx_emulator.e170_gm_audio import ApproximateSmafPlayer
@@ -28,6 +29,9 @@ def _access(image: bytearray, offset: int, base: int,
 
 
 class AudioTransportTests(unittest.TestCase):
+    def test_lifecycle_uses_packaged_audio_player(self) -> None:
+        self.assertIs(LifecycleAudioPlayer, ApproximateSmafPlayer)
+
     def test_marker_scan_keeps_chunk_boundary_matches(self) -> None:
         image = bytearray(b"\xff" * 128)
         image[62:71] = b"Ma2main.c"

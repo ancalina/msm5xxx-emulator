@@ -197,6 +197,7 @@ class CheckpointMixin:
             },
             "rex_controller": self._rex_controller_telemetry(),
             "sbi": self._sbi_telemetry(),
+            "dc0_transport": self._dc0_transport_telemetry(),
             "dynamic_pages": len(self.dynamic_pages),
             "last_unmapped": safe_unmapped,
             "unmapped_accesses": safe_unmapped_accesses,

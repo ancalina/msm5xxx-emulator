@@ -287,9 +287,11 @@ class RexMixin:
     @staticmethod
     def _rex_irq_shadow_access_allowed(
             uc: Uc, route: dict[str, object] | None) -> bool:
-        """Keep group14 boot-time controller accesses guest-owned."""
-        if (route is None or route.get("controller_class")
-                != "legacy-c80-three-bank-group14-v1"):
+        """Keep C80 controller accesses outside its handler guest-owned."""
+        if (route is None or route.get("controller_class") not in {
+                "legacy-c80-two-bank-group10-v1",
+                "legacy-c80-three-bank-group14-v1",
+        }):
             return True
         handler = route.get("handler")
         length = route.get("handler_validation_size")

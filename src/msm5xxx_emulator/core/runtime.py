@@ -224,6 +224,7 @@ class RuntimeMixin:
             "rex_irq_deliveries": self.rex_irq_deliveries,
             "rex_controller": self._rex_controller_telemetry(),
             "sbi": self._sbi_telemetry(),
+            "dc0_transport": self._dc0_transport_telemetry(),
             "board_adc_reads": self.board_adc_reads,
             "board_adc_channels": [
                 {"channel": channel, "entries": entries}

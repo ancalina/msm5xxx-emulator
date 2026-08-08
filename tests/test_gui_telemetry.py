@@ -358,6 +358,31 @@ class GuiTelemetryTests(unittest.TestCase):
         self.assertEqual(compact["input"], matrix)
         self.assertNotIn("/private/dumps", json.dumps(payload, sort_keys=True))
 
+    def test_dc0_transport_survives_full_and_compact_telemetry(self) -> None:
+        config = SimpleNamespace(
+            path="/private/dumps/firmware.bin", file_size=128,
+            model="unknown", chipset="MSM5100", dump_status="complete",
+            firmware_identity=lambda: {"sha256": "a" * 64},
+        )
+        dc0 = {
+            "status": "observed",
+            "semantic_status": "unclassified",
+            "counts": {"completed_readback_epochs": 1},
+            "readback_epochs": [{
+                "write_pc": "0x00001000", "write_word": "0xB200",
+                "read_pc": "0x00001010", "readback_word": "0xB200",
+                "readback_matches_write": True,
+            }],
+        }
+        payload = runtime_telemetry(
+            config, self._state(dc0_transport=dc0), generation=1,
+            phase="early-boot", event="checkpoint", width=1, height=1,
+            frame=b"\0\0\0", nonblack=0,
+        )
+        self.assertEqual(payload["dc0_transport"], dc0)
+        self.assertEqual(_compact_telemetry(payload)["dc0_transport"], dc0)
+        self.assertNotIn("/private/dumps", json.dumps(payload, sort_keys=True))
+
     def test_session_frame_names_do_not_overwrite_same_checkpoint(self) -> None:
         config = SimpleNamespace(path=Path("/private/dumps/SCH-X350.bin"))
         first_frame = b"\x00\x00\x00"
