@@ -70,6 +70,7 @@ jobs:
             --disable-guest-agent \
             --disable-werror \
             --disable-debug-info \
+            --extra-cflags="-ffile-prefix-map=$work=." \
             --enable-strip
           ninja qemu-system-arm.exe
 

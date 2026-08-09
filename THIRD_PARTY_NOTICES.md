@@ -13,6 +13,7 @@
   SHA-256:
   `c5378b62028c920cb11e4803327983fee2f2cdff5dc89c708e39da417e51c854`.
 
-Dependencies are installed by the launcher or package manager; their source
-and license notices are not replaced by this file. The complete GPLv2 text
-covering this distribution and TimGM6mb is in `LICENSE`.
+Python dependencies are installed by the launcher. Native release bundles may
+also include QEMU runtime libraries listed in bundle-specific manifests, with
+license texts and companion source assets supplied beside the bundle. The
+complete GPLv2 text covering this distribution and TimGM6mb is in `LICENSE`.
