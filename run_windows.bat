@@ -140,7 +140,14 @@ if errorlevel 1 (
     goto failed
 )
 
-"%PYTHON_CMD%" %PYTHON_ARGS% "%SCRIPT_DIR%gui.py" %*
+if defined MSM5XXX_QEMU (
+    set "QEMU=%MSM5XXX_QEMU%"
+) else (
+    set "QEMU=%SCRIPT_DIR%bin\qemu-system-arm.exe"
+)
+if not exist "%QEMU%" goto missing_qemu
+
+"%PYTHON_CMD%" %PYTHON_ARGS% "%SCRIPT_DIR%experiments\qemu-tcg\live-display.py" %* --qemu "%QEMU%"
 set "STATUS=%ERRORLEVEL%"
 if not "%STATUS%"=="0" (
     echo Emulator exited with status %STATUS%.
@@ -156,6 +163,12 @@ goto failed
 
 :missing_requirements
 echo Missing requirements.txt beside launcher.
+set "STATUS=1"
+goto failed
+
+:missing_qemu
+echo Missing QEMU binary: %QEMU%
+echo Use a matching release archive or set MSM5XXX_QEMU.
 set "STATUS=1"
 goto failed
 

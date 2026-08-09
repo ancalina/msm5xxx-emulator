@@ -1,7 +1,7 @@
 # Experimental QEMU TCG backend
 
-Status: `engine/qemu-tcg-alpha-20260809` experiment. Unicorn remains the stable/default
-backend. QEMU is not yet an alpha release and is never selected implicitly.
+Status: `engine/qemu-tcg-alpha-20260809` experiment. Unicorn remains the
+behavioral oracle; this branch's root launchers select QEMU explicitly.
 
 ## Boundary
 
@@ -78,19 +78,21 @@ The local verified target is QEMU `v10.2.1`, `arm-softmmu`. Copy
 
 ```sh
 ../qemu/configure --target-list=arm-softmmu \
+  --without-default-features --enable-fdt=internal \
   --disable-docs --disable-tools --disable-guest-agent \
-  --disable-gtk --disable-sdl --disable-vnc --disable-curses \
-  --disable-slirp --disable-plugins --disable-werror --disable-debug-info \
-  --audio-drv-list= --enable-fdt=internal
+  --disable-werror --disable-debug-info --enable-strip
 ninja -j2 qemu-system-arm
 ```
 
-Run the explicit experimental GUI:
+Run a matching binary archive:
 
 ```sh
-PYTHONPATH=src python3 experiments/qemu-tcg/live-display.py FIRMWARE \
-  --qemu /path/to/qemu-system-arm --state-dir /path/to/qemu-state
+./run_linux.sh FIRMWARE --state-dir /path/to/qemu-state
+# Intel macOS: ./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
 ```
+
+Windows uses `run_windows.bat`. Source builds can set `MSM5XXX_QEMU` to an
+external `qemu-system-arm` path.
 
 The QEMU settings button is disabled because this runner cannot safely restart
 the native process in place. Restart the command after changing settings.
@@ -103,4 +105,4 @@ initialization can be required before a persistent warm boot reaches idle.
 2. Prove real handset-idle paths, including persistent warm storage.
 3. Verify reset, storage parity/quiescence, input effect, and reject telemetry.
 4. Run the full source tests and native build on the exact staged tree.
-5. Package one-command Linux and Windows launchers without firmware or evidence.
+5. Verify Linux, Windows, and Intel macOS archives without firmware or evidence.

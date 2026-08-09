@@ -37,7 +37,7 @@ is_supported_python "$python" ||
     die "Python 3.10 or newer is required. Install a newer Python, then run this launcher again." 1
 
 if ! "$python" -c 'import tkinter' >/dev/null 2>&1; then
-    die "Tk is missing. Install your distribution's Tk package (for Debian/Ubuntu: python3-tk), then run this launcher again." 1
+    die "Tk is missing. Install Python Tk support (Debian/Ubuntu: python3-tk; macOS: a Python build with Tcl/Tk), then run this launcher again." 1
 fi
 
 if ! "$python" -c 'import unicorn, PIL, numpy' >/dev/null 2>&1; then
@@ -55,4 +55,9 @@ fi
 "$python" -c 'import unicorn, PIL, numpy' >/dev/null 2>&1 ||
     die "Python dependencies are still unavailable after installation." 1
 
-exec "$python" "$script_dir/gui.py" "$@"
+qemu=${MSM5XXX_QEMU:-"$script_dir/bin/qemu-system-arm"}
+[ -x "$qemu" ] ||
+    die "Missing QEMU binary: $qemu. Use a matching release archive or set MSM5XXX_QEMU." 1
+
+exec "$python" "$script_dir/experiments/qemu-tcg/live-display.py" \
+    "$@" --qemu "$qemu"

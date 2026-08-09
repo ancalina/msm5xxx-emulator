@@ -1,14 +1,13 @@
-# MSM5xxx Emulator: experimental QEMU TCG backend
+# MSM5xxx Emulator: experimental QEMU TCG build
 
 [한국어](README.ko.md)
 
 This branch moves Qualcomm MSM5000/MSM5100/MSM5500 firmware execution to
-QEMU TCG. It is a reproducible source checkpoint for emulator development,
-not a packaged end-user alpha release.
+QEMU TCG. It is an experimental build checkpoint; the compatibility table
+below is the release boundary.
 
-The Unicorn implementation remains in the tree as a behavioral oracle. The
-root `run_linux.sh` and `run_windows.bat` launch that older Unicorn frontend;
-they do **not** start this QEMU backend.
+The Unicorn implementation remains in the tree as a behavioral oracle. Root
+launchers now start the QEMU backend and use the matching binary under `bin/`.
 
 ## Current status
 
@@ -67,16 +66,41 @@ Configure and build QEMU with the command in
 
 ## Run
 
+Binary archives use this layout:
+
+```text
+MSM5xxx-QEMU-<platform>/
+  bin/qemu-system-arm[.exe]
+  run_linux.sh | run_windows.bat | run_macos.command
+```
+
+Linux:
+
 ```sh
-cd msm5xxx-emulator
-PYTHONPATH=src python3 experiments/qemu-tcg/live-display.py FIRMWARE \
-  --qemu /path/to/qemu-system-arm --state-dir /path/to/qemu-state
+./run_linux.sh FIRMWARE --state-dir /path/to/qemu-state
+```
+
+Windows x86-64:
+
+```bat
+run_windows.bat "C:\path\phone.bin" --state-dir "C:\path\qemu-state"
+```
+
+Intel macOS:
+
+```sh
+./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
 ```
 
 Firmware input remains read-only. NOR and EEPROM changes are written under the
 separate state directory. Reuse that directory when a firmware needs one cold
 storage initialization before a persistent warm boot. Omitting `--state-dir`
 creates disposable state.
+
+Python 3.10+, Tk, and the packages in `requirements.txt` are required. The
+launchers create a local virtual environment and install missing Python
+packages on first use. For a source checkout or external binary, set
+`MSM5XXX_QEMU=/path/to/qemu-system-arm`.
 
 ## Verify
 
@@ -97,3 +121,7 @@ The project is licensed under `GPL-2.0-or-later`. A distributed QEMU binary
 must also include the corresponding source and notices required by its
 licenses. See [LICENSE](LICENSE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Current binary targets are Linux x86-64, Windows x86-64, and Intel macOS.
+Android is not advertised: QEMU's required host libraries and the Python/Tk
+frontend do not yet have a verified Android package path.

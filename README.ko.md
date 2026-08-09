@@ -1,14 +1,13 @@
-# MSM5xxx 에뮬레이터: 실험적 QEMU TCG backend
+# MSM5xxx 에뮬레이터: 실험적 QEMU TCG build
 
 [English](README.md)
 
 Qualcomm MSM5000/MSM5100/MSM5500 펌웨어 실행을 QEMU TCG로 옮기는
-브랜치입니다. 재현 가능한 emulator 개발용 source checkpoint이며, 아직 일반
-사용자용 alpha package는 아닙니다.
+브랜치입니다. 실험적 build checkpoint이며 아래 compatibility table이 현재
+release 경계입니다.
 
-Unicorn 구현은 동작 oracle로 tree에 보존됩니다. Root의 `run_linux.sh`와
-`run_windows.bat`는 기존 Unicorn frontend를 실행하며 이 QEMU backend를
-시작하지 않습니다.
+Unicorn 구현은 동작 oracle로 tree에 보존됩니다. Root launcher는 이제 `bin/`의
+해당 platform QEMU binary를 사용해 QEMU backend를 시작합니다.
 
 ## 현재 상태
 
@@ -68,16 +67,41 @@ QEMU를 configure/build합니다.
 
 ## 실행
 
+Binary archive 구조:
+
+```text
+MSM5xxx-QEMU-<platform>/
+  bin/qemu-system-arm[.exe]
+  run_linux.sh | run_windows.bat | run_macos.command
+```
+
+Linux:
+
 ```sh
-cd msm5xxx-emulator
-PYTHONPATH=src python3 experiments/qemu-tcg/live-display.py FIRMWARE \
-  --qemu /path/to/qemu-system-arm --state-dir /path/to/qemu-state
+./run_linux.sh FIRMWARE --state-dir /path/to/qemu-state
+```
+
+Windows x86-64:
+
+```bat
+run_windows.bat "C:\path\phone.bin" --state-dir "C:\path\qemu-state"
+```
+
+Intel macOS:
+
+```sh
+./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
 ```
 
 펌웨어 원본은 읽기 전용입니다. NOR/EEPROM 변경은 별도 state directory에
 기록됩니다. Cold storage 초기화 후 persistent warm boot가 필요한 펌웨어는 같은
 directory를 재사용하십시오. `--state-dir`를 생략하면 종료 시 폐기되는 state를
 만듭니다.
+
+Python 3.10+, Tk, `requirements.txt`의 package가 필요합니다. Launcher는 누락된
+Python package를 첫 실행 때 local virtual environment에 설치합니다. Source
+checkout 또는 외부 binary는
+`MSM5XXX_QEMU=/path/to/qemu-system-arm`을 설정하십시오.
 
 ## 검증
 
@@ -98,3 +122,7 @@ screenshot, IDA database가 없습니다. Source 또는 binary archive에도 넣
 license가 요구하는 corresponding source와 notice도 함께 제공해야 합니다.
 [LICENSE](LICENSE)와 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를
 확인하십시오.
+
+현재 binary target은 Linux x86-64, Windows x86-64, Intel macOS입니다. Android는
+QEMU host library와 Python/Tk frontend의 검증된 package 경로가 없어 아직
+배포 대상으로 표기하지 않습니다.

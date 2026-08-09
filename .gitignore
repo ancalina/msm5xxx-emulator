@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-py310plus/
+/bin/
 build/
 dist/
 *.egg-info/
