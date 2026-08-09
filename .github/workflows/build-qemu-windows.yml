@@ -1,0 +1,195 @@
+name: Build QEMU for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - engine/qemu-tcg-alpha-20260809
+
+permissions:
+  contents: read
+
+env:
+  QEMU_VERSION: 10.2.1
+  BUNDLE_NAME: msm5xxx-qemu-windows-x86_64
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            bison
+            curl
+            diffutils
+            flex
+            make
+            tar
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-python
+
+      - name: Build patched QEMU
+        run: |
+          set -euxo pipefail
+          work="$PWD/.ci-windows"
+          source="$work/qemu-${QEMU_VERSION}-msm5xxx"
+          build="$work/build"
+          archive="$work/qemu-${QEMU_VERSION}.tar.xz"
+          mkdir -p "$source" "$build"
+          curl -fL --retry 3 \
+            "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" \
+            -o "$archive"
+          tar -xJf "$archive" --strip-components=1 -C "$source"
+          cp experiments/qemu-tcg/msm5xxx-poc.c "$source/hw/arm/"
+          printf "\narm_common_ss.add(files('msm5xxx-poc.c'))\n" \
+            >> "$source/hw/arm/meson.build"
+          test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c'))" \
+            "$source/hw/arm/meson.build")" -eq 1
+          cd "$build"
+          "$source/configure" \
+            --target-list=arm-softmmu \
+            --without-default-features \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-tools \
+            --disable-guest-agent \
+            --disable-werror \
+            --disable-debug-info \
+            --enable-strip
+          ninja qemu-system-arm.exe
+
+      - name: Assemble runtime and DLL closure
+        run: |
+          set -euxo pipefail
+          work="$PWD/.ci-windows"
+          source="$work/qemu-${QEMU_VERSION}-msm5xxx"
+          bundle="$PWD/dist/$BUNDLE_NAME"
+          mkdir -p "$bundle/bin" "$bundle/experiments/qemu-tcg"
+          cp "$work/build/qemu-system-arm.exe" "$bundle/bin/"
+          cp run_windows.bat requirements.txt README.md README.ko.md \
+            LICENSE THIRD_PARTY_NOTICES.md "$bundle/"
+          cp -a src "$bundle/"
+          cp experiments/qemu-tcg/live-display.py \
+            experiments/qemu-tcg/gdb_remote.py \
+            experiments/qemu-tcg/README.md "$bundle/experiments/qemu-tcg/"
+          cp "$source/COPYING" "$bundle/QEMU_COPYING"
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import sys
+
+          bundle = Path("dist/msm5xxx-qemu-windows-x86_64")
+          target = (bundle / "bin").resolve()
+          available = {
+              path.name.casefold(): path
+              for path in (Path(sys.prefix) / "bin").glob("*.dll")
+          }
+          pending = [target / "qemu-system-arm.exe"]
+          copied = set()
+          while pending:
+              binary = pending.pop()
+              output = subprocess.run(
+                  ["objdump", "-p", str(binary)], check=True,
+                  capture_output=True, text=True, errors="replace",
+              ).stdout
+              for name in re.findall(r"^\s*DLL Name:\s*(\S+)", output, re.M):
+                  key = name.casefold()
+                  source = available.get(key)
+                  if source is None or key in copied:
+                      continue
+                  destination = target / source.name
+                  shutil.copy2(source, destination)
+                  copied.add(key)
+                  pending.append(destination)
+          (bundle / "DLLS.txt").write_text(
+              "\n".join(sorted(path.name for path in target.glob("*.dll"))) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          owners="$(while IFS= read -r dll; do
+            pacman -Qqo "$MINGW_PREFIX/bin/$dll"
+          done < "$bundle/DLLS.txt" | sort -u)"
+          test -n "$owners"
+          {
+            echo "Bundled MinGW runtime packages:"
+            for package in $owners; do
+              pacman -Q "$package"
+              echo "source: https://packages.msys2.org/package/$package"
+            done
+          } > "$bundle/MSYS2_PACKAGES.txt"
+          for package in $owners; do
+            while IFS= read -r license; do
+              test -f "$license" || continue
+              relative="${license#"$MINGW_PREFIX/share/licenses/"}"
+              mkdir -p "$bundle/licenses/msys2/$(dirname "$relative")"
+              cp "$license" "$bundle/licenses/msys2/$relative"
+            done < <(pacman -Ql "$package" | awk '$2 ~ /\/share\/licenses\// {print $2}')
+          done
+
+          upstream_sha="$(sha256sum "$work/qemu-${QEMU_VERSION}.tar.xz" | cut -d' ' -f1)"
+          machine_sha="$(sha256sum experiments/qemu-tcg/msm5xxx-poc.c | cut -d' ' -f1)"
+          cat > "$bundle/BUILDINFO.txt" <<EOF
+          QEMU_VERSION=$QEMU_VERSION
+          QEMU_UPSTREAM=https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz
+          QEMU_UPSTREAM_SHA256=$upstream_sha
+          MSM5XXX_MACHINE_SHA256=$machine_sha
+          PROJECT_COMMIT=$GITHUB_SHA
+          EOF
+
+      - name: Smoke test isolated bundle
+        run: |
+          set -euxo pipefail
+          bundle="$PWD/dist/$BUNDLE_NAME"
+          saved_path="$PATH"
+          PATH="$bundle/bin:/c/Windows/System32:/c/Windows"
+          "$bundle/bin/qemu-system-arm.exe" --version \
+            > "$bundle/QEMU_VERSION.txt" 2>&1
+          "$bundle/bin/qemu-system-arm.exe" -machine help \
+            > "$bundle/QEMU_MACHINES.txt" 2>&1
+          PATH="$saved_path"
+          grep -q '^QEMU emulator version 10\.2\.1' "$bundle/QEMU_VERSION.txt"
+          grep -q '^msm5xxx-poc ' "$bundle/QEMU_MACHINES.txt"
+          cd "$bundle"
+          find . -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+
+      - name: Pack corresponding source
+        run: |
+          set -euxo pipefail
+          work="$PWD/.ci-windows"
+          name="qemu-${QEMU_VERSION}-msm5xxx"
+          tar -cJf "dist/$name.tar.xz" -C "$work" "$name"
+          sha256sum "dist/$name.tar.xz" > "dist/$name.tar.xz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUNDLE_NAME }}
+          path: dist/${{ env.BUNDLE_NAME }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msm5xxx-qemu-${{ env.QEMU_VERSION }}-corresponding-source
+          path: |
+            dist/qemu-${{ env.QEMU_VERSION }}-msm5xxx.tar.xz
+            dist/qemu-${{ env.QEMU_VERSION }}-msm5xxx.tar.xz.sha256
+          if-no-files-found: error
+          retention-days: 30
