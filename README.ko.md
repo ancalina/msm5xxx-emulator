@@ -1,129 +1,87 @@
-# MSM5xxx 에뮬레이터: 실험적 QEMU TCG build
+# MSM5xxx QEMU 에뮬레이터
 
 [English](README.md)
 
-Qualcomm MSM5000/MSM5100/MSM5500 펌웨어 실행을 QEMU TCG로 옮기는
-브랜치입니다. 실험적 build checkpoint이며 아래 compatibility table이 현재
-release 경계입니다.
+QEMU TCG 기반 Qualcomm MSM5000/MSM5100/MSM5500 피처폰 실험용
+에뮬레이터입니다. 하드웨어 동작은 모델명이나 파일명이 아니라 펌웨어 내용으로
+탐지합니다.
 
-Unicorn 구현은 동작 oracle로 tree에 보존됩니다. Root launcher는 이제 `bin/`의
-해당 platform QEMU binary를 사용해 QEMU backend를 시작합니다.
+## 다운로드
 
-## 현재 상태
+[Releases](https://github.com/ancalina/msm5xxx-emulator/releases)에서 운영체제용
+압축 파일과 `SHA256SUMS`를 받습니다. 압축 전체를 풉니다. Launcher, `bin/`,
+동봉 DLL을 분리하지 마십시오.
 
-`handset idle`은 식별된 firmware idle consumer와 이를 뒷받침하는 task/frame
-근거가 있어야 합니다. 화면이나 QEMU process가 살아 있다는 사실만으로는 pass가
-아닙니다.
-
-| 펌웨어 | QEMU에서 검증됨 | 남은 gap |
-|---|---|---|
-| SCH-X350 | Cold storage 초기화 후 같은 state로 warm boot하면 UISIdle `0xC125C -> 0xC1308` 도달; 이후 20M guest instruction 동안 REX/LCD 진행; physical END `0x51` press/release가 input task 도달 | UI power-off effect, reset parity, release packaging |
-| KTFT-X3500 | Detector가 승인한 DC0 battery profile로 guest state 주입 없이 안정된 128x160 standby frame 도달 | Current module은 module0B에 머묾; module1/idle consumer 미폐쇄 |
-| SD810 | Detector가 승인한 `0x02800000`의 8 MiB upper x8 NOR mapping/read/persistence | Periodic IRQ producer/cadence/acknowledge 미해결; completed frame 없음 |
-| SCH-X250 | Anycall splash와 animation | Idle entry 미도달 |
-| SCH-X250RUS | Anycall splash와 animation | Early-device RX status/data/frame/CRC contract 미해결; fatal loop `0x1608` 진입 |
-
-아직 release pass인 행은 없습니다. 고정 5종 alpha gate도 충족하지 못했습니다.
-
-END event `0x51`은 matrix event table에 없다는 이유만으로 거부하지 않습니다.
-유일한 physical sideband producer와 consumer path가 검출된 경우에만
-활성화합니다. Producer가 없거나 duplicated/ambiguous/collision이면 기존처럼
-fail closed합니다.
-
-## Backend 경계
-
-- QEMU가 deterministic instruction-counted time으로 ARMv4T 펌웨어를 실행합니다.
-- Native C가 device/MMIO hot path, IRQ, LCD, storage, matrix input과 현재 승인된
-  protocol class를 처리합니다.
-- Python은 firmware 구조를 검출하고 승인된 machine property만 전달하며,
-  completed LCD write decode와 실험적 GUI를 담당합니다.
-- Model명이나 firmware filename이 아니라 signature, call shape, consumer,
-  runtime readback으로 탐지합니다.
-- 불완전한 detector는 native fallback을 유지하거나 reject reason을 남깁니다.
-  Boot를 진행시키려고 알 수 없는 hardware 값을 만들지 않습니다.
-
-정확한 device, determinism, reset, release 경계는
-[QEMU backend 문서](docs/QEMU_TCG_BACKEND.md)를 확인하십시오.
-
-## 빌드
-
-검증한 target은 QEMU `v10.2.1`의 `arm-softmmu`이며 Python 3.10+와 Tk가
-필요합니다. 이 브랜치를 clone하고 machine source를 QEMU source tree에 복사한
-뒤 `hw/arm/meson.build`에 등록합니다.
-
-```sh
-git clone --branch engine/qemu-tcg-alpha-20260809 \
-  https://github.com/ancalina/msm5xxx-emulator.git
-cp msm5xxx-emulator/experiments/qemu-tcg/msm5xxx-poc.c \
-  /path/to/qemu/hw/arm/
-```
-
-```meson
-arm_common_ss.add(files('msm5xxx-poc.c'))
-```
-
-[docs/QEMU_TCG_BACKEND.md](docs/QEMU_TCG_BACKEND.md#build-and-run)의 명령으로
-QEMU를 configure/build합니다.
+펌웨어와 저장 state는 포함되지 않습니다.
 
 ## 실행
 
-Binary archive 구조:
+인자 없이 launcher를 실행하면 펌웨어 선택창이 뜹니다.
 
-```text
-MSM5xxx-QEMU-<platform>/
-  bin/qemu-system-arm[.exe]
-  run_linux.sh | run_windows.bat | run_macos.command
-```
+- Windows: `run_windows.bat`를 더블클릭합니다.
+- Linux: `./run_linux.sh`를 실행합니다.
+- Intel macOS: `run_macos.command`를 더블클릭하거나 Terminal에서 실행합니다.
 
-Linux:
+Windows에서는 펌웨어 하나를 `run_windows.bat`에 drag-and-drop해도 됩니다.
+모든 플랫폼에서 경로를 직접 줄 수도 있습니다.
 
 ```sh
-./run_linux.sh FIRMWARE --state-dir /path/to/qemu-state
+./run_linux.sh /path/to/phone.bin
+./run_macos.command /path/to/phone.bin
 ```
-
-Windows x86-64:
 
 ```bat
-run_windows.bat "C:\path\phone.bin" --state-dir "C:\path\qemu-state"
+run_windows.bat "C:\path\phone.bin"
 ```
 
-Intel macOS 15.0 이상:
+펌웨어 원본은 읽기 전용입니다.
+
+## 영속 state
+
+재시작 후에도 writable NOR와 EEPROM을 유지하려면 `--state-dir`를 사용합니다.
 
 ```sh
-brew install python-tk@3.14
-./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
+./run_linux.sh /path/to/phone.bin --state-dir /path/to/qemu-state
 ```
 
-펌웨어 원본은 읽기 전용입니다. NOR/EEPROM 변경은 별도 state directory에
-기록됩니다. Cold storage 초기화 후 persistent warm boot가 필요한 펌웨어는 같은
-directory를 재사용하십시오. `--state-dir`를 생략하면 종료 시 폐기되는 state를
-만듭니다.
+Cold boot 후 warm boot가 필요한 경우 같은 directory를 재사용합니다.
+`--state-dir`를 생략하면 writable state는 종료 시 폐기됩니다.
 
-Python 3.10+, Tk, `requirements.txt`의 package가 필요합니다. Launcher는 누락된
-Python package를 첫 실행 때 local virtual environment에 설치합니다. Source
-checkout 또는 외부 binary는
-`MSM5XXX_QEMU=/path/to/qemu-system-arm`을 설정하십시오.
+## 요구사항
 
-## 검증
+- Tcl/Tk를 포함한 Python 3.10 이상.
+- Linux x86-64, Windows x86-64, Intel macOS 15.0 이상.
+- Python package 설치가 필요한 첫 실행에서는 network access.
 
-```sh
-PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
-```
+Linux는 `python3-tk`가 필요할 수 있습니다. macOS는
+`brew install python-tk@3.14`처럼 Tcl/Tk가 포함된 Python을 설치하십시오.
+Windows binary는 unsigned입니다. macOS bundle은 ad-hoc signed이며
+notarization되지 않았습니다.
 
-공개한 checkpoint는 test 380개 통과, corpus-dependent skip 10개와 native
-`qemu-system-arm` build를 통과했습니다.
+## 현재 호환성
 
-## 배포와 라이선스
+| 펌웨어 | 현재 QEMU 결과 |
+|---|---|
+| SCH-X350 | 영속 warm boot에서 검증된 idle consumer 도달; END 입력은 input task 도달 |
+| KTFT-X3500 | 안정된 standby frame; handset-idle 경로는 미완성 |
+| SCH-X250 / X250RUS | Splash와 boot animation; idle은 미완성 |
+| SD810 | Upper NOR mapping과 persistence; display/idle은 미완성 |
 
-이 repository에는 제조사 펌웨어, 사용자 state, evidence, diagnostic log,
-screenshot, IDA database가 없습니다. Source 또는 binary archive에도 넣지
+현재 developer preview입니다. 지원되지 않는 펌웨어는 idle 전에 멈출 수 있습니다.
+Detector는 모델명 분기 대신 근거가 불완전한 동작을 fail closed합니다.
+
+## 문제 해결
+
+- Tk 없음: 선택한 Python에 Tcl/Tk support를 설치합니다.
+- Dependency 설치 실패: Python `pip`와 network를 확인합니다.
+- QEMU 또는 DLL 없음: 압축 전체를 다시 풉니다.
+- Nonzero exit: terminal에서 launcher를 실행하고 전체 error text를 보존합니다.
+
+## 개발과 license
+
+Build 방법과 backend 경계는
+[docs/QEMU_TCG_BACKEND.md](docs/QEMU_TCG_BACKEND.md)에 있습니다.
+
+프로젝트 license는 `GPL-2.0-or-later`입니다. Binary release에는 QEMU와 동봉
+library의 source archive와 notice가 함께 제공됩니다. 제조사 펌웨어는 재배포하지
 마십시오.
-
-프로젝트 license는 `GPL-2.0-or-later`입니다. QEMU binary를 배포할 때는 해당
-license가 요구하는 corresponding source와 notice도 함께 제공해야 합니다.
-[LICENSE](LICENSE)와 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를
-확인하십시오.
-
-현재 binary target은 Linux x86-64, Windows x86-64, Intel macOS 15.0
-이상입니다. Android는 QEMU host library와 Python/Tk frontend의 검증된 package
-경로가 없어 아직 배포 대상으로 표기하지 않습니다.

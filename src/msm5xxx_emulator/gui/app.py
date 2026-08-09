@@ -63,6 +63,18 @@ STATE_ROOT = DEFAULT_STATE_ROOT
 LAST_CONFIG = STATE_ROOT / "last_config.json"
 
 
+def choose_firmware() -> Path | None:
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        chosen = filedialog.askopenfilename(
+            filetypes=(("Firmware", "*.bin *.hex *.hxb"), ("All", "*"))
+        )
+    finally:
+        root.destroy()
+    return Path(chosen) if chosen else None
+
+
 class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
     def __init__(self, root: tk.Tk, firmware: Path, *,
                  experimental_c80_controller: bool = False) -> None:
@@ -314,16 +326,10 @@ def main() -> int:
     args = parser.parse_args()
     firmware = args.firmware
     if firmware is None:
-        root = tk.Tk()
-        root.withdraw()
-        chosen = filedialog.askopenfilename(
-            filetypes=(("Firmware", "*.bin *.hex *.hxb"), ("All", "*"))
-        )
-        root.destroy()
-        if not chosen:
+        firmware = choose_firmware()
+        if firmware is None:
             LOGGER.info("firmware selection cancelled log=%s", session_log)
             return 0
-        firmware = Path(chosen)
     root = tk.Tk()
 
     def callback_exception(error_type: type[BaseException], error: BaseException,

@@ -173,6 +173,18 @@ jobs:
           find . -type f ! -name SHA256SUMS -print0 \
             | sort -z | xargs -0 sha256sum > SHA256SUMS
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test Windows launcher source
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          $env:PYTHONPATH = "src;."
+          python -m unittest discover -s tests -p "test_qemu_input_transport.py" -v
+          python -m unittest discover -s tests -p "test_gui_locale.py" -v
+
       - name: Pack corresponding source
         run: |
           set -euxo pipefail

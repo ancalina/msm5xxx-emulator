@@ -14,7 +14,8 @@ from gui import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
                  resolve_ui_language, runtime_status_text, settings_apply_mode,
                  system_ui_language)
 from msm5xxx_emulator import gui as package_gui
-from msm5xxx_emulator.gui.app import main as package_main
+from msm5xxx_emulator.gui.app import (choose_firmware,
+                                      main as package_main)
 from msm5xxx import detect
 from msm5xxx_emulator.gui.controls import (ControlsMixin, detect_profile,
                                            manual_keymap,
@@ -25,6 +26,17 @@ from msm5xxx_emulator.gui.settings import (parse_settings_values, settings_value
 
 
 class GuiLocaleTests(unittest.TestCase):
+    def test_startup_firmware_chooser_selects_or_cancels(self) -> None:
+        root = mock.Mock()
+        with mock.patch("msm5xxx_emulator.gui.app.tk.Tk",
+                        return_value=root), \
+             mock.patch("msm5xxx_emulator.gui.app.filedialog.askopenfilename",
+                        side_effect=("/tmp/phone.bin", "")):
+            self.assertEqual(choose_firmware(), Path("/tmp/phone.bin"))
+            self.assertIsNone(choose_firmware())
+        self.assertEqual(root.withdraw.call_count, 2)
+        self.assertEqual(root.destroy.call_count, 2)
+
     def test_package_gui_public_exports_match_compatibility_surface(self) -> None:
         self.assertIs(package_gui.Window, Window)
         self.assertIs(package_gui.main, package_main)

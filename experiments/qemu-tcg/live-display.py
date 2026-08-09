@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import tkinter as tk
 
 
@@ -34,7 +33,7 @@ from msm5xxx_emulator.detection.upper_nor import (  # noqa: E402
     UPPER_FLASH_SIZE,
 )
 from msm5xxx_emulator.devices.storage.nor import NORFlash  # noqa: E402
-from msm5xxx_emulator.gui.app import Window  # noqa: E402
+from msm5xxx_emulator.gui.app import Window, choose_firmware  # noqa: E402
 from msm5xxx_emulator.gui.locale import display_model_name  # noqa: E402
 from unicorn import arm_const  # noqa: E402
 
@@ -129,6 +128,18 @@ def sideband_input_command(producer: dict[str, object],
             or mask & (mask - 1)):
         raise ValueError("invalid detector-resolved sideband producer")
     return bytes((HOST_INPUT, 1, 0xFF, mask))
+
+
+def loopback_listener() -> socket.socket:
+    """Open a private TCP listener supported by every release platform."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+    except Exception:
+        listener.close()
+        raise
+    return listener
 
 
 def load_legacy_nor_state(
@@ -347,11 +358,16 @@ class Transport:
             self.config, unicorn_state(self.decoder)
         )
 
-        lcd_path = temporary / "lcd.sock"
-        gdb_path = temporary / "gdb.sock"
-        listener = socket.socket(socket.AF_UNIX)
-        listener.bind(str(lcd_path))
-        listener.listen(1)
+        lcd_listener = loopback_listener()
+        try:
+            gdb_listener = loopback_listener()
+        except Exception:
+            lcd_listener.close()
+            self.decoder.close()
+            self.temporary.cleanup()
+            raise
+        lcd_host, lcd_port = lcd_listener.getsockname()
+        gdb_host, gdb_port = gdb_listener.getsockname()
         eligible = (
             self.config.chipset == "MSM5000"
             and self.config.board_adc_reader_address is not None
@@ -603,9 +619,14 @@ class Transport:
                         loader, self.config.ram_size, temporary, loader_size
                     ),
                     *storage_args,
-                    "-chardev", f"socket,id=lcd,path={lcd_path},server=off",
+                    "-chardev",
+                    f"socket,id=lcd,host={lcd_host},port={lcd_port},"
+                    "server=off,nodelay=on",
+                    "-chardev",
+                    f"socket,id=gdb,host={gdb_host},port={gdb_port},"
+                    "server=off,nodelay=on",
                     "-nographic", "-monitor", "none", "-serial", "none",
-                    "-S", "-gdb", f"unix:{gdb_path},server=on,wait=off",
+                    "-S", "-gdb", "chardev:gdb",
                     "-icount", "shift=6,align=on,sleep=on",
                     "-no-reboot", "-no-shutdown",
                 ],
@@ -614,35 +635,29 @@ class Transport:
                 text=True,
             )
         except Exception:
-            listener.close()
+            lcd_listener.close()
+            gdb_listener.close()
             self.stderr.close()
             self.decoder.close()
             self.temporary.cleanup()
             raise
         try:
-            listener.settimeout(5)
             try:
-                self.lcd_socket, _ = listener.accept()
+                self.lcd_socket = self._accept_qemu(lcd_listener)
+                gdb_socket = self._accept_qemu(gdb_listener)
             finally:
-                listener.close()
+                lcd_listener.close()
+                gdb_listener.close()
             self.lcd_socket.settimeout(0.2)
-            deadline = time.monotonic() + 5
-            while not gdb_path.exists():
-                if self.process.poll() is not None:
-                    raise RuntimeError(self._stderr_text() or
-                                       "QEMU exited during startup")
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("QEMU GDB socket did not appear")
-                time.sleep(0.02)
-            with socket.socket(socket.AF_UNIX) as sock:
-                sock.settimeout(10)
-                sock.connect(str(gdb_path))
-                remote = Remote(sock)
+            with gdb_socket:
+                gdb_socket.settimeout(10)
+                remote = Remote(gdb_socket)
                 remote.command("qSupported:qXfer:features:read+")
                 if remote.command("D") != "OK":
                     raise RuntimeError("QEMU GDB detach failed")
         except Exception:
-            listener.close()
+            lcd_listener.close()
+            gdb_listener.close()
             if hasattr(self, "lcd_socket"):
                 self.lcd_socket.close()
             self._terminate_process()
@@ -650,6 +665,21 @@ class Transport:
             self.decoder.close()
             self.temporary.cleanup()
             raise
+
+    def _accept_qemu(self, listener: socket.socket) -> socket.socket:
+        listener.settimeout(0.1)
+        for _ in range(50):
+            try:
+                return listener.accept()[0]
+            except socket.timeout:
+                status = self.process.poll()
+                if status is not None:
+                    detail = self._stderr_text()
+                    raise RuntimeError(
+                        f"QEMU exited with status {status} before transport"
+                        f" connection{': ' + detail if detail else ''}"
+                    )
+        raise TimeoutError("timed out waiting for QEMU transport connection")
 
     def _stderr_text(self) -> str:
         self.stderr.flush()
@@ -858,18 +888,23 @@ class LiveWindow(Window):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("firmware", type=Path)
+    parser.add_argument("firmware", nargs="?", type=Path)
     parser.add_argument("--qemu", required=True, type=Path)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--experimental-c80-controller", action="store_true")
     args = parser.parse_args()
+    firmware = args.firmware
+    if firmware is None:
+        firmware = choose_firmware()
+        if firmware is None:
+            return 0
     transport = Transport(
-        args.qemu.resolve(), args.firmware.resolve(),
+        args.qemu.resolve(), firmware.resolve(),
         args.state_dir.resolve() if args.state_dir is not None else None,
         args.experimental_c80_controller,
     )
     root = tk.Tk()
-    window = LiveWindow(root, args.firmware.resolve(), transport)
+    window = LiveWindow(root, firmware.resolve(), transport)
     try:
         root.mainloop()
     finally:

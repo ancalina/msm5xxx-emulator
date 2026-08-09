@@ -1,7 +1,7 @@
 # Experimental QEMU TCG backend
 
-Status: `engine/qemu-tcg-alpha-20260809` experiment. Unicorn remains the
-behavioral oracle; this branch's root launchers select QEMU explicitly.
+Status: developer preview. Unicorn remains the behavioral oracle; root
+launchers use QEMU.
 
 ## Boundary
 
@@ -9,6 +9,7 @@ The backend uses QEMU system emulation with native C MMIO/device hot paths.
 Python performs firmware detection, constructs fail-closed machine properties,
 decodes completed LCD writes, and owns the GUI. GDB and QMP are control and
 checkpoint interfaces; they are not per-access device buses.
+Loopback LCD/GDB control sockets assume a trusted local user session.
 
 The prototype currently provides:
 
@@ -87,12 +88,14 @@ ninja -j2 qemu-system-arm
 Run a matching binary archive:
 
 ```sh
+./run_linux.sh                         # firmware chooser
 ./run_linux.sh FIRMWARE --state-dir /path/to/qemu-state
-# Intel macOS 15+: ./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
+./run_macos.command                    # Intel macOS 15+ chooser
 ```
 
-Windows uses `run_windows.bat`. Source builds can set `MSM5XXX_QEMU` to an
-external `qemu-system-arm` path.
+Windows uses `run_windows.bat`; double-click for the chooser or drag one
+firmware file onto it. Source builds can set `MSM5XXX_QEMU` to an external
+`qemu-system-arm` path.
 
 The QEMU settings button is disabled because this runner cannot safely restart
 the native process in place. Restart the command after changing settings.

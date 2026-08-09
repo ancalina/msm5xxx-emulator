@@ -1,7 +1,7 @@
 # QEMU TCG probe machine
 
-This directory contains the explicit, experimental QEMU `v10.2.1` backend.
-It includes no firmware and is not selected by the stable launchers.
+This directory contains the experimental QEMU `v10.2.1` backend used by the
+root launchers. It includes no firmware.
 
 Build the machine by copying `msm5xxx-poc.c` to QEMU `hw/arm/`, adding:
 
@@ -15,14 +15,16 @@ to `hw/arm/meson.build`, then following the configure command in
 Run:
 
 ```sh
-PYTHONPATH=src python3 experiments/qemu-tcg/live-display.py FIRMWARE \
+PYTHONPATH=src python3 experiments/qemu-tcg/live-display.py [FIRMWARE] \
   --qemu /path/to/qemu-system-arm --state-dir /path/to/qemu-state
 ```
 
 `live-display.py` reuses the existing firmware detector and display decoder.
+Omitting `FIRMWARE` opens the same chooser as the Unicorn GUI.
 It passes only detector-accepted machine properties, starts QEMU without GDB
 register/memory seeding, and transports LCD writes plus accepted physical input
-edges over one batched socket. Per-MMIO Python callbacks are not used.
+edges over a loopback TCP chardev. A second loopback chardev releases the paused
+QEMU startup through GDB. Per-MMIO Python callbacks are not used.
 
 Persistent QEMU NOR/EEPROM files are separate from Unicorn state. Omitting
 `--state-dir` makes an isolated temporary copy and discards it on exit. The

@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 from pathlib import Path
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 EXPERIMENT = Path(__file__).parents[1] / "experiments/qemu-tcg"
@@ -25,6 +27,33 @@ class QEMUInputTransportTests(unittest.TestCase):
         "no_key": 0x0F,
         "single_key_column_sense": (0x0E, 0x0D, 0x0B, 0x07),
     }
+
+    def test_loopback_transport_and_cancelled_picker(self) -> None:
+        listener = MODULE.loopback_listener()
+        try:
+            self.assertEqual(listener.family, MODULE.socket.AF_INET)
+            self.assertEqual(listener.getsockname()[0], "127.0.0.1")
+        finally:
+            listener.close()
+        argv = ["live-display.py", "--qemu", "qemu-system-arm"]
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(MODULE, "choose_firmware",
+                               return_value=None) as chooser, \
+             mock.patch.object(MODULE, "Transport") as transport:
+            self.assertEqual(MODULE.main(), 0)
+        chooser.assert_called_once_with()
+        transport.assert_not_called()
+
+    def test_transport_accept_reports_early_qemu_exit(self) -> None:
+        transport = object.__new__(MODULE.Transport)
+        transport.process = SimpleNamespace(poll=lambda: 2)
+        transport.stderr = io.StringIO("bad QEMU option")
+        listener = mock.Mock()
+        listener.accept.side_effect = MODULE.socket.timeout
+
+        with self.assertRaisesRegex(RuntimeError, "bad QEMU option"):
+            transport._accept_qemu(listener)
+        listener.settimeout.assert_called_once_with(0.1)
 
     def test_memory_profile_fails_closed_outside_native_shape(self) -> None:
         config = SimpleNamespace(flash_size=0x01800000,
