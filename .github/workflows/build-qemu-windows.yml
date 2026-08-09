@@ -49,6 +49,7 @@ jobs:
           source="$work/qemu-${QEMU_VERSION}-msm5xxx"
           build="$work/build"
           archive="$work/qemu-${QEMU_VERSION}.tar.xz"
+          work_native="$(cygpath -m "$work")"
           mkdir -p "$source" "$build"
           curl -fL --retry 3 \
             "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" \
@@ -70,7 +71,7 @@ jobs:
             --disable-guest-agent \
             --disable-werror \
             --disable-debug-info \
-            --extra-cflags="-ffile-prefix-map=$work=." \
+            --extra-cflags="-ffile-prefix-map=$work=. -ffile-prefix-map=$work_native=." \
             --enable-strip
           ninja qemu-system-arm.exe
 
