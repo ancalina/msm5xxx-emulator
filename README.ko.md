@@ -65,7 +65,7 @@ notarization되지 않았습니다.
 | SCH-X350 | 영속 warm boot에서 검증된 idle consumer 도달; END 입력은 input task 도달 |
 | KTFT-X3500 | 안정된 standby frame; handset-idle 경로는 미완성 |
 | SCH-X250 / X250RUS | Splash와 boot animation; idle은 미완성 |
-| SD810 | Upper NOR mapping과 persistence; display/idle은 미완성 |
+| SD810 | 120×160 boot splash 도달; idle은 미완성 |
 
 현재 developer preview입니다. 지원되지 않는 펌웨어는 idle 전에 멈출 수 있습니다.
 Detector는 모델명 분기 대신 근거가 불완전한 동작을 fail closed합니다.

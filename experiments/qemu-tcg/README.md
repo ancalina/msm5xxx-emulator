@@ -3,7 +3,8 @@
 This directory contains the experimental QEMU `v10.2.1` backend used by the
 root launchers. It includes no firmware.
 
-Build the machine by copying `msm5xxx-poc.c` to QEMU `hw/arm/`, adding:
+Apply `qemu-10.2.1-icount-advance.patch` to QEMU `v10.2.1`, copy
+`msm5xxx-poc.c` to QEMU `hw/arm/`, and add:
 
 ```meson
 arm_common_ss.add(files('msm5xxx-poc.c'))

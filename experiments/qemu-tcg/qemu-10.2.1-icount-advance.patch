@@ -1,0 +1,59 @@
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -44,6 +44,17 @@
+  */
+ void icount_update(CPUState *cpu);
+ 
++/* Advance precise virtual time at a deterministic vCPU MMIO boundary. */
++#ifdef CONFIG_TCG
++bool icount_advance_ns(int64_t ns);
++#else
++static inline bool icount_advance_ns(int64_t ns)
++{
++    (void)ns;
++    return false;
++}
++#endif
++
+ /* get raw icount value */
+ int64_t icount_get_raw(void);
+ 
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -106,6 +106,34 @@ void icount_update(CPUState *cpu)
+                          &timers_state.vm_clock_lock);
+ }
+ 
++bool icount_advance_ns(int64_t ns)
++{
++    CPUState *cpu = current_cpu;
++    int64_t bias;
++    bool advanced = false;
++
++    if (icount_enabled() != ICOUNT_PRECISE || ns <= 0 ||
++        !qemu_in_vcpu_thread() || !cpu || !cpu->running ||
++        !cpu->neg.can_do_io) {
++        return false;
++    }
++
++    seqlock_write_lock(&timers_state.vm_clock_seqlock,
++                       &timers_state.vm_clock_lock);
++    bias = qatomic_read_i64(&timers_state.qemu_icount_bias);
++    if (bias <= INT64_MAX - ns) {
++        qatomic_set_i64(&timers_state.qemu_icount_bias, bias + ns);
++        advanced = true;
++    }
++    seqlock_write_unlock(&timers_state.vm_clock_seqlock,
++                         &timers_state.vm_clock_lock);
++
++    if (advanced) {
++        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
++    }
++    return advanced;
++}
++
+ static int64_t icount_get_raw_locked(void)
+ {
+     CPUState *cpu = current_cpu;

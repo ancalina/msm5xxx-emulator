@@ -35,7 +35,7 @@ frame, or a running scheduler does not count.
 | SCH-X350 | cold storage initialization, then one same-state warm QEMU process reaches UISIdle entry `0xC125C`, body `0xC1308`, and 20M further guest instructions; physical END reaches the input task, while UI power/reset effects remain pending |
 | SCH-X250 | Anycall splash/animation; idle entry not reached in 30 s |
 | SCH-X250RUS | Anycall splash/animation, then fatal loop at `0x1608`; idle entry not reached |
-| SD810 | detected upper x8 NOR is mapped, readable, and persistent; no completed frame and the timer/IRQ producer remains unresolved |
+| SD810 | detector-accepted DMD completion reaches one 120×160 boot splash frame; the idle timer/IRQ route remains unresolved |
 | KTFT-X3500 | detector-admitted DC0 battery profile reaches a stable standby frame, but current module remains module0B and the module1/idle consumer is not closed |
 
 No row is yet a release pass. X350 cold initializes the raw storage; restarting
@@ -73,7 +73,8 @@ is proven.
 
 ## Build and run
 
-The local verified target is QEMU `v10.2.1`, `arm-softmmu`. Copy
+The local verified target is QEMU `v10.2.1`, `arm-softmmu`. Apply
+`experiments/qemu-tcg/qemu-10.2.1-icount-advance.patch`, copy
 `experiments/qemu-tcg/msm5xxx-poc.c` into QEMU `hw/arm/`, add it to
 `hw/arm/meson.build`, then configure and build:
 

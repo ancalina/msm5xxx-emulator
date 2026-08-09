@@ -30,6 +30,7 @@
 #include "hw/sysbus.h"
 #include "system/block-backend.h"
 #include "system/address-spaces.h"
+#include "system/cpus.h"
 #include "system/reset.h"
 #include "target/arm/cpu.h"
 #include "target/arm/cpu-qom.h"
@@ -59,7 +60,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_DC0_DATA_OFFSET 0x08
 #define MSM5XXX_POC_DC0_START_OFFSET 0x0c
 #define MSM5XXX_POC_LCD_SIZE 0x1000
-#define MSM5XXX_POC_LCD_PORTS 3
+#define MSM5XXX_POC_LCD_PORTS 4
 #define MSM5XXX_POC_AUDIO_MAX_PORTS 16
 #define MSM5XXX_POC_LCD_TRACE_BASE 0x10001000
 #define MSM5XXX_POC_LCD_TRACE_RECORD_SIZE 12
@@ -75,6 +76,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_HOST_INPUT_SIZE 4
 #define MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW UINT8_MAX
 #define MSM5XXX_POC_READY_POLL_DELAY 200000
+#define MSM5XXX_POC_PAUSE_TIMER_SIZE 4
 #define MSM5XXX_POC_REX_CONTROLLER_SIZE 0x10
 #define MSM5XXX_POC_REX_C80_CONTROLLER_SIZE 0x1a
 #define MSM5XXX_POC_EEPROM_GPIO_SIZE 0x20
@@ -93,7 +95,7 @@ struct MSM5xxx24LCxxState {
 };
 
 static const hwaddr msm5xxx_poc_lcd_bases[MSM5XXX_POC_LCD_PORTS] = {
-    0x02000000, 0x02800000, 0x02c00000,
+    0x02000000, 0x02800000, 0x02c00000, 0x02200000,
 };
 
 typedef enum MSM5xxxPOCSBIStatus {
@@ -155,6 +157,7 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion lcd_trace;
     MemoryRegion ready_status;
     MemoryRegion ready_pulse;
+    MemoryRegion pause_timer;
     MemoryRegion board_status_input;
     MemoryRegion matrix_input;
     MemoryRegion audio;
@@ -207,6 +210,16 @@ struct MSM5xxxPOCMachineState {
     uint64_t ready_poll_reads;
     uint64_t ready_poll_cycles;
     uint64_t ready_poll_responses;
+    bool pause_timer_enabled;
+    bool pause_timer_rejected;
+    uint32_t pause_timer_address;
+    uint32_t pause_timer_count_hz;
+    uint32_t pause_timer_helper_start;
+    uint32_t pause_timer_helper_end;
+    uint8_t pause_timer_backing[MSM5XXX_POC_PAUSE_TIMER_SIZE];
+    uint64_t pause_timer_writes;
+    uint64_t pause_timer_fallbacks;
+    uint64_t pause_timer_added_ns;
     bool board_status_input_enabled;
     uint32_t board_status_input_address;
     uint8_t board_status_input_mask;
@@ -664,6 +677,89 @@ static const MemoryRegionOps msm5xxx_poc_ready_pulse_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 1,
+};
+
+static bool msm5xxx_poc_pause_timer_in_scope(MSM5xxxPOCMachineState *s)
+{
+    CPUState *cpu = current_cpu;
+    CPUClass *cc;
+    uint32_t pc;
+
+    if (!qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io) {
+        return false;
+    }
+    cc = CPU_GET_CLASS(cpu);
+    pc = cc->get_pc(cpu) & ~1U;
+
+    return pc >= s->pause_timer_helper_start &&
+           pc < s->pause_timer_helper_end;
+}
+
+static uint64_t msm5xxx_poc_pause_timer_read(void *opaque, hwaddr offset,
+                                              unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset + size > MSM5XXX_POC_PAUSE_TIMER_SIZE) {
+        return 0;
+    }
+    if (msm5xxx_poc_pause_timer_in_scope(s)) {
+        s->pause_timer_rejected = true;
+    }
+    s->pause_timer_fallbacks++;
+    return msm5xxx_poc_backing_read(s->pause_timer_backing, offset, size);
+}
+
+static void msm5xxx_poc_pause_timer_write(void *opaque, hwaddr offset,
+                                           uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t ns;
+    uint16_t count;
+
+    if (offset + size > MSM5XXX_POC_PAUSE_TIMER_SIZE) {
+        if (msm5xxx_poc_pause_timer_in_scope(s)) {
+            s->pause_timer_rejected = true;
+        }
+        s->pause_timer_fallbacks++;
+        return;
+    }
+    msm5xxx_poc_backing_write(s->pause_timer_backing, offset, value, size);
+    if (!msm5xxx_poc_pause_timer_in_scope(s)) {
+        s->pause_timer_fallbacks++;
+        return;
+    }
+    if (s->pause_timer_rejected || offset || size != 2) {
+        s->pause_timer_rejected = true;
+        s->pause_timer_fallbacks++;
+        return;
+    }
+
+    count = value & 0x03ff;
+    if (!count) {
+        s->pause_timer_writes++;
+        return;
+    }
+    ns = ((uint64_t)count * NANOSECONDS_PER_SECOND +
+          s->pause_timer_count_hz / 2) / s->pause_timer_count_hz;
+    if (!icount_advance_ns(ns)) {
+        s->pause_timer_rejected = true;
+        s->pause_timer_fallbacks++;
+        return;
+    }
+    s->pause_timer_writes++;
+    s->pause_timer_added_ns += ns;
+}
+
+static const MemoryRegionOps msm5xxx_poc_pause_timer_ops = {
+    .read = msm5xxx_poc_pause_timer_read,
+    .write = msm5xxx_poc_pause_timer_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
 };
 
 static uint64_t msm5xxx_poc_board_status_input_read(void *opaque,
@@ -1370,7 +1466,8 @@ static uint64_t msm5xxx_poc_read(void *opaque, hwaddr offset, unsigned size)
     case 0x20:
         return s->sbi_writes;
     case 0x24:
-        return s->lcd_writes[0] + s->lcd_writes[1] + s->lcd_writes[2];
+        return s->lcd_writes[0] + s->lcd_writes[1] + s->lcd_writes[2] +
+               s->lcd_writes[3];
     case 0x28:
     case 0x2c:
     case 0x30:
@@ -1407,6 +1504,16 @@ static uint64_t msm5xxx_poc_read(void *opaque, hwaddr offset, unsigned size)
         return s->rex_irq_pending[0];
     case 0x70:
         return s->dc0_board_adc_responses;
+    case 0x74:
+        return s->pause_timer_writes;
+    case 0x78:
+        return s->pause_timer_fallbacks;
+    case 0x7c:
+        return s->pause_timer_rejected;
+    case 0x80:
+        return (uint32_t)s->pause_timer_added_ns;
+    case 0x84:
+        return s->pause_timer_added_ns >> 32;
     default:
         return 0;
     }
@@ -1493,6 +1600,10 @@ static void msm5xxx_poc_reset(void *opaque)
     s->ready_poll_reads = 0;
     s->ready_poll_cycles = 0;
     s->ready_poll_responses = 0;
+    s->pause_timer_rejected = false;
+    s->pause_timer_writes = 0;
+    s->pause_timer_fallbacks = 0;
+    s->pause_timer_added_ns = 0;
     s->board_status_input_backing =
         s->board_status_input_default & s->board_status_input_mask;
     s->matrix_input_backing = s->matrix_input_reset;
@@ -1568,6 +1679,13 @@ static void msm5xxx_poc_init(MachineState *machine)
 
     s->cpu = ARM_CPU(cpu_create(machine->cpu_type));
     s->cpu_irq = qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ);
+
+    if (s->pause_timer_enabled &&
+        (icount_enabled() != ICOUNT_PRECISE ||
+         s->pause_timer_helper_end > s->primary_nor_size)) {
+        error_report("pause-timer requires fixed-shift icount and a NOR scope");
+        exit(EXIT_FAILURE);
+    }
 
     if (s->memory_profile_enabled &&
             (machine->ram_size > 0x02000000 - s->ram_base ||
@@ -1688,6 +1806,16 @@ static void msm5xxx_poc_init(MachineState *machine)
                            MSM5XXX_POC_BOOTSTRAP_SIZE, &error_fatal);
     memory_region_add_subregion(get_system_memory(), MSM5XXX_POC_BOOTSTRAP_BASE,
                                 &s->bootstrap);
+    if (s->pause_timer_enabled) {
+        memory_region_init_io(&s->pause_timer, OBJECT(machine),
+                              &msm5xxx_poc_pause_timer_ops, s,
+                              "msm5xxx-poc.pause-timer",
+                              MSM5XXX_POC_PAUSE_TIMER_SIZE);
+        memory_region_add_subregion_overlap(
+            get_system_memory(), s->pause_timer_address,
+            &s->pause_timer, 1
+        );
+    }
     memory_region_init_ram(&s->msm, NULL, "msm5xxx-poc.msm",
                            MSM5XXX_POC_MSM_SIZE, &error_fatal);
     memory_region_add_subregion(get_system_memory(), MSM5XXX_POC_MSM_BASE,
@@ -1760,7 +1888,8 @@ static void msm5xxx_poc_init(MachineState *machine)
                                             &s->dc0, 1);
     }
     for (i = 0; i < MSM5XXX_POC_LCD_PORTS; i++) {
-        if (s->upper_x8_nor_enabled && i != 0) {
+        if (s->upper_x8_nor_enabled &&
+            msm5xxx_poc_lcd_bases[i] >= MSM5XXX_POC_UPPER_NOR_BASE) {
             continue;
         }
         s->lcd_port[i].machine = s;
@@ -1936,6 +2065,48 @@ static void msm5xxx_poc_set_ready_poll(Object *obj, const char *value,
     s->ready_pulse_address = pulse;
     s->ready_poll_entry = entry;
     s->ready_poll_enabled = true;
+}
+
+static char *msm5xxx_poc_get_pause_timer(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->pause_timer_enabled) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x:%x", s->pause_timer_address,
+                           s->pause_timer_count_hz,
+                           s->pause_timer_helper_start,
+                           s->pause_timer_helper_end);
+}
+
+static void msm5xxx_poc_set_pause_timer(Object *obj, const char *value,
+                                         Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned address, count_hz, helper_start, helper_end;
+    char trailing;
+
+    if (sscanf(value, "%x:%x:%x:%x%c", &address, &count_hz,
+               &helper_start, &helper_end, &trailing) != 4 ||
+        s->pause_timer_enabled || (address & 1) ||
+        address < MSM5XXX_POC_BOOTSTRAP_BASE ||
+        address > MSM5XXX_POC_BOOTSTRAP_BASE +
+                  MSM5XXX_POC_BOOTSTRAP_SIZE - MSM5XXX_POC_PAUSE_TIMER_SIZE ||
+        !count_hz || count_hz > NANOSECONDS_PER_SECOND ||
+        (helper_start & 1) || (helper_end & 1) ||
+        helper_start >= helper_end || helper_end > s->primary_nor_size) {
+        error_setg(
+            errp,
+            "pause-timer must be ADDRESS:COUNT_HZ:HELPER_START:HELPER_END"
+        );
+        return;
+    }
+    s->pause_timer_address = address;
+    s->pause_timer_count_hz = count_hz;
+    s->pause_timer_helper_start = helper_start;
+    s->pause_timer_helper_end = helper_end;
+    s->pause_timer_enabled = true;
 }
 
 static char *msm5xxx_poc_get_fujitsu_x16_nor(Object *obj, Error **errp)
@@ -2463,6 +2634,12 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_ready_poll);
     object_class_property_set_description(
         oc, "ready-poll", "Detector-provided byte-ready/pulse protocol");
+    object_class_property_add_str(oc, "pause-timer",
+                                  msm5xxx_poc_get_pause_timer,
+                                  msm5xxx_poc_set_pause_timer);
+    object_class_property_set_description(
+        oc, "pause-timer",
+        "Detector-scoped noninterruptible pause-timer writes");
     object_class_property_add_str(oc, "board-status-input",
                                   msm5xxx_poc_get_board_status_input,
                                   msm5xxx_poc_set_board_status_input);

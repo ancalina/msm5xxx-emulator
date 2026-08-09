@@ -22,8 +22,15 @@ from gdb_remote import Remote  # noqa: E402
 from msm5xxx_emulator.core import GenericMSMEmulator  # noqa: E402
 from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO  # noqa: E402
 from msm5xxx_emulator.detection import detect  # noqa: E402
+from msm5xxx_emulator.detection.arm import (  # noqa: E402
+    thumb_bl_target,
+    thumb_literal_value,
+)
+from msm5xxx_emulator.detection.boot import DMD_DOWNLOAD_SIGNATURE  # noqa: E402
 from msm5xxx_emulator.detection.storage import (  # noqa: E402
     EEPROM_24LCXX_READ_SIGNATURE,
+    EEPROM_24LCXX_X430_READ_PREFIX,
+    EEPROM_24LCXX_X430_WRITE_PREFIX,
     eeprom_24lcxx_write_at,
     fujitsu_x16_flash_ids,
     find_primary_fsd_amd_x16_nor,
@@ -46,6 +53,16 @@ INPUT_TELEMETRY = 4
 HOST_INPUT = 0x80
 REGISTER_NAMES = tuple(f"r{index}" for index in range(13)) + (
     "sp", "lr", "pc", "cpsr",
+)
+PAUSE_TIMER_ADDRESS = 0x04800020
+PAUSE_TIMER_LDR_OFFSETS = (0x26, 0x4E, 0x78, 0xA4)
+PAUSE_TIMER_FIXED_HELPER = bytes.fromhex(
+    "90b4322813dc00211423041c5c431f23e318223b9b1106d414214843031c1f21"
+    "5918223989110048198090bc704700211424322363431f241b19223b9b1106d4"
+    "1421322359431f23c9182239891100481980c11f2b39081c322813dd00211424"
+    "322363431f241b199b1105d41421322359431f23c918891100481980c11f2b39"
+    "081ce9e70028d0dd00211423041c5c431f23e3189b1105d414214843031c1f21"
+    "5918891100481980bfe7"
 )
 
 
@@ -182,6 +199,129 @@ def raw_loader_arguments(image: Path, max_size: int,
     )]
 
 
+def qemu_pause_timer_profile(
+        image: bytes, config: object,
+        immutable_limit: int | None = None,
+        ) -> tuple[str | None, str | None]:
+    """Return one exact fixed-rate pause timer or its reject reason."""
+    load = int(getattr(config, "load_address", 0))
+    limit = min(
+        len(image), int(getattr(config, "flash_size", len(image))),
+        immutable_limit if immutable_limit is not None else len(image),
+    )
+    template = PAUSE_TIMER_FIXED_HELPER
+    prefix = template[:PAUSE_TIMER_LDR_OFFSETS[0]]
+    starts: list[int] = []
+    anchored = bounded = literal_match = False
+    cursor = 0
+    while True:
+        start = image.find(prefix, cursor, limit)
+        if start < 0:
+            break
+        anchored = True
+        cursor = start + 1
+        if start & 1 or start + len(template) + 6 > limit:
+            continue
+        bounded = True
+        candidate = bytearray(image[start:start + len(template)])
+        if any(thumb_literal_value(image, start + offset, 3)
+               != PAUSE_TIMER_ADDRESS
+               for offset in PAUSE_TIMER_LDR_OFFSETS):
+            continue
+        literal_match = True
+        for offset in PAUSE_TIMER_LDR_OFFSETS:
+            struct.pack_into("<H", candidate, offset, 0x4800)
+        if bytes(candidate) == template:
+            starts.append(start)
+    if not starts:
+        reason = None
+        if literal_match:
+            reason = "fixed-helper-shape-mismatch"
+        elif bounded:
+            reason = "pause-register-literal-mismatch"
+        elif anchored:
+            reason = "fixed-helper-outside-immutable-nor"
+        return None, reason
+    if len(starts) != 1:
+        return None, "fixed-helper-ambiguous"
+
+    start = starts[0]
+    literal = struct.pack("<I", 100_000)
+    pool = image.find(literal, 0, limit)
+    while pool >= 0:
+        first = max(0, pool - 0x400) & ~1
+        for caller in range(first, min(pool + 1, limit - 5), 2):
+            if (thumb_literal_value(image, caller, 0) == 100_000
+                    and thumb_bl_target(image, caller + 2) == start):
+                return (
+                    f"{PAUSE_TIMER_ADDRESS:x}:{312_500:x}:"
+                    f"{load + start:x}:{load + start + len(template):x}",
+                    None,
+                )
+        pool = image.find(literal, pool + 1, limit)
+    return None, "100ms-caller-not-found"
+
+
+def legacy_dmd_loader_patch(
+        image: bytes, config: object,
+        immutable_limit: int | None = None) -> tuple[int, bytes] | None:
+    """Return the existing legacy DMD completion contract as Thumb code."""
+    entry = getattr(config, "dmd_download_address", None)
+    load = int(getattr(config, "load_address", 0))
+    if type(entry) is not int:
+        return None
+    offset = entry - load
+    signature = DMD_DOWNLOAD_SIGNATURE
+    if (not 0 <= offset <= len(image) - 0xF4
+            or image[offset:offset + len(signature)] != signature
+            or image.find(signature) != offset
+            or image.find(signature, offset + 1) >= 0):
+        return None
+    try:
+        completion, control, _, dmd = struct.unpack_from(
+            "<4I", image, offset + 0xE0
+        )
+        file_load = struct.unpack_from("<H", image, offset + 0xD4)[0]
+        if file_load == 0x4906:
+            filename = struct.unpack_from("<I", image, offset + 0xF0)[0]
+        elif file_load == 0xA106:
+            filename = entry + 0xF0
+        else:
+            return None
+    except struct.error:
+        return None
+    filename_offset = filename - load
+    ram_base = int(getattr(config, "ram_base", 0))
+    ram_end = ram_base + int(getattr(config, "ram_size", 0))
+    if (control != 0x03000050 or dmd != 0x030007E0
+            or not ram_base <= completion < ram_end
+            or not 0 <= filename_offset <= len(image) - 12
+            or not image[filename_offset:filename_offset + 12].startswith(
+                b"dmddown_"
+            )):
+        return None
+    halfwords = (
+        0xB406,              # push {r1, r2}
+        0x4906, 0x4A06,     # completion, 2
+        0x700A,              # strb r2, [r1]
+        0x4906, 0x4A07,     # control, 1
+        0x730A,              # strb r2, [r1, #12]
+        0x4907, 0x4A07,     # dmd, 0
+        0x608A, 0x818A,     # clear dmd + 8 through + 13
+        0xBC06,              # pop {r1, r2}
+        0x4803, 0x4770,     # r0 = 1; bx lr
+    )
+    patch = struct.pack(
+        "<14H6I", *halfwords,
+        completion, 2, control, 1, dmd, 0,
+    )
+    limit = min(len(image), int(config.flash_size),
+                immutable_limit if immutable_limit is not None else len(image))
+    if offset + len(patch) > limit:
+        return None
+    return offset, patch
+
+
 def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
     """Encode only the detector-closed, explicitly enabled C80 route."""
     if not enabled:
@@ -262,26 +402,98 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
     return ":".join(f"{value:x}" for value in values)
 
 
-def eeprom_gpio_profile(image: bytes, config: object) -> tuple[int, int] | None:
-    """Return the exact common 24LCxx GPIO aperture and static capacity."""
+def eeprom_gpio_profile(
+        image: bytes, config: object,
+        ) -> tuple[tuple[int, int, int, int, int, int, int] | None,
+                   str | None]:
+    """Return one detector-closed 24LCxx GPIO descriptor or reject reason."""
     read = getattr(config, "eeprom_read_address", None)
     write = getattr(config, "eeprom_write_address", None)
     geometry = getattr(config, "eeprom_geometry_address", None)
     load = getattr(config, "load_address", 0)
     if not all(isinstance(value, int) for value in (read, write, geometry)):
-        return None
+        return None, None
     read -= load
     write -= load
-    if (image[read:read + len(EEPROM_24LCXX_READ_SIGNATURE)]
-            != EEPROM_24LCXX_READ_SIGNATURE
-            or not eeprom_24lcxx_write_at(image, write)):
-        return None
+    if not (0 <= read < len(image) and 0 <= write < len(image)):
+        return None, "transport-entry-outside-firmware"
+    common = (
+        image[read:read + len(EEPROM_24LCXX_READ_SIGNATURE)]
+        == EEPROM_24LCXX_READ_SIGNATURE
+        and eeprom_24lcxx_write_at(image, write)
+    )
+    split_bank = (
+        image[read:read + len(EEPROM_24LCXX_X430_READ_PREFIX)]
+        == EEPROM_24LCXX_X430_READ_PREFIX
+        and image[write:write + len(EEPROM_24LCXX_X430_WRITE_PREFIX)]
+        == EEPROM_24LCXX_X430_WRITE_PREFIX
+    )
+    if split_bank:
+        writer = write - 0x12C
+        ack = writer - 0xA6
+        reader = read - 0x718
+        shapes = (
+            (writer, bytes.fromhex("f0b5071c8025")),
+            (writer + 0x16,
+             bytes.fromhex("0122087810430870087826490871")),
+            (writer + 0x2E,
+             bytes.fromhex("202108431070107821490870")),
+            (writer + 0x44,
+             bytes.fromhex("202311789943117011781b4a1170")),
+            (writer + 0x5A,
+             bytes.fromhex("0878400840000870087815490871")),
+            (writer + 0x72,
+             bytes.fromhex("202108431070107810490870")),
+            (writer + 0x88,
+             bytes.fromhex("202311789943117011780a4a1170")),
+            (ack, b"\xf0\xb5"),
+            (ack + 0x06,
+             bytes.fromhex("234a11784908490011701178214a1172")),
+            (ack + 0x24,
+             bytes.fromhex("202229781c4c114329702978103c2170")),
+            (ack + 0x40,
+             bytes.fromhex("21790126301c490800d2002007063f0e")),
+            (ack + 0x5A,
+             bytes.fromhex("20239943297029782170")),
+            (ack + 0x78,
+             bytes.fromhex("0a7832430a700978064a1172")),
+            (reader, bytes.fromhex("f0b50027164d")),
+            (reader + 0x10,
+             bytes.fromhex("20220878104308700878114904390870")),
+            (reader + 0x28,
+             bytes.fromhex("28783f0e400801d301200743")),
+            (reader + 0x36,
+             bytes.fromhex("20230878984308700878074904390870")),
+        )
+        literals = (
+            (writer + 0x20, 1, 0x03000660),
+            (writer + 0x36, 1, 0x03000660),
+            (writer + 0x4E, 2, 0x03000660),
+            (writer + 0x64, 1, 0x03000660),
+            (writer + 0x7A, 1, 0x03000660),
+            (writer + 0x92, 2, 0x03000660),
+            (ack + 0x12, 2, 0x03000670),
+            (ack + 0x28, 4, 0x03000670),
+            (ack + 0x80, 2, 0x03000670),
+            (reader + 0x04, 5, 0x03000664),
+            (reader + 0x1A, 1, 0x03000664),
+            (reader + 0x40, 1, 0x03000664),
+        )
+        if (min(ack, writer, reader) < 0
+                or any(image[position:position + len(expected)] != expected
+                       for position, expected in shapes)
+                or any(thumb_literal_value(image, position, register) != value
+                       for position, register, value in literals)):
+            return None, "gpio-line-shape-mismatch"
+        return (0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None
+    if not common:
+        return None, "transport-entry-signature-mismatch"
     gpio = struct.pack("<II", 0x03000660, 0x03000670)
     if (not all(value in image[write:write + 0x700]
                 for value in (gpio[:4], gpio[4:]))
             or not all(value in image[read:read + 0x700]
                        for value in (gpio[:4], gpio[4:]))):
-        return None
+        return None, "gpio-line-shape-mismatch"
     literal = struct.pack("<I", geometry)
     for position in range(0, len(image) - 3, 4):
         if image[position:position + 4] != literal or position < 0x14:
@@ -295,8 +507,8 @@ def eeprom_gpio_profile(image: bytes, config: object) -> tuple[int, int] | None:
                 and literal_address == position
                 and initializer[4:18]
                 == bytes.fromhex("c9030180012181700021c170f746")):
-            return 0x03000660, 0x8000
-    return None
+            return (0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None
+    return None, "capacity-initializer-mismatch"
 
 
 class Transport:
@@ -468,21 +680,41 @@ class Transport:
             )
         if self.rex_c80_profile is not None:
             machine += f",rex-static-c80={self.rex_c80_profile}"
-        primary_seed, primary_imported = load_legacy_nor_state(
-            bytes(self.decoder.flash.data), (legacy_primary_state,)
-        )
-        loader = firmware
-        loader_size = None
-        if primary_imported:
-            loader = temporary / "primary.raw"
-            loader.write_bytes(primary_seed)
-            self.state_imports.append("primary-nor-json")
-        storage_args: list[str] = []
-        pflash_unit = 0
         primary_profile = find_primary_fsd_amd_x16_nor(
             firmware_image[:self.config.flash_size],
             self.config.flash_id_address, self.config.flash_size,
         )
+        primary_seed, primary_imported = load_legacy_nor_state(
+            bytes(self.decoder.flash.data), (legacy_primary_state,)
+        )
+        dmd_patch = legacy_dmd_loader_patch(
+            primary_seed, self.config,
+            primary_profile[0] if primary_profile is not None else None,
+        )
+        if dmd_patch is not None:
+            offset, patch = dmd_patch
+            patched = bytearray(primary_seed)
+            patched[offset:offset + len(patch)] = patch
+            primary_seed = bytes(patched)
+        pause_timer, pause_timer_reject = qemu_pause_timer_profile(
+            primary_seed, self.config,
+            primary_profile[0] if primary_profile is not None else None,
+        )
+        if pause_timer is not None:
+            machine += f",pause-timer={pause_timer}"
+        elif pause_timer_reject is not None:
+            self.config.detection_notes.append(
+                f"pause timer detector rejected: {pause_timer_reject}"
+            )
+        loader = firmware
+        loader_size = None
+        if primary_imported or dmd_patch is not None:
+            loader = temporary / "primary.raw"
+            loader.write_bytes(primary_seed)
+            if primary_imported:
+                self.state_imports.append("primary-nor-json")
+        storage_args: list[str] = []
+        pflash_unit = 0
         if primary_profile is not None:
             base, size, sector_size, id0, id1 = primary_profile
             primary_state = ((state_dir / "primary-writable.raw")
@@ -586,9 +818,16 @@ class Transport:
                 "-drive",
                 f"file={upper_state},if=pflash,format=raw,unit={pflash_unit}",
             ))
-        eeprom_profile = eeprom_gpio_profile(firmware_image, self.config)
+        eeprom_profile, eeprom_reject = eeprom_gpio_profile(
+            firmware_image, self.config
+        )
+        if eeprom_reject is not None:
+            self.config.detection_notes.append(
+                f"24LCxx GPIO bridge rejected: {eeprom_reject}"
+            )
         if eeprom_profile is not None:
-            gpio_base, capacity = eeprom_profile
+            (gpio_base, data_offset, data_mask, clock_offset, clock_mask,
+             direction_offset, capacity) = eeprom_profile
             eeprom_state = ((state_dir / "eeprom.raw")
                             if state_dir is not None else
                             (temporary / "eeprom.raw"))
@@ -603,7 +842,9 @@ class Transport:
                     self.state_imports.append("eeprom-raw")
                 eeprom_state.write_bytes(eeprom_seed)
             machine += (
-                f",eeprom-24lcxx-gpio={gpio_base:x}:8:8:c:1:1c:"
+                f",eeprom-24lcxx-gpio={gpio_base:x}:{data_offset:x}:"
+                f"{data_mask:x}:{clock_offset:x}:{clock_mask:x}:"
+                f"{direction_offset:x}:"
                 f"{capacity:x}"
             )
             storage_args.extend((

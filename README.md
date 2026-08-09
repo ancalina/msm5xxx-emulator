@@ -64,7 +64,7 @@ is ad-hoc signed and not notarized.
 | SCH-X350 | Persistent warm boot reaches the verified idle consumer; END input reaches the input task |
 | KTFT-X3500 | Stable standby frame; handset-idle path remains incomplete |
 | SCH-X250 / X250RUS | Splash and boot animation; idle remains incomplete |
-| SD810 | Upper NOR mapping and persistence; display/idle remain incomplete |
+| SD810 | Reaches the 120×160 boot splash; idle remains incomplete |
 
 This is a developer preview. Unsupported firmware may stop before idle, but
 detectors fail closed instead of selecting behavior by model name.

@@ -9,6 +9,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
 
 
 EXPERIMENT = Path(__file__).parents[1] / "experiments/qemu-tcg"
@@ -91,6 +92,56 @@ class QEMUInputTransportTests(unittest.TestCase):
                                 upper_flash_size=0x00400000)):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 MODULE.qemu_upper_nor_enabled(changed)
+
+    def test_eeprom_gpio_profile_accepts_split_bank_open_drain_shape(
+            self) -> None:
+        image = bytearray(b"\xff" * 0x1400)
+        write, read = 0x800, 0xEB0
+        writer, ack, reader = write - 0x12C, write - 0x1D2, read - 0x718
+        image[write:write + len(MODULE.EEPROM_24LCXX_X430_WRITE_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X430_WRITE_PREFIX
+        )
+        image[read:read + len(MODULE.EEPROM_24LCXX_X430_READ_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X430_READ_PREFIX
+        )
+        shapes = (
+            (writer, "f0b5071c8025"),
+            (writer + 0x16, "0122087810430870087826490871"),
+            (writer + 0x2E, "202108431070107821490870"),
+            (writer + 0x44, "202311789943117011781b4a1170"),
+            (writer + 0x5A, "0878400840000870087815490871"),
+            (writer + 0x72, "202108431070107810490870"),
+            (writer + 0x88, "202311789943117011780a4a1170"),
+            (ack, "f0b5"),
+            (ack + 0x06, "234a11784908490011701178214a1172"),
+            (ack + 0x24, "202229781c4c114329702978103c2170"),
+            (ack + 0x40, "21790126301c490800d2002007063f0e"),
+            (ack + 0x5A, "20239943297029782170"),
+            (ack + 0x78, "0a7832430a700978064a1172"),
+            (reader, "f0b50027164d"),
+            (reader + 0x10, "20220878104308700878114904390870"),
+            (reader + 0x28, "28783f0e400801d301200743"),
+            (reader + 0x36, "20230878984308700878074904390870"),
+        )
+        for position, value in shapes:
+            image[position:position + len(bytes.fromhex(value))] = bytes.fromhex(value)
+        MODULE.struct.pack_into("<I", image, writer + 0xBC, 0x03000660)
+        MODULE.struct.pack_into("<I", image, ack + 0x9A, 0x03000670)
+        MODULE.struct.pack_into("<I", image, reader + 0x60, 0x03000664)
+        config = SimpleNamespace(
+            eeprom_read_address=read, eeprom_write_address=write,
+            eeprom_geometry_address=0x01001000, load_address=0,
+        )
+
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
+        )
+        MODULE.struct.pack_into("<I", image, ack + 0x9A, 0x03000674)
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            (None, "gpio-line-shape-mismatch"),
+        )
 
     def test_press_and_release_packets(self) -> None:
         self.assertEqual(MODULE.matrix_senses(self.PROFILE),
@@ -225,6 +276,129 @@ class QEMUInputTransportTests(unittest.TestCase):
                 bytes(range(6)),
             )
             self.assertEqual(len(limited), 4)
+
+    def test_pause_timer_profile_requires_fixed_helper_and_long_caller(
+            self) -> None:
+        def thumb_bl(source: int, target: int) -> bytes:
+            displacement = (target - source - 4) & 0x7FFFFF
+            return MODULE.struct.pack(
+                "<2H",
+                0xF000 | displacement >> 12 & 0x7FF,
+                0xF800 | displacement >> 1 & 0x7FF,
+            )
+
+        helper = bytes.fromhex(
+            "90b4322813dc00211423041c5c431f23e318223b9b1106d414214843031c1f21"
+            "591822398911214b198090bc704700211424322363431f241b19223b9b1106d4"
+            "1421322359431f23c91822398911174b1980c11f2b39081c322813dd00211424"
+            "322363431f241b199b1105d41421322359431f23c91889110c4b1980c11f2b39"
+            "081ce9e70028d0dd00211423041c5c431f23e3189b1105d414214843031c1f21"
+            "59188911014b1980bfe7000020008004"
+        )
+        image = bytearray(b"\xff" * 0x800)
+        caller, pool, start = 0x100, 0x180, 0x300
+        ldr = 0x4800 | (pool - ((caller + 4) & ~3)) // 4
+        MODULE.struct.pack_into("<H", image, caller, ldr)
+        image[caller + 2:caller + 6] = thumb_bl(caller + 2, start)
+        MODULE.struct.pack_into("<I", image, pool, 100_000)
+        image[start:start + len(helper)] = helper
+        config = SimpleNamespace(load_address=0, flash_size=len(image))
+
+        expected = "4800020:4c4b4:300:3aa"
+        self.assertEqual(
+            MODULE.qemu_pause_timer_profile(bytes(image), config),
+            (expected, None),
+        )
+        self.assertEqual(MODULE.qemu_pause_timer_profile(
+            bytes(image), config, start + len(helper) - 1
+        ), (None, "fixed-helper-outside-immutable-nor"))
+
+        MODULE.struct.pack_into("<I", image, pool, 20_000)
+        self.assertEqual(
+            MODULE.qemu_pause_timer_profile(bytes(image), config),
+            (None, "100ms-caller-not-found"),
+        )
+        MODULE.struct.pack_into("<I", image, pool, 100_000)
+        image[start + 0x30] ^= 1
+        self.assertEqual(
+            MODULE.qemu_pause_timer_profile(bytes(image), config),
+            (None, "fixed-helper-shape-mismatch"),
+        )
+        image[start + 0x30] ^= 1
+        image[0x500:0x500 + len(helper)] = helper
+        self.assertEqual(
+            MODULE.qemu_pause_timer_profile(bytes(image), config),
+            (None, "fixed-helper-ambiguous"),
+        )
+
+    def test_legacy_dmd_loader_patch_preserves_call_contract(self) -> None:
+        load = 0x1000
+        entry = load + 0x100
+        completion = 0x01001020
+        control = 0x03000050
+        dmd = 0x030007E0
+        filename = load + 0x600
+        image = bytearray(b"\xff" * 0x1000)
+        signature = MODULE.DMD_DOWNLOAD_SIGNATURE
+        image[0x100:0x100 + len(signature)] = signature
+        image[0x100 + 0xD4:0x100 + 0xD6] = b"\x06\x49"
+        MODULE.struct.pack_into(
+            "<4I", image, 0x100 + 0xE0,
+            completion, control, 0, dmd,
+        )
+        MODULE.struct.pack_into("<I", image, 0x100 + 0xF0, filename)
+        image[0x600:0x60C] = b"dmddown_510"
+        config = SimpleNamespace(
+            dmd_download_address=entry, load_address=load,
+            flash_size=len(image), ram_base=0x01000000, ram_size=0x2000,
+        )
+
+        result = MODULE.legacy_dmd_loader_patch(bytes(image), config)
+        self.assertIsNotNone(result)
+        offset, patch = result
+        self.assertEqual((offset, len(patch)), (0x100, 52))
+
+        uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+        uc.mem_map(load, 0x1000)
+        uc.mem_map(0x01000000, 0x2000)
+        uc.mem_map(0x03000000, 0x1000)
+        uc.mem_write(entry, patch)
+        uc.mem_write(completion, b"\xaa\xbb\xcc\xdd")
+        uc.mem_write(control + 0x0C, b"\xaa\xbb")
+        uc.mem_write(dmd + 8, b"\xaa" * 8)
+        registers = MODULE.arm_const
+        uc.reg_write(registers.UC_ARM_REG_CPSR, 0xA0000033)
+        uc.reg_write(registers.UC_ARM_REG_SP, 0x01001FF0)
+        uc.reg_write(registers.UC_ARM_REG_LR, 0x1201)
+        uc.reg_write(registers.UC_ARM_REG_R1, 0x11111111)
+        uc.reg_write(registers.UC_ARM_REG_R2, 0x22222222)
+        flags = uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000
+
+        uc.emu_start(entry | 1, 0, count=14)
+
+        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_PC), 0x1200)
+        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R0), 1)
+        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R1), 0x11111111)
+        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R2), 0x22222222)
+        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_SP), 0x01001FF0)
+        self.assertEqual(
+            uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000, flags
+        )
+        self.assertEqual(bytes(uc.mem_read(completion, 4)),
+                         b"\x02\xbb\xcc\xdd")
+        self.assertEqual(bytes(uc.mem_read(control + 0x0C, 2)),
+                         b"\x01\xbb")
+        self.assertEqual(bytes(uc.mem_read(dmd + 8, 8)),
+                         b"\0" * 6 + b"\xaa" * 2)
+
+        image[0x600] = 0
+        self.assertIsNone(
+            MODULE.legacy_dmd_loader_patch(bytes(image), config)
+        )
+        image[0x600] = ord("d")
+        self.assertIsNone(MODULE.legacy_dmd_loader_patch(
+            bytes(image), config, 0x100 + len(patch) - 1
+        ))
 
     def test_c80_route_requires_explicit_closed_candidate(self) -> None:
         status = 0x03000C80
