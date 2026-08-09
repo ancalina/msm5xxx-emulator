@@ -44,6 +44,7 @@ jobs:
       - name: Build patched QEMU
         run: |
           set -euxo pipefail
+          export MSYS=winsymlinks:sys
           work="$PWD/.ci-windows"
           source="$work/qemu-${QEMU_VERSION}-msm5xxx"
           build="$work/build"
