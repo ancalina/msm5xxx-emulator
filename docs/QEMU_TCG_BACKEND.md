@@ -1,6 +1,6 @@
 # Experimental QEMU TCG backend
 
-Status: `engine/qemu-tcg` experiment. Unicorn remains the stable/default
+Status: `engine/qemu-tcg-alpha-20260809` experiment. Unicorn remains the stable/default
 backend. QEMU is not yet an alpha release and is never selected implicitly.
 
 ## Boundary
@@ -31,24 +31,25 @@ frame, or a running scheduler does not count.
 
 | Firmware | Current final-source result |
 |---|---|
-| SCH-X350 | cold storage initialization, then one same-state warm QEMU process reaches UISIdle entry `0xC125C`, body `0xC1308`, and 20M further guest instructions; input/reset gate pending |
+| SCH-X350 | cold storage initialization, then one same-state warm QEMU process reaches UISIdle entry `0xC125C`, body `0xC1308`, and 20M further guest instructions; physical END reaches the input task, while UI power/reset effects remain pending |
 | SCH-X250 | Anycall splash/animation; idle entry not reached in 30 s |
 | SCH-X250RUS | Anycall splash/animation, then fatal loop at `0x1608`; idle entry not reached |
 | SD810 | detected upper x8 NOR is mapped, readable, and persistent; no completed frame and the timer/IRQ producer remains unresolved |
-| KTFT-X3500 | stable standby frame plus exact app-idle module init/callback; full release gate pending |
+| KTFT-X3500 | detector-admitted DC0 battery profile reaches a stable standby frame, but current module remains module0B and the module1/idle consumer is not closed |
 
 No row is yet a release pass. X350 cold initializes the raw storage; restarting
 with the same `--state-dir` reaches the entry and body in one process without
 guest register or memory writes. The strict idle-consumer boundary is closed,
-and REX/LCD activity continues for 20M further instructions, but input, reset,
-and cross-firmware gates remain. SD810 keeps native
+and REX/LCD activity continues for 20M further instructions. Physical END
+press/release reaches the input task, but its UI power effect, reset, and
+cross-firmware gates remain. SD810 keeps native
 fallback because the periodic IRQ producer is not evidence-closed. The project
 alpha gate remains five real handset-idle passes among the fixed set.
 
 Input support is also evidence-scoped. A physical event must have one unique
 matrix or sideband producer. END event `0x51` is no longer rejected merely
 because it is absent from the matrix table; absent, ambiguous, or colliding
-physical producers still fail closed. X250 has carried END press/release into
+physical producers still fail closed. X350 has carried END press/release into
 its input task, but the downstream UI/power effect is not yet proven.
 
 ## Determinism and reset
