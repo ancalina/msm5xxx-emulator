@@ -196,7 +196,7 @@ jobs:
           tar --exclude='*/.git' --exclude='*/.git/**' \
             --exclude='*/__pycache__' --exclude='*.pyc' \
             -cJf "dist/$name.tar.xz" -C "$work" "$name"
-          sha256sum "dist/$name.tar.xz" > "dist/$name.tar.xz.sha256"
+          (cd dist && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
 
       - uses: actions/upload-artifact@v4
         with:
