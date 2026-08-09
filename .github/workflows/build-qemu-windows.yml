@@ -126,6 +126,7 @@ jobs:
           PY
 
           owners="$(while IFS= read -r dll; do
+            dll="${dll%$'\r'}"
             pacman -Qqo "$MINGW_PREFIX/bin/$dll"
           done < "$bundle/DLLS.txt" | sort -u)"
           test -n "$owners"
