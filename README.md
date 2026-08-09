@@ -86,9 +86,10 @@ Windows x86-64:
 run_windows.bat "C:\path\phone.bin" --state-dir "C:\path\qemu-state"
 ```
 
-Intel macOS:
+Intel macOS 15.0 or newer:
 
 ```sh
+brew install python-tk@3.14
 ./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
 ```
 
@@ -122,6 +123,6 @@ must also include the corresponding source and notices required by its
 licenses. See [LICENSE](LICENSE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Current binary targets are Linux x86-64, Windows x86-64, and Intel macOS.
-Android is not advertised: QEMU's required host libraries and the Python/Tk
-frontend do not yet have a verified Android package path.
+Current binary targets are Linux x86-64, Windows x86-64, and Intel macOS 15.0
+or newer. Android is not advertised: QEMU's required host libraries and the
+Python/Tk frontend do not yet have a verified Android package path.

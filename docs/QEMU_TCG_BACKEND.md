@@ -88,7 +88,7 @@ Run a matching binary archive:
 
 ```sh
 ./run_linux.sh FIRMWARE --state-dir /path/to/qemu-state
-# Intel macOS: ./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
+# Intel macOS 15+: ./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
 ```
 
 Windows uses `run_windows.bat`. Source builds can set `MSM5XXX_QEMU` to an
@@ -105,4 +105,4 @@ initialization can be required before a persistent warm boot reaches idle.
 2. Prove real handset-idle paths, including persistent warm storage.
 3. Verify reset, storage parity/quiescence, input effect, and reject telemetry.
 4. Run the full source tests and native build on the exact staged tree.
-5. Verify Linux, Windows, and Intel macOS archives without firmware or evidence.
+5. Verify Linux, Windows, and Intel macOS 15+ archives without firmware or evidence.

@@ -87,9 +87,10 @@ Windows x86-64:
 run_windows.bat "C:\path\phone.bin" --state-dir "C:\path\qemu-state"
 ```
 
-Intel macOS:
+Intel macOS 15.0 이상:
 
 ```sh
+brew install python-tk@3.14
 ./run_macos.command FIRMWARE --state-dir /path/to/qemu-state
 ```
 
@@ -123,6 +124,6 @@ license가 요구하는 corresponding source와 notice도 함께 제공해야 �
 [LICENSE](LICENSE)와 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를
 확인하십시오.
 
-현재 binary target은 Linux x86-64, Windows x86-64, Intel macOS입니다. Android는
-QEMU host library와 Python/Tk frontend의 검증된 package 경로가 없어 아직
-배포 대상으로 표기하지 않습니다.
+현재 binary target은 Linux x86-64, Windows x86-64, Intel macOS 15.0
+이상입니다. Android는 QEMU host library와 Python/Tk frontend의 검증된 package
+경로가 없어 아직 배포 대상으로 표기하지 않습니다.
