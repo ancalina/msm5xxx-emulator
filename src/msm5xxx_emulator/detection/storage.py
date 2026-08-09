@@ -12,14 +12,44 @@ from .signatures import find_all
 
 FUJITSU_MB84VD2219X_IDS = (0x0004, 0x005F)
 FUJITSU_X16_BULK_WRITE_MAX_SIZE = 0x118
-FUJITSU_X16_BULK_WRITE_F8_PREFIX = bytes.fromhex(
-    "f8b5041c8818171c3c4a1268ff32c132936b5b00984205d8"
+PRIMARY_FSD_AMD_X16_WRITER_PREFIX = bytes.fromhex(
+    "f0b5544b8f181b68ff3381339c696400a74200d962e0504f"
 )
-FUJITSU_X16_BULK_WRITE_F8_BODY_HASH = (
-    "0d6ec61f9c5574193e392fa98e95219cd1b7897993fb9a96f9f8488cf49bc62f"
+PRIMARY_FSD_AMD_X16_WRITER_SIZE = 0x152
+PRIMARY_FSD_AMD_X16_WRITER_CALLS = (0x4A,)
+PRIMARY_FSD_AMD_X16_WRITER_HASH = (
+    "4e6e8bf7a24612fe68352426367bc562796e239f8e9148153aed31c7eb7e7769"
 )
-FUJITSU_X16_BULK_WRITE_F8_CALLS = (
-    0x4A, 0x64, 0x6C, 0xA2, 0xBE, 0xC6, 0xD4, 0xE8, 0xF2,
+PRIMARY_FSD_AMD_X16_ID_ROUTINE = bytes.fromhex(
+    "30b50e4b011ccc18084d094b258023800b4bca18074b1380074b238008884b88"
+    "00041b04000c184325800be0f0000000aa0000005500000090000000aa0a0000"
+    "5405000030bd"
+)
+FUJITSU_X16_BULK_WRITE_HASHED_SHAPES = (
+    (
+        bytes.fromhex(
+            "f8b5041c8818171c3c4a1268ff32c132936b5b00984205d8"
+        ),
+        0xFC, 0x104, (0xAAA0, 0x5540),
+        (0x4A, 0x64, 0x6C, 0xA2, 0xBE, 0xC6, 0xD4, 0xE8, 0xF2),
+        "0d6ec61f9c5574193e392fa98e95219cd1b7897993fb9a96f9f8488cf49bc62f",
+    ),
+    (
+        bytes.fromhex(
+            "f8b5041c3c488b18171c42688032556b6d00ab4201d90120"
+        ),
+        0xF8, 0xFC, (0x5540, 0xAAA0),
+        (0x46, 0x60, 0x68, 0xA4, 0xC0, 0xC8, 0xD4, 0xE8, 0xF0),
+        "975c74b1238c4877172250f17d79d064290c18b6aa3b677b9b1d9241ec29bd9b",
+    ),
+    (
+        bytes.fromhex(
+            "f8b5041c8818171c3b4a12688032536b5b00984205d8394b"
+        ),
+        0xF8, 0x100, (0xAAA0, 0x5540),
+        (0x48, 0x62, 0x6A, 0xA0, 0xBC, 0xC4, 0xD2, 0xE6, 0xF0),
+        "d8eaaac4d169ad91c278fcbfadee8ffa6bc6ade2dfe3dbea8909a611bb9b429c",
+    ),
 )
 
 
@@ -229,6 +259,93 @@ def flash_id_for_size(size: int) -> int | None:
         if capacity - PAGE <= size <= capacity:
             return device_id
     return None
+
+
+def _primary_fsd_amd_x16_writer_at(image: bytes, position: int) -> bool:
+    if (position < 0
+            or position + PRIMARY_FSD_AMD_X16_WRITER_SIZE > len(image)
+            or image[position:position + len(PRIMARY_FSD_AMD_X16_WRITER_PREFIX)]
+               != PRIMARY_FSD_AMD_X16_WRITER_PREFIX):
+        return False
+    body = bytearray(
+        image[position:position + PRIMARY_FSD_AMD_X16_WRITER_SIZE]
+    )
+    calls: list[int] = []
+    for offset in range(0, len(body) - 3, 2):
+        if thumb_bl_target(image, position + offset) is None:
+            continue
+        calls.append(offset)
+        body[offset:offset + 4] = b"\0" * 4
+    return (tuple(calls) == PRIMARY_FSD_AMD_X16_WRITER_CALLS
+            and hashlib.sha256(body).hexdigest()
+            == PRIMARY_FSD_AMD_X16_WRITER_HASH)
+
+
+def find_primary_fsd_amd_x16_nor(
+        image: bytes, flash_id_address: int | None, flash_size: int,
+) -> tuple[int, int, int, int, int] | None:
+    """Return a uniquely linked writable primary x16 NOR tail profile."""
+    if (b"fsd_amd.c\0" not in image or flash_id_address is None
+            or flash_size <= 0 or flash_size > len(image)):
+        return None
+    writers = [
+        position
+        for position in find_all(image, PRIMARY_FSD_AMD_X16_WRITER_PREFIX)
+        if _primary_fsd_amd_x16_writer_at(image, position)
+    ]
+    if len(writers) != 1:
+        return None
+    writer = writers[0]
+    profiles: list[tuple[int, int, int, int, int]] = []
+    for reference in find_all(image, struct.pack("<I", writer | 1)):
+        descriptor = reference - 0x1C
+        if descriptor < 0 or descriptor + 0x34 > flash_size:
+            continue
+        device_id, reserved, banks, base_words, usable_words = (
+            struct.unpack_from("<5I", image, descriptor)
+        )
+        functions = struct.unpack_from("<7I", image, descriptor + 0x14)
+        name_address = descriptor + 0x30
+        name_end = image.find(b"\0", name_address, name_address + 32)
+        manufacturer, device = device_id & 0xFFFF, device_id >> 16
+        base, size = base_words * 2, usable_words * 2
+        if (reserved != 0 or banks != 1 or functions[2] != writer | 1
+                or any(not pointer & 1 or pointer & ~1 >= flash_size
+                       for pointer in functions)
+                or name_end < name_address + 4
+                or any(not 0x21 <= byte <= 0x7E
+                       for byte in image[name_address:name_end])
+                or manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)
+                or base <= 0 or size <= 0 or base + size != flash_size):
+            continue
+        geometries: list[tuple[int, int]] = []
+        for sector_count in range(1, min(512, (descriptor - 8) // 4) + 1):
+            entry = descriptor - 8 - sector_count * 4
+            if (struct.unpack_from("<2I", image, entry)
+                    != (name_address, sector_count)):
+                continue
+            sectors = struct.unpack_from(
+                f"<{sector_count}I", image, entry + 8
+            )
+            sector_size = sectors[0]
+            if (all(value == sector_size for value in sectors)
+                    and PAGE <= sector_size <= 0x100000
+                    and not sector_size & (PAGE - 1)
+                    and sum(sectors) == size
+                    and not base % sector_size):
+                geometries.append((entry, sector_size))
+        if len(geometries) != 1:
+            continue
+        entry, sector_size = geometries[0]
+        if (flash_id_address < 12
+                or struct.unpack_from("<3I", image, flash_id_address - 12)
+                   != (0, entry, 0)
+                or image[flash_id_address:
+                         flash_id_address + len(PRIMARY_FSD_AMD_X16_ID_ROUTINE)]
+                   != PRIMARY_FSD_AMD_X16_ID_ROUTINE):
+            continue
+        profiles.append((base, size, sector_size, manufacturer, device))
+    return profiles[0] if len(profiles) == 1 else None
 
 
 def qualcomm_efs_seed(size: int, chipset: str) -> bytes:
@@ -511,25 +628,26 @@ def fujitsu_x16_bulk_write_mode_at(
                 and struct.unpack_from("<I", image, position + literal_offset)[0]
                 == secondary_base + unlock_offset):
             return "unlock-bypass"
-    if (position < 0
-            or position + FUJITSU_X16_BULK_WRITE_MAX_SIZE > len(image)
-            or image[position:position + len(FUJITSU_X16_BULK_WRITE_F8_PREFIX)]
-               != FUJITSU_X16_BULK_WRITE_F8_PREFIX
-            or struct.unpack_from("<2I", image, position + 0x104)
-               != (secondary_base + 0xAAA0, secondary_base + 0x5540)):
-        return None
-    body = bytearray(image[position:position + 0xFC])
-    calls: list[int] = []
-    for offset in range(0, len(body) - 3, 2):
-        if thumb_bl_target(image, position + offset) is None:
+    for (prefix, body_size, literal_offset, literal_deltas,
+         expected_calls, body_hash) in FUJITSU_X16_BULK_WRITE_HASHED_SHAPES:
+        if (position < 0
+                or position + max(body_size, literal_offset + 8) > len(image)
+                or image[position:position + len(prefix)] != prefix
+                or struct.unpack_from("<2I", image, position + literal_offset)
+                   != tuple(secondary_base + delta
+                            for delta in literal_deltas)):
             continue
-        calls.append(offset)
-        body[offset:offset + 4] = b"\0" * 4
-    return ("per-word-unlock" if (
-        tuple(calls) == FUJITSU_X16_BULK_WRITE_F8_CALLS
-        and hashlib.sha256(body).hexdigest()
-        == FUJITSU_X16_BULK_WRITE_F8_BODY_HASH
-    ) else None)
+        body = bytearray(image[position:position + body_size])
+        calls: list[int] = []
+        for offset in range(0, len(body) - 3, 2):
+            if thumb_bl_target(image, position + offset) is None:
+                continue
+            calls.append(offset)
+            body[offset:offset + 4] = b"\0" * 4
+        if (tuple(calls) == expected_calls
+                and hashlib.sha256(body).hexdigest() == body_hash):
+            return "per-word-unlock"
+    return None
 
 
 def fujitsu_x16_bulk_write_at(image: bytes, position: int,
@@ -547,7 +665,8 @@ def find_fujitsu_x16_bulk_write(image: bytes, secondary_base: int) -> int | None
         for pattern, _literal_offset, _unlock_offset in FUJITSU_X16_BULK_WRITE_PATTERNS
         for match in pattern.finditer(image)
     }
-    candidates.update(find_all(image, FUJITSU_X16_BULK_WRITE_F8_PREFIX))
+    for prefix, *_rest in FUJITSU_X16_BULK_WRITE_HASHED_SHAPES:
+        candidates.update(find_all(image, prefix))
     matches = [position for position in sorted(candidates)
                if fujitsu_x16_bulk_write_at(
                    image, position, secondary_base

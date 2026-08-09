@@ -24,6 +24,7 @@ from msm5xxx_emulator.detection.storage import (
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
     EEPROM_24LCXX_F6F7_WRITE_PREFIX,
     find_24lc64_class_b_driver,
+    find_primary_fsd_amd_x16_nor,
 )
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
@@ -940,6 +941,28 @@ class DetectionTests(unittest.TestCase):
                 "02340237023d0120c005f5f79ffb0549054814f082f8002dd8d10020ede70000"
                 "dc0a2600c50300007cd81501a0aa800021050000"
             ), 0x800000, 0x84FC8),
+            (bytes.fromhex(
+                "f8b5041c3c488b18171c42688032556b6d00ab4201d901206de0037a002b01d0"
+                "022bf8d1126b0068344b10184518e607f60fa0205522002e52d1490850d27908"
+                "4ed21be0268875f059fc2d49aa224a812a4b55229a82a0224a812e80002801d1"
+                "75f05afc0221281cfff79efd002802d0244925482ee002340235023f012fe1d8"
+                "30e06e087600217830886a0803d2ff231b02194302e00902ff23194308400104"
+                "090c009175f02afc1549aa224a81134b55229a82a0224a8100993180002801d1"
+                "75f02afc0221301cfff76efd002804d00c490e482af7e6fc9de701340135013f"
+                "002fced80120c00518f7e4fa0848094972f76af90020f8bd4870180140552000"
+                "a0aa2000"
+            ), 0x200000, 0x2000),
+            (bytes.fromhex(
+                "f8b5041c8818171c3b4a12688032536b5b00984205d8394b1879002805d00228"
+                "03d00120f8bc08bc1847106b1a6880184518600800d352e0480800d34fe07808"
+                "00d34ce01be02688fdf022fa2c4aaa2151812c4b55219982a02151812e800028"
+                "01d1fdf021fa0221281cfff769fd002802d0254925482ce002340235023f012f"
+                "e1d82ee06e087600217830886a0802d2ff22120201e00902ff22114301400091"
+                "fdf0f6f9164aaa215181164b55219982a021518100993180002801d1fdf0f4f9"
+                "0221301cfff73cfd002805d00f480e493130f5f705fca4e701340135013f002f"
+                "d0d80120c005f5f777fd08490848893913f0e1fb002095e7bc191801044c1e01"
+                "a0aa200040552000"
+            ), 0x200000, 0x3000),
         )
         for body, secondary_base, padding in variants:
             image = b"\xff" * padding + body + b"fs_fujitsu.c\0"
@@ -956,6 +979,57 @@ class DetectionTests(unittest.TestCase):
             self.assertIsNone(
                 find_fujitsu_x16_bulk_write(image + body, secondary_base)
             )
+
+    def test_primary_fsd_amd_nor_requires_linked_writer_and_geometry(self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        writer = 0x400
+        writer_body = bytearray(bytes.fromhex(
+            "f0b5544b8f181b68ff3381339c696400a74200d962e0504f3f78002f02d0022f"
+            "00d05be04d4f5b693f685b00df197c186608760005235b059c4203d301231b06"
+            "9c4205d300a1b4394548f4f7fff845e0aa231d017f197b813e4f55233f683f4d"
+            "ff3781377f692d687f007f191525ad017f19bb82374f20233f68384dff378137"
+            "7f692d687f007f1955256d017f197b81c307db0f0127002b00d053e0490800d3"
+            "50e0510800d34de02e4d1ee00188a0232380218001272f7080270f4021888023"
+            "0b40bb420ed08909f8d3218880231940b94207d090202080002020800120f0bc"
+            "08bc184702300234023a012aded82be06108490003780f88a0250d80650802d2"
+            "ff252d0201e01b02ff252b433b400b80144d01272f701f1c80253d400f888023"
+            "3b40ab420bd0bb09f8d30f8880233b40ab4204d09020088000200880cee70130"
+            "0134013a002ad3d89020308000203080c5e7"
+        ))
+        displacement = 0x600 - (writer + 0x4A) - 4
+        encoded = displacement & ((1 << 23) - 1)
+        struct.pack_into(
+            "<2H", writer_body, 0x4A,
+            0xF000 | (encoded >> 12), 0xF800 | (encoded >> 1 & 0x7FF),
+        )
+        image[writer:writer + len(writer_body)] = writer_body
+        image[0x80:0x8A] = b"fsd_amd.c\0"
+
+        entry, descriptor = 0x1000, 0x1010
+        name = descriptor + 0x30
+        struct.pack_into("<4I", image, entry, name, 2, 0x1000, 0x1000)
+        struct.pack_into(
+            "<12I", image, descriptor,
+            0x00840098, 0, 1, 0x1000, 0x1000,
+            0x301, 0x321, writer | 1, 0x341, 0x361, 0x381, 0x3A1,
+        )
+        image[name:name + 8] = b"NOR-X16\0"
+        flash_id = 0x208
+        struct.pack_into("<3I", image, flash_id - 12, 0, entry, 0)
+        image[flash_id:flash_id + 70] = bytes.fromhex(
+            "30b50e4b011ccc18084d094b258023800b4bca18074b1380074b238008884b88"
+            "00041b04000c184325800be0f0000000aa0000005500000090000000aa0a0000"
+            "5405000030bd"
+        )
+
+        self.assertEqual(
+            find_primary_fsd_amd_x16_nor(bytes(image), flash_id, len(image)),
+            (0x2000, 0x2000, 0x1000, 0x98, 0x84),
+        )
+        image[writer + 4] ^= 1
+        self.assertIsNone(
+            find_primary_fsd_amd_x16_nor(bytes(image), flash_id, len(image))
+        )
 
     def test_complete_compound_fujitsu_dump_splits_and_seeds_secondary_nor(self) -> None:
         primary_size, secondary_size = 0x400000, 0x200000

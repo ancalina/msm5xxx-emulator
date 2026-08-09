@@ -421,12 +421,12 @@ class ControlsMixin:
             return "break"
         current = self._manual_key_event(bit)
         prompt = (
-            "검출된 matrix event byte 입력 (예: 0x53 또는 053).\n"
-            "펌웨어 event table의 고유 row/column만 사용합니다.\n"
+            "검출된 physical input event byte 입력 (예: 0x53 또는 053).\n"
+            "펌웨어의 고유 matrix/sideband producer만 사용합니다.\n"
             "빈 값은 수동 매핑 삭제."
             if self.ui_language == "ko" else
-            "Enter detected matrix event byte (example: 0x53 or 053).\n"
-            "Only a unique row/column in firmware event table is used.\n"
+            "Enter detected physical input event byte (example: 0x53 or 053).\n"
+            "Only a unique firmware matrix/sideband producer is used.\n"
             "Leave empty to remove manual mapping."
         )
         value = simpledialog.askstring(
@@ -441,8 +441,8 @@ class ControlsMixin:
             if (event_code is not None
                     and not self._key_supported(bit, event_code)):
                 raise ValueError(
-                    f"event 0x{event_code:02X} is absent or duplicated "
-                    "in the detected matrix"
+                    f"event 0x{event_code:02X} has no unique detected "
+                    "physical input producer"
                 )
             self._save_manual_key_event(bit, event_code)
         except (OSError, ValueError) as error:

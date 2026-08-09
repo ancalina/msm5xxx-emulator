@@ -5,6 +5,7 @@ from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 import struct
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from msm5xxx_emulator.detection.input import (
     BOARD_ADC_READER_REORDERED_FIXED,
     BOARD_ADC_READER_VARIANT_SIZE,
     board_adc_reader_read_offset_at,
+    find_dc0_board_adc_profile,
 )
 
 
@@ -47,6 +49,60 @@ class BoardADCReaderTests(unittest.TestCase):
         "X4209.bin": 0x1005C,
         "x4000.bin": 0x605C,
     }
+
+    def test_dc0_battery_policy_is_complete_and_fail_closed(self) -> None:
+        firmware = ROOT / "firmwares/KTFT_X3500_verX3p56.73.0_riffdump_clean.bin"
+        if not firmware.is_file():
+            firmware = ROOT.parent / firmware.relative_to(ROOT)
+        if not firmware.is_file():
+            self.skipTest("private firmware corpus is not available")
+        image = bytearray(firmware.read_bytes())
+        profile = find_dc0_board_adc_profile(image)
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertTrue(profile["accepted"])
+        self.assertEqual(profile["response_raw"], 0xFF)
+        self.assertEqual(profile["low_thresholds"], [0xC8, 0xDE])
+        self.assertEqual(profile["caller_offsets"], [0x550DA2, 0x550E4E])
+        config = detect(firmware)
+        self.assertEqual(config.board_adc_value, 0xC2)
+        self.assertEqual(config.dc0_board_adc_profile, profile)
+        self.assertIn("virtual full raw byte", " ".join(config.detection_notes))
+
+        invalid_root = bytearray(image)
+        struct.pack_into("<I", invalid_root, 0x3D00EC, 0)
+        struct.pack_into("<I", invalid_root, 0x3D0110, 0)
+        rejected = find_dc0_board_adc_profile(invalid_root)
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertEqual(rejected["reject_reason"],
+                         "raw-getter/service-grammar-mismatch")
+
+        image[int(profile["filter_offset"]) + 0xCA] ^= 1
+        rejected = find_dc0_board_adc_profile(image)
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reject_reason"],
+                         "battery-filter-policy-mismatch")
+        with tempfile.NamedTemporaryFile(suffix=".bin") as changed:
+            changed.write(image)
+            changed.flush()
+            fallback = detect(Path(changed.name))
+        self.assertEqual(fallback.board_adc_value, 0xC2)
+        self.assertFalse(fallback.dc0_board_adc_profile["accepted"])
+        self.assertIn("battery-filter-policy-mismatch",
+                      " ".join(fallback.detection_notes))
+
+        peer = firmware.with_name("LG-KH5000.bin")
+        if peer.is_file():
+            rejected = find_dc0_board_adc_profile(peer.read_bytes())
+            self.assertIsNotNone(rejected)
+            assert rejected is not None
+            self.assertFalse(rejected["accepted"])
+            self.assertEqual(rejected["reject_reason"],
+                             "battery-filter-consumer-not-unique")
+            self.assertEqual(detect(peer).board_adc_value, 0xC2)
 
     def test_reordered_reader_grammar_is_exact(self) -> None:
         image = bytearray(BOARD_ADC_READER_VARIANT_SIZE)

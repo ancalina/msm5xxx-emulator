@@ -482,7 +482,8 @@ class InputMixin:
                         list(direct["event_codes"]).count(event_code) == 1
                     )
                 self.input_error = (
-                    f"manual matrix event 0x{event_code:02X} is absent or ambiguous"
+                    f"manual event 0x{event_code:02X} has no unique "
+                    "detected physical input producer"
                     if event_code is not None else
                     "automatic matrix detected; this key semantic is not proven"
                 )
@@ -847,10 +848,9 @@ class InputMixin:
     ) -> dict[str, object] | None:
         matches = [producer
                    for producer in self._validated_direct_sideband_producers()
-                   if ((event_code is None
-                         and producer.get("semantic_key") == bit)
-                        or (event_code is not None
-                            and producer.get("event") == event_code))]
+                   if (producer.get("semantic_key") == bit
+                       and (event_code is None
+                            or producer.get("event") == event_code))]
         return matches[0] if len(matches) == 1 else None
 
     def _validated_direct_sideband_producers(
@@ -860,6 +860,12 @@ class InputMixin:
         profile = getattr(self, "direct_input_profile", None)
         raw = (profile.get("sideband_producers", ())
                if isinstance(profile, dict) else ())
+        matrix_events = (profile.get("event_codes", ())
+                         if isinstance(profile, dict) else ())
+        if any(isinstance(producer, dict)
+               and producer.get("event") in matrix_events
+               for producer in raw):
+            return ()
         candidates: list[dict[str, object]] = []
         for producer in raw:
             if not isinstance(producer, dict):

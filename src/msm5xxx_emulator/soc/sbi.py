@@ -57,7 +57,13 @@ class SbiMixin:
             "read_requests": 0,
         }
         self._dc0_sequence = 0
-        self._dc0_board_adc_value = getattr(config, "board_adc_value", None)
+        profile = getattr(config, "dc0_board_adc_profile", None)
+        self._dc0_board_adc_profile = profile
+        self._dc0_board_adc_value = (
+            profile.get("response_raw")
+            if isinstance(profile, dict) and profile.get("accepted") is True
+            else getattr(config, "board_adc_value", None)
+        )
         self._dc0_last_control: dict[str, object] | None = None
         self._dc0_last_control_word: int | None = None
         self._dc0_pending: dict[str, object] | None = None
@@ -187,6 +193,7 @@ class SbiMixin:
         pending = getattr(self, "_dc0_pending", None)
         return {
             "status": "observed" if any(counts.values()) else "unobserved",
+            "profile": getattr(self, "_dc0_board_adc_profile", None),
             "semantic_status": (
                 "board-adc-read"
                 if counts.get("board_adc_responses", 0) else "unclassified"

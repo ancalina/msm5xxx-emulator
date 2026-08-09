@@ -21,14 +21,17 @@ from unicorn.arm_const import UC_ARM_REG_PC
 
 
 class Harness(SbiMixin):
-    def __init__(self, *, eligible: bool = True) -> None:
+    def __init__(self, *, eligible: bool = True,
+                 dc0_profile: dict[str, object] | None = None) -> None:
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
         self.uc.mem_map(0x03000000, 0x1000)
-        self._init_sbi_state(SimpleNamespace(
+        self.config = SimpleNamespace(
             chipset="MSM5000" if eligible else "MSM5100",
             board_adc_reader_address=0x4050,
             board_adc_value=0xC2,
-        ))
+            dc0_board_adc_profile=dc0_profile,
+        )
+        self._init_sbi_state(self.config)
 
 
 class SbiControllerTest(unittest.TestCase):
@@ -219,6 +222,27 @@ class SbiControllerTest(unittest.TestCase):
         self.assertEqual(
             telemetry["readback_epochs"][0]["emulated_response_word"],
             "0xB2C2",
+        )
+
+    def test_dc0_profile_override_does_not_change_generic_adc(self) -> None:
+        profile = {"accepted": True, "response_raw": 0xFF}
+        emulator = Harness(eligible=False, dc0_profile=profile)
+
+        self.assertEqual(emulator.config.board_adc_value, 0xC2)
+        self.assertEqual(emulator._dc0_board_adc_value, 0xFF)
+        self.assertEqual(emulator._dc0_transport_telemetry()["profile"],
+                         profile)
+        for address, value in ((DC0_CONTROL, DC0_BOARD_ADC_CONTROL),
+                               (DC0_DATA, DC0_BOARD_ADC_READ),
+                               (DC0_START, 0), (DC0_START, 1)):
+            emulator._dc0_observer_write(
+                emulator.uc, 0, address, 2, value, None
+            )
+            if address == DC0_DATA:
+                emulator.uc.mem_write(address, value.to_bytes(2, "little"))
+        self.assertEqual(
+            int.from_bytes(emulator.uc.mem_read(DC0_DATA, 2), "little"),
+            0xB2FF,
         )
 
     def test_dc0_noncontiguous_request_keeps_native_backing(self) -> None:

@@ -259,6 +259,27 @@ class GuiLocaleTests(unittest.TestCase):
             self.assertEqual(Window._edit_key_mapping(window, "OK"), "break")
         save.assert_called_once_with(5, 0x53)
 
+    def test_manual_editor_accepts_detected_sideband_end(self) -> None:
+        window = Window.__new__(Window)
+        window.emulator = SimpleNamespace(
+            config=SimpleNamespace(firmware_sha256="a" * 64),
+            can_set_key=lambda bit, event: (bit, event) == (7, 0x51),
+        )
+        window.held = {}
+        window.root = None
+        window.ui_language = "en"
+        with (mock.patch.object(Window, "_manual_key_event",
+                                return_value=None),
+              mock.patch.object(Window, "_save_manual_key_event") as save,
+              mock.patch("msm5xxx_emulator.gui.controls.simpledialog.askstring",
+                         return_value="051"),
+              mock.patch(
+                  "msm5xxx_emulator.gui.controls.messagebox.showerror"
+              ) as error):
+            self.assertEqual(Window._edit_key_mapping(window, "종료"), "break")
+        save.assert_called_once_with(7, 0x51)
+        error.assert_not_called()
+
     def test_rejected_manual_key_event_is_logged(self) -> None:
         window = Window.__new__(Window)
         window.emulator = SimpleNamespace(

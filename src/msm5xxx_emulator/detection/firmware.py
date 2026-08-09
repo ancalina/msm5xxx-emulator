@@ -30,7 +30,8 @@ from .boot import (
 from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout
 from .firmware_image import load_firmware_image
-from .input import find_board_adc_reader, find_board_status_input
+from .input import (find_board_adc_reader, find_board_status_input,
+                    find_dc0_board_adc_profile)
 from .memory_layout import (
     find_arm_memory_copy_addresses, find_arm_vector_offset, find_linker_layout,
     find_missing_overlays, find_overlays, find_runtime_overlays, infer_ram_base,
@@ -44,6 +45,7 @@ from .rex import (REX_TICK_SIGNATURE, find_rex_5ms_irq_arm,
                   find_rex_idle_address,
                   find_rex_static_c40_controller_observation,
                   find_rex_static_controller_callback_candidate)
+from .ready_poll import find_ready_poll_profile
 from .signatures import find_all
 from .storage import (
     EEPROM_24LC64_CLASS_B_READ_PREFIX, EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
@@ -486,6 +488,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             raise ValueError("flash size must be positive")
         scan_flash_size = requested_flash_size
     primary_image = image[:min(len(image), scan_flash_size)]
+    ready_poll = find_ready_poll_profile(primary_image)
+    if ready_poll is not None:
+        detection_notes.append(
+            "exact Thumb byte-ready/pulse poll class detected"
+        )
     rex_static_controller_candidate = (
         find_rex_static_controller_callback_candidate(primary_image)
     )
@@ -564,6 +571,18 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         rex_idle_address, rex_tick_address, rex_tick_ms = rex_5ms_pair
     board_adc_address = direct_signature("board_adc_address", BOARD_ADC_SIGNATURE)
     board_adc_reader_position = find_board_adc_reader(primary_image)
+    dc0_board_adc_profile = find_dc0_board_adc_profile(primary_image)
+    if dc0_board_adc_profile is not None:
+        if dc0_board_adc_profile["accepted"]:
+            detection_notes.append(
+                "temporary selector-2 DC0 battery policy detected; "
+                "virtual full raw byte enabled"
+            )
+        else:
+            detection_notes.append(
+                "selector-2 DC0 battery policy rejected: "
+                f"{dc0_board_adc_profile['reject_reason']}"
+            )
     overlays = find_overlays(primary_image, requested_load_address)
 
     def mapped_position(position: int) -> tuple[int | None, bool]:
@@ -955,6 +974,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         guest_owned_status_72c=guest_owned_status_72c,
         rex_static_controller_candidate=rex_static_controller_candidate,
         rex_static_c40_controller_observation=rex_static_c40_controller_observation,
+        ready_poll=ready_poll,
+        dc0_board_adc_profile=dc0_board_adc_profile,
     )
     if overrides is not None:
         _apply_overrides(

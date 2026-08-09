@@ -155,6 +155,33 @@ SAMSUNG_SIDEBAND_51_WORDS = {
 }
 
 
+def _accepted_samsung_sideband_51(
+        press_callsite: int, release_callsite: int, event_sink: int,
+        load_address: int) -> dict[str, object]:
+    return {
+        "sideband_detection_status": "accepted",
+        "sideband_detection_reject_reasons": [],
+        "sideband_producers": [{
+            "grammar": "active-low-mmio-bit-debounced-event-v1",
+            "evidence": "literal+mask+local-state+shared-queue",
+            "semantic_status": "temporary-evidence-gated",
+            "semantic_key": 7,
+            "semantic_name": "END",
+            "semantic_evidence": "event-0x51-independent-keyemu-maps",
+            "event": 0x51,
+            "event_register": 7,
+            "register": 0x03000694,
+            "register_width": 1,
+            "mask": 0x10,
+            "polarity": "active-low",
+            "press_callsite": load_address + press_callsite,
+            "release_event": 0xFF,
+            "release_callsite": load_address + release_callsite,
+            "event_sink": load_address + event_sink,
+        }],
+    }
+
+
 def _samsung_sideband_51_metadata(
         image: bytes, scanner: int, event_sink: int, load_address: int
 ) -> dict[str, object]:
@@ -185,28 +212,294 @@ def _samsung_sideband_51_metadata(
             "sideband_detection_status": "rejected",
             "sideband_detection_reject_reasons": reasons,
         }
-    return {
-        "sideband_detection_status": "accepted",
-        "sideband_detection_reject_reasons": [],
-        "sideband_producers": [{
-            "grammar": "active-low-mmio-bit-debounced-event-v1",
-            "evidence": "literal+mask+local-state+shared-queue",
-            "semantic_status": "temporary-evidence-gated",
-            "semantic_key": 7,
-            "semantic_name": "END",
-            "semantic_evidence": "event-0x51-independent-keyemu-maps",
-            "event": 0x51,
-            "event_register": 7,
-            "register": 0x03000694,
-            "register_width": 1,
-            "mask": 0x10,
-            "polarity": "active-low",
-            "press_callsite": load_address + scanner + 0x2FA,
-            "release_event": 0xFF,
-            "release_callsite": load_address + scanner + 0x2B0,
-            "event_sink": load_address + event_sink,
-        }],
+    return _accepted_samsung_sideband_51(
+        scanner + 0x2FA, scanner + 0x2B0, event_sink, load_address
+    )
+
+
+def _thumb_immediate_byte_stores(
+        image: bytes, path: set[int], end: int, value: int
+) -> set[tuple[int, int, int]]:
+    """Return STRB sites fed by one preserved MOVS immediate."""
+    stores: set[tuple[int, int, int]] = set()
+    for move in path:
+        word = struct.unpack_from("<H", image, move)[0]
+        if word & 0xF800 != 0x2000 or word & 0xFF != value:
+            continue
+        register = word >> 8 & 7
+        for site in _thumb_reachable_preserving_register(
+                image, move + 2, end, register):
+            if site not in path:
+                continue
+            store = struct.unpack_from("<H", image, site)[0]
+            if store & 0xF800 == 0x7000 and store & 7 == register:
+                stores.add((site, store >> 3 & 7, store >> 6 & 0x1F))
+    return stores
+
+
+def _samsung_sideband_51_family_metadata(
+        image: bytes, scanner: int, sense_site: int, event_sink: int,
+        load_address: int) -> dict[str, object]:
+    """Close compiler variants of one bit4-to-event-0x51 producer."""
+    end = min(len(image), scanner + 0x600) & ~1
+    if not 0 <= scanner < sense_site < end:
+        return {}
+    reachable = _thumb_reachable(image, scanner, end)
+    search_end = min(sense_site, scanner + 0x100)
+    base_reads: list[tuple[int, int, int]] = []
+    for read in sorted(site for site in reachable
+                       if scanner <= site < search_end):
+        word = struct.unpack_from("<H", image, read)[0]
+        if word & 0xF800 != 0x7800 or word >> 6 & 0x1F != 4:
+            continue
+        value_register = word & 7
+        base_register = word >> 3 & 7
+        loads = [
+            site for site in range(max(scanner, read - 0x30), read, 2)
+            if (site in reachable
+                and struct.unpack_from("<H", image, site)[0] & 0xF800
+                == 0x4800
+                and struct.unpack_from("<H", image, site)[0] >> 8 & 7
+                == base_register
+                and thumb_literal_value(image, site, base_register)
+                == 0x03000690
+                and _thumb_path_preserves_register(
+                    image, site + 2, read, search_end, base_register
+                ))
+        ]
+        if len(loads) == 1:
+            base_reads.append((read, value_register, loads[0]))
+    event_sites = [
+        site for site in reachable
+        if scanner <= site < sense_site
+        and struct.unpack_from("<H", image, site)[0] == 0x2751
+    ]
+    if not base_reads and not event_sites:
+        return {}
+    if not base_reads or not event_sites:
+        return {
+            "sideband_detection_status": "rejected",
+            "sideband_detection_reject_reasons": [
+                ("bit4-mmio-read-not-found" if not base_reads
+                 else "event-0x51-materialization-not-found")
+            ],
+        }
+
+    chains: list[tuple[int, int, int, int, int, int]] = []
+    for read, value_register, load in base_reads:
+        for mask_site in range(read + 2, min(read + 0x10, sense_site), 2):
+            mask_word = struct.unpack_from("<H", image, mask_site)[0]
+            if (mask_site not in reachable
+                    or mask_word & 0xF800 != 0x2000
+                    or mask_word & 0xFF != 0x10):
+                continue
+            mask_register = mask_word >> 8 & 7
+            if mask_register == value_register:
+                continue
+            for and_site in range(
+                    mask_site + 2, min(mask_site + 0x10, sense_site), 2):
+                and_word = struct.unpack_from("<H", image, and_site)[0]
+                if (and_site not in reachable
+                        or and_word & 0xFFC0 != 0x4000
+                        or {and_word & 7, and_word >> 3 & 7}
+                        != {value_register, mask_register}
+                        or not _thumb_path_preserves_register(
+                            image, read + 2, and_site, sense_site,
+                            value_register
+                        )
+                        or not _thumb_path_preserves_register(
+                            image, mask_site + 2, and_site, sense_site,
+                            mask_register
+                        )):
+                    continue
+                result_register = and_word & 7
+                for compare in range(
+                        and_site + 2, min(and_site + 0x20, sense_site), 2):
+                    if (compare in reachable
+                            and struct.unpack_from("<H", image, compare)[0]
+                            == 0x2800 | result_register << 8
+                            and struct.unpack_from(
+                                "<H", image, compare + 2
+                            )[0] & 0xFF00 == 0xD100
+                            and _thumb_path_preserves_register(
+                                image, and_site + 2, compare, sense_site,
+                                result_register
+                            )):
+                        chains.append((
+                            load, read, mask_site, and_site,
+                            compare, compare + 2,
+                        ))
+                        break
+    reasons: list[str] = []
+    if len(chains) != 1:
+        reasons.append("bit4-active-low-chain-not-unique")
+    if len(event_sites) != 1:
+        reasons.append("event-0x51-materialization-not-unique")
+    if reasons:
+        return {
+            "sideband_detection_status": "rejected",
+            "sideband_detection_reject_reasons": reasons,
+        }
+
+    branch = chains[0][-1]
+    event_site = event_sites[0]
+    branch_successors = _thumb_successors(image, branch, sense_site)
+    if (len(branch_successors) != 2
+            or branch + 2 not in branch_successors):
+        return {
+            "sideband_detection_status": "rejected",
+            "sideband_detection_reject_reasons": [
+                "active-low-branch-not-closed"
+            ],
+        }
+    inactive_start = next(
+        site for site in branch_successors if site != branch + 2
+    )
+    active_path = _thumb_reachable(image, branch + 2, sense_site)
+    inactive_path = _thumb_reachable(image, inactive_start, sense_site)
+    event_branch = event_site + 2
+    successors = _thumb_successors(image, event_branch, end)
+    if event_site not in active_path:
+        reasons.append("event-0x51-not-on-active-low-path")
+    if (struct.unpack_from("<H", image, event_branch)[0] & 0xF800
+            != 0xE000 or len(successors) != 1
+            or successors[0] <= sense_site):
+        reasons.append("event-0x51-common-state-branch-not-closed")
+    if reasons:
+        return {
+            "sideband_detection_status": "rejected",
+            "sideband_detection_reject_reasons": reasons,
+        }
+
+    active_stores = _thumb_immediate_byte_stores(
+        image, {site for site in active_path if site < event_site},
+        event_site, 1,
+    )
+    inactive_stores = _thumb_immediate_byte_stores(
+        image, {site for site in inactive_path if site < event_site},
+        event_site, 0,
+    )
+    flag_gates: set[tuple[int, int, int]] = set()
+    for gate in reachable:
+        if not branch < gate < event_site or gate + 6 > sense_site:
+            continue
+        load = struct.unpack_from("<H", image, gate)[0]
+        if load & 0xF800 != 0x7800:
+            continue
+        register = load & 7
+        address = (load >> 3 & 7, load >> 6 & 0x1F)
+        if (struct.unpack_from("<H", image, gate + 2)[0]
+                != 0x2800 | register << 8
+                or struct.unpack_from("<H", image, gate + 4)[0]
+                & 0xFF00 != 0xD000):
+            continue
+        gate_successors = _thumb_successors(image, gate + 4, sense_site)
+        if len(gate_successors) != 2 or gate + 6 not in gate_successors:
+            continue
+        skip = next(site for site in gate_successors if site != gate + 6)
+        if (event_site not in _thumb_reachable(
+                image, gate + 6, sense_site)
+                or event_site in _thumb_reachable(image, skip, sense_site)):
+            continue
+        if (any(site < gate and (base, offset) == address
+                for site, base, offset in active_stores)
+                and any(site < gate and (base, offset) == address
+                        for site, base, offset in inactive_stores)):
+            flag_gates.add((gate, *address))
+    if len(flag_gates) != 1:
+        return {
+            "sideband_detection_status": "rejected",
+            "sideband_detection_reject_reasons": [
+                "sideband-active-flag-dataflow-not-closed"
+            ],
+        }
+
+    common = _thumb_reachable(image, successors[0], end)
+    press_calls = [
+        site + 2 for site in common
+        if struct.unpack_from("<H", image, site)[0] == 0x1C38
+        and thumb_bl_target(image, site + 2) == event_sink
+    ]
+    release_calls = [
+        site + 2 for site in common
+        if struct.unpack_from("<H", image, site)[0] == 0x20FF
+        and thumb_bl_target(image, site + 2) == event_sink
+    ]
+    direct_release_calls = [
+        site + 2 for site in reachable
+        if site + 6 <= sense_site
+        and struct.unpack_from("<H", image, site)[0] == 0x20FF
+        and thumb_bl_target(image, site + 2) == event_sink
+    ]
+    candidate_stores = {
+        (site, word >> 3 & 7, word >> 6 & 0x1F)
+        for site in common
+        for word in (struct.unpack_from("<H", image, site)[0],)
+        if word & 0xF800 == 0x7000 and word & 7 == 7
     }
+    candidate_compares: list[tuple[int, tuple[int, int]]] = []
+    for site in common:
+        if site < 2 or site + 4 > end:
+            continue
+        compare = struct.unpack_from("<H", image, site)[0]
+        load = struct.unpack_from("<H", image, site - 2)[0]
+        loaded_register = compare >> 3 & 7
+        address = (load >> 3 & 7, load >> 6 & 0x1F)
+        if (compare & 0xFFC7 == 0x4287
+                and load & 0xF800 == 0x7800
+                and load & 7 == loaded_register
+                and struct.unpack_from("<H", image, site + 2)[0]
+                & 0xFF00 == 0xD100
+                and any(store < site and (base, offset) == address
+                        for store, base, offset in candidate_stores)
+                and any(store > site and (base, offset) == address
+                        for store, base, offset in candidate_stores)):
+            candidate_compares.append((site, address))
+
+    state_stores = {
+        value: _thumb_immediate_byte_stores(image, common, end, value)
+        for value in (1, 2, 3)
+    }
+    state_sources: list[tuple[int, tuple[int, int]]] = []
+    for site in common:
+        load = struct.unpack_from("<H", image, site)[0]
+        if load & 0xF800 != 0x7800:
+            continue
+        register = load & 7
+        address = (load >> 3 & 7, load >> 6 & 0x1F)
+        preserved = _thumb_reachable_preserving_register(
+            image, site + 2, end, register
+        ) & common
+        compare_sites = {
+            value: [
+                compare for compare in preserved
+                if struct.unpack_from("<H", image, compare)[0]
+                == 0x2800 | register << 8 | value
+            ]
+            for value in (1, 2, 3)
+        }
+        if (all(len(compare_sites[value]) == 1 for value in (1, 2, 3))
+                and all(any((base, offset) == address
+                            for _, base, offset in state_stores[value])
+                        for value in (1, 2, 3))):
+            state_sources.append((site, address))
+    if len(press_calls) != 1:
+        reasons.append("press-sink-not-unique")
+    if len(release_calls) != 1:
+        reasons.append("release-sink-not-unique")
+    if len(direct_release_calls) != 1:
+        reasons.append("direct-release-sink-not-unique")
+    if (len(candidate_compares) != 1 or len(state_sources) != 1
+            or candidate_compares[0][1] == state_sources[0][1]):
+        reasons.append("candidate-debounce-state-not-closed")
+    if reasons:
+        return {
+            "sideband_detection_status": "rejected",
+            "sideband_detection_reject_reasons": reasons,
+        }
+    return _accepted_samsung_sideband_51(
+        press_calls[0], release_calls[0], event_sink, load_address
+    )
 
 
 def _same_image_keyemu_ok_mapping(
@@ -972,9 +1265,14 @@ def find_direct_matrix_scanners(
             "fingerprint_scope": "linear-prefix",
             "fingerprint_boundary": boundary,
         }
-        found[start].update(_samsung_sideband_51_metadata(
+        sideband = _samsung_sideband_51_metadata(
             image, start, sink, load_address
-        ))
+        )
+        if not sideband:
+            sideband = _samsung_sideband_51_family_metadata(
+                image, start, site, sink, load_address
+            )
+        found[start].update(sideband)
     return ([_ for _ in _find_n330_5x6_scanners(image, load_address)]
             + [found[start] for start in sorted(found)])
 
@@ -989,6 +1287,12 @@ def resolve_direct_matrix_input(
     for scanner in scanners:
         events = scanner["event_codes"]
         reasons: list[str] = []
+        if any(
+                producer.get("event") in events
+                for producer in scanner.get("sideband_producers", ())
+                if isinstance(producer, dict)
+        ):
+            reasons.append("sideband-event-conflicts-with-matrix")
         if scanner["event_sink_family"] is None:
             reasons.append("event-sink-family-unclassified")
         if scanner["event_sink_family"] != SAMSUNG_DUAL_PLANE_RING32:

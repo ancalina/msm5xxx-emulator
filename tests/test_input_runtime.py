@@ -240,10 +240,11 @@ class InputRuntimeTests(unittest.TestCase):
         emulator._install_direct_sideband_reads()
 
         self.assertTrue(emulator.can_set_key(7))
-        self.assertTrue(emulator.can_set_key(5, 0x51))
+        self.assertTrue(emulator.can_set_key(7, 0x51))
+        self.assertFalse(emulator.can_set_key(5, 0x51))
         self.assertFalse(emulator.can_set_key(5, 0x7F))
         with mock.patch("msm5xxx_emulator.devices.input.LOGGER.info") as logged:
-            emulator.set_key(7, True)
+            emulator.set_key(7, True, 0x51)
             self.assertEqual(emulator.uc.memory[0x03000694], b"\xA7")
             self.assertEqual(emulator.direct_sideband_held_keys, {7})
             self.assertEqual(emulator.held_keys, set())
@@ -263,7 +264,8 @@ class InputRuntimeTests(unittest.TestCase):
             "polarity": "active-low", "semantic": "END",
         })
 
-    def test_invalid_or_overlapping_sideband_metadata_fails_closed(self) -> None:
+    def test_invalid_overlapping_or_matrix_colliding_sideband_fails_closed(
+            self) -> None:
         producer = {
             "semantic_status": "temporary-evidence-gated",
             "semantic_key": 5,
@@ -276,6 +278,7 @@ class InputRuntimeTests(unittest.TestCase):
             "polarity": "active-low",
         }
         cases = (
+            [producer],
             [{**producer, "mask": 0x100}],
             [producer, {**producer, "semantic_key": 7, "event": 0x51}],
         )

@@ -394,6 +394,19 @@ class DirectInputMatrixTests(unittest.TestCase):
             "event_sink": 0x0007F3F0,
         }])
 
+        collision = bytearray(image)
+        collision[int(profile["event_table"])] = 0x51
+        changed, status, rejected = resolve_direct_matrix_input(
+            bytes(collision)
+        )
+        self.assertIsNone(changed)
+        self.assertEqual(status, "rejected")
+        self.assertIn(
+            "sideband-event-conflicts-with-matrix",
+            {reason for candidate in rejected
+             for reason in candidate["reasons"]},
+        )
+
         near_miss = bytearray(image)
         near_miss[int(profile["function"]) + 0x28] ^= 1
         changed, status, rejected = resolve_direct_matrix_input(bytes(near_miss))
@@ -404,6 +417,67 @@ class DirectInputMatrixTests(unittest.TestCase):
         self.assertEqual(
             changed["sideband_detection_reject_reasons"],
             ["shape-word-0x028-mismatch"],
+        )
+
+    def test_samsung_sideband_family_closes_compiler_variants(self) -> None:
+        expected = {
+            "schx150.bin": (0x330C4, 0x33056, 0x32958),
+            "SCH-X250.bin": (0x345C2, 0x34584, 0x34030),
+            "SCH-x127.bin": (0x3FCCE, 0x3FC30, 0x3F52C),
+        }
+        root = _test_firmware_root()
+        if root is None or any(
+                not (root / name).is_file() for name in expected):
+            self.skipTest(
+                "firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT"
+            )
+        for name, callsites in expected.items():
+            image = (root / name).read_bytes()
+            profile, status, rejected = resolve_direct_matrix_input(image)
+            self.assertEqual((status, rejected), ("accepted", []))
+            assert profile is not None
+            self.assertEqual(profile["sideband_detection_status"], "accepted")
+            producer = profile["sideband_producers"][0]
+            self.assertEqual(
+                (producer["event"], producer["mask"],
+                 producer["press_callsite"], producer["release_callsite"],
+                 producer["event_sink"]),
+                (0x51, 0x10, *callsites),
+            )
+
+        image = bytearray((root / "schx150.bin").read_bytes())
+        profile, _, _ = resolve_direct_matrix_input(bytes(image))
+        assert profile is not None
+        image[int(profile["function"]) + 0x21] ^= 1
+        changed, status, rejected = resolve_direct_matrix_input(bytes(image))
+        self.assertEqual((status, rejected), ("accepted", []))
+        assert changed is not None
+        self.assertNotIn("sideband_producers", changed)
+        self.assertEqual(
+            changed["sideband_detection_reject_reasons"],
+            ["bit4-active-low-chain-not-unique"],
+        )
+
+        image = bytearray((root / "schx150.bin").read_bytes())
+        image[0x32D36] ^= 0x40
+        changed, status, rejected = resolve_direct_matrix_input(bytes(image))
+        self.assertEqual((status, rejected), ("accepted", []))
+        assert changed is not None
+        self.assertNotIn("sideband_producers", changed)
+        self.assertEqual(
+            changed["sideband_detection_reject_reasons"],
+            ["sideband-active-flag-dataflow-not-closed"],
+        )
+
+        image = bytearray((root / "schx150.bin").read_bytes())
+        image[0x3302A] ^= 0x40
+        changed, status, rejected = resolve_direct_matrix_input(bytes(image))
+        self.assertEqual((status, rejected), ("accepted", []))
+        assert changed is not None
+        self.assertNotIn("sideband_producers", changed)
+        self.assertEqual(
+            changed["sideband_detection_reject_reasons"],
+            ["candidate-debounce-state-not-closed"],
         )
 
     def test_samsung_r7_raw_telemetry_requires_closed_task_dispatch(self) -> None:

@@ -7,6 +7,7 @@ import struct
 from ..core.config import BoardStatusInput
 
 from .arm import thumb_bl_target, thumb_literal_value
+from .rex import THUMB_BL_PATTERN, _normalized_thumb_sha256
 from .signatures import find_all
 
 
@@ -101,6 +102,34 @@ BOARD_ADC_READER_FIXED = (
 )
 
 
+DC0_BOARD_ADC_SCALE_PREFIX = bytes.fromhex("88b569461520")
+DC0_BOARD_ADC_SCALE_SHAPE = (
+    "e5621ef56171f9454c9ce7e229f69400a217419ccd18f07410960033ba863af5",
+    (0x06, 0x1A, 0x36),
+)
+DC0_BOARD_ADC_GETTER_SHAPE = (
+    "5518153f5d945817368f2ff4faddb98c18e50956cf987f966883943b3026aa7b",
+    (0x12,),
+)
+DC0_BOARD_ADC_SERVICE_SHAPE = (
+    "0b27f75b80031a871db2964a6d942894fc7f8214c2cabf88549b1352ed4856fe",
+    (0x04, 0x10, 0x3E, 0x5C, 0x70, 0x7A, 0x80, 0x92, 0xAA, 0xB2),
+)
+DC0_BOARD_ADC_SEND_SHAPE = (
+    "1346c57a455f6cde6eacdd0af0101d755515b61e6d4fcb467fd8ba8e3693cbc1",
+    (0x5E,),
+)
+DC0_BOARD_ADC_RECEIVE_SHAPE = (
+    "2ae667b7657c17780af982024b29ecb9be362d0bda978ee98e6a794d3d96c069",
+    (0x64,),
+)
+DC0_BOARD_ADC_FILTER_SHAPE = (
+    "e0682467707ce4f868e0d6779bab9834c97f7fe433a02ecf574dde949a68f430",
+    (0x12, 0x74, 0x7A, 0x94, 0x9E, 0xBC, 0xC2, 0xD6, 0xE0,
+     0xFE, 0x104, 0x112, 0x12E, 0x13A, 0x144, 0x148, 0x162),
+)
+
+
 BOARD_STATUS_INPUT_BODY = bytes.fromhex(
     "007808231840082801d1012100e00021002700260124002936484ad0"
 )
@@ -161,6 +190,127 @@ def find_board_adc_reader(image: bytes) -> int | None:
     matches = [anchor - 8 for anchor in find_all(image, BOARD_ADC_READER_ANCHOR)
                if anchor >= 8 and board_adc_reader_at(image, anchor - 8)]
     return matches[0] if len(matches) == 1 else None
+
+
+def _dc0_board_adc_profile_at(
+        image: bytes, scale: int,
+) -> tuple[dict[str, object] | None, str]:
+    """Close one selector-2 raw-byte path through its battery policy."""
+    def exact_shape(position: int, size: int,
+                    expected: tuple[str, tuple[int, ...]]) -> bool:
+        return (_normalized_thumb_sha256(image, position, size) == expected
+                and all((target := thumb_bl_target(image, position + offset))
+                        is not None and 0 <= target < len(image)
+                        for offset in expected[1]))
+
+    if not exact_shape(scale, 0x4C, DC0_BOARD_ADC_SCALE_SHAPE):
+        return None, "selector2-helper-not-unique"
+    getter = thumb_bl_target(image, scale + 0x1A)
+    if (image[scale + 0x18:scale + 0x1A] != b"\x02\x20"
+            or getter is None
+            or not exact_shape(getter, 0x1C, DC0_BOARD_ADC_GETTER_SHAPE)):
+        return None, "raw-getter/service-grammar-mismatch"
+    service = thumb_bl_target(image, getter + 0x12)
+    if (service is None
+            or not exact_shape(service, 0xBE, DC0_BOARD_ADC_SERVICE_SHAPE)):
+        return None, "raw-getter/service-grammar-mismatch"
+    cache_roots = (
+        thumb_literal_value(image, getter + 0x04, 3),
+        thumb_literal_value(image, service + 0x14, 1),
+        thumb_literal_value(image, service + 0x66, 0),
+        thumb_literal_value(image, service + 0x96, 1),
+    )
+    if (cache_roots[0] is None
+            or not 0x01000000 <= cache_roots[0] < 0x02000000
+            or len(set(cache_roots)) != 1):
+        return None, "raw-getter/service-grammar-mismatch"
+
+    send = thumb_bl_target(image, service + 0x5C)
+    receive = thumb_bl_target(image, service + 0x92)
+    if (send is None or receive is None
+            or not exact_shape(send, 0x74, DC0_BOARD_ADC_SEND_SHAPE)
+            or not exact_shape(receive, 0xAE, DC0_BOARD_ADC_RECEIVE_SHAPE)):
+        return None, "dc0-receive-mmio-mismatch"
+    if (thumb_literal_value(image, receive + 0x04, 1) != 0x8840
+            or any(thumb_literal_value(image, receive + offset, 4)
+                   != 0x03000DC0 for offset in (0x2E, 0x7E, 0x8A, 0x96))
+            or thumb_literal_value(image, receive + 0x0A, 0) != 0x03000DC0
+            or any(thumb_literal_value(image, receive + offset, 0)
+                   != 0x03000C80 for offset in (0x44, 0x68))):
+        return None, "dc0-receive-mmio-mismatch"
+
+    callers = [
+        match.start()
+        for match in THUMB_BL_PATTERN.finditer(image)
+        if not match.start() & 1
+        and thumb_bl_target(image, match.start()) == scale
+        and thumb_bl_target(image, match.start() + 4) is not None
+    ]
+    filter_addresses = {
+        thumb_bl_target(image, caller + 4) for caller in callers
+    }
+    if len(callers) != 2 or len(filter_addresses) != 1:
+        return None, "battery-filter-consumer-not-unique"
+    filter_address = filter_addresses.pop()
+    if not exact_shape(filter_address, 0x1B4, DC0_BOARD_ADC_FILTER_SHAPE):
+        return None, "battery-filter-policy-mismatch"
+    filter_calls = {
+        offset: thumb_bl_target(image, filter_address + offset)
+        for offset in DC0_BOARD_ADC_FILTER_SHAPE[1]
+    }
+    same_targets = (
+        (0x12, 0x148), (0x7A, 0xC2, 0x104), (0x94, 0xD6, 0x112),
+        (0x9E, 0xE0), (0xBC, 0xFE),
+    )
+    if (any(len({filter_calls[offset] for offset in group}) != 1
+            for group in same_targets)
+            or thumb_literal_value(image, filter_address + 0x9C, 0)
+            != 0x4000001B
+            or thumb_literal_value(image, filter_address + 0xDE, 0)
+            != 0x4000001A):
+        return None, "battery-filter-policy-mismatch"
+    return {
+        "signature": "static-dc0-selector2-battery-policy-v1",
+        "accepted": True,
+        "scope": "temporary-evidence-gated",
+        "transport": "dc0-887e-b200-start01-lowbyte-v1",
+        "selector": 2,
+        "response_raw": 0xFF,
+        "low_thresholds": [0xC8, 0xDE],
+        "scale_offset": scale,
+        "raw_getter_offset": getter,
+        "service_offset": service,
+        "receive_offset": receive,
+        "filter_offset": filter_address,
+        "caller_offsets": callers,
+    }, ""
+
+
+def find_dc0_board_adc_profile(image: bytes) -> dict[str, object] | None:
+    """Return one fail-closed virtual full-battery policy, never a model gate."""
+    scales = [position for position in find_all(image, DC0_BOARD_ADC_SCALE_PREFIX)
+              if not position & 1]
+    if not scales:
+        return None
+    profiles: list[dict[str, object]] = []
+    reasons: list[str] = []
+    for scale in scales:
+        profile, reason = _dc0_board_adc_profile_at(image, scale)
+        if profile is not None:
+            profiles.append(profile)
+        else:
+            reasons.append(reason)
+    if len(profiles) == 1:
+        return profiles[0]
+    return {
+        "signature": "static-dc0-selector2-battery-policy-v1",
+        "accepted": False,
+        "reject_reason": (
+            "battery-policy-ambiguous" if profiles
+            else reasons[0] if len(scales) == 1
+            else "selector2-helper-not-unique"
+        ),
+    }
 
 
 def detect_input_profile(image: bytes, load_address: int = 0
