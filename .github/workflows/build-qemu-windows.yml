@@ -120,14 +120,12 @@ jobs:
                   shutil.copy2(source, destination)
                   copied.add(key)
                   pending.append(destination)
-          (bundle / "DLLS.txt").write_text(
-              "\n".join(sorted(path.name for path in target.glob("*.dll"))) + "\n",
-              encoding="utf-8",
+          (bundle / "DLLS.txt").write_bytes(
+              ("\n".join(sorted(path.name for path in target.glob("*.dll"))) + "\n").encode()
           )
           PY
 
           owners="$(while IFS= read -r dll; do
-            dll="${dll%$'\r'}"
             pacman -Qqo "$MINGW_PREFIX/bin/$dll"
           done < "$bundle/DLLS.txt" | sort -u)"
           test -n "$owners"
