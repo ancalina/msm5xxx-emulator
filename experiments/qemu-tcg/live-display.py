@@ -29,6 +29,10 @@ from msm5xxx_emulator.detection.storage import (  # noqa: E402
     fujitsu_x16_flash_ids,
     find_primary_fsd_amd_x16_nor,
 )
+from msm5xxx_emulator.detection.upper_nor import (  # noqa: E402
+    UPPER_FLASH_ADDRESS,
+    UPPER_FLASH_SIZE,
+)
 from msm5xxx_emulator.devices.storage.nor import NORFlash  # noqa: E402
 from msm5xxx_emulator.gui.app import Window  # noqa: E402
 from msm5xxx_emulator.gui.locale import display_model_name  # noqa: E402
@@ -82,6 +86,17 @@ def qemu_memory_profile(config: object,
             or not ram_base <= registers["sp"] <= ram_end - 4):
         raise ValueError("QEMU memory profile cannot represent initial state")
     return f"{flash_size:x}:{ram_base:x}:{registers['sp']:x}"
+
+
+def qemu_upper_nor_enabled(config: object) -> bool:
+    """Accept only the detector's closed fixed upper-NOR range."""
+    address = getattr(config, "upper_flash_address", None)
+    size = int(getattr(config, "upper_flash_size", 0))
+    if address is None and size == 0:
+        return False
+    if address != UPPER_FLASH_ADDRESS or size != UPPER_FLASH_SIZE:
+        raise ValueError("QEMU cannot represent the detected upper NOR")
+    return True
 
 
 def matrix_input_command(profile: dict[str, object],
@@ -289,9 +304,18 @@ class Transport:
         self.config.rex_static_controller_experimental = (
             self.rex_c80_profile is not None
         )
+        upper_nor_enabled = qemu_upper_nor_enabled(self.config)
         legacy_primary_state = Path(self.config.flash_state)
         legacy_secondary_state = Path(self.config.secondary_flash_state)
+        legacy_upper_state = (Path(self.config.upper_flash_state)
+                              if upper_nor_enabled else None)
         legacy_eeprom_state = Path(str(self.config.flash_state) + ".eeprom.bin")
+        if (legacy_upper_state is not None
+                and legacy_upper_state.resolve() in {
+                    legacy_primary_state.resolve(),
+                    legacy_secondary_state.resolve(),
+                }):
+            raise ValueError("persistent upper NOR path collides")
         os.environ["MSM5XXX_STATE_DIR"] = str(temporary / "state")
         os.environ["MSM5XXX_LOG_DIR"] = str(temporary / "logs")
         self.instructions = 0
@@ -314,7 +338,7 @@ class Transport:
         self.state_imports: list[str] = []
         self.config.flash_state = str(temporary / "primary.flash.json")
         self.config.secondary_flash_state = str(temporary / "secondary.flash.json")
-        if self.config.upper_flash_state:
+        if upper_nor_enabled:
             self.config.upper_flash_state = str(temporary / "upper.flash.json")
         self.decoder = GenericMSMEmulator(self.config)
         if self.config.load_address != 0:
@@ -522,6 +546,29 @@ class Transport:
             storage_args.extend((
                 "-drive",
                 f"file={secondary_state},if=pflash,format=raw,unit={pflash_unit}",
+            ))
+            pflash_unit += 1
+        if upper_nor_enabled:
+            upper = self.decoder.upper_flash
+            assert upper is not None and legacy_upper_state is not None
+            upper_state = ((state_dir / "upper.raw")
+                           if state_dir is not None else
+                           (temporary / "upper.raw"))
+            upper_seed = bytes(upper.data)
+            if upper_state.exists():
+                if upper_state.stat().st_size != len(upper_seed):
+                    raise ValueError("persistent upper NOR size mismatch")
+            else:
+                upper_seed, imported = load_legacy_nor_state(
+                    upper_seed, (legacy_upper_state,)
+                )
+                if imported:
+                    self.state_imports.append("upper-nor-json")
+                upper_state.write_bytes(upper_seed)
+            machine += ",upper-x8-nor=on"
+            storage_args.extend((
+                "-drive",
+                f"file={upper_state},if=pflash,format=raw,unit={pflash_unit}",
             ))
         eeprom_profile = eeprom_gpio_profile(firmware_image, self.config)
         if eeprom_profile is not None:

@@ -26,7 +26,8 @@ edges over one batched socket. Per-MMIO Python callbacks are not used.
 
 Persistent QEMU NOR/EEPROM files are separate from Unicorn state. Omitting
 `--state-dir` makes an isolated temporary copy and discards it on exit. The
-settings button is disabled; restart the command to apply settings.
+settings button is disabled; restart the command to apply settings. Keep the
+same state directory when a cold storage initialization requires a warm boot.
 
 Current representative firmware status and release gates are documented in
 `docs/QEMU_TCG_BACKEND.md`. A visible frame or live process is not by itself a

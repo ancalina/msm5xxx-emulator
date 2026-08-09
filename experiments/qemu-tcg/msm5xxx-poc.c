@@ -44,6 +44,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_MMIO_SIZE 0x1000
 #define MSM5XXX_POC_NOR_SIZE (16 * MiB)
 #define MSM5XXX_POC_NOR_MAX_SIZE (32 * MiB)
+#define MSM5XXX_POC_UPPER_NOR_BASE 0x02800000
+#define MSM5XXX_POC_UPPER_NOR_SIZE (8 * MiB)
+#define MSM5XXX_POC_UPPER_NOR_SECTOR_SIZE 0x10000
 #define MSM5XXX_POC_RAM_BASE 0x01000000
 #define MSM5XXX_POC_BOOTSTRAP_BASE 0x04800000
 #define MSM5XXX_POC_BOOTSTRAP_SIZE 0x1000
@@ -143,6 +146,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t secondary_nor_size;
     uint16_t secondary_nor_id0;
     uint16_t secondary_nor_id1;
+    bool upper_x8_nor_enabled;
     MemoryRegion bootstrap;
     MemoryRegion msm;
     MemoryRegion sbi;
@@ -1646,6 +1650,38 @@ static void msm5xxx_poc_init(MachineState *machine)
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, s->secondary_nor_base);
     }
+    if (s->upper_x8_nor_enabled) {
+        DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
+        unsigned unit = s->primary_x16_nor_enabled +
+                        s->fujitsu_x16_nor_enabled;
+
+        dinfo = drive_get(IF_PFLASH, 0, unit);
+        if (!dinfo) {
+            error_report("upper-x8-nor requires one pflash drive");
+            exit(EXIT_FAILURE);
+        }
+        qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(dinfo));
+        qdev_prop_set_uint32(
+            dev, "num-blocks",
+            MSM5XXX_POC_UPPER_NOR_SIZE /
+            MSM5XXX_POC_UPPER_NOR_SECTOR_SIZE
+        );
+        qdev_prop_set_uint32(dev, "sector-length",
+                             MSM5XXX_POC_UPPER_NOR_SECTOR_SIZE);
+        qdev_prop_set_uint8(dev, "width", 1);
+        qdev_prop_set_uint8(dev, "mappings", 1);
+        qdev_prop_set_uint8(dev, "big-endian", 0);
+        qdev_prop_set_uint16(dev, "id0", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id1", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id2", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id3", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "unlock-addr0", 0xaaa);
+        qdev_prop_set_uint16(dev, "unlock-addr1", 0x554);
+        qdev_prop_set_string(dev, "name", "msm5xxx-poc.upper-nor");
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0,
+                        MSM5XXX_POC_UPPER_NOR_BASE);
+    }
     memory_region_add_subregion(get_system_memory(), s->ram_base,
                                 machine->ram);
     memory_region_init_ram(&s->bootstrap, NULL, "msm5xxx-poc.bootstrap",
@@ -1724,6 +1760,9 @@ static void msm5xxx_poc_init(MachineState *machine)
                                             &s->dc0, 1);
     }
     for (i = 0; i < MSM5XXX_POC_LCD_PORTS; i++) {
+        if (s->upper_x8_nor_enabled && i != 0) {
+            continue;
+        }
         s->lcd_port[i].machine = s;
         s->lcd_port[i].index = i;
         memory_region_init_io(&s->lcd[i], OBJECT(machine),
@@ -1823,6 +1862,17 @@ static bool msm5xxx_poc_get_sbi(Object *obj, Error **errp)
 static void msm5xxx_poc_set_sbi(Object *obj, bool value, Error **errp)
 {
     MSM5XXX_POC_MACHINE(obj)->sbi_enabled = value;
+}
+
+static bool msm5xxx_poc_get_upper_x8_nor(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->upper_x8_nor_enabled;
+}
+
+static void msm5xxx_poc_set_upper_x8_nor(Object *obj, bool value,
+                                         Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->upper_x8_nor_enabled = value;
 }
 
 static bool msm5xxx_poc_get_lcd_trace(Object *obj, Error **errp)
@@ -2441,6 +2491,12 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "fujitsu-x16-nor",
         "Detector-provided primary/secondary Fujitsu x16 NOR layout");
+    object_class_property_add_bool(oc, "upper-x8-nor",
+                                   msm5xxx_poc_get_upper_x8_nor,
+                                   msm5xxx_poc_set_upper_x8_nor);
+    object_class_property_set_description(
+        oc, "upper-x8-nor",
+        "Enable the detector-admitted fixed upper x8 AMD NOR class");
     object_class_property_add_str(oc, "rex-irq", msm5xxx_poc_get_rex_irq,
                                   msm5xxx_poc_set_rex_irq);
     object_class_property_set_description(

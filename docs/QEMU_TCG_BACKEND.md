@@ -31,16 +31,19 @@ frame, or a running scheduler does not count.
 
 | Firmware | Current final-source result |
 |---|---|
-| SCH-X350 | boot/frame progress; idle entry not reached in the 60 s probe |
+| SCH-X350 | cold storage initialization, then one same-state warm QEMU process reaches UISIdle entry `0xC125C`, body `0xC1308`, and 20M further guest instructions; input/reset gate pending |
 | SCH-X250 | Anycall splash/animation; idle entry not reached in 30 s |
 | SCH-X250RUS | Anycall splash/animation, then fatal loop at `0x1608`; idle entry not reached |
-| SD810 | no completed visible frame in the 30 s probe |
-| KTFT-X3500 | Boot Manager/task handoff evidence only; handset idle not reached |
+| SD810 | detected upper x8 NOR is mapped, readable, and persistent; no completed frame and the timer/IRQ producer remains unresolved |
+| KTFT-X3500 | stable standby frame plus exact app-idle module init/callback; full release gate pending |
 
-These are `UNKNOWN`/unfinished results, not idle passes. An older source/device
-epoch reached X350 idle, but that result is not promoted to the current branch.
-The project alpha gate remains five real handset-idle passes among the fixed
-representative set.
+No row is yet a release pass. X350 cold initializes the raw storage; restarting
+with the same `--state-dir` reaches the entry and body in one process without
+guest register or memory writes. The strict idle-consumer boundary is closed,
+and REX/LCD activity continues for 20M further instructions, but input, reset,
+and cross-firmware gates remain. SD810 keeps native
+fallback because the periodic IRQ producer is not evidence-closed. The project
+alpha gate remains five real handset-idle passes among the fixed set.
 
 Input support is also evidence-scoped. A physical event must have one unique
 matrix or sideband producer. END event `0x51` is no longer rejected merely
@@ -90,11 +93,13 @@ PYTHONPATH=src python3 experiments/qemu-tcg/live-display.py FIRMWARE \
 
 The QEMU settings button is disabled because this runner cannot safely restart
 the native process in place. Restart the command after changing settings.
+Keep the same state directory across restarts; firmware-owned cold storage
+initialization can be required before a persistent warm boot reaches idle.
 
 ## Release gates
 
 1. Close the current X250RUS early-device fatal protocol without invented RX.
-2. Prove real handset idle on representative cold and persistent warm paths.
+2. Prove real handset-idle paths, including persistent warm storage.
 3. Verify reset, storage parity/quiescence, input effect, and reject telemetry.
 4. Run the full source tests and native build on the exact staged tree.
 5. Package one-command Linux and Windows launchers without firmware or evidence.

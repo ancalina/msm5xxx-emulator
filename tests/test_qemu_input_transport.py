@@ -48,6 +48,21 @@ class QEMUInputTransportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.qemu_memory_profile(config, registers)
 
+    def test_upper_nor_accepts_only_the_detector_range(self) -> None:
+        disabled = SimpleNamespace(upper_flash_address=None,
+                                   upper_flash_size=0)
+        accepted = SimpleNamespace(upper_flash_address=0x02800000,
+                                   upper_flash_size=0x00800000)
+        self.assertFalse(MODULE.qemu_upper_nor_enabled(disabled))
+        self.assertTrue(MODULE.qemu_upper_nor_enabled(accepted))
+        for changed in (
+                SimpleNamespace(upper_flash_address=0x02801000,
+                                upper_flash_size=0x00800000),
+                SimpleNamespace(upper_flash_address=0x02800000,
+                                upper_flash_size=0x00400000)):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                MODULE.qemu_upper_nor_enabled(changed)
+
     def test_press_and_release_packets(self) -> None:
         self.assertEqual(MODULE.matrix_senses(self.PROFILE),
                          (0x0E, 0x0D, 0x0B, 0x07))
