@@ -45,7 +45,6 @@ jobs:
       - name: Build patched QEMU
         run: |
           set -euxo pipefail
-          export MSYS=winsymlinks:sys
           work="$PWD/.ci-windows"
           source="$work/qemu-${QEMU_VERSION}-msm5xxx"
           build="$work/build"
@@ -54,7 +53,8 @@ jobs:
           curl -fL --retry 3 \
             "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" \
             -o "$archive"
-          tar -xJf "$archive" --strip-components=1 -C "$source"
+          MSYS=winsymlinks:sys tar -xJf "$archive" \
+            --strip-components=1 -C "$source"
           cp experiments/qemu-tcg/msm5xxx-poc.c "$source/hw/arm/"
           printf "\narm_common_ss.add(files('msm5xxx-poc.c'))\n" \
             >> "$source/hw/arm/meson.build"
