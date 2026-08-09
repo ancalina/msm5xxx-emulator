@@ -33,6 +33,7 @@ jobs:
             curl
             diffutils
             flex
+            git
             make
             tar
             mingw-w64-x86_64-gcc
@@ -176,7 +177,9 @@ jobs:
           set -euxo pipefail
           work="$PWD/.ci-windows"
           name="qemu-${QEMU_VERSION}-msm5xxx"
-          tar -cJf "dist/$name.tar.xz" -C "$work" "$name"
+          tar --exclude='*/.git' --exclude='*/.git/**' \
+            --exclude='*/__pycache__' --exclude='*.pyc' \
+            -cJf "dist/$name.tar.xz" -C "$work" "$name"
           sha256sum "dist/$name.tar.xz" > "dist/$name.tar.xz.sha256"
 
       - uses: actions/upload-artifact@v4
