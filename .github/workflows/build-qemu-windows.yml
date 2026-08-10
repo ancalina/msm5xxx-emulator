@@ -239,6 +239,7 @@ jobs:
           name="qemu-${QEMU_VERSION}-msm5xxx"
           tar --exclude='*/.git' --exclude='*/.git/**' \
             --exclude='*/__pycache__' --exclude='*.pyc' \
+            --owner=0 --group=0 --numeric-owner \
             -cJf "dist/$name.tar.xz" -C "$work" "$name"
           (cd dist && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
 
