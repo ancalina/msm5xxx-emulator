@@ -39,5 +39,5 @@ use separate state subdirectories. Existing root-level state stays with the
 first firmware opened after upgrading.
 
 Current representative firmware status and release gates are documented in
-`docs/QEMU_TCG_BACKEND.md`. A visible frame or live process is not by itself a
+[../../docs/QEMU_TCG_BACKEND.md](../../docs/QEMU_TCG_BACKEND.md). A visible frame or live process is not by itself a
 handset-idle pass.

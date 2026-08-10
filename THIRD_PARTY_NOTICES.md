@@ -2,15 +2,19 @@
 
 - Unicorn Engine (`unicorn==2.1.4`) is GPLv2. It supplies the native CPU
   engine used by this emulator. A combined distribution must use this
-  project's GPLv2 option.
+  project's GPLv2 option. Its LGPL-2.0 public API license text is also
+  included with the Android package.
 - QEMU 10.2.1 is distributed under GPLv2. The Android and desktop preview
-  packages use a patched QEMU system emulator.
+  packages use a patched QEMU system emulator. QEMU components under
+  LGPL-2.1 include their license text.
+- QEMU's bundled DTC/libfdt revision is dual-licensed under GPLv2 or the
+  2-clause BSD license. Its license notice and BSD text are included.
 - GLib 2.88.1 is LGPL-2.1-or-later. Its Android build includes PCRE2 10.46
   under its BSD-style license and proxy-libintl 0.5 under
   LGPL-2.0-or-later.
 - CPython 3.14.4 is distributed under the Python Software Foundation License.
   The Android detector runtime also contains libffi 3.4.4 under its MIT-style
-  license.
+  license. CPython's bundled third-party license notices are included.
 - Pillow (`Pillow>=10,<13`) uses the MIT-CMU License.
 - NumPy (`numpy>=1.26,<3`) uses the BSD 3-Clause License.
 - `src/msm5xxx_emulator/gm.sf2` is TimGM6mb, copyright 2004 Tim

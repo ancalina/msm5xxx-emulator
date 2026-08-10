@@ -12,6 +12,7 @@ permissions:
 env:
   QEMU_VERSION: 10.2.1
   BUNDLE_NAME: msm5xxx-qemu-windows-x86_64
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
   build:
@@ -178,9 +179,6 @@ jobs:
           PATH="$saved_path"
           grep -Fxq "QEMU emulator version $QEMU_VERSION" "$bundle/QEMU_VERSION.txt"
           grep -q '^msm5xxx-poc ' "$bundle/QEMU_MACHINES.txt"
-          cd "$bundle"
-          find . -type f ! -name SHA256SUMS -print0 \
-            | sort -z | xargs -0 sha256sum > SHA256SUMS
 
       - uses: actions/setup-python@v5
         with:
@@ -197,6 +195,42 @@ jobs:
           $bundle = (Resolve-Path "dist/$env:BUNDLE_NAME").Path
           $env:PYTHONPATH = "$bundle/src;$bundle"
           python "$bundle/experiments/qemu-tcg/live-display.py" --help | Out-Null
+
+      - name: Finalize and verify runtime bundle
+        run: |
+          set -euxo pipefail
+          bundle="$PWD/dist/$BUNDLE_NAME"
+          test -d "$bundle"
+          cd "$bundle"
+          BUNDLE=. python - <<'PY'
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ["BUNDLE"])
+          if not root.is_dir():
+              raise SystemExit("runtime bundle is not a directory")
+          needles = (
+              b"D:/a/", b"/d/a/", b"D:\\a\\",
+              b"C:/hostedtoolcache", b"C:\\hostedtoolcache",
+              b"runneradmin", b"/home/", b"/Users/",
+              b"codex-work", b"MSM5xxx_Codex_Handoff", b"evidence/tmp",
+          )
+          for path in root.rglob("*"):
+              if not path.is_file():
+                  continue
+              relative = path.relative_to(root)
+              if path.suffix == ".pyc" or "__pycache__" in relative.parts:
+                  raise SystemExit(f"unexpected Python cache: {relative}")
+              data = path.read_bytes()
+              for needle in needles:
+                  if needle in data or needle.decode().encode("utf-16le") in data:
+                      raise SystemExit(f"private build path in {relative}")
+          PY
+          find . -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq \
+            "$(find . -type f ! -name SHA256SUMS | wc -l)"
+          sha256sum -c SHA256SUMS
 
       - name: Pack corresponding source
         run: |
