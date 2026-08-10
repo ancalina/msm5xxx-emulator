@@ -18,7 +18,10 @@ from msm5xxx_emulator.detection.arm import (
     thumb_bl_target,
     thumb_literal_value,
 )
-from msm5xxx_emulator.detection.boot import DMD_DOWNLOAD_SIGNATURE
+from msm5xxx_emulator.detection.boot import (
+    DMD_DOWNLOAD_SIGNATURE,
+    find_ma2_silent_boot_wait,
+)
 from msm5xxx_emulator.detection.storage import (
     EEPROM_24LCXX_READ_SIGNATURE,
     EEPROM_24LCXX_X430_READ_PREFIX,
@@ -360,6 +363,24 @@ def legacy_dmd_loader_patch(
     if offset + len(patch) > limit:
         return None
     return offset, patch
+
+
+def ma2_silent_boot_loader_patch(
+        image: bytes, config: object,
+        immutable_limit: int | None = None) -> tuple[int, bytes] | None:
+    """Return the detector-qualified MA2 wait success contract as Thumb code."""
+    entry = getattr(config, "ma2_silent_boot_address", None)
+    load = int(getattr(config, "load_address", 0))
+    detected = find_ma2_silent_boot_wait(image)
+    if (type(entry) is not int or detected is None
+            or entry != load + detected or entry & 3):
+        return None
+    patch = bytes.fromhex("0048704700000000")  # ldr r0, [pc]; bx lr; 0
+    limit = min(len(image), int(config.flash_size),
+                immutable_limit if immutable_limit is not None else len(image))
+    if detected + len(patch) > limit:
+        return None
+    return detected, patch
 
 
 def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
@@ -862,10 +883,22 @@ class Transport:
             primary_seed, self.config,
             primary_profile[0] if primary_profile is not None else None,
         )
-        if dmd_patch is not None:
-            offset, patch = dmd_patch
+        ma2_patch = ma2_silent_boot_loader_patch(
+            primary_seed, self.config,
+            primary_profile[0] if primary_profile is not None else None,
+        )
+        if (dmd_patch is not None and ma2_patch is not None
+                and max(dmd_patch[0], ma2_patch[0])
+                < min(dmd_patch[0] + len(dmd_patch[1]),
+                      ma2_patch[0] + len(ma2_patch[1]))):
+            ma2_patch = None
+        if dmd_patch is not None or ma2_patch is not None:
             patched = bytearray(primary_seed)
-            patched[offset:offset + len(patch)] = patch
+            for candidate in (dmd_patch, ma2_patch):
+                if candidate is None:
+                    continue
+                offset, patch = candidate
+                patched[offset:offset + len(patch)] = patch
             primary_seed = bytes(patched)
         if len(primary_seed) != self.config.flash_size:
             raise ValueError("primary seed size does not match flash size")

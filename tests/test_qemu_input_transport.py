@@ -691,6 +691,55 @@ class QEMUInputTransportTests(unittest.TestCase):
             bytes(image), config, 0x100 + len(patch) - 1
         ))
 
+    def test_ma2_loader_patch_preserves_silent_boot_call_contract(self) -> None:
+        load = 0x1000
+        offset = 0x100
+        entry = load + offset
+        image = bytes(b"\xff" * 0x1000)
+        config = SimpleNamespace(
+            ma2_silent_boot_address=entry, load_address=load,
+            flash_size=len(image),
+        )
+        with mock.patch.dict(
+                MODULE.ma2_silent_boot_loader_patch.__globals__,
+                {"find_ma2_silent_boot_wait": lambda _: offset}):
+            result = MODULE.ma2_silent_boot_loader_patch(image, config)
+            self.assertIsNotNone(result)
+            patch_offset, patch = result
+            self.assertEqual((patch_offset, len(patch)), (offset, 8))
+
+            uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+            uc.mem_map(load, 0x1000)
+            uc.mem_write(entry, patch)
+            registers = MODULE.arm_const
+            uc.reg_write(registers.UC_ARM_REG_CPSR, 0xA0000033)
+            uc.reg_write(registers.UC_ARM_REG_SP, 0x1FF0)
+            uc.reg_write(registers.UC_ARM_REG_LR, 0x1201)
+            uc.reg_write(registers.UC_ARM_REG_R0, 0xFFFFFFFF)
+            uc.reg_write(registers.UC_ARM_REG_R1, 0x11111111)
+            uc.reg_write(registers.UC_ARM_REG_R7, 0x77777777)
+            flags = uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000
+
+            uc.emu_start(entry | 1, 0, count=2)
+
+            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_PC), 0x1200)
+            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R0), 0)
+            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R1), 0x11111111)
+            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R7), 0x77777777)
+            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_SP), 0x1FF0)
+            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_LR), 0x1201)
+            self.assertEqual(
+                uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000, flags
+            )
+
+            self.assertIsNone(MODULE.ma2_silent_boot_loader_patch(
+                image, config, offset + len(patch) - 1
+            ))
+            config.ma2_silent_boot_address += 2
+            self.assertIsNone(
+                MODULE.ma2_silent_boot_loader_patch(image, config)
+            )
+
     def test_c80_route_requires_explicit_closed_candidate(self) -> None:
         status = 0x03000C80
         candidate = {
