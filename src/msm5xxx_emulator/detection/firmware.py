@@ -459,8 +459,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append("MSM6050 is outside the supported 5000/5100/5500 scope")
     scan_chipset = ((getattr(overrides, "chipset", None) if overrides else None)
                     or chipset)
-    scan_ram_base = (getattr(overrides, "ram_base", None)
-                     if overrides else None)
+    requested_ram_base = (getattr(overrides, "ram_base", None)
+                          if overrides else None)
+    scan_ram_base = requested_ram_base
     if scan_ram_base is None:
         scan_ram_base = (0x01000000
                          if scan_chipset in ("MSM5000", "MSM5500")
@@ -488,13 +489,23 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             raise ValueError("flash size must be positive")
         scan_flash_size = requested_flash_size
     primary_image = image[:min(len(image), scan_flash_size)]
+    linker = find_linker_layout(primary_image, requested_load_address)
+    ram_base = infer_ram_base(linker, chipset, primary_image)
+    if requested_ram_base is not None:
+        ram_base = requested_ram_base
+    requested_ram_size = (getattr(overrides, "ram_size", None)
+                          if overrides else None)
+    ram_size = (0x00800000 if requested_ram_size is None
+                else requested_ram_size)
     ready_poll = find_ready_poll_profile(primary_image)
     if ready_poll is not None:
         detection_notes.append(
             "exact Thumb byte-ready/pulse poll class detected"
         )
     rex_static_controller_candidate = (
-        find_rex_static_controller_callback_candidate(primary_image)
+        find_rex_static_controller_callback_candidate(
+            primary_image, ram_base=ram_base, ram_size=ram_size
+        )
     )
     rex_static_c40_controller_observation = (
         find_rex_static_c40_controller_observation(primary_image)
@@ -515,7 +526,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 )
         else:
             detection_notes.append(
-                "static C80 controller candidate rejected: "
+                "static REX controller candidate rejected: "
                 f"{rex_static_controller_candidate['reject_reason']}"
             )
     if rex_static_c40_controller_observation is not None:
@@ -552,7 +563,6 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         auto_relative.add(field)
         return position
 
-    linker = find_linker_layout(primary_image, requested_load_address)
     audio_address = direct_signature("audio_play_address", AUDIO_PLAY_SIGNATURE)
     fast_boot_address = direct_signature("fast_boot_address", FAST_BOOT_SIGNATURE)
     delay_address = direct_signature("delay_address", DELAY_SIGNATURE)
@@ -859,11 +869,6 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             "MSM revision marker + 0x03000740 found; automatic register/value rejected "
             f"without closed consumer class ({revision_note})"
         )
-    ram_base = infer_ram_base(linker, chipset, primary_image)
-    requested_ram_base = (getattr(overrides, "ram_base", None)
-                          if overrides else None)
-    if requested_ram_base is not None:
-        ram_base = requested_ram_base
     flash_size = (compound_fujitsu[0] if compound_fujitsu else
                   normalised_flash_size(
                       max(len(image), required_flash_extent), ram_base
@@ -915,7 +920,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         eeprom_geometry_address=eeprom_geometry_address,
         eeprom_static_capacity=eeprom_static_capacity,
         ram_base=ram_base,
-        ram_size=0x00800000,
+        ram_size=ram_size,
         ram_image_offset=(compound_secondary_offset + compound_secondary_size
                           if compound_secondary_offset is not None
                           and compound_secondary_size is not None else flash_size),

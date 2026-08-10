@@ -8,9 +8,9 @@ not select hardware behavior.
 
 ## Download
 
-Download the archive for your OS and `SHA256SUMS` from
+Download the archive or Android APK for your OS and `SHA256SUMS` from
 [Releases](https://github.com/ancalina/msm5xxx-emulator/releases). Extract the
-entire archive. Keep the launcher, `bin/`, and bundled DLLs together.
+entire desktop archive. Keep the launcher, `bin/`, and bundled DLLs together.
 
 Firmware and saved state are not included.
 
@@ -21,6 +21,7 @@ Run the launcher without arguments to open the firmware chooser:
 - Windows: double-click `run_windows.bat`.
 - Linux: run `./run_linux.sh`.
 - Intel macOS: double-click `run_macos.command` or run it in Terminal.
+- Android arm64: install the APK and open it.
 
 On Windows, one firmware file can also be dragged onto `run_windows.bat`.
 Command-line paths work on every platform:
@@ -46,12 +47,14 @@ Use `--state-dir` to retain writable NOR and EEPROM data across restarts:
 
 Reuse the same directory for a cold boot followed by a warm boot. Without
 `--state-dir`, writable state is temporary and is discarded on exit.
+Android keeps SHA-256-scoped state in app-private storage.
 
 ## Requirements
 
-- Python 3.10 or newer with Tcl/Tk.
-- Linux x86-64, Windows x86-64, or Intel macOS 15.0 or newer.
-- Network access on first start if Python packages must be installed.
+- Desktop: Python 3.10 or newer with Tcl/Tk.
+- Desktop: Linux x86-64, Windows x86-64, or Intel macOS 15.0 or newer.
+- Android: Android 9 or newer on arm64-v8a.
+- Desktop network access on first start if Python packages must be installed.
 
 Linux may need `python3-tk`. On macOS, install a Tcl/Tk-enabled Python such as
 `brew install python-tk@3.14`. The Windows binary is unsigned. The macOS bundle

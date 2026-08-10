@@ -1,0 +1,6 @@
+/experiments/qemu-tcg/*.c text eol=lf
+/experiments/qemu-tcg/*.env text eol=lf
+/experiments/qemu-tcg/*.patch text eol=lf whitespace=-trailing-space
+/experiments/qemu-tcg/*.py text eol=lf
+/experiments/qemu-tcg/*.sh text eol=lf
+/android-client/*.sh text eol=lf

@@ -59,6 +59,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_DC0_SIZE 0x0e
 #define MSM5XXX_POC_DC0_DATA_OFFSET 0x08
 #define MSM5XXX_POC_DC0_START_OFFSET 0x0c
+#define MSM5XXX_POC_LCD_APERTURE_BASE 0x02000000
+#define MSM5XXX_POC_LCD_APERTURE_SIZE (8 * MiB)
 #define MSM5XXX_POC_LCD_SIZE 0x1000
 #define MSM5XXX_POC_LCD_PORTS 4
 #define MSM5XXX_POC_AUDIO_MAX_PORTS 16
@@ -72,6 +74,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_LCD_STREAM_TELEMETRY 2
 #define MSM5XXX_POC_DEVICE_STREAM_TELEMETRY 3
 #define MSM5XXX_POC_INPUT_STREAM_TELEMETRY 4
+#define MSM5XXX_POC_AUDIO_STREAM_WRITE 5
+#define MSM5XXX_POC_AUDIO_STREAM_STATUS 6
+#define MSM5XXX_POC_AUDIO_STATUS_OVERFLOW 1
+#define MSM5XXX_POC_AUDIO_STATUS_RESET 2
 #define MSM5XXX_POC_HOST_INPUT 0x80
 #define MSM5XXX_POC_HOST_INPUT_SIZE 4
 #define MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW UINT8_MAX
@@ -153,6 +159,7 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion msm;
     MemoryRegion sbi;
     MemoryRegion dc0;
+    MemoryRegion lcd_aperture;
     MemoryRegion lcd[MSM5XXX_POC_LCD_PORTS];
     MemoryRegion lcd_trace;
     MemoryRegion ready_status;
@@ -185,6 +192,9 @@ struct MSM5xxxPOCMachineState {
     uint8_t dc0_backing[MSM5XXX_POC_DC0_SIZE];
     unsigned dc0_board_adc_phase;
     uint64_t dc0_board_adc_responses;
+    uint8_t lcd_aperture_backing[MSM5XXX_POC_LCD_APERTURE_SIZE];
+    uint64_t lcd_aperture_reads;
+    uint64_t lcd_aperture_writes;
     MSM5xxxPOCLCDPort lcd_port[MSM5XXX_POC_LCD_PORTS];
     uint8_t lcd_backing[MSM5XXX_POC_LCD_PORTS][MSM5XXX_POC_LCD_SIZE];
     uint64_t lcd_reads[MSM5XXX_POC_LCD_PORTS];
@@ -241,6 +251,7 @@ struct MSM5xxxPOCMachineState {
     uint8_t matrix_input_sense;
     uint8_t matrix_input_buffer[MSM5XXX_POC_HOST_INPUT_SIZE];
     unsigned matrix_input_buffer_length;
+    bool matrix_input_telemetry_priority;
     uint64_t matrix_input_host_events;
     uint64_t matrix_input_active_reads;
     uint64_t matrix_input_rejections;
@@ -249,8 +260,14 @@ struct MSM5xxxPOCMachineState {
     uint8_t audio_data_offset;
     uint8_t audio_index;
     uint8_t audio_backing[MSM5XXX_POC_AUDIO_MAX_PORTS];
+    uint32_t audio_stream_order;
+    uint32_t audio_stream_dropped;
+    uint8_t audio_stream_status_pending;
+    bool audio_stream_started;
+    bool audio_stream_rejected;
     bool rex_irq_enabled;
     bool rex_irq_c80;
+    bool rex_irq_read_consume;
     uint32_t rex_irq_status_address;
     uint32_t rex_irq_enable_address;
     uint32_t rex_irq_arm_address;
@@ -460,7 +477,7 @@ static void msm5xxx_poc_backing_write(uint8_t *backing, hwaddr offset,
     }
 }
 
-static void msm5xxx_poc_lcd_stream_append(MSM5xxxPOCMachineState *s,
+static bool msm5xxx_poc_lcd_stream_append(MSM5xxxPOCMachineState *s,
                                           uint8_t kind, uint8_t size,
                                           uint32_t address, uint32_t value,
                                           uint32_t auxiliary)
@@ -470,12 +487,76 @@ static void msm5xxx_poc_lcd_stream_append(MSM5xxxPOCMachineState *s,
     if (s->lcd_trace_buffer->len + sizeof(record) >
         MSM5XXX_POC_LCD_TRACE_SIZE) {
         s->lcd_trace_overflow = true;
-        return;
+        return false;
     }
     msm5xxx_poc_backing_write(record, 4, address, 4);
     msm5xxx_poc_backing_write(record, 8, value, 4);
     msm5xxx_poc_backing_write(record, 12, auxiliary, 4);
     g_byte_array_append(s->lcd_trace_buffer, record, sizeof(record));
+    return true;
+}
+
+static bool msm5xxx_poc_input_stream_prioritize(MSM5xxxPOCMachineState *s)
+{
+    GByteArray *buffer = s->lcd_trace_buffer;
+    uint8_t record[MSM5XXX_POC_LCD_STREAM_RECORD_SIZE] = {
+        MSM5XXX_POC_INPUT_STREAM_TELEMETRY,
+        s->matrix_input_pressed,
+    };
+    guint prefix = buffer->len % MSM5XXX_POC_LCD_STREAM_RECORD_SIZE;
+    guint read_offset;
+    guint write_offset = prefix;
+    guint old_length;
+
+    /* Preserve a record suffix left by a partial chardev write. */
+    for (read_offset = prefix;
+         read_offset + MSM5XXX_POC_LCD_STREAM_RECORD_SIZE <= buffer->len;
+         read_offset += MSM5XXX_POC_LCD_STREAM_RECORD_SIZE) {
+        if (buffer->data[read_offset] ==
+            MSM5XXX_POC_INPUT_STREAM_TELEMETRY) {
+            continue;
+        }
+        if (write_offset != read_offset) {
+            memmove(buffer->data + write_offset,
+                    buffer->data + read_offset,
+                    MSM5XXX_POC_LCD_STREAM_RECORD_SIZE);
+        }
+        write_offset += MSM5XXX_POC_LCD_STREAM_RECORD_SIZE;
+    }
+    g_byte_array_set_size(buffer, write_offset);
+    /* Keep ordered device records; one priority record may exceed the cap. */
+    msm5xxx_poc_backing_write(
+        record, 4,
+        s->matrix_input_row | (s->matrix_input_sense << 8) |
+        (MIN(s->matrix_input_rejections, UINT16_MAX) << 16), 4);
+    msm5xxx_poc_backing_write(
+        record, 8, s->matrix_input_host_events, 4);
+    msm5xxx_poc_backing_write(
+        record, 12, s->matrix_input_active_reads, 4);
+    old_length = buffer->len;
+    g_byte_array_set_size(buffer, old_length + sizeof(record));
+    memmove(buffer->data + prefix + sizeof(record),
+            buffer->data + prefix, old_length - prefix);
+    memcpy(buffer->data + prefix, record, sizeof(record));
+    return true;
+}
+
+static void msm5xxx_poc_audio_stream_status(MSM5xxxPOCMachineState *s)
+{
+    uint8_t status = s->audio_stream_status_pending;
+
+    if (!status || !s->lcd_trace_buffer) {
+        return;
+    }
+    if (msm5xxx_poc_lcd_stream_append(
+            s, MSM5XXX_POC_AUDIO_STREAM_STATUS, status,
+            status == MSM5XXX_POC_AUDIO_STATUS_OVERFLOW ?
+                s->audio_stream_order : 0,
+            status == MSM5XXX_POC_AUDIO_STATUS_OVERFLOW ?
+                s->audio_stream_dropped : 0,
+            0)) {
+        s->audio_stream_status_pending = 0;
+    }
 }
 
 static void msm5xxx_poc_lcd_trace_flush(void *opaque)
@@ -485,6 +566,7 @@ static void msm5xxx_poc_lcd_trace_flush(void *opaque)
     uint64_t instructions = icount_get_raw();
     int written;
 
+    msm5xxx_poc_audio_stream_status(s);
     msm5xxx_poc_lcd_stream_append(
         s, MSM5XXX_POC_LCD_STREAM_TELEMETRY, 0,
         cc->get_pc(CPU(s->cpu)), instructions, instructions >> 32
@@ -495,13 +577,19 @@ static void msm5xxx_poc_lcd_trace_flush(void *opaque)
         s->ready_poll_reads, s->ready_poll_responses
     );
     if (s->matrix_input_host_enabled) {
-        msm5xxx_poc_lcd_stream_append(
-            s, MSM5XXX_POC_INPUT_STREAM_TELEMETRY,
-            s->matrix_input_pressed,
-            s->matrix_input_row | (s->matrix_input_sense << 8) |
-            (MIN(s->matrix_input_rejections, UINT16_MAX) << 16),
-            s->matrix_input_host_events, s->matrix_input_active_reads
-        );
+        if (s->matrix_input_telemetry_priority) {
+            if (msm5xxx_poc_input_stream_prioritize(s)) {
+                s->matrix_input_telemetry_priority = false;
+            }
+        } else {
+            msm5xxx_poc_lcd_stream_append(
+                s, MSM5XXX_POC_INPUT_STREAM_TELEMETRY,
+                s->matrix_input_pressed,
+                s->matrix_input_row | (s->matrix_input_sense << 8) |
+                (MIN(s->matrix_input_rejections, UINT16_MAX) << 16),
+                s->matrix_input_host_events, s->matrix_input_active_reads
+            );
+        }
     }
     if (s->lcd_trace_buffer->len) {
         written = qemu_chr_fe_write(&s->lcd_trace_chr,
@@ -509,6 +597,7 @@ static void msm5xxx_poc_lcd_trace_flush(void *opaque)
                                     s->lcd_trace_buffer->len);
         if (written > 0) {
             g_byte_array_remove_range(s->lcd_trace_buffer, 0, written);
+            msm5xxx_poc_audio_stream_status(s);
         }
     }
     timer_mod(s->lcd_trace_timer,
@@ -562,6 +651,7 @@ static void msm5xxx_poc_host_input_read(void *opaque, const uint8_t *buf,
             }
             s->matrix_input_host_events++;
         }
+        s->matrix_input_telemetry_priority = true;
         s->matrix_input_buffer_length = 0;
     }
 }
@@ -845,10 +935,6 @@ static uint64_t msm5xxx_poc_audio_read(void *opaque, hwaddr offset,
     if (size != 1 || offset > s->audio_data_offset) {
         return 0;
     }
-    if (offset == s->audio_data_offset &&
-        (s->audio_index == 0x0b || s->audio_index == 0x0c)) {
-        return 0xff;
-    }
     return s->audio_backing[offset];
 }
 
@@ -856,6 +942,9 @@ static void msm5xxx_poc_audio_write(void *opaque, hwaddr offset,
                                     uint64_t value, unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    CPUState *cpu = current_cpu;
+    CPUClass *cc;
+    uint32_t pc;
 
     if (size != 1 || offset > s->audio_data_offset) {
         return;
@@ -863,6 +952,28 @@ static void msm5xxx_poc_audio_write(void *opaque, hwaddr offset,
     s->audio_backing[offset] = value;
     if (!offset) {
         s->audio_index = value;
+    }
+    if (!qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io) {
+        return;
+    }
+    s->audio_stream_started = true;
+    s->audio_stream_order++;
+    if (s->audio_stream_rejected) {
+        if (s->audio_stream_dropped != UINT32_MAX) {
+            s->audio_stream_dropped++;
+        }
+        return;
+    }
+    cc = CPU_GET_CLASS(cpu);
+    pc = cc->get_pc(cpu) & ~1U;
+    if (!s->lcd_trace_buffer || !msm5xxx_poc_lcd_stream_append(
+            s, MSM5XXX_POC_AUDIO_STREAM_WRITE, size, pc,
+            offset | ((value & UINT8_MAX) << 8),
+            s->audio_stream_order)) {
+        s->audio_stream_rejected = true;
+        s->audio_stream_dropped = 1;
+        s->audio_stream_status_pending = MSM5XXX_POC_AUDIO_STATUS_OVERFLOW;
     }
 }
 
@@ -898,7 +1009,7 @@ static uint32_t msm5xxx_poc_guest_u32(hwaddr address)
     return le32_to_cpu(value);
 }
 
-static bool msm5xxx_poc_rex_c80_gate(MSM5xxxPOCMachineState *s)
+static bool msm5xxx_poc_rex_static_gate(MSM5xxxPOCMachineState *s)
 {
     uint32_t target;
 
@@ -932,6 +1043,7 @@ static bool msm5xxx_poc_rex_c80_gate(MSM5xxxPOCMachineState *s)
 
 static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s)
 {
+    CPUState *cpu = current_cpu;
     CPUClass *cc;
     uint32_t pc;
 
@@ -941,8 +1053,12 @@ static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s)
     if (!s->rex_irq_route_active) {
         return false;
     }
-    cc = CPU_GET_CLASS(s->cpu);
-    pc = cc->get_pc(CPU(s->cpu)) & ~1U;
+    if (!qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io) {
+        return false;
+    }
+    cc = CPU_GET_CLASS(cpu);
+    pc = cc->get_pc(cpu) & ~1U;
     return pc >= s->rex_irq_handler_address &&
            pc < s->rex_irq_handler_address + s->rex_irq_handler_size;
 }
@@ -984,7 +1100,7 @@ static void msm5xxx_poc_rex_irq_tick(void *opaque)
         return;
     }
     if (s->rex_irq_c80 && !s->rex_irq_route_active) {
-        msm5xxx_poc_rex_c80_gate(s);
+        msm5xxx_poc_rex_static_gate(s);
         s->rex_irq_next = now + s->rex_irq_interval;
         msm5xxx_poc_rex_irq_schedule(s);
         return;
@@ -1009,17 +1125,58 @@ static uint64_t msm5xxx_poc_rex_irq_read(void *opaque, hwaddr offset,
                                          unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value;
+    bool shadow;
+    bool touched = false;
+    bool consumed = false;
+    unsigned i;
 
     if (offset + size > s->rex_irq_controller_size) {
         return 0;
     }
-    if (msm5xxx_poc_rex_irq_shadow_active(s)) {
+    shadow = msm5xxx_poc_rex_irq_shadow_active(s);
+    value = msm5xxx_poc_backing_read(s->rex_irq_backing, offset, size);
+    if (!shadow) {
+        return value;
+    }
+    if (!s->rex_irq_read_consume) {
         msm5xxx_poc_backing_write(s->rex_irq_backing, 0,
                                   s->rex_irq_pending[0], 2);
         msm5xxx_poc_backing_write(s->rex_irq_backing, 4,
                                   s->rex_irq_pending[1], 2);
+        return msm5xxx_poc_backing_read(s->rex_irq_backing, offset, size);
     }
-    return msm5xxx_poc_backing_read(s->rex_irq_backing, offset, size);
+    for (i = 0; i < size; i++) {
+        hwaddr byte = offset + i;
+        uint8_t pending;
+
+        if (byte < 2) {
+            pending = s->rex_irq_pending[0] >> (byte * 8);
+        } else if (byte >= 4 && byte < 6) {
+            pending = s->rex_irq_pending[1] >> ((byte - 4) * 8);
+        } else {
+            continue;
+        }
+        value &= ~(UINT64_C(0xff) << (i * 8));
+        value |= (uint64_t)pending << (i * 8);
+    }
+    for (i = 0; i < 2; i++) {
+        hwaddr bank = i * 4;
+
+        if (offset < bank + 2 && offset + size > bank) {
+            touched = true;
+            consumed |= s->rex_irq_pending[i] != 0;
+            s->rex_irq_pending[i] = 0;
+        }
+    }
+    if (consumed) {
+        s->rex_irq_acks++;
+    }
+    if (touched) {
+        msm5xxx_poc_rex_irq_update(s);
+        msm5xxx_poc_rex_irq_schedule(s);
+    }
+    return value;
 }
 
 static void msm5xxx_poc_rex_irq_write(void *opaque, hwaddr offset,
@@ -1032,7 +1189,7 @@ static void msm5xxx_poc_rex_irq_write(void *opaque, hwaddr offset,
     if (offset + size > s->rex_irq_controller_size) {
         return;
     }
-    if (!msm5xxx_poc_rex_irq_shadow_active(s)) {
+    if (!msm5xxx_poc_rex_irq_shadow_active(s) || s->rex_irq_read_consume) {
         msm5xxx_poc_backing_write(s->rex_irq_backing, offset, value, size);
         msm5xxx_poc_rex_irq_update(s);
         return;
@@ -1375,6 +1532,74 @@ static const MemoryRegionOps msm5xxx_poc_dc0_ops = {
     .impl.max_access_size = 2,
 };
 
+static void msm5xxx_poc_lcd_trace_write(MSM5xxxPOCMachineState *s,
+                                        hwaddr address, uint64_t value,
+                                        unsigned size)
+{
+    uint8_t record[MSM5XXX_POC_LCD_TRACE_RECORD_SIZE] = { 0 };
+
+    if (!s->lcd_trace_enabled && !s->lcd_trace_buffer) {
+        return;
+    }
+    msm5xxx_poc_backing_write(record, 0, address, 4);
+    msm5xxx_poc_backing_write(record, 4, value, 4);
+    record[8] = size;
+    if (s->lcd_trace_enabled) {
+        if (s->lcd_trace_count < MSM5XXX_POC_LCD_TRACE_CAPACITY) {
+            memcpy(s->lcd_trace_backing +
+                   s->lcd_trace_count * MSM5XXX_POC_LCD_TRACE_RECORD_SIZE,
+                   record, sizeof(record));
+        } else {
+            s->lcd_trace_overflow = true;
+        }
+    }
+    if (s->lcd_trace_buffer) {
+        msm5xxx_poc_lcd_stream_append(
+            s, MSM5XXX_POC_LCD_STREAM_WRITE, size, address, value, 0
+        );
+    }
+    s->lcd_trace_count++;
+}
+
+static uint64_t msm5xxx_poc_lcd_aperture_read(void *opaque, hwaddr offset,
+                                              unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset + size > MSM5XXX_POC_LCD_APERTURE_SIZE) {
+        return 0;
+    }
+    s->lcd_aperture_reads++;
+    return msm5xxx_poc_backing_read(s->lcd_aperture_backing, offset, size);
+}
+
+static void msm5xxx_poc_lcd_aperture_write(void *opaque, hwaddr offset,
+                                           uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset + size > MSM5XXX_POC_LCD_APERTURE_SIZE) {
+        return;
+    }
+    s->lcd_aperture_writes++;
+    msm5xxx_poc_lcd_trace_write(
+        s, MSM5XXX_POC_LCD_APERTURE_BASE + offset, value, size
+    );
+    msm5xxx_poc_backing_write(
+        s->lcd_aperture_backing, offset, value, size
+    );
+}
+
+static const MemoryRegionOps msm5xxx_poc_lcd_aperture_ops = {
+    .read = msm5xxx_poc_lcd_aperture_read,
+    .write = msm5xxx_poc_lcd_aperture_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
 static uint64_t msm5xxx_poc_lcd_read(void *opaque, hwaddr offset,
                                      unsigned size)
 {
@@ -1400,32 +1625,9 @@ static void msm5xxx_poc_lcd_write(void *opaque, hwaddr offset,
         return;
     }
     s->lcd_writes[port->index]++;
-    if (s->lcd_trace_enabled || s->lcd_trace_buffer) {
-        uint8_t record[MSM5XXX_POC_LCD_TRACE_RECORD_SIZE] = { 0 };
-
-        msm5xxx_poc_backing_write(record, 0,
-                                  msm5xxx_poc_lcd_bases[port->index] + offset,
-                                  4);
-        msm5xxx_poc_backing_write(record, 4, value, 4);
-        record[8] = size;
-        if (s->lcd_trace_enabled) {
-            if (s->lcd_trace_count < MSM5XXX_POC_LCD_TRACE_CAPACITY) {
-                memcpy(s->lcd_trace_backing +
-                       s->lcd_trace_count * MSM5XXX_POC_LCD_TRACE_RECORD_SIZE,
-                       record, sizeof(record));
-            } else {
-                s->lcd_trace_overflow = true;
-            }
-        }
-        if (s->lcd_trace_buffer) {
-            msm5xxx_poc_lcd_stream_append(
-                s, MSM5XXX_POC_LCD_STREAM_WRITE, size,
-                msm5xxx_poc_lcd_bases[port->index] + offset,
-                value, 0
-            );
-        }
-        s->lcd_trace_count++;
-    }
+    msm5xxx_poc_lcd_trace_write(
+        s, msm5xxx_poc_lcd_bases[port->index] + offset, value, size
+    );
     msm5xxx_poc_backing_write(
         s->lcd_backing[port->index], offset, value, size
     );
@@ -1467,7 +1669,7 @@ static uint64_t msm5xxx_poc_read(void *opaque, hwaddr offset, unsigned size)
         return s->sbi_writes;
     case 0x24:
         return s->lcd_writes[0] + s->lcd_writes[1] + s->lcd_writes[2] +
-               s->lcd_writes[3];
+               s->lcd_writes[3] + s->lcd_aperture_writes;
     case 0x28:
     case 0x2c:
     case 0x30:
@@ -1553,6 +1755,7 @@ static void msm5xxx_poc_reset(void *opaque)
     MSM5xxxPOCMachineState *s = opaque;
     CPUARMState *env = &s->cpu->env;
     uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    bool audio_was_started = s->audio_stream_started;
 
     if (s->rex_irq_timer) {
         timer_del(s->rex_irq_timer);
@@ -1580,6 +1783,10 @@ static void msm5xxx_poc_reset(void *opaque)
     memset(s->dc0_backing, 0, sizeof(s->dc0_backing));
     s->dc0_board_adc_phase = 0;
     s->dc0_board_adc_responses = 0;
+    memset(s->lcd_aperture_backing, 0,
+           sizeof(s->lcd_aperture_backing));
+    s->lcd_aperture_reads = 0;
+    s->lcd_aperture_writes = 0;
     memset(s->lcd_backing, 0, sizeof(s->lcd_backing));
     memset(s->lcd_reads, 0, sizeof(s->lcd_reads));
     memset(s->lcd_writes, 0, sizeof(s->lcd_writes));
@@ -1612,15 +1819,23 @@ static void msm5xxx_poc_reset(void *opaque)
     s->matrix_input_sense = 0;
     memset(s->matrix_input_buffer, 0, sizeof(s->matrix_input_buffer));
     s->matrix_input_buffer_length = 0;
+    s->matrix_input_telemetry_priority = false;
     s->matrix_input_host_events = 0;
     s->matrix_input_active_reads = 0;
     s->matrix_input_rejections = 0;
     s->audio_index = 0;
     memset(s->audio_backing, 0, sizeof(s->audio_backing));
+    s->audio_stream_order = 0;
+    s->audio_stream_dropped = 0;
+    s->audio_stream_started = false;
+    s->audio_stream_rejected = audio_was_started;
+    s->audio_stream_status_pending = audio_was_started ?
+        MSM5XXX_POC_AUDIO_STATUS_RESET : 0;
     memset(s->rex_irq_backing, 0, sizeof(s->rex_irq_backing));
     s->rex_irq_arm_backing = 0;
     memset(s->rex_irq_pending, 0, sizeof(s->rex_irq_pending));
-    s->rex_irq_armed = s->rex_irq_enabled && s->rex_irq_c80;
+    s->rex_irq_armed = (s->rex_irq_enabled && s->rex_irq_c80 &&
+                        !s->rex_irq_read_consume);
     s->rex_irq_level = false;
     s->rex_irq_route_active = false;
     s->rex_idle_seen = false;
@@ -1666,6 +1881,7 @@ static void msm5xxx_poc_reset(void *opaque)
         msm5xxx_poc_rex_irq_schedule(s);
     }
     if (s->lcd_trace_timer) {
+        msm5xxx_poc_audio_stream_status(s);
         timer_mod(s->lcd_trace_timer,
                   qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 33);
     }
@@ -1693,6 +1909,28 @@ static void msm5xxx_poc_init(MachineState *machine)
              s->initial_sp > s->ram_base + machine->ram_size - 4)) {
         error_report("memory-profile RAM range does not contain INITIAL_SP");
         exit(EXIT_FAILURE);
+    }
+
+    if (s->rex_irq_c80) {
+        uint64_t ram_end = s->ram_base + machine->ram_size;
+        bool vector_invalid = s->rex_irq_read_consume ?
+            s->rex_irq_vector_target < s->ram_base ||
+            s->rex_irq_vector_target > ram_end - 4 :
+            s->rex_irq_vector_target != s->ram_base;
+
+        if (vector_invalid ||
+                s->rex_irq_wrapper_address >= s->primary_nor_size ||
+                s->rex_irq_handler_address >= s->primary_nor_size ||
+                s->rex_irq_handler_size >
+                    s->primary_nor_size - s->rex_irq_handler_address ||
+                s->rex_irq_callback_address >= s->primary_nor_size ||
+                s->rex_irq_handler_slot < s->ram_base ||
+                s->rex_irq_handler_slot > ram_end - 4 ||
+                s->rex_irq_callback_slot < s->ram_base ||
+                s->rex_irq_callback_slot > ram_end - 4) {
+            error_report("rex-static route exceeds final memory-profile");
+            exit(EXIT_FAILURE);
+        }
     }
 
     memory_region_init_rom(&s->nor, NULL, "msm5xxx-poc.nor",
@@ -1766,7 +2004,12 @@ static void msm5xxx_poc_init(MachineState *machine)
         qdev_prop_set_uint16(dev, "unlock-addr1", 0x2aa);
         qdev_prop_set_string(dev, "name", "msm5xxx-poc.secondary-nor");
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, s->secondary_nor_base);
+        if (s->secondary_nor_base < s->primary_nor_size) {
+            sysbus_mmio_map_overlap(SYS_BUS_DEVICE(dev), 0,
+                                    s->secondary_nor_base, 1);
+        } else {
+            sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, s->secondary_nor_base);
+        }
     }
     if (s->upper_x8_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
@@ -1856,7 +2099,7 @@ static void msm5xxx_poc_init(MachineState *machine)
             get_system_memory(), s->rex_irq_status_address,
             &s->rex_irq_controller, 1
         );
-        if (s->rex_irq_c80) {
+        if (s->rex_irq_c80 && !s->rex_irq_read_consume) {
             s->rex_irq_armed = true;
             s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                               s->rex_irq_interval;
@@ -1887,6 +2130,14 @@ static void msm5xxx_poc_init(MachineState *machine)
                                             MSM5XXX_POC_DC0_BASE,
                                             &s->dc0, 1);
     }
+    memory_region_init_io(&s->lcd_aperture, OBJECT(machine),
+                          &msm5xxx_poc_lcd_aperture_ops, s,
+                          "msm5xxx-poc.lcd-aperture",
+                          MSM5XXX_POC_LCD_APERTURE_SIZE);
+    memory_region_add_subregion_overlap(
+        get_system_memory(), MSM5XXX_POC_LCD_APERTURE_BASE,
+        &s->lcd_aperture, -1
+    );
     for (i = 0; i < MSM5XXX_POC_LCD_PORTS; i++) {
         if (s->upper_x8_nor_enabled &&
             msm5xxx_poc_lcd_bases[i] >= MSM5XXX_POC_UPPER_NOR_BASE) {
@@ -2281,10 +2532,13 @@ static void msm5xxx_poc_set_fujitsu_x16_nor(Object *obj, const char *value,
 
     if (sscanf(value, "%x:%x:%x:%x:%x%c", &primary, &base, &size,
                &id0, &id1, &trailing) != 5 || !primary || !size ||
-            primary > s->primary_nor_size || base < primary ||
-            base >= MSM5XXX_POC_RAM_BASE ||
-            size > MSM5XXX_POC_RAM_BASE - base || size < 0x10000 ||
-            size % 0x10000 || id0 > UINT16_MAX || id1 > UINT16_MAX) {
+            primary > s->primary_nor_size || base >= MSM5XXX_POC_RAM_BASE ||
+            (base < primary ? size > primary - base :
+             size > MSM5XXX_POC_RAM_BASE - base) || size < 0x10000 ||
+            size % 0x10000 || id0 > UINT16_MAX || id1 > UINT16_MAX ||
+            (base < primary &&
+             (base % 0x200000 || size != 0x200000 ||
+              id0 != 0x0004 || id1 != 0x005f))) {
         error_setg(errp,
                    "fujitsu-x16-nor must be PRIMARY:BASE:SIZE:ID0:ID1");
         return;
@@ -2401,10 +2655,8 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
                                             Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    MachineState *machine = MACHINE(s);
     unsigned status, enable, mask, interval, vector_target, wrapper;
     unsigned handler_slot, handler, handler_size, callback_slot, callback;
-    uint64_t ram_end = MSM5XXX_POC_RAM_BASE + machine->ram_size;
     char trailing;
 
     if (sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%c",
@@ -2415,14 +2667,9 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
             status + MSM5XXX_POC_REX_C80_CONTROLLER_SIZE >
                 MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
             mask != 0x0200 || !interval ||
-            vector_target != MSM5XXX_POC_RAM_BASE || wrapper & 3 ||
-            wrapper >= s->primary_nor_size || handler & 1 ||
-            handler_size == 0 || handler >= s->primary_nor_size ||
-            handler_size > s->primary_nor_size - handler || callback & 1 ||
-            callback >= s->primary_nor_size || handler_slot & 3 ||
-            handler_slot < MSM5XXX_POC_RAM_BASE || handler_slot > ram_end - 4 ||
-            callback_slot & 3 || callback_slot < MSM5XXX_POC_RAM_BASE ||
-            callback_slot > ram_end - 4) {
+            vector_target & 3 || wrapper & 3 || handler & 1 ||
+            handler_size == 0 || callback & 1 || handler_slot & 3 ||
+            callback_slot & 3) {
         error_setg(
             errp,
             "rex-static-c80 must be "
@@ -2444,6 +2691,71 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
     s->rex_irq_callback_address = callback;
     s->rex_irq_controller_size = MSM5XXX_POC_REX_C80_CONTROLLER_SIZE;
     s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
+    s->rex_irq_c80 = true;
+    s->rex_irq_enabled = true;
+}
+
+static char *msm5xxx_poc_get_rex_static_read_consume(Object *obj,
+                                                      Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->rex_irq_read_consume) {
+        return g_strdup("");
+    }
+    return g_strdup_printf(
+        "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x",
+        s->rex_irq_status_address, s->rex_irq_enable_address,
+        s->rex_irq_arm_address, s->rex_irq_mask, s->rex_irq_interval,
+        s->rex_irq_vector_target, s->rex_irq_wrapper_address,
+        s->rex_irq_handler_slot, s->rex_irq_handler_address,
+        s->rex_irq_handler_size, s->rex_irq_callback_slot,
+        s->rex_irq_callback_address
+    );
+}
+
+static void msm5xxx_poc_set_rex_static_read_consume(
+    Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned status, enable, arm, mask, interval, vector_target, wrapper;
+    unsigned handler_slot, handler, handler_size, callback_slot, callback;
+    char trailing;
+
+    if (sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%c",
+               &status, &enable, &arm, &mask, &interval, &vector_target,
+               &wrapper, &handler_slot, &handler, &handler_size,
+               &callback_slot, &callback, &trailing) != 12 ||
+            s->rex_irq_enabled || status != 0x03000620 ||
+            enable != status + 8 || arm != 0x030006e0 ||
+            status + MSM5XXX_POC_REX_CONTROLLER_SIZE >
+                MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+            mask != 0x0200 || !interval || vector_target & 3 || wrapper & 3 ||
+            handler & 1 || handler_size == 0 || callback & 1 ||
+            handler_slot & 3 || callback_slot & 3) {
+        error_setg(
+            errp,
+            "rex-static-read-consume must be "
+            "STATUS:ENABLE:ARM:MASK:INTERVAL:VECTOR_TARGET:WRAPPER:"
+            "HANDLER_SLOT:HANDLER:HANDLER_SIZE:CALLBACK_SLOT:CALLBACK"
+        );
+        return;
+    }
+    s->rex_irq_status_address = status;
+    s->rex_irq_enable_address = enable;
+    s->rex_irq_arm_address = arm;
+    s->rex_irq_mask = mask;
+    s->rex_irq_interval = interval;
+    s->rex_irq_vector_target = vector_target;
+    s->rex_irq_wrapper_address = wrapper;
+    s->rex_irq_handler_slot = handler_slot;
+    s->rex_irq_handler_address = handler;
+    s->rex_irq_handler_size = handler_size;
+    s->rex_irq_callback_slot = callback_slot;
+    s->rex_irq_callback_address = callback;
+    s->rex_irq_controller_size = MSM5XXX_POC_REX_CONTROLLER_SIZE;
+    s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
+    s->rex_irq_read_consume = true;
     s->rex_irq_c80 = true;
     s->rex_irq_enabled = true;
 }
@@ -2684,6 +2996,13 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "rex-static-c80",
         "Explicit detector- and runtime-gated C80 periodic IRQ route");
+    object_class_property_add_str(
+        oc, "rex-static-read-consume",
+        msm5xxx_poc_get_rex_static_read_consume,
+        msm5xxx_poc_set_rex_static_read_consume);
+    object_class_property_set_description(
+        oc, "rex-static-read-consume",
+        "Explicit detector-, arm-, and runtime-gated read-consume IRQ route");
     object_class_property_add_str(oc, "eeprom-24lcxx-gpio",
                                   msm5xxx_poc_get_eeprom_gpio,
                                   msm5xxx_poc_set_eeprom_gpio);

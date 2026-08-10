@@ -1,0 +1,39 @@
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -1364,7 +1364,13 @@ spice = dependency('spice-server', version: '>=0.12.5',
+ spice_headers = spice.partial_dependency(compile_args: true, includes: true)
+ 
+ rt = not_found
+-if host_os != 'windows'
++host_is_android = cc.compiles('''
++  #ifndef __ANDROID__
++  #error not Android
++  #endif
++  int main(void) { return 0; }
++''')
++if host_os != 'windows' and not host_is_android
+   have_shm_open = cc.has_function('shm_open')
+   if not have_shm_open
+     rt = cc.find_library('rt', required: true)
+diff --git a/util/oslib-posix.c b/util/oslib-posix.c
+--- a/util/oslib-posix.c
++++ b/util/oslib-posix.c
+@@ -984,6 +984,11 @@ static int qemu_shm_open(const char *shm_name, int flags, mode_t mode)
+ 
+ int qemu_shm_alloc(size_t size, Error **errp)
+ {
++#ifdef __ANDROID__
++    (void)size;
++    error_setg(errp, "POSIX shared memory is unavailable on Android");
++    return -1;
++#else
+     g_autoptr(GString) shm_name = g_string_new(NULL);
+     int fd, oflag, cur_sequence;
+     static int sequence;
+@@ -1032,4 +1037,5 @@ int qemu_shm_alloc(size_t size, Error **errp)
+     }
+ 
+     return fd;
++#endif
+ }

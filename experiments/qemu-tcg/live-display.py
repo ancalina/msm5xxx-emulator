@@ -3,1067 +3,135 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 import queue
-import socket
-import struct
-import subprocess
 import sys
-import tempfile
 import threading
 import tkinter as tk
+from tkinter import messagebox
 
 
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from gdb_remote import Remote  # noqa: E402
-from msm5xxx_emulator.core import GenericMSMEmulator  # noqa: E402
-from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO  # noqa: E402
-from msm5xxx_emulator.detection import detect  # noqa: E402
-from msm5xxx_emulator.detection.arm import (  # noqa: E402
-    thumb_bl_target,
-    thumb_literal_value,
-)
-from msm5xxx_emulator.detection.boot import DMD_DOWNLOAD_SIGNATURE  # noqa: E402
-from msm5xxx_emulator.detection.storage import (  # noqa: E402
-    EEPROM_24LCXX_READ_SIGNATURE,
-    EEPROM_24LCXX_X430_READ_PREFIX,
-    EEPROM_24LCXX_X430_WRITE_PREFIX,
-    eeprom_24lcxx_write_at,
-    fujitsu_x16_flash_ids,
-    find_primary_fsd_amd_x16_nor,
-)
-from msm5xxx_emulator.detection.upper_nor import (  # noqa: E402
-    UPPER_FLASH_ADDRESS,
-    UPPER_FLASH_SIZE,
-)
-from msm5xxx_emulator.devices.storage.nor import NORFlash  # noqa: E402
+from qemu_transport import *  # noqa: E402,F403
 from msm5xxx_emulator.gui.app import Window, choose_firmware  # noqa: E402
+from msm5xxx_emulator.gui.controls import detect_profile  # noqa: E402
 from msm5xxx_emulator.gui.locale import display_model_name  # noqa: E402
-from unicorn import arm_const  # noqa: E402
-
-
-RECORD_SIZE = 16
-LCD_WRITE = 1
-TELEMETRY = 2
-DEVICE_TELEMETRY = 3
-INPUT_TELEMETRY = 4
-HOST_INPUT = 0x80
-REGISTER_NAMES = tuple(f"r{index}" for index in range(13)) + (
-    "sp", "lr", "pc", "cpsr",
-)
-PAUSE_TIMER_ADDRESS = 0x04800020
-PAUSE_TIMER_LDR_OFFSETS = (0x26, 0x4E, 0x78, 0xA4)
-PAUSE_TIMER_FIXED_HELPER = bytes.fromhex(
-    "90b4322813dc00211423041c5c431f23e318223b9b1106d414214843031c1f21"
-    "5918223989110048198090bc704700211424322363431f241b19223b9b1106d4"
-    "1421322359431f23c9182239891100481980c11f2b39081c322813dd00211424"
-    "322363431f241b199b1105d41421322359431f23c918891100481980c11f2b39"
-    "081ce9e70028d0dd00211423041c5c431f23e3189b1105d414214843031c1f21"
-    "5918891100481980bfe7"
-)
-
-
-def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
-    """Return the detector-admitted, unique physical sense values."""
-    senses = tuple(int(value) for value in profile.get(
-        "senses", profile.get("single_key_column_sense", ())
-    ))
-    no_key = int(profile["no_key"])
-    if (not senses or len(set(senses)) != len(senses)
-            or any(not 0 <= value <= 0x0F or value == no_key
-                   for value in senses)):
-        raise ValueError("invalid detector-resolved matrix senses")
-    return senses
-
-
-def unicorn_state(emulator: GenericMSMEmulator) -> dict[str, int]:
-    return {
-        name: emulator.uc.reg_read(
-            getattr(arm_const, f"UC_ARM_REG_{name.upper()}")
-        )
-        for name in REGISTER_NAMES
-    }
-
-
-def qemu_memory_profile(config: object,
-                        registers: dict[str, int]) -> str:
-    """Encode only the memory/reset state represented by the machine."""
-    expected = {name: 0 for name in REGISTER_NAMES}
-    expected["sp"] = registers["sp"]
-    expected["cpsr"] = 0xD3
-    flash_size = int(config.flash_size)
-    ram_base = int(config.ram_base)
-    ram_end = ram_base + int(config.ram_size)
-    if (not 0x1000 <= flash_size <= ram_base or registers != expected
-            or registers["sp"] & 3
-            or not ram_base <= registers["sp"] <= ram_end - 4):
-        raise ValueError("QEMU memory profile cannot represent initial state")
-    return f"{flash_size:x}:{ram_base:x}:{registers['sp']:x}"
-
-
-def qemu_upper_nor_enabled(config: object) -> bool:
-    """Accept only the detector's closed fixed upper-NOR range."""
-    address = getattr(config, "upper_flash_address", None)
-    size = int(getattr(config, "upper_flash_size", 0))
-    if address is None and size == 0:
-        return False
-    if address != UPPER_FLASH_ADDRESS or size != UPPER_FLASH_SIZE:
-        raise ValueError("QEMU cannot represent the detected upper NOR")
-    return True
-
-
-def matrix_input_command(profile: dict[str, object],
-                         position: tuple[int, int, int] | None,
-                         pressed: bool) -> bytes:
-    """Encode one detector-resolved physical matrix transition."""
-    if not pressed:
-        return bytes((HOST_INPUT, 0, 0, 0))
-    if position is None:
-        raise ValueError("matrix key position is unavailable")
-    _event, row, column = position
-    senses = matrix_senses(profile)
-    rows = int(profile["rows"])
-    no_key = int(profile["no_key"])
-    if (not 0 <= row < rows or not 0 <= column < len(senses)
-            or int(senses[column]) == no_key):
-        raise ValueError("invalid detector-resolved matrix position")
-    return bytes((HOST_INPUT, 1, row, int(senses[column])))
-
-
-def sideband_input_command(producer: dict[str, object],
-                           pressed: bool) -> bytes:
-    """Encode one detector-resolved active-low sideband transition."""
-    if not pressed:
-        return bytes((HOST_INPUT, 0, 0, 0))
-    mask = int(producer.get("mask", 0))
-    if (producer.get("register_width") != 1
-            or producer.get("polarity") != "active-low"
-            or not 0 < mask <= 0xF0 or mask & 0x0F
-            or mask & (mask - 1)):
-        raise ValueError("invalid detector-resolved sideband producer")
-    return bytes((HOST_INPUT, 1, 0xFF, mask))
-
-
-def loopback_listener() -> socket.socket:
-    """Open a private TCP listener supported by every release platform."""
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(1)
-    except Exception:
-        listener.close()
-        raise
-    return listener
-
-
-def load_legacy_nor_state(
-        seed: bytes, candidates: tuple[Path, ...]) -> tuple[bytes, bool]:
-    """Read the first existing stable JSON state without modifying it."""
-    for path in candidates:
-        if path.is_file():
-            return bytes(NORFlash(seed, path).data), True
-    return seed, False
-
-
-def load_legacy_raw_state(seed: bytes, path: Path) -> tuple[bytes, bool]:
-    """Read one same-size stable raw state without modifying it."""
-    if not path.is_file():
-        return seed, False
-    data = path.read_bytes()
-    if len(data) != len(seed):
-        raise ValueError(f"persistent state size mismatch: {path}")
-    return data, True
-
-
-def raw_loader_arguments(image: Path, max_size: int,
-                         temporary: Path,
-                         size: int | None = None) -> list[str]:
-    """Split raw NOR only around QEMU loader's machine-RAM size limit."""
-    data = image.read_bytes()
-    if size is not None:
-        if not 0 <= size <= len(data):
-            raise ValueError("raw loader size is outside the image")
-        data = data[:size]
-    parts = [(image, 0)]
-    if len(data) != image.stat().st_size or len(data) > max_size:
-        parts = []
-        for offset in range(0, len(data), max_size):
-            part = temporary / f"primary-{offset:08x}.raw"
-            part.write_bytes(data[offset:offset + max_size])
-            parts.append((part, offset))
-    return [argument for part, offset in parts for argument in (
-        "-device", f"loader,file={part},addr=0x{offset:x},force-raw=on",
-    )]
-
-
-def qemu_pause_timer_profile(
-        image: bytes, config: object,
-        immutable_limit: int | None = None,
-        ) -> tuple[str | None, str | None]:
-    """Return one exact fixed-rate pause timer or its reject reason."""
-    load = int(getattr(config, "load_address", 0))
-    limit = min(
-        len(image), int(getattr(config, "flash_size", len(image))),
-        immutable_limit if immutable_limit is not None else len(image),
-    )
-    template = PAUSE_TIMER_FIXED_HELPER
-    prefix = template[:PAUSE_TIMER_LDR_OFFSETS[0]]
-    starts: list[int] = []
-    anchored = bounded = literal_match = False
-    cursor = 0
-    while True:
-        start = image.find(prefix, cursor, limit)
-        if start < 0:
-            break
-        anchored = True
-        cursor = start + 1
-        if start & 1 or start + len(template) + 6 > limit:
-            continue
-        bounded = True
-        candidate = bytearray(image[start:start + len(template)])
-        if any(thumb_literal_value(image, start + offset, 3)
-               != PAUSE_TIMER_ADDRESS
-               for offset in PAUSE_TIMER_LDR_OFFSETS):
-            continue
-        literal_match = True
-        for offset in PAUSE_TIMER_LDR_OFFSETS:
-            struct.pack_into("<H", candidate, offset, 0x4800)
-        if bytes(candidate) == template:
-            starts.append(start)
-    if not starts:
-        reason = None
-        if literal_match:
-            reason = "fixed-helper-shape-mismatch"
-        elif bounded:
-            reason = "pause-register-literal-mismatch"
-        elif anchored:
-            reason = "fixed-helper-outside-immutable-nor"
-        return None, reason
-    if len(starts) != 1:
-        return None, "fixed-helper-ambiguous"
-
-    start = starts[0]
-    literal = struct.pack("<I", 100_000)
-    pool = image.find(literal, 0, limit)
-    while pool >= 0:
-        first = max(0, pool - 0x400) & ~1
-        for caller in range(first, min(pool + 1, limit - 5), 2):
-            if (thumb_literal_value(image, caller, 0) == 100_000
-                    and thumb_bl_target(image, caller + 2) == start):
-                return (
-                    f"{PAUSE_TIMER_ADDRESS:x}:{312_500:x}:"
-                    f"{load + start:x}:{load + start + len(template):x}",
-                    None,
-                )
-        pool = image.find(literal, pool + 1, limit)
-    return None, "100ms-caller-not-found"
-
-
-def legacy_dmd_loader_patch(
-        image: bytes, config: object,
-        immutable_limit: int | None = None) -> tuple[int, bytes] | None:
-    """Return the existing legacy DMD completion contract as Thumb code."""
-    entry = getattr(config, "dmd_download_address", None)
-    load = int(getattr(config, "load_address", 0))
-    if type(entry) is not int:
-        return None
-    offset = entry - load
-    signature = DMD_DOWNLOAD_SIGNATURE
-    if (not 0 <= offset <= len(image) - 0xF4
-            or image[offset:offset + len(signature)] != signature
-            or image.find(signature) != offset
-            or image.find(signature, offset + 1) >= 0):
-        return None
-    try:
-        completion, control, _, dmd = struct.unpack_from(
-            "<4I", image, offset + 0xE0
-        )
-        file_load = struct.unpack_from("<H", image, offset + 0xD4)[0]
-        if file_load == 0x4906:
-            filename = struct.unpack_from("<I", image, offset + 0xF0)[0]
-        elif file_load == 0xA106:
-            filename = entry + 0xF0
-        else:
-            return None
-    except struct.error:
-        return None
-    filename_offset = filename - load
-    ram_base = int(getattr(config, "ram_base", 0))
-    ram_end = ram_base + int(getattr(config, "ram_size", 0))
-    if (control != 0x03000050 or dmd != 0x030007E0
-            or not ram_base <= completion < ram_end
-            or not 0 <= filename_offset <= len(image) - 12
-            or not image[filename_offset:filename_offset + 12].startswith(
-                b"dmddown_"
-            )):
-        return None
-    halfwords = (
-        0xB406,              # push {r1, r2}
-        0x4906, 0x4A06,     # completion, 2
-        0x700A,              # strb r2, [r1]
-        0x4906, 0x4A07,     # control, 1
-        0x730A,              # strb r2, [r1, #12]
-        0x4907, 0x4A07,     # dmd, 0
-        0x608A, 0x818A,     # clear dmd + 8 through + 13
-        0xBC06,              # pop {r1, r2}
-        0x4803, 0x4770,     # r0 = 1; bx lr
-    )
-    patch = struct.pack(
-        "<14H6I", *halfwords,
-        completion, 2, control, 1, dmd, 0,
-    )
-    limit = min(len(image), int(config.flash_size),
-                immutable_limit if immutable_limit is not None else len(image))
-    if offset + len(patch) > limit:
-        return None
-    return offset, patch
-
-
-def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
-    """Encode only the detector-closed, explicitly enabled C80 route."""
-    if not enabled:
-        return None
-    candidate = getattr(config, "rex_static_controller_candidate", None)
-    required = {
-        "signature": "static-c80-controller-callback-v1",
-        "controller_class":
-            "legacy-c80-index1e-delta5-controller-candidate-v1",
-        "accepted": True,
-        "active": False,
-        "vector": 0x18,
-        "mask": 0x0200,
-        "callback_delta": 5,
-        "callback_validation_size": 68,
-    }
-    if (not isinstance(candidate, dict)
-            or any(candidate.get(key) != value
-                   for key, value in required.items())):
-        return None
-    integer_fields = (
-        "vector_target", "status", "enable", "wrapper_file_offset",
-        "handler_slot", "handler_file_offset", "handler_validation_size",
-        "callback_slot", "callback_file_offset", "wrapper_validation_size",
-    )
-    if any(type(candidate.get(field)) is not int for field in integer_fields):
-        return None
-    status = int(candidate["status"])
-    enable = int(candidate["enable"])
-    ram_base = int(getattr(config, "ram_base", 0))
-    ram_end = ram_base + int(getattr(config, "ram_size", 0))
-    flash_size = int(getattr(config, "flash_size", 0))
-    wrapper = int(candidate["wrapper_file_offset"])
-    wrapper_size = int(candidate["wrapper_validation_size"])
-    handler = int(candidate["handler_file_offset"])
-    handler_size = int(candidate["handler_validation_size"])
-    callback = int(candidate["callback_file_offset"])
-    callback_size = int(candidate["callback_validation_size"])
-    handler_slot = int(candidate["handler_slot"])
-    callback_slot = int(candidate["callback_slot"])
-    direct_fields = (
-        "rex_tick_address", "rex_irq_wrapper_address",
-        "rex_irq_handler_address", "rex_irq_handler_slot",
-        "rex_irq_callback_slot", "rex_irq_status_address",
-        "rex_irq_enable_address", "rex_irq_arm_address",
-    )
-    if (getattr(config, "load_address", None) != 0
-            or any(getattr(config, field, None) is not None
-                   for field in direct_fields)
-            or getattr(config, "rex_irq_mask", 0)
-            or int(candidate["vector_target"]) != ram_base
-            or status != 0x03000C80 or enable != status + 0x14
-            or tuple(candidate.get("status_banks", ()))
-               != (status, status + 4)
-            or tuple(candidate.get("clear_banks", ()))
-               != (status, status + 4)
-            or tuple(candidate.get("controller_write_banks", ()))
-               != (enable, enable + 4)
-            or tuple(candidate.get("controller_aperture", ()))
-               != (status, enable + 6)
-            or any(address & 3 or not ram_base <= address <= ram_end - 4
-                   for address in (handler_slot, callback_slot))
-            or wrapper & 3 or handler & 1 or callback & 1
-            or any(not 0 <= address < flash_size
-                   for address in (wrapper, handler, callback))
-            or any(size <= 0 or address + size > flash_size
-                   for address, size in (
-                       (wrapper, wrapper_size),
-                       (handler, handler_size),
-                       (callback, callback_size),
-                   ))):
-        return None
-    values = (
-        status, enable, 0x0200, 5_000_000,
-        ram_base, wrapper, handler_slot, handler, handler_size,
-        callback_slot, callback,
-    )
-    return ":".join(f"{value:x}" for value in values)
-
-
-def eeprom_gpio_profile(
-        image: bytes, config: object,
-        ) -> tuple[tuple[int, int, int, int, int, int, int] | None,
-                   str | None]:
-    """Return one detector-closed 24LCxx GPIO descriptor or reject reason."""
-    read = getattr(config, "eeprom_read_address", None)
-    write = getattr(config, "eeprom_write_address", None)
-    geometry = getattr(config, "eeprom_geometry_address", None)
-    load = getattr(config, "load_address", 0)
-    if not all(isinstance(value, int) for value in (read, write, geometry)):
-        return None, None
-    read -= load
-    write -= load
-    if not (0 <= read < len(image) and 0 <= write < len(image)):
-        return None, "transport-entry-outside-firmware"
-    common = (
-        image[read:read + len(EEPROM_24LCXX_READ_SIGNATURE)]
-        == EEPROM_24LCXX_READ_SIGNATURE
-        and eeprom_24lcxx_write_at(image, write)
-    )
-    split_bank = (
-        image[read:read + len(EEPROM_24LCXX_X430_READ_PREFIX)]
-        == EEPROM_24LCXX_X430_READ_PREFIX
-        and image[write:write + len(EEPROM_24LCXX_X430_WRITE_PREFIX)]
-        == EEPROM_24LCXX_X430_WRITE_PREFIX
-    )
-    if split_bank:
-        writer = write - 0x12C
-        ack = writer - 0xA6
-        reader = read - 0x718
-        shapes = (
-            (writer, bytes.fromhex("f0b5071c8025")),
-            (writer + 0x16,
-             bytes.fromhex("0122087810430870087826490871")),
-            (writer + 0x2E,
-             bytes.fromhex("202108431070107821490870")),
-            (writer + 0x44,
-             bytes.fromhex("202311789943117011781b4a1170")),
-            (writer + 0x5A,
-             bytes.fromhex("0878400840000870087815490871")),
-            (writer + 0x72,
-             bytes.fromhex("202108431070107810490870")),
-            (writer + 0x88,
-             bytes.fromhex("202311789943117011780a4a1170")),
-            (ack, b"\xf0\xb5"),
-            (ack + 0x06,
-             bytes.fromhex("234a11784908490011701178214a1172")),
-            (ack + 0x24,
-             bytes.fromhex("202229781c4c114329702978103c2170")),
-            (ack + 0x40,
-             bytes.fromhex("21790126301c490800d2002007063f0e")),
-            (ack + 0x5A,
-             bytes.fromhex("20239943297029782170")),
-            (ack + 0x78,
-             bytes.fromhex("0a7832430a700978064a1172")),
-            (reader, bytes.fromhex("f0b50027164d")),
-            (reader + 0x10,
-             bytes.fromhex("20220878104308700878114904390870")),
-            (reader + 0x28,
-             bytes.fromhex("28783f0e400801d301200743")),
-            (reader + 0x36,
-             bytes.fromhex("20230878984308700878074904390870")),
-        )
-        literals = (
-            (writer + 0x20, 1, 0x03000660),
-            (writer + 0x36, 1, 0x03000660),
-            (writer + 0x4E, 2, 0x03000660),
-            (writer + 0x64, 1, 0x03000660),
-            (writer + 0x7A, 1, 0x03000660),
-            (writer + 0x92, 2, 0x03000660),
-            (ack + 0x12, 2, 0x03000670),
-            (ack + 0x28, 4, 0x03000670),
-            (ack + 0x80, 2, 0x03000670),
-            (reader + 0x04, 5, 0x03000664),
-            (reader + 0x1A, 1, 0x03000664),
-            (reader + 0x40, 1, 0x03000664),
-        )
-        if (min(ack, writer, reader) < 0
-                or any(image[position:position + len(expected)] != expected
-                       for position, expected in shapes)
-                or any(thumb_literal_value(image, position, register) != value
-                       for position, register, value in literals)):
-            return None, "gpio-line-shape-mismatch"
-        return (0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None
-    if not common:
-        return None, "transport-entry-signature-mismatch"
-    gpio = struct.pack("<II", 0x03000660, 0x03000670)
-    if (not all(value in image[write:write + 0x700]
-                for value in (gpio[:4], gpio[4:]))
-            or not all(value in image[read:read + 0x700]
-                       for value in (gpio[:4], gpio[4:]))):
-        return None, "gpio-line-shape-mismatch"
-    literal = struct.pack("<I", geometry)
-    for position in range(0, len(image) - 3, 4):
-        if image[position:position + 4] != literal or position < 0x14:
-            continue
-        initializer = image[position - 0x14:position]
-        operation = struct.unpack_from("<H", initializer, 2)[0]
-        literal_address = ((position - 0x14 + 6) & ~3) + (operation & 0xFF) * 4
-        if (initializer[:2] == b"\x01\x21"
-                and operation & 0xF800 == 0x4800
-                and operation >> 8 & 7 == 0
-                and literal_address == position
-                and initializer[4:18]
-                == bytes.fromhex("c9030180012181700021c170f746")):
-            return (0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None
-    return None, "capacity-initializer-mismatch"
-
-
-class Transport:
-    def __init__(self, qemu: Path, firmware: Path,
-                 state_dir: Path | None = None,
-                 experimental_c80: bool = False) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="msm5xxx-qemu-gui-")
-        temporary = Path(self.temporary.name)
-        if state_dir is not None:
-            state_dir.mkdir(parents=True, exist_ok=True)
-        self.config = detect(firmware)
-        firmware_image = firmware.read_bytes()
-        self.rex_c80_profile = c80_rex_irq_profile(
-            self.config, experimental_c80
-        )
-        self.config.rex_static_controller_experimental = (
-            self.rex_c80_profile is not None
-        )
-        upper_nor_enabled = qemu_upper_nor_enabled(self.config)
-        legacy_primary_state = Path(self.config.flash_state)
-        legacy_secondary_state = Path(self.config.secondary_flash_state)
-        legacy_upper_state = (Path(self.config.upper_flash_state)
-                              if upper_nor_enabled else None)
-        legacy_eeprom_state = Path(str(self.config.flash_state) + ".eeprom.bin")
-        if (legacy_upper_state is not None
-                and legacy_upper_state.resolve() in {
-                    legacy_primary_state.resolve(),
-                    legacy_secondary_state.resolve(),
-                }):
-            raise ValueError("persistent upper NOR path collides")
-        os.environ["MSM5XXX_STATE_DIR"] = str(temporary / "state")
-        os.environ["MSM5XXX_LOG_DIR"] = str(temporary / "logs")
-        self.instructions = 0
-        self.pc = 0
-        self.ready_status = 0
-        self.ready_phase = 0
-        self.ready_cycles = 0
-        self.ready_reads = 0
-        self.ready_responses = 0
-        self.input_pressed = False
-        self.input_row = 0
-        self.input_sense = 0
-        self.input_host_events = 0
-        self.input_active_reads = 0
-        self.input_rejections = 0
-        self.matrix_input_profile: dict[str, object] | None = None
-        self.matrix_input_sideband_producer: dict[str, object] | None = None
-        self.matrix_held: dict[int, tuple[int, int, int]] = {}
-        self.sideband_held: set[int] = set()
-        self.state_imports: list[str] = []
-        self.config.flash_state = str(temporary / "primary.flash.json")
-        self.config.secondary_flash_state = str(temporary / "secondary.flash.json")
-        if upper_nor_enabled:
-            self.config.upper_flash_state = str(temporary / "upper.flash.json")
-        self.decoder = GenericMSMEmulator(self.config)
-        if self.config.load_address != 0:
-            raise ValueError("QEMU PoC requires NOR=0")
-        memory_profile = qemu_memory_profile(
-            self.config, unicorn_state(self.decoder)
-        )
-
-        lcd_listener = loopback_listener()
-        try:
-            gdb_listener = loopback_listener()
-        except Exception:
-            lcd_listener.close()
-            self.decoder.close()
-            self.temporary.cleanup()
-            raise
-        lcd_host, lcd_port = lcd_listener.getsockname()
-        gdb_host, gdb_port = gdb_listener.getsockname()
-        eligible = (
-            self.config.chipset == "MSM5000"
-            and self.config.board_adc_reader_address is not None
-        )
-        machine = (
-            "msm5xxx-poc,lcd-trace-chardev=lcd,"
-            f"memory-profile={memory_profile}"
-        )
-        board_adc_value = self.config.board_adc_value
-        if type(board_adc_value) is int and 0 <= board_adc_value <= 0xFF:
-            machine += f",board-adc-value={board_adc_value}"
-        dc0_profile = self.config.dc0_board_adc_profile
-        dc0_board_adc_value = (
-            dc0_profile.get("response_raw")
-            if isinstance(dc0_profile, dict)
-            and dc0_profile.get("accepted") is True
-            else board_adc_value
-        )
-        if (type(dc0_board_adc_value) is int
-                and 0 <= dc0_board_adc_value <= 0xFF):
-            machine += f",dc0-board-adc-value={dc0_board_adc_value}"
-        if eligible:
-            machine += ",sbi=on"
-        if (self.config.ready_poll is not None
-                and len(self.config.ready_poll["entries"]) == 1):
-            profile = self.config.ready_poll
-            machine += (
-                f",ready-poll={int(profile['status_address']):x}:"
-                f"{int(profile['mask']):x}:"
-                f"{int(profile['pulse_address']):x}:"
-                f"{int(profile['entries'][0]):x}"
-            )
-        board_status = self.config.board_status_input
-        if board_status is not None:
-            machine += (
-                f",board-status-input={board_status.address:x}:"
-                f"{board_status.mask:x}:{board_status.default:x}"
-            )
-        direct = self.decoder.direct_input_profile
-        if (direct is not None
-                and direct.get("grammar") == "direct-low-nibble-6-row-v1"
-                and int(direct.get("sense_bits", 0)) == 4):
-            register = int(direct["register"])
-            reset = next((value[0] for address, value in STABLE_MSM_MMIO
-                          if address == register and len(value) == 1), None)
-            if reset is not None:
-                sideband_producers = [
-                    producer
-                    for producer in
-                    self.decoder._validated_direct_sideband_producers()
-                    if int(producer["register"]) == register
-                    and int(producer["register_width"]) == 1
-                    and producer["polarity"] == "active-low"
-                    and int(producer["mask"]) & 0x0f == 0
-                    and int(producer["mask"]) &
-                    (int(producer["mask"]) - 1) == 0
-                    and int(producer["mask"]) & reset ==
-                    int(producer["mask"])
-                ]
-                sideband = (sideband_producers[0]
-                            if len(sideband_producers) == 1 else None)
-                sideband_mask = int(sideband["mask"]) if sideband else 0
-                sense_bitmap = sum(
-                    1 << sense for sense in matrix_senses(direct)
-                )
-                machine += (
-                    f",matrix-input={register:x}:"
-                    f"{int(direct['sense_site']):x}:"
-                    f"{int(direct['no_key']):x}:{reset:x}:"
-                    f"{int(direct['row_register']):x}:"
-                    f"{int(direct['rows']):x}:{sideband_mask:x}:"
-                    f"{sense_bitmap:x}"
-                )
-                self.matrix_input_profile = direct
-                self.matrix_input_sideband_producer = sideband
-        audio = self.config.audio_transport
-        if (audio is not None
-                and audio.get("static_status") == "accepted"
-                and audio.get("family") == "ma2"
-                and self.config.ma2_silent_boot_address is not None):
-            machine += (
-                f",audio-aperture={int(audio['base']):x}:"
-                f"{int(audio['data_offset']):x}"
-            )
-        rex_fields = (
-            self.config.rex_irq_status_address,
-            self.config.rex_irq_enable_address,
-            self.config.rex_irq_arm_address,
-            self.config.rex_idle_address,
-        )
-        if (self.config.rex_tick_ms == 5 and self.config.rex_irq_mask
-                and all(isinstance(value, int) for value in rex_fields)):
-            status, enable, arm, idle = rex_fields
-            machine += (
-                f",rex-irq={status:x}:{enable:x}:{arm:x}:"
-                f"{self.config.rex_irq_mask:x}:"
-                f"{self.config.rex_tick_ms * 1_000_000:x}:{idle:x}"
-            )
-        if self.rex_c80_profile is not None:
-            machine += f",rex-static-c80={self.rex_c80_profile}"
-        primary_profile = find_primary_fsd_amd_x16_nor(
-            firmware_image[:self.config.flash_size],
-            self.config.flash_id_address, self.config.flash_size,
-        )
-        primary_seed, primary_imported = load_legacy_nor_state(
-            bytes(self.decoder.flash.data), (legacy_primary_state,)
-        )
-        dmd_patch = legacy_dmd_loader_patch(
-            primary_seed, self.config,
-            primary_profile[0] if primary_profile is not None else None,
-        )
-        if dmd_patch is not None:
-            offset, patch = dmd_patch
-            patched = bytearray(primary_seed)
-            patched[offset:offset + len(patch)] = patch
-            primary_seed = bytes(patched)
-        pause_timer, pause_timer_reject = qemu_pause_timer_profile(
-            primary_seed, self.config,
-            primary_profile[0] if primary_profile is not None else None,
-        )
-        if pause_timer is not None:
-            machine += f",pause-timer={pause_timer}"
-        elif pause_timer_reject is not None:
-            self.config.detection_notes.append(
-                f"pause timer detector rejected: {pause_timer_reject}"
-            )
-        loader = firmware
-        loader_size = None
-        if primary_imported or dmd_patch is not None:
-            loader = temporary / "primary.raw"
-            loader.write_bytes(primary_seed)
-            if primary_imported:
-                self.state_imports.append("primary-nor-json")
-        storage_args: list[str] = []
-        pflash_unit = 0
-        if primary_profile is not None:
-            base, size, sector_size, id0, id1 = primary_profile
-            primary_state = ((state_dir / "primary-writable.raw")
-                             if state_dir is not None else
-                             (temporary / "primary-writable.raw"))
-            primary_writable_seed = primary_seed[base:base + size]
-            if primary_state.exists():
-                if primary_state.stat().st_size != size:
-                    raise ValueError("persistent primary NOR size mismatch")
-            else:
-                primary_state.write_bytes(primary_writable_seed)
-            machine += (
-                f",primary-x16-nor={base:x}:{size:x}:{sector_size:x}:"
-                f"{id0:x}:{id1:x}"
-            )
-            storage_args.extend((
-                "-drive",
-                f"file={primary_state},if=pflash,format=raw,unit=0",
-            ))
-            loader_size = base
-            pflash_unit = 1
-            self.config.detection_notes.append(
-                "primary x16 NOR writable tail selected from unique "
-                "fsd_amd descriptor/writer/ID linkage"
-            )
-        secondary = self.decoder.secondary_flash
-        secondary_base = self.config.secondary_flash_address
-        if (secondary_base is None
-                and self.config.secondary_flash_write_address is not None):
-            candidate = self.config.load_address + self.config.flash_size
-            candidate_ids = fujitsu_x16_flash_ids(
-                firmware_image,
-                self.config.secondary_flash_write_address,
-                self.config.load_address, candidate,
-            )
-            if (candidate_ids is not None
-                    and candidate + self.config.secondary_flash_size
-                    <= self.config.ram_base):
-                secondary_base = candidate
-        secondary_ids = fujitsu_x16_flash_ids(
-            firmware_image, self.config.secondary_flash_write_address,
-            self.config.load_address, int(secondary_base or 0),
-        )
-        if secondary_base is not None and secondary_ids:
-            if loader == firmware:
-                loader = temporary / "primary.raw"
-                loader.write_bytes(primary_seed)
-            secondary_state = ((state_dir / "secondary.raw")
-                               if state_dir is not None else
-                               (temporary / "secondary.raw"))
-            secondary_seed = (
-                bytes(secondary.data) if secondary is not None else
-                b"\xff" * self.config.secondary_flash_size
-            )
-            if secondary_state.exists():
-                if secondary_state.stat().st_size != len(secondary_seed):
-                    raise ValueError("persistent secondary NOR size mismatch")
-            else:
-                candidates = [legacy_secondary_state]
-                if self.config.secondary_flash_address is None:
-                    candidates.insert(0, legacy_primary_state.with_name(
-                        legacy_primary_state.stem +
-                        f".lazy-secondary-{secondary_base:08x}-"
-                        f"{len(secondary_seed):x}.json"
-                    ))
-                secondary_seed, imported = load_legacy_nor_state(
-                    secondary_seed, tuple(candidates)
-                )
-                if imported:
-                    self.state_imports.append("secondary-nor-json")
-                secondary_state.write_bytes(secondary_seed)
-            machine += (
-                f",fujitsu-x16-nor={self.config.flash_size:x}:"
-                f"{secondary_base:x}:{len(secondary_seed):x}:"
-                f"{secondary_ids[0]:x}:{secondary_ids[1]:x}"
-            )
-            storage_args.extend((
-                "-drive",
-                f"file={secondary_state},if=pflash,format=raw,unit={pflash_unit}",
-            ))
-            pflash_unit += 1
-        if upper_nor_enabled:
-            upper = self.decoder.upper_flash
-            assert upper is not None and legacy_upper_state is not None
-            upper_state = ((state_dir / "upper.raw")
-                           if state_dir is not None else
-                           (temporary / "upper.raw"))
-            upper_seed = bytes(upper.data)
-            if upper_state.exists():
-                if upper_state.stat().st_size != len(upper_seed):
-                    raise ValueError("persistent upper NOR size mismatch")
-            else:
-                upper_seed, imported = load_legacy_nor_state(
-                    upper_seed, (legacy_upper_state,)
-                )
-                if imported:
-                    self.state_imports.append("upper-nor-json")
-                upper_state.write_bytes(upper_seed)
-            machine += ",upper-x8-nor=on"
-            storage_args.extend((
-                "-drive",
-                f"file={upper_state},if=pflash,format=raw,unit={pflash_unit}",
-            ))
-        eeprom_profile, eeprom_reject = eeprom_gpio_profile(
-            firmware_image, self.config
-        )
-        if eeprom_reject is not None:
-            self.config.detection_notes.append(
-                f"24LCxx GPIO bridge rejected: {eeprom_reject}"
-            )
-        if eeprom_profile is not None:
-            (gpio_base, data_offset, data_mask, clock_offset, clock_mask,
-             direction_offset, capacity) = eeprom_profile
-            eeprom_state = ((state_dir / "eeprom.raw")
-                            if state_dir is not None else
-                            (temporary / "eeprom.raw"))
-            if eeprom_state.exists():
-                if eeprom_state.stat().st_size != capacity:
-                    raise ValueError("persistent EEPROM size mismatch")
-            else:
-                eeprom_seed, imported = load_legacy_raw_state(
-                    b"\xff" * capacity, legacy_eeprom_state
-                )
-                if imported:
-                    self.state_imports.append("eeprom-raw")
-                eeprom_state.write_bytes(eeprom_seed)
-            machine += (
-                f",eeprom-24lcxx-gpio={gpio_base:x}:{data_offset:x}:"
-                f"{data_mask:x}:{clock_offset:x}:{clock_mask:x}:"
-                f"{direction_offset:x}:"
-                f"{capacity:x}"
-            )
-            storage_args.extend((
-                "-drive", f"file={eeprom_state},if=mtd,format=raw,unit=0",
-            ))
-        self.stderr = tempfile.TemporaryFile(mode="w+t")
-        try:
-            self.process = subprocess.Popen(
-                [
-                    str(qemu), "-M", machine, "-cpu", "ti925t",
-                    "-m", f"{self.config.ram_size // (1024 * 1024)}M",
-                    *raw_loader_arguments(
-                        loader, self.config.ram_size, temporary, loader_size
-                    ),
-                    *storage_args,
-                    "-chardev",
-                    f"socket,id=lcd,host={lcd_host},port={lcd_port},"
-                    "server=off,nodelay=on",
-                    "-chardev",
-                    f"socket,id=gdb,host={gdb_host},port={gdb_port},"
-                    "server=off,nodelay=on",
-                    "-nographic", "-monitor", "none", "-serial", "none",
-                    "-S", "-gdb", "chardev:gdb",
-                    "-icount", "shift=6,align=on,sleep=on",
-                    "-no-reboot", "-no-shutdown",
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=self.stderr,
-                text=True,
-            )
-        except Exception:
-            lcd_listener.close()
-            gdb_listener.close()
-            self.stderr.close()
-            self.decoder.close()
-            self.temporary.cleanup()
-            raise
-        try:
-            try:
-                self.lcd_socket = self._accept_qemu(lcd_listener)
-                gdb_socket = self._accept_qemu(gdb_listener)
-            finally:
-                lcd_listener.close()
-                gdb_listener.close()
-            self.lcd_socket.settimeout(0.2)
-            with gdb_socket:
-                gdb_socket.settimeout(10)
-                remote = Remote(gdb_socket)
-                remote.command("qSupported:qXfer:features:read+")
-                if remote.command("D") != "OK":
-                    raise RuntimeError("QEMU GDB detach failed")
-        except Exception:
-            lcd_listener.close()
-            gdb_listener.close()
-            if hasattr(self, "lcd_socket"):
-                self.lcd_socket.close()
-            self._terminate_process()
-            self.stderr.close()
-            self.decoder.close()
-            self.temporary.cleanup()
-            raise
-
-    def _accept_qemu(self, listener: socket.socket) -> socket.socket:
-        listener.settimeout(0.1)
-        for _ in range(50):
-            try:
-                return listener.accept()[0]
-            except socket.timeout:
-                status = self.process.poll()
-                if status is not None:
-                    detail = self._stderr_text()
-                    raise RuntimeError(
-                        f"QEMU exited with status {status} before transport"
-                        f" connection{': ' + detail if detail else ''}"
-                    )
-        raise TimeoutError("timed out waiting for QEMU transport connection")
-
-    def _stderr_text(self) -> str:
-        self.stderr.flush()
-        self.stderr.seek(0)
-        return self.stderr.read().strip()
-
-    def _terminate_process(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(2)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-
-    def replay(self, stop: threading.Event) -> None:
-        pending = bytearray()
-        while not stop.is_set() and self.process.poll() is None:
-            try:
-                chunk = self.lcd_socket.recv(65536)
-            except TimeoutError:
-                continue
-            except OSError:
-                if stop.is_set() or self.process.poll() is not None:
-                    break
-                raise
-            if not chunk:
-                break
-            pending.extend(chunk)
-            complete = len(pending) // RECORD_SIZE * RECORD_SIZE
-            for offset in range(0, complete, RECORD_SIZE):
-                record = pending[offset:offset + RECORD_SIZE]
-                if record[0] == LCD_WRITE:
-                    self.decoder._lcd_write(
-                        self.decoder.uc, 0,
-                        int.from_bytes(record[4:8], "little"),
-                        record[1],
-                        int.from_bytes(record[8:12], "little"),
-                        None,
-                    )
-                elif record[0] == TELEMETRY:
-                    self.decoder._lcd_page_flush_current()
-                    self.decoder._flush_indexed_frame()
-                    self.pc = int.from_bytes(record[4:8], "little")
-                    self.instructions = int.from_bytes(record[8:16], "little")
-                elif record[0] == DEVICE_TELEMETRY:
-                    phase_cycles = int.from_bytes(record[4:8], "little")
-                    self.ready_status = record[1]
-                    self.ready_phase = phase_cycles & 0xff
-                    self.ready_cycles = phase_cycles >> 8
-                    self.ready_reads = int.from_bytes(record[8:12], "little")
-                    self.ready_responses = int.from_bytes(
-                        record[12:16], "little"
-                    )
-                elif record[0] == INPUT_TELEMETRY:
-                    matrix = int.from_bytes(record[4:8], "little")
-                    self.input_pressed = bool(record[1])
-                    self.input_row = matrix & 0xff
-                    self.input_sense = matrix >> 8 & 0xff
-                    self.input_rejections = matrix >> 16
-                    self.input_host_events = int.from_bytes(
-                        record[8:12], "little"
-                    )
-                    self.input_active_reads = int.from_bytes(
-                        record[12:16], "little"
-                    )
-            del pending[:complete]
-
-    def _sideband_input_producer(
-            self, bit: int, event_code: int | None,
-    ) -> dict[str, object] | None:
-        producer = self.decoder._direct_sideband_producer(bit, event_code)
-        return (producer if producer == self.matrix_input_sideband_producer
-                else None)
-
-    def can_set_key(self, bit: int, event_code: int | None = None) -> bool:
-        profile = self.matrix_input_profile
-        return (profile is not None and
-                (self._sideband_input_producer(bit, event_code) is not None
-                 or self.decoder._direct_matrix_position(bit, event_code)
-                 is not None))
-
-    def set_key(self, bit: int, pressed: bool,
-                event_code: int | None = None) -> bool:
-        profile = self.matrix_input_profile
-        if profile is None:
-            return False
-        if pressed:
-            if bit in self.matrix_held or bit in self.sideband_held:
-                return True
-            if self.matrix_held or self.sideband_held:
-                self.decoder.input_error = (
-                    "direct input supports one key at a time"
-                )
-                return False
-            sideband = self._sideband_input_producer(bit, event_code)
-            position = self.decoder._direct_matrix_position(bit, event_code)
-            if sideband is not None:
-                packet = sideband_input_command(sideband, True)
-            elif position is not None:
-                packet = matrix_input_command(profile, position, True)
-            else:
-                return False
-        else:
-            sideband = self._sideband_input_producer(bit, event_code)
-            position = self.matrix_held.get(bit)
-            if bit in self.sideband_held and sideband is not None:
-                packet = sideband_input_command(sideband, False)
-            elif position is not None:
-                packet = matrix_input_command(profile, position, False)
-            else:
-                return False
-        try:
-            self.lcd_socket.sendall(packet)
-        except OSError as error:
-            self.decoder.input_error = f"QEMU input transport failed: {error}"
-            return False
-        if pressed:
-            if sideband is not None:
-                self.sideband_held.add(bit)
-            else:
-                assert position is not None
-                self.matrix_held[bit] = position
-        else:
-            self.sideband_held.discard(bit)
-            self.matrix_held.pop(bit, None)
-        self.decoder.input_error = ""
-        return True
-
-    def close(self) -> None:
-        self.lcd_socket.close()
-        self._terminate_process()
-        self.stderr.close()
-        self.decoder.close()
-        self.temporary.cleanup()
+from msm5xxx_emulator.gui.worker import _prepared_profile_matches  # noqa: E402
 
 
 class LiveWindow(Window):
     def __init__(self, root: tk.Tk, firmware: Path,
-                 transport: Transport) -> None:
+                 qemu: Path, state_dir: Path | None = None,
+                 experimental_c80: bool = False) -> None:
+        self.qemu = qemu
+        self.state_dir = state_dir
+        self.experimental_c80 = experimental_c80
+        self.transport: Transport | None = None
+        self._active_firmware: Path | None = None
+        self._active_overrides: dict[str, object] = {}
+        super().__init__(
+            root, firmware,
+            experimental_c80_controller=experimental_c80,
+        )
+        self.root.after(100, self._refresh_qemu_metrics)
+        self.root.after(5, self._forward_qemu_keys)
+
+    def _restart(self) -> None:
+        requested_firmware = self.firmware
+        requested_overrides = dict(self.overrides)
+        prepared = self._prepared_profile
+        self._prepared_profile = None
+        try:
+            if _prepared_profile_matches(
+                    prepared, requested_firmware, requested_overrides):
+                assert prepared is not None
+                config = prepared[0]
+                requested_overrides = dict(prepared[1])
+            else:
+                config, requested_overrides = detect_profile(
+                    requested_firmware, requested_overrides
+                )
+        except Exception as error:
+            if self._active_firmware is None:
+                raise
+            self.firmware = self._active_firmware
+            self.overrides = dict(self._active_overrides)
+            self.status.set(str(error))
+            messagebox.showerror(
+                self._text("settings_error"), str(error), parent=self.root
+            )
+            return
+
+        self.generation += 1
+        self.stop.set()
+        for callback in self.pending_key_releases.values():
+            self.root.after_cancel(callback)
+        self.pending_key_releases.clear()
+        self.keyboard_bits.clear()
+        self.keyboard_sources.clear()
+        self.held.clear()
+        self.commands = queue.SimpleQueue()
+        self._stop_transport()
+        self.stop = threading.Event()
+        self._render_cache = None
+        try:
+            transport = Transport(
+                self.qemu, requested_firmware, self.state_dir,
+                self.experimental_c80, config=config,
+            )
+        except Exception as error:
+            if self._active_firmware is None:
+                raise
+            self.firmware = self._active_firmware
+            self.overrides = dict(self._active_overrides)
+            save_error = None
+            try:
+                self._save_config()
+            except (OSError, TimeoutError) as restore_error:
+                save_error = restore_error
+            try:
+                rollback, _cleaned = detect_profile(
+                    self.firmware, self.overrides
+                )
+                transport = Transport(
+                    self.qemu, self.firmware, self.state_dir,
+                    self.experimental_c80, config=rollback,
+                )
+            except Exception as rollback_error:
+                detail = f"{error}; restore failed: {rollback_error}"
+                if save_error is not None:
+                    detail += f"; settings restore not saved: {save_error}"
+                self.status.set(detail)
+                messagebox.showerror(
+                    self._text("settings_error"), detail, parent=self.root
+                )
+                return
+            self._activate_transport(
+                transport, self.firmware, self.overrides
+            )
+            detail = f"Settings failed; previous firmware restored: {error}"
+            if save_error is not None:
+                detail += f"; settings restore not saved: {save_error}"
+            self.status.set(detail)
+            messagebox.showerror(
+                self._text("settings_error"), detail, parent=self.root
+            )
+            return
+        self._activate_transport(
+            transport, requested_firmware, requested_overrides
+        )
+
+    def _activate_transport(
+            self, transport: Transport, firmware: Path,
+            overrides: dict[str, object]) -> None:
         self.transport = transport
-        super().__init__(root, firmware)
         self.emulator = transport.decoder
+        self.firmware = firmware
+        self.overrides = dict(overrides)
+        self._active_firmware = firmware
+        self._active_overrides = dict(overrides)
         config = transport.config
         self.model.set(display_model_name(
             config.model, config.verified_model, self.ui_language
@@ -1072,23 +140,36 @@ class LiveWindow(Window):
             f"QEMU TCG · {config.chipset} · {config.width}×{config.height}"
         )
         self.status.set("QEMU TCG real-time LCD transport")
-        self.settings_button.configure(state="disabled")
         self.worker = threading.Thread(
             target=transport.replay, args=(self.stop,), daemon=False
         )
         self.worker.start()
-        self.root.after(100, self._refresh_qemu_metrics)
-        self.root.after(5, self._forward_qemu_keys)
 
-    def _restart(self) -> None:
-        pass
+    def _stop_transport(self) -> None:
+        transport = self.transport
+        worker = self.worker
+        self.transport = None
+        self.worker = None
+        self.emulator = None
+        if transport is None:
+            return
+        self.stop.set()
+        transport.interrupt()
+        if worker is not None and worker.is_alive():
+            worker.join()
+        transport.close()
 
     def _key_supported(self, bit: int,
                        event_code: int | None = None) -> bool:
-        return self.transport.can_set_key(bit, event_code)
+        return (self.transport is not None
+                and self.transport.can_set_key(bit, event_code))
 
     def _forward_qemu_keys(self) -> None:
         if self.closing:
+            return
+        transport = self.transport
+        if transport is None:
+            self.root.after(5, self._forward_qemu_keys)
             return
         while True:
             try:
@@ -1097,33 +178,35 @@ class LiveWindow(Window):
                 break
             if len(command) in (2, 3) and isinstance(command[0], int):
                 event_code = int(command[2]) if len(command) == 3 else None
-                self.transport.set_key(
+                transport.set_key(
                     int(command[0]), bool(command[1]), event_code
                 )
             elif command[0] == "framebuffer-format" and len(command) == 2:
-                self.transport.decoder.set_framebuffer_format(str(command[1]))
+                transport.decoder.set_framebuffer_format(str(command[1]))
+                self._active_overrides = dict(self.overrides)
         self.root.after(5, self._forward_qemu_keys)
 
     def _refresh_qemu_metrics(self) -> None:
         if self.closing:
             return
-        emulator = self.transport.decoder
+        transport = self.transport
+        if transport is None:
+            self.root.after(100, self._refresh_qemu_metrics)
+            return
+        emulator = transport.decoder
         width, height, _frame = emulator.display_snapshot()
         self.device_details.set(
             f"QEMU TCG · {emulator.config.chipset} · {width}×{height}"
         )
-        self.metric_values["run"].set(f"{self.transport.instructions:,}")
-        self.metric_values["pc"].set(f"0x{self.transport.pc:08X}")
+        self.metric_values["run"].set(f"{transport.instructions:,}")
+        self.metric_values["pc"].set(f"0x{transport.pc:08X}")
         self.metric_values["lcd"].set(f"{emulator.lcd_writes:,}")
         self.metric_values["frame"].set(str(emulator.frame_sequence))
         self.root.after(100, self._refresh_qemu_metrics)
 
     def _close(self) -> None:
         if not self.closing:
-            self.stop.set()
-            if self.worker is not None and self.worker.is_alive():
-                self.worker.join(1)
-            self.transport.close()
+            self._stop_transport()
         super()._close()
 
 
@@ -1132,20 +215,23 @@ def main() -> int:
     parser.add_argument("firmware", nargs="?", type=Path)
     parser.add_argument("--qemu", required=True, type=Path)
     parser.add_argument("--state-dir", type=Path)
-    parser.add_argument("--experimental-c80-controller", action="store_true")
+    parser.add_argument(
+        "--experimental-static-rex-controller",
+        "--experimental-c80-controller",
+        dest="experimental_c80_controller", action="store_true",
+    )
     args = parser.parse_args()
     firmware = args.firmware
     if firmware is None:
         firmware = choose_firmware()
         if firmware is None:
             return 0
-    transport = Transport(
-        args.qemu.resolve(), firmware.resolve(),
+    root = tk.Tk()
+    window = LiveWindow(
+        root, firmware.resolve(), args.qemu.resolve(),
         args.state_dir.resolve() if args.state_dir is not None else None,
         args.experimental_c80_controller,
     )
-    root = tk.Tk()
-    window = LiveWindow(root, firmware.resolve(), transport)
     try:
         root.mainloop()
     finally:

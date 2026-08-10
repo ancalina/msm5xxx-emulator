@@ -44,22 +44,59 @@ class PageProtocolMixin:
             return False
         bits_per_pixel = self._lcd_page_bits_per_pixel
         raw = page * 256 + column * bits_per_pixel
-        planes = self._lcd_page_ram[raw:raw + bits_per_pixel]
-        if len(planes) != bits_per_pixel:
+        ram = self._lcd_page_ram
+        if raw + bits_per_pixel > len(ram):
             return False
-        changed = False
-        for bit in range(8):
-            index = (page * 8 + bit) * self.config.width + column
-            offset = index * 3
-            before = self.framebuffer[offset:offset + 3]
-            level = 0
-            for plane_index, value in enumerate(planes):
-                level |= ((value >> bit) & 1) << (
-                    bits_per_pixel - plane_index - 1
+        if bits_per_pixel not in (1, 2):
+            planes = ram[raw:raw + bits_per_pixel]
+            changed = False
+            for bit in range(8):
+                offset = ((page * 8 + bit) * self.config.width + column) * 3
+                before = self.framebuffer[offset:offset + 3]
+                level = 0
+                for plane_index, value in enumerate(planes):
+                    level |= ((value >> bit) & 1) << (
+                        bits_per_pixel - plane_index - 1
+                    )
+                shade = level * 255 // ((1 << bits_per_pixel) - 1)
+                self.framebuffer[offset:offset + 3] = bytes((shade,) * 3)
+                changed |= before != self.framebuffer[offset:offset + 3]
+            return changed
+        first = ram[raw]
+        second = ram[raw + 1] if bits_per_pixel == 2 else 0
+        cache = getattr(self, "_lcd_page_shade_cache", None)
+        if cache is None:
+            cache = self._lcd_page_shade_cache = {}
+        key = bits_per_pixel << 16 | second << 8 | first
+        shades = cache.get(key)
+        if shades is None:
+            if bits_per_pixel == 1:
+                shades = bytes(
+                    ((first >> bit) & 1) * 255 for bit in range(8)
                 )
-            shade = level * 255 // ((1 << bits_per_pixel) - 1)
-            self.framebuffer[offset:offset + 3] = bytes((shade, shade, shade))
-            changed |= before != self.framebuffer[offset:offset + 3]
+            else:
+                shades = bytes(
+                    ((((first >> bit) & 1) << 1)
+                     | ((second >> bit) & 1)) * 85
+                    for bit in range(8)
+                )
+            # ponytail: bounded glyph cache; raise only if high-entropy page
+            # panels are measured to benefit from a larger working set.
+            if len(cache) < 1024:
+                cache[key] = shades
+        framebuffer = self.framebuffer
+        width = self.config.width
+        offset = (page * 8 * width + column) * 3
+        stride = width * 3
+        end = offset + stride * 8
+        changed = (
+            framebuffer[offset:end:stride] != shades
+            or framebuffer[offset + 1:end:stride] != shades
+            or framebuffer[offset + 2:end:stride] != shades
+        )
+        framebuffer[offset:end:stride] = shades
+        framebuffer[offset + 1:end:stride] = shades
+        framebuffer[offset + 2:end:stride] = shades
         return changed
 
     def _lcd_page_render_current(self) -> bool:
@@ -89,7 +126,11 @@ class PageProtocolMixin:
 
     def _lcd_page_flush_current(self) -> None:
         """Publish a validated partial page without treating a chunk as a row end."""
-        if self._lcd_page_render_current():
+        if not self._lcd_page_dirty:
+            return
+        changed = self._lcd_page_render_current()
+        self._lcd_page_dirty = False
+        if changed:
             self._lcd_protocol = f"page-{self._lcd_page_bits_per_pixel}bpp"
             self._publish_frame()
 
@@ -208,6 +249,7 @@ class PageProtocolMixin:
         column = self._lcd_page_column
         if 0 <= column < 256:
             self._lcd_page_ram[self._lcd_page_current * 256 + column] = value & 0xFF
+            self._lcd_page_dirty = True
         self._lcd_page_column += 1
         self._lcd_page_data_count += 1
         return self._lcd_page_qualified

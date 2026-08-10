@@ -278,6 +278,28 @@ class AudioTransportTests(unittest.TestCase):
         }))
         self.assertEqual(player.last_submit_error, "audio-player-closed")
 
+    def test_player_uses_macos_native_audio_fallback(self) -> None:
+        with patch(
+                "msm5xxx_emulator.e170_gm_audio.shutil.which",
+                side_effect=lambda name: "/usr/bin/afplay"
+                if name == "afplay" else None):
+            player = ApproximateSmafPlayer()
+        try:
+            self.assertEqual(player.backend, "SMAF PCM / afplay")
+        finally:
+            player.close()
+
+    def test_player_uses_linux_native_audio_fallback(self) -> None:
+        with patch(
+                "msm5xxx_emulator.e170_gm_audio.shutil.which",
+                side_effect=lambda name: "/usr/bin/aplay"
+                if name == "aplay" else None):
+            player = ApproximateSmafPlayer()
+        try:
+            self.assertEqual(player.backend, "SMAF PCM / aplay")
+        finally:
+            player.close()
+
     def test_ma5_fifo_decodes_register_write_without_readback(self) -> None:
         transport = AudioTransport({
             "family": "ma5", "grammar": "indexed-rw-v1",

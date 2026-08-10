@@ -73,18 +73,18 @@ is proven.
 
 ## Build and run
 
-The local verified target is QEMU `v10.2.1`, `arm-softmmu`. Apply
-`experiments/qemu-tcg/qemu-10.2.1-icount-advance.patch`, copy
-`experiments/qemu-tcg/msm5xxx-poc.c` into QEMU `hw/arm/`, add it to
-`hw/arm/meson.build`, then configure and build:
+The local verified target is QEMU `v10.2.1`, `arm-softmmu`. Linux and macOS use
+the checked source staging and native build wrapper:
 
 ```sh
-../qemu/configure --target-list=arm-softmmu \
-  --without-default-features --enable-fdt=internal \
-  --disable-docs --disable-tools --disable-guest-agent \
-  --disable-werror --disable-debug-info --enable-strip
-ninja -j2 qemu-system-arm
+./experiments/qemu-tcg/build_qemu_native.sh \
+  /path/to/qemu-10.2.1.tar.xz /new/build/work
 ```
+
+Set `MSM5XXX_DTC_SOURCE` to a checkout at the revision recorded in
+`experiments/qemu-tcg/qemu_build_inputs.env`.
+
+The Windows workflow calls the same staging script before its MinGW build.
 
 Run a matching binary archive:
 
@@ -98,10 +98,14 @@ Windows uses `run_windows.bat`; double-click for the chooser or drag one
 firmware file onto it. Source builds can set `MSM5XXX_QEMU` to an external
 `qemu-system-arm` path.
 
-The QEMU settings button is disabled because this runner cannot safely restart
-the native process in place. Restart the command after changing settings.
-Keep the same state directory across restarts; firmware-owned cold storage
-initialization can be required before a persistent warm boot reaches idle.
+The Android arm64 client and its pinned QEMU build command are in the
+[public Android source tree](https://github.com/ancalina/msm5xxx-emulator/tree/engine/qemu-tcg-alpha-20260809/android-client).
+
+Applying boot settings restarts the native QEMU process. Keep the same state
+directory across restarts; firmware-owned cold storage initialization can be
+required before a persistent warm boot reaches idle. Writable state is kept in
+a separate firmware-identity subdirectory. Existing root-level state remains
+assigned to the first firmware opened after upgrading.
 
 ## Release gates
 

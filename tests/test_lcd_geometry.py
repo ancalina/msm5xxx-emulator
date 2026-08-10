@@ -142,6 +142,7 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_page_column = 0
         emulator._lcd_page_start_column = 0
         emulator._lcd_page_data_count = 0
+        emulator._lcd_page_dirty = False
         emulator._lcd_page_row_bytes = 0
         emulator._lcd_page_width = 0
         emulator._lcd_page_height = 0
@@ -684,11 +685,19 @@ class LCDGeometryTests(unittest.TestCase):
         emulator = self._blank_emulator(visible=False)
         emulator._lcd_protocol = "direct"
         emulator._lcd_page_bits_per_pixel = 1
-        emulator._lcd_page_render_current = lambda: True
+        emulator._lcd_page_port = 0x02000000
+        emulator._lcd_page_current = 0
+        emulator._lcd_page_column_ready = True
+        emulator._lcd_page_qualified = True
+        renders = []
+        emulator._lcd_page_render_current = lambda: renders.append(1) or True
 
+        self.assertTrue(emulator._lcd_page_feed_data(0x02000004, 1, 1))
+        emulator._lcd_page_flush_current()
         emulator._lcd_page_flush_current()
 
         self.assertEqual(emulator._lcd_frame_protocol, "page-1bpp")
+        self.assertEqual(renders, [1])
 
     def test_page_lcd_metadata_supplies_only_an_unambiguous_width(self) -> None:
         self.assertEqual(
@@ -718,6 +727,28 @@ class LCDGeometryTests(unittest.TestCase):
             emulator.framebuffer[:12],
             bytes((170, 170, 170, 85, 85, 85, 255, 255, 255, 0, 0, 0)),
         )
+
+    def test_page_lcd_cached_shades_match_all_two_plane_bytes(self) -> None:
+        emulator = self._blank_emulator(visible=False, width=1, height=8)
+        emulator._lcd_page_width = 1
+        emulator._lcd_page_height = 8
+        emulator._lcd_page_bits_per_pixel = 2
+        emulator._lcd_page_ram = bytearray(16 * 256)
+
+        for first in range(256):
+            for second in range(256):
+                emulator._lcd_page_ram[:2] = bytes((first, second))
+                emulator._lcd_page_render_column(0, 0)
+                expected = bytes(
+                    channel
+                    for bit in range(8)
+                    for channel in (((((first >> bit) & 1) << 1)
+                                      | ((second >> bit) & 1)) * 85,) * 3
+                )
+                self.assertEqual(emulator.framebuffer, expected)
+
+        self.assertEqual(len(emulator._lcd_page_shade_cache), 1024)
+        self.assertFalse(emulator._lcd_page_render_column(0, 0))
 
     def test_low_byte_strh_page_scan_is_2bpp_without_raw_takeover(self) -> None:
         emulator = self._routing_emulator()

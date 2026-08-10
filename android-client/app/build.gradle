@@ -1,0 +1,48 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "org.msm5xxx.emulator"
+    compileSdk 35
+    ndkVersion "28.2.13676358"
+
+    defaultConfig {
+        applicationId "org.msm5xxx.emulator"
+        minSdk 28
+        targetSdk 35
+        versionCode 1
+        versionName "0.1"
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments "-DPYTHON_PREFIX_DIR=$rootDir/build/vendor-src/python-3.14.4-android/prefix"
+            }
+        }
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir "$rootDir/build/generated/python-assets"
+            jniLibs.srcDir "$rootDir/build/generated/jniLibs"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/c/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    // Python's stdlib contains required directories whose names start with '_'.
+    aaptOptions.ignoreAssetsPattern = "android-testbed-dont-ignore-anything"
+}

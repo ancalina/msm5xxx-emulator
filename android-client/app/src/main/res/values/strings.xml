@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MSM5xxx Emulator</string>
+    <string name="choose">Choose</string>
+    <string name="settings">Settings</string>
+    <string name="start">Run</string>
+    <string name="stop">Stop</string>
+    <string name="more">⋮</string>
+    <string name="more_actions">More actions</string>
+
+    <string name="key_menu">Menu</string>
+    <string name="key_up">▲</string>
+    <string name="key_cancel">Cancel</string>
+    <string name="key_call">Call</string>
+    <string name="key_left">◀</string>
+    <string name="key_ok">OK</string>
+    <string name="key_right">▶</string>
+    <string name="key_end">End</string>
+    <string name="key_volume_down">Vol-</string>
+    <string name="key_down">▼</string>
+    <string name="key_volume_up">Vol+</string>
+    <string name="key_1">1</string>
+    <string name="key_2">2</string>
+    <string name="key_3">3</string>
+    <string name="key_4">4</string>
+    <string name="key_5">5</string>
+    <string name="key_6">6</string>
+    <string name="key_7">7</string>
+    <string name="key_8">8</string>
+    <string name="key_9">9</string>
+    <string name="key_star">*</string>
+    <string name="key_0">0</string>
+    <string name="key_hash">#</string>
+
+    <string name="size_unavailable">Size unavailable</string>
+    <string name="size_bytes">%1$d bytes</string>
+    <string name="copying_firmware">Copying firmware…</string>
+    <string name="detecting_firmware">Detecting firmware profile…</string>
+    <string name="profile_header">%1$s · %2$d×%3$d · %4$s</string>
+    <string name="profile_header_without_geometry">%1$s · %2$s</string>
+    <string name="starting_session">Starting QEMU…</string>
+    <string name="lcd_visible">LCD frame visible</string>
+    <string name="lcd_waiting">LCD frame pending</string>
+    <string name="metric_pc_empty">PC —</string>
+    <string name="metric_run_empty">Run —</string>
+    <string name="metric_lcd_empty">LCD —</string>
+    <string name="metric_frame_empty">Frame —</string>
+    <string name="metric_input_empty">Input —</string>
+    <string name="metric_reject_empty">Reject —</string>
+    <string name="metric_jni_empty">JNI —</string>
+    <string name="metric_ack_empty">ACK —</string>
+    <string name="metric_pc">PC 0x%1$08X</string>
+    <string name="metric_run">Run %1$d</string>
+    <string name="metric_lcd">LCD %1$d</string>
+    <string name="metric_frame">Frame %1$d</string>
+    <string name="metric_input">Input %1$d</string>
+    <string name="metric_reject">Reject %1$d</string>
+    <string name="metric_jni">JNI %1$s</string>
+    <string name="metric_ack">ACK %1$s</string>
+    <string name="latency_pending">—</string>
+    <string name="latency_milliseconds">%1$d ms</string>
+    <string name="stopping_session">Stopping QEMU…</string>
+    <string name="session_failed">Session failed.</string>
+
+    <string name="error_no_picker">No document picker is available.</string>
+    <string name="error_unreadable_document">The selected document is not a readable firmware file.</string>
+    <string name="error_copy_failed">Could not copy the selected firmware into private storage.</string>
+    <string name="error_private_copy_missing">The private firmware copy is unavailable. Choose it again.</string>
+    <string name="error_preparation_failed">Firmware preparation failed.</string>
+    <string name="error_unsupported_firmware">Unsupported firmware.</string>
+    <string name="error_detection_failed">Firmware detection failed.</string>
+    <string name="error_backend_failed">The QEMU backend is unavailable.</string>
+    <string name="error_detector_runtime_failed">The detector runtime is unavailable.</string>
+    <string name="error_not_ready">The selected firmware is not ready to run.</string>
+    <string name="error_session_failed">The QEMU session could not continue.</string>
+    <string name="error_process_exited">The QEMU process exited.</string>
+    <string name="error_input_failed">The input could not be sent.</string>
+    <string name="error_stop_failed">The QEMU session did not stop cleanly.</string>
+
+    <string name="settings_title">Session settings</string>
+    <string name="persistent_state">Persistent device state (firmware SHA-isolated)</string>
+    <string name="experimental_rex">Experimental static REX controller</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+
+    <string name="mapping_title">Map %1$s</string>
+    <string name="mapping_value">0x%1$02X</string>
+    <string name="mapping_prompt">Enter a detected physical input event byte (example: 0x53 or 053). Only a unique firmware matrix/sideband producer is accepted. Leave empty to remove the mapping.</string>
+    <string name="mapping_invalid">Use 0x00..0xFF, zero-prefixed hex, or decimal 0..255.</string>
+    <string name="mapping_rejected">That event has no unique detected physical input producer.</string>
+    <string name="mapping_saved">Manual key mapping saved.</string>
+    <string name="mapping_deleted">Manual key mapping removed.</string>
+    <string name="key_detected_description">%1$s, detected input</string>
+    <string name="key_mapped_description">%1$s, manual mapping</string>
+    <string name="key_mapping_description">%1$s, tap to map input</string>
+
+    <string name="unnamed_firmware">Unnamed firmware</string>
+</resources>

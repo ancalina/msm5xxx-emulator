@@ -24,6 +24,7 @@ from msm5xxx_emulator.detection.storage import (
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
     EEPROM_24LCXX_F6F7_WRITE_PREFIX,
     find_24lc64_class_b_driver,
+    find_embedded_fujitsu_x16_nor,
     find_primary_fsd_amd_x16_nor,
 )
 
@@ -979,6 +980,32 @@ class DetectionTests(unittest.TestCase):
             self.assertIsNone(
                 find_fujitsu_x16_bulk_write(image + body, secondary_base)
             )
+
+        body, secondary_base, padding = variants[0]
+        image = bytearray(b"\xff" * 0x600000)
+        image[padding:padding + len(body)] = body
+        image[0x1800:0x1800 + 13] = b"fs_fujitsu.c\0"
+        name = 0x1900
+        image[name:name + 20] = b"Fujitsu command bus\0"
+        geometry = 0x2000
+        sectors = 24
+        struct.pack_into("<2I", image, geometry, name, sectors)
+        struct.pack_into(f"<{sectors}I", image, geometry + 8,
+                         *(0x10000,) * sectors)
+        descriptor = 0x3000
+        struct.pack_into("<5I", image, descriptor, 0x005F0004, 0, 1,
+                         0x410000, sectors * 0x10000)
+        functions = (0x1001, 0x1101, 0x1201, padding - 0x60 | 1,
+                     0x1301, 0x1401)
+        struct.pack_into("<6I", image, descriptor + 0x14, *functions)
+        self.assertEqual(
+            find_embedded_fujitsu_x16_nor(bytes(image), len(image)),
+            (secondary_base, 0x200000, 0x0004, 0x005F),
+        )
+        struct.pack_into("<I", image, descriptor + 0x20, functions[3] + 2)
+        self.assertIsNone(
+            find_embedded_fujitsu_x16_nor(bytes(image), len(image))
+        )
 
     def test_primary_fsd_amd_nor_requires_linked_writer_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x4000)

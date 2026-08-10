@@ -46,29 +46,34 @@ jobs:
       - name: Build patched QEMU
         run: |
           set -euxo pipefail
+          workflow_qemu_version="$QEMU_VERSION"
+          . experiments/qemu-tcg/qemu_build_inputs.env
+          test "$workflow_qemu_version" = "$QEMU_VERSION"
           work="$PWD/.ci-windows"
           source="$work/qemu-${QEMU_VERSION}-msm5xxx"
           build="$work/build"
           archive="$work/qemu-${QEMU_VERSION}.tar.xz"
           work_native="$(cygpath -m "$work")"
-          mkdir -p "$source" "$build"
+          mkdir -p "$work" "$build"
           curl -fL --retry 3 \
             "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" \
             -o "$archive"
-          MSYS=winsymlinks:sys tar -xJf "$archive" \
-            --strip-components=1 -C "$source"
-          patch -p1 -d "$source" < \
-            experiments/qemu-tcg/qemu-10.2.1-icount-advance.patch
-          cp experiments/qemu-tcg/msm5xxx-poc.c "$source/hw/arm/"
-          printf "\narm_common_ss.add(files('msm5xxx-poc.c'))\n" \
-            >> "$source/hw/arm/meson.build"
-          test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c'))" \
-            "$source/hw/arm/meson.build")" -eq 1
+          MSYS=winsymlinks:sys \
+            experiments/qemu-tcg/stage_qemu_source.sh "$archive" "$source"
+          mkdir "$source/subprojects/dtc"
+          git -C "$source/subprojects/dtc" init
+          git -C "$source/subprojects/dtc" config core.autocrlf false
+          git -C "$source/subprojects/dtc" fetch --depth 1 \
+            "$QEMU_DTC_URL" "$QEMU_DTC_REVISION"
+          git -C "$source/subprojects/dtc" checkout --detach FETCH_HEAD
+          test "$(git -C "$source/subprojects/dtc" rev-parse HEAD)" = \
+            "$QEMU_DTC_REVISION"
           cd "$build"
           "$source/configure" \
             --target-list=arm-softmmu \
             --without-default-features \
             --enable-fdt=internal \
+            --disable-download \
             --disable-docs \
             --disable-tools \
             --disable-guest-agent \
@@ -84,24 +89,27 @@ jobs:
           work="$PWD/.ci-windows"
           source="$work/qemu-${QEMU_VERSION}-msm5xxx"
           bundle="$PWD/dist/$BUNDLE_NAME"
-          mkdir -p "$bundle/bin" "$bundle/experiments/qemu-tcg"
+          mkdir -p "$bundle/bin" "$bundle/docs" "$bundle/experiments/qemu-tcg"
           cp "$work/build/qemu-system-arm.exe" "$bundle/bin/"
           cp run_windows.bat requirements.txt README.md README.ko.md \
             LICENSE THIRD_PARTY_NOTICES.md "$bundle/"
           cp -a src "$bundle/"
           cp experiments/qemu-tcg/live-display.py \
+            experiments/qemu-tcg/qemu_transport.py \
             experiments/qemu-tcg/gdb_remote.py \
             experiments/qemu-tcg/README.md "$bundle/experiments/qemu-tcg/"
+          cp docs/QEMU_TCG_BACKEND.md "$bundle/docs/"
           cp "$source/COPYING" "$bundle/QEMU_COPYING"
 
           python - <<'PY'
           from pathlib import Path
+          import os
           import re
           import shutil
           import subprocess
           import sys
 
-          bundle = Path("dist/msm5xxx-qemu-windows-x86_64")
+          bundle = Path("dist") / os.environ["BUNDLE_NAME"]
           target = (bundle / "bin").resolve()
           available = {
               path.name.casefold(): path
@@ -149,15 +157,13 @@ jobs:
             done < <(pacman -Ql "$package" | awk '$2 ~ /\/share\/licenses\// {print $2}')
           done
 
-          upstream_sha="$(sha256sum "$work/qemu-${QEMU_VERSION}.tar.xz" | cut -d' ' -f1)"
-          machine_sha="$(sha256sum experiments/qemu-tcg/msm5xxx-poc.c | cut -d' ' -f1)"
-          cat > "$bundle/BUILDINFO.txt" <<EOF
-          QEMU_VERSION=$QEMU_VERSION
+          {
+            cat "$source/MSM5XXX_STAGING_INFO"
+            cat <<EOF
           QEMU_UPSTREAM=https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz
-          QEMU_UPSTREAM_SHA256=$upstream_sha
-          MSM5XXX_MACHINE_SHA256=$machine_sha
           PROJECT_COMMIT=$GITHUB_SHA
           EOF
+          } > "$bundle/BUILDINFO.txt"
 
       - name: Smoke test isolated bundle
         run: |
@@ -170,7 +176,7 @@ jobs:
           "$bundle/bin/qemu-system-arm.exe" -machine help \
             > "$bundle/QEMU_MACHINES.txt" 2>&1
           PATH="$saved_path"
-          grep -q '^QEMU emulator version 10\.2\.1' "$bundle/QEMU_VERSION.txt"
+          grep -Fxq "QEMU emulator version $QEMU_VERSION" "$bundle/QEMU_VERSION.txt"
           grep -q '^msm5xxx-poc ' "$bundle/QEMU_MACHINES.txt"
           cd "$bundle"
           find . -type f ! -name SHA256SUMS -print0 \
@@ -186,7 +192,11 @@ jobs:
           python -m pip install --disable-pip-version-check -r requirements.txt
           $env:PYTHONPATH = "src;."
           python -m unittest discover -s tests -p "test_qemu_input_transport.py" -v
+          python -m unittest discover -s tests -p "test_qemu_audio_transport.py" -v
           python -m unittest discover -s tests -p "test_gui_locale.py" -v
+          $bundle = (Resolve-Path "dist/$env:BUNDLE_NAME").Path
+          $env:PYTHONPATH = "$bundle/src;$bundle"
+          python "$bundle/experiments/qemu-tcg/live-display.py" --help | Out-Null
 
       - name: Pack corresponding source
         run: |

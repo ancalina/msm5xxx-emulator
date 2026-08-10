@@ -9,8 +9,8 @@ QEMU TCG 기반 Qualcomm MSM5000/MSM5100/MSM5500 피처폰 실험용
 ## 다운로드
 
 [Releases](https://github.com/ancalina/msm5xxx-emulator/releases)에서 운영체제용
-압축 파일과 `SHA256SUMS`를 받습니다. 압축 전체를 풉니다. Launcher, `bin/`,
-동봉 DLL을 분리하지 마십시오.
+압축 파일 또는 Android APK와 `SHA256SUMS`를 받습니다. Desktop 압축 전체를
+풉니다. Launcher, `bin/`, 동봉 DLL을 분리하지 마십시오.
 
 펌웨어와 저장 state는 포함되지 않습니다.
 
@@ -21,6 +21,7 @@ QEMU TCG 기반 Qualcomm MSM5000/MSM5100/MSM5500 피처폰 실험용
 - Windows: `run_windows.bat`를 더블클릭합니다.
 - Linux: `./run_linux.sh`를 실행합니다.
 - Intel macOS: `run_macos.command`를 더블클릭하거나 Terminal에서 실행합니다.
+- Android arm64: APK를 설치하고 실행합니다.
 
 Windows에서는 펌웨어 하나를 `run_windows.bat`에 drag-and-drop해도 됩니다.
 모든 플랫폼에서 경로를 직접 줄 수도 있습니다.
@@ -46,12 +47,14 @@ run_windows.bat "C:\path\phone.bin"
 
 Cold boot 후 warm boot가 필요한 경우 같은 directory를 재사용합니다.
 `--state-dir`를 생략하면 writable state는 종료 시 폐기됩니다.
+Android는 firmware SHA-256별 state를 app-private storage에 보존합니다.
 
 ## 요구사항
 
-- Tcl/Tk를 포함한 Python 3.10 이상.
-- Linux x86-64, Windows x86-64, Intel macOS 15.0 이상.
-- Python package 설치가 필요한 첫 실행에서는 network access.
+- Desktop: Tcl/Tk를 포함한 Python 3.10 이상.
+- Desktop: Linux x86-64, Windows x86-64, Intel macOS 15.0 이상.
+- Android: arm64-v8a Android 9 이상.
+- Python package 설치가 필요한 desktop 첫 실행에서는 network access.
 
 Linux는 `python3-tk`가 필요할 수 있습니다. macOS는
 `brew install python-tk@3.14`처럼 Tcl/Tk가 포함된 Python을 설치하십시오.

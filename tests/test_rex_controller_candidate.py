@@ -10,15 +10,25 @@ from unittest.mock import patch
 
 from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.rex import find_rex_static_controller_callback_candidate
+from msm5xxx_emulator.detection.rex import (
+    _legacy_620_vector_copy,
+    find_rex_static_controller_callback_candidate,
+)
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_SP
+
+RAM_5000 = {"ram_base": 0x01000000, "ram_size": 0x00800000}
+RAM_5100 = {"ram_base": 0x01800000, "ram_size": 0x00800000}
 
 
 def _bl(source: int, target: int) -> bytes:
     displacement = target - source - 4
     return struct.pack("<2H", 0xF000 | (displacement >> 12 & 0x7FF),
                        0xF800 | (displacement >> 1 & 0x7FF))
+
+
+def _arm_b(source: int, target: int) -> int:
+    return 0xEA000000 | ((target - source - 8) >> 2 & 0x00FFFFFF)
 
 
 def _literal(
@@ -37,12 +47,17 @@ def _candidate_image() -> tuple[bytearray, dict[str, int]]:
     callback, advance, seed_at = 0xC00, 0xE00, 0x1000
     masks, status, enable, table = 0x01004000, 0x03000C80, 0x03000C94, 0x01005000
     default = handler - 0x68 | 1
-    struct.pack_into("<I", image, 0x18, 0xEA3FFFF8)
+    wrapper, vector_source = 0x100, 0x1200
+    struct.pack_into("<I", image, 0x18, _arm_b(0x18, 0x01000000))
+    struct.pack_into("<4I", image, 0x1100, vector_source, 0x01000000,
+                     0x100, 0x01000100)
+    struct.pack_into("<I", image, vector_source,
+                     _arm_b(0x01000000, wrapper))
     struct.pack_into("<7I", image, seed_at, status, enable, 0x200, masks,
                      masks + 6, default, 0)
 
-    wrapper, handler_slot, setter, handler_registration = (
-        0x100, 0x01007000, 0xD00, 0xB80)
+    handler_slot, setter, handler_registration = (
+        0x01007000, 0xD00, 0xB80)
     struct.pack_into("<4I", image, wrapper, 0xE24EE004, 0xE92D540F,
                      0xE14F0000, 0xE92D0001)
     struct.pack_into("<I", image, wrapper + 0x28, 0xE59F3000)
@@ -137,6 +152,39 @@ def _candidate_image() -> tuple[bytearray, dict[str, int]]:
 
 
 class StaticControllerCandidateTests(unittest.TestCase):
+    def test_620_vector_copy_requires_unique_closed_route(self) -> None:
+        image = bytearray(0x1000)
+        source, target, size, wrapper = 0x400, 0x01100000, 0x100, 0x800
+        struct.pack_into("<I", image, 0x18, _arm_b(0x18, target))
+        struct.pack_into("<4I", image, 0x100, source, target, size,
+                         target + size)
+        struct.pack_into("<I", image, source, _arm_b(target, wrapper))
+        self.assertEqual(
+            _legacy_620_vector_copy(image, **RAM_5000),
+            (source, target, size, wrapper),
+        )
+
+        duplicate = bytearray(image)
+        struct.pack_into("<4I", duplicate, 0x120, source, target, size,
+                         target + size)
+        self.assertIsNone(_legacy_620_vector_copy(duplicate, **RAM_5000))
+
+        broken = bytearray(image)
+        struct.pack_into("<I", broken, 0x100 + 12, target + size - 4)
+        self.assertIsNone(_legacy_620_vector_copy(broken, **RAM_5000))
+
+        far = bytearray(0x24000)
+        far_source, far_record = 0x22000, 0x21000
+        struct.pack_into("<I", far, 0x18, _arm_b(0x18, target))
+        struct.pack_into("<4I", far, far_record, far_source, target, size,
+                         target + size)
+        struct.pack_into("<I", far, far_source, _arm_b(target, wrapper))
+        struct.pack_into("<I", far, 0x203, target)  # Unaligned decoy.
+        self.assertEqual(
+            _legacy_620_vector_copy(far, **RAM_5000),
+            (far_source, target, size, wrapper),
+        )
+
     def test_620_pending_reads_consume_only_addressed_bank(self) -> None:
         status, enable = 0x03000620, 0x03000628
         route = {
@@ -193,7 +241,9 @@ class StaticControllerCandidateTests(unittest.TestCase):
         }
         for name, addresses in expected.items():
             image = (root / name).read_bytes()
-            candidate = find_rex_static_controller_callback_candidate(image)
+            candidate = find_rex_static_controller_callback_candidate(
+                image, **RAM_5000
+            )
             self.assertIsNotNone(candidate)
             assert candidate is not None
             self.assertTrue(candidate["accepted"])
@@ -216,7 +266,9 @@ class StaticControllerCandidateTests(unittest.TestCase):
 
             changed = bytearray(image)
             changed[addresses[0] + 0x20] ^= 1
-            rejected = find_rex_static_controller_callback_candidate(changed)
+            rejected = find_rex_static_controller_callback_candidate(
+                changed, **RAM_5000
+            )
             self.assertIsNotNone(rejected)
             assert rejected is not None
             self.assertFalse(rejected["accepted"])
@@ -225,9 +277,113 @@ class StaticControllerCandidateTests(unittest.TestCase):
                 "two-bank-read-consume-handler-not-closed",
             )
 
+    def test_620_group10_copied_vector_is_telemetry_only(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares"
+        image = (root / "X430_VE21_Dump.bin").read_bytes()
+        candidate = find_rex_static_controller_callback_candidate(
+            image, **RAM_5000
+        )
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate["accepted"])
+        self.assertFalse(candidate["active"])
+        self.assertEqual(
+            candidate["controller_class"],
+            "legacy-msm5000-620-two-bank-read-consume-group10-v1",
+        )
+        self.assertEqual(candidate["group_row_size"], 10)
+        self.assertEqual(candidate["vector_target"], 0x01100000)
+        self.assertEqual(candidate["vector_copy_source"], 0x0039519C)
+        self.assertEqual(candidate["descriptor_runtime_address"],
+                         candidate["callback_slot"] - 0x14)
+
+        copy_record = image.find(struct.pack(
+            "<4I", candidate["vector_copy_source"],
+            candidate["vector_target"], candidate["vector_copy_size"],
+            candidate["vector_target"] + candidate["vector_copy_size"],
+        ), 0, 0x20000)
+        self.assertGreaterEqual(copy_record, 0)
+        clipped = bytearray(image)
+        clipped_size = (candidate["descriptor_file_offset"]
+                        - candidate["vector_copy_source"] + 4)
+        struct.pack_into("<2I", clipped, copy_record + 8, clipped_size,
+                         candidate["vector_target"] + clipped_size)
+        rejected = find_rex_static_controller_callback_candidate(
+            clipped, **RAM_5000
+        )
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reject_reason"],
+                         "descriptor-outside-vector-copy")
+
+        changed = bytearray(image)
+        changed[int(candidate["handler_file_offset"]) + 0x46] ^= 1
+        rejected = find_rex_static_controller_callback_candidate(
+            changed, **RAM_5000
+        )
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(
+            rejected["reject_reason"],
+            "two-bank-read-consume-handler-not-closed",
+        )
+
+    def test_c80_group10_relocated_vector_three_peer_topology(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares"
+        expected = {
+            "LG-SD810-General.bin": (0x00A41C18, 0x3694),
+            "LG-SD810-AfterSKTVer.bin": (0x00A2A48C, 0x3520),
+            "LG-SD840-FullDump.bin": (0x0099B060, 0x3690),
+        }
+        for name, (source, wrapper) in expected.items():
+            image = (root / name).read_bytes()
+            candidate = find_rex_static_controller_callback_candidate(
+                image, **RAM_5100
+            )
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            self.assertTrue(candidate["accepted"])
+            self.assertEqual(candidate["vector_target"], 0x01800000)
+            self.assertEqual(candidate["vector_copy_source"], source)
+            self.assertEqual(candidate["vector_copy_size"], 0x140)
+            self.assertEqual(candidate["wrapper_file_offset"], wrapper)
+            self.assertEqual(candidate["handler_validation_size"], 0x150)
+
+        image = bytearray((root / "LG-SD810-General.bin").read_bytes())
+        record = image.find(struct.pack(
+            "<4I", 0x00A41C18, 0x01800000, 0x140, 0x01800140,
+        ), 0, 0x20000)
+        self.assertGreaterEqual(record, 0)
+        struct.pack_into("<I", image, record + 12, 0x0180013C)
+        rejected = find_rex_static_controller_callback_candidate(
+            image, **RAM_5100
+        )
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reject_reason"],
+                         "copied-vector-route-not-closed")
+
+        changed = bytearray(
+            (root / "LG-SD810-General.bin").read_bytes()
+        )
+        changed[0x000C1870 + 0x104] ^= 1
+        rejected = find_rex_static_controller_callback_candidate(
+            changed, **RAM_5100
+        )
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reject_reason"],
+                         "two-bank-handler-not-closed")
+
     def test_closed_static_candidate_accepts_and_mutations_reject(self) -> None:
         image, offsets = _candidate_image()
-        result = find_rex_static_controller_callback_candidate(image)
+        result = find_rex_static_controller_callback_candidate(
+            image, **RAM_5000
+        )
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result["handler_file_offset"], offsets["handler"])
@@ -255,6 +411,24 @@ class StaticControllerCandidateTests(unittest.TestCase):
         )
         self.assertIn("static topology only", result["semantic_limit"])
 
+        missing_copy = bytearray(image)
+        missing_copy[0x1100:0x1110] = b"\0" * 16
+        self.assertEqual(
+            find_rex_static_controller_callback_candidate(
+                missing_copy, **RAM_5000
+            )["reject_reason"],
+            "copied-vector-route-not-closed",
+        )
+        wrong_wrapper = bytearray(image)
+        struct.pack_into("<I", wrong_wrapper, 0x1200,
+                         _arm_b(0x01000000, 0x200))
+        self.assertEqual(
+            find_rex_static_controller_callback_candidate(
+                wrong_wrapper, **RAM_5000
+            )["reject_reason"],
+            "copied-vector-wrapper-mismatch",
+        )
+
         unaligned = bytearray(image)
         duplicate = offsets["wrapper"] + 0x81
         struct.pack_into("<4I", unaligned, duplicate, 0xE24EE004,
@@ -263,7 +437,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
         struct.pack_into("<I", unaligned, duplicate + 0x30,
                          offsets["handler_slot"])
         self.assertTrue(find_rex_static_controller_callback_candidate(
-            unaligned)["accepted"])
+            unaligned, **RAM_5000)["accepted"])
 
         mutations = (
                 (0x18, 0, 4),
@@ -278,7 +452,9 @@ class StaticControllerCandidateTests(unittest.TestCase):
         for index, (offset, value, width) in enumerate(mutations):
             changed = bytearray(image)
             struct.pack_into("<I" if width == 4 else "<H", changed, offset, value)
-            rejected = find_rex_static_controller_callback_candidate(changed)
+            rejected = find_rex_static_controller_callback_candidate(
+                changed, **RAM_5000
+            )
             if index == 1:  # No exact C80 seed remains, so no telemetry class.
                 self.assertIsNone(rejected)
                 continue
@@ -287,7 +463,9 @@ class StaticControllerCandidateTests(unittest.TestCase):
             self.assertFalse(rejected["accepted"])
             self.assertIn("reject_reason", rejected)
 
-        self.assertIsNone(find_rex_static_controller_callback_candidate(bytearray(0x200)))
+        self.assertIsNone(find_rex_static_controller_callback_candidate(
+            bytearray(0x200), **RAM_5000
+        ))
 
     def test_detection_keeps_candidate_inactive_and_reports_rejection(self) -> None:
         accepted = {
@@ -334,7 +512,9 @@ class StaticControllerCandidateTests(unittest.TestCase):
 
     def test_runtime_gate_waits_for_installed_route_then_activates(self) -> None:
         image, offsets = _candidate_image()
-        candidate = find_rex_static_controller_callback_candidate(image)
+        candidate = find_rex_static_controller_callback_candidate(
+            image, **RAM_5000
+        )
         assert candidate is not None and candidate["accepted"]
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(

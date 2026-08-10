@@ -71,6 +71,11 @@ class ApproximateSmafPlayer:
     def __init__(self) -> None:
         self._sf2_path = Path(__file__).with_name("gm.sf2")
         self._ffplay = shutil.which("ffplay")
+        self._afplay = shutil.which("afplay") if not self._ffplay else None
+        self._aplay = (
+            shutil.which("aplay")
+            if not self._ffplay and not self._afplay else None
+        )
         try:
             self._soundfont = SoundFont(self._sf2_path) if self._sf2_path.is_file() else None
         except Exception as exc:
@@ -89,6 +94,10 @@ class ApproximateSmafPlayer:
 
         if self._ffplay:
             self.backend = "SMAF PCM / ffplay"
+        elif self._afplay:
+            self.backend = "SMAF PCM / afplay"
+        elif self._aplay:
+            self.backend = "SMAF PCM / aplay"
         elif self._winsound is not None:
             self.backend = "SMAF PCM / Windows waveOut"
         else:
@@ -246,14 +255,18 @@ class ApproximateSmafPlayer:
         else:
             scaled = pcm
         self.stop()
-        if self._ffplay:
+        if self._ffplay or self._afplay or self._aplay:
             write_wav(self._wav_path, scaled, OUTPUT_RATE)
+            if self._ffplay:
+                command = [self._ffplay, "-loglevel", "quiet", "-nodisp",
+                           "-autoexit", str(self._wav_path)]
+            else:
+                command = [self._afplay or self._aplay, str(self._wav_path)]
             with self._lock:
                 if self._closed:
                     return
                 process = subprocess.Popen(
-                    [self._ffplay, "-loglevel", "quiet", "-nodisp", "-autoexit",
-                     str(self._wav_path)],
+                    command,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
@@ -270,7 +283,7 @@ class ApproximateSmafPlayer:
                         self._process = None
                 if active and process.returncode:
                     detail = stderr.decode(errors="replace").strip().splitlines()
-                    self.last_error = f"ffplay exited {process.returncode}: {detail[-1] if detail else 'unknown error'}"
+                    self.last_error = f"audio player exited {process.returncode}: {detail[-1] if detail else 'unknown error'}"
                     LOGGER.error("%s", self.last_error)
 
             threading.Thread(target=feed, name="E170 audio feed", daemon=True).start()

@@ -3,15 +3,19 @@
 This directory contains the experimental QEMU `v10.2.1` backend used by the
 root launchers. It includes no firmware.
 
-Apply `qemu-10.2.1-icount-advance.patch` to QEMU `v10.2.1`, copy
-`msm5xxx-poc.c` to QEMU `hw/arm/`, and add:
+Stage and build the pinned QEMU source on Linux or macOS:
 
-```meson
-arm_common_ss.add(files('msm5xxx-poc.c'))
+```sh
+./experiments/qemu-tcg/build_qemu_native.sh \
+  /path/to/qemu-10.2.1.tar.xz /new/build/work
 ```
 
-to `hw/arm/meson.build`, then following the configure command in
-`docs/QEMU_TCG_BACKEND.md`.
+Set `MSM5XXX_DTC_SOURCE` to a checkout at the revision recorded in
+`qemu_build_inputs.env`.
+
+The same checked staging script is used by the Windows build. It verifies the
+upstream archive, icount patch, machine source, and transport source before
+changing the QEMU tree.
 
 Run:
 
@@ -28,9 +32,11 @@ edges over a loopback TCP chardev. A second loopback chardev releases the paused
 QEMU startup through GDB. Per-MMIO Python callbacks are not used.
 
 Persistent QEMU NOR/EEPROM files are separate from Unicorn state. Omitting
-`--state-dir` makes an isolated temporary copy and discards it on exit. The
-settings button is disabled; restart the command to apply settings. Keep the
-same state directory when a cold storage initialization requires a warm boot.
+`--state-dir` makes an isolated temporary copy and discards it on exit.
+Applying boot settings restarts QEMU. Keep the same state directory when a
+cold storage initialization requires a warm boot; different firmware images
+use separate state subdirectories. Existing root-level state stays with the
+first firmware opened after upgrading.
 
 Current representative firmware status and release gates are documented in
 `docs/QEMU_TCG_BACKEND.md`. A visible frame or live process is not by itself a

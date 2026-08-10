@@ -140,12 +140,12 @@ def _controller_two_bank_handler_at(
     """Validate the common C80 two-bank mask/dispatch controller shape."""
     if position < 0 or position + 0x100 > len(image):
         return False
-    words = struct.unpack_from("<28H", image, position)
+    words = struct.unpack_from("<33H", image, position)
 
     def literal(index: int, register: int, value: int) -> bool:
         return thumb_literal_value(image, position + index * 2, register) == value
 
-    if not (
+    common = (
         words[0] == 0xB5F0
         and words[1] & 0xFFF0 == 0xB080
         and words[2] & 0xF800 == 0xF000
@@ -162,7 +162,31 @@ def _controller_two_bank_handler_at(
         )
         and words[25] & 0xFF00 == 0xD100
         and thumb_bl_target(image, position + 26 * 2) is not None
-    ):
+    )
+    group10 = (
+        words[:2] == (0xB5F0, 0xB087)
+        and words[2] & 0xF800 == 0xF000
+        and words[3] & 0xF800 == 0xF800
+        and literal(4, 7, masks)
+        and words[5:11] == (0x201B, 0x88F9, 0x0140, 0x9102, 0x8939, 0x9101)
+        and literal(11, 1, masks + 0x0C)
+        and words[12:14] == (0x1840, 0x9006)
+        and literal(14, 7, status)
+        and words[15] == 0x8838
+        and literal(16, 3, masks)
+        and words[17:30] == (
+            0x881A, 0x9902, 0x4011, 0x4001, 0x9104, 0x88B8,
+            0x885A, 0x9901, 0x4011, 0x4008, 0x9904, 0x9003,
+            0x4308,
+        )
+        and words[30] & 0xFF00 == 0xD100
+        and thumb_bl_target(image, position + 31 * 2) is not None
+        and _normalized_thumb_sha256(image, position, 0x150) == (
+            "b1b2c73d6bebf0bf1262d1258f2c1bf0787b25cfba27bfc9f24566fc9676f627",
+            (0x04, 0x3E, 0x9E, 0xC2, 0xFE, 0x116),
+        )
+    )
+    if not (common or group10):
         return False
 
     # A second bank pass must consume both the same RAM masks and status.
@@ -245,9 +269,7 @@ def _controller_registrar_at(
                 and words[index + 6] >> 8 & 7 == 1)]
     if len(rows) != 1:
         return None
-    descriptor = thumb_literal_value(image, position + (rows[0] + 6) * 2, 1)
-    return (descriptor if descriptor is not None
-            and 0x01000000 <= descriptor < 0x02000000 else None)
+    return thumb_literal_value(image, position + (rows[0] + 6) * 2, 1)
 
 
 def _controller_callback_advance(
@@ -285,8 +307,46 @@ def _normalized_thumb_sha256(
     return hashlib.sha256(normalized).hexdigest(), tuple(calls)
 
 
+def _ram_contains(address: int, size: int, base: int, length: int) -> bool:
+    end = base + length
+    return (0 <= base < end <= 0x100000000 and size > 0
+            and base <= address <= end - size)
+
+
+def _legacy_620_vector_copy(
+        image: bytes, *, ram_base: int, ram_size: int,
+) -> tuple[int, int, int, int] | None:
+    """Return the unique copied vector source, target, size, and wrapper."""
+    if len(image) < 0x20:
+        return None
+    target = arm_b_word_target(struct.unpack_from("<I", image, 0x18)[0], 0x18)
+    if target is None or not _ram_contains(target, 4, ram_base, ram_size):
+        return None
+    copies: list[tuple[int, int, int]] = []
+    needle = struct.pack("<I", target)
+    position = 0
+    while (position := image.find(needle, position)) >= 0:
+        offset = position - 4
+        position += 1
+        if offset < 0 or offset & 3 or offset + 16 > len(image):
+            continue
+        source, candidate, size, end = struct.unpack_from("<4I", image, offset)
+        if (candidate == target and 0x100 <= size <= 0x200000
+                and end == target + size and source > offset + 0x20
+                and source + size <= len(image)
+                and _ram_contains(candidate, size, ram_base, ram_size)):
+            copies.append((source, target, size))
+    if len(copies) != 1:
+        return None
+    source, target, size = copies[0]
+    wrapper = arm_b_word_target(struct.unpack_from("<I", image, source)[0],
+                                target)
+    return ((source, target, size, wrapper) if wrapper is not None
+            and 0 <= wrapper <= len(image) - 4 else None)
+
+
 def _find_rex_620_static_controller_callback_candidate(
-        image: bytes,
+        image: bytes, *, ram_base: int, ram_size: int,
 ) -> dict[str, object] | None:
     """Close the early 0x620 two-bank route as telemetry-only evidence."""
     prefix = struct.pack("<3I", 0x03000620, 0x03000628, 0x0200)
@@ -295,7 +355,7 @@ def _find_rex_620_static_controller_callback_candidate(
     while (offset := image.find(prefix, offset)) >= 0:
         if offset + 28 <= len(image):
             seed = struct.unpack_from("<7I", image, offset)
-            if (0x01000000 <= seed[3] < 0x02000000
+            if (_ram_contains(seed[3], 4, ram_base, ram_size)
                     and seed[4] == seed[3] + 4
                     and seed[5] & 1 and (seed[5] & ~1) < len(image)
                     and seed[6] == 0):
@@ -314,23 +374,57 @@ def _find_rex_620_static_controller_callback_candidate(
             "signature": "static-msm5000-620-controller-callback-v1",
             "accepted": False,
             "active": False,
+            "promotion": "experimental-only",
             "semantic_limit": semantic_limit,
             "reject_reason": reason,
         }
 
-    if (arm_b_word_target(struct.unpack_from("<I", image, 0x18)[0], 0x18)
-            != 0x01000000):
-        return rejected("raw-vector-not-01000000")
+    vector_copy = _legacy_620_vector_copy(
+        image, ram_base=ram_base, ram_size=ram_size
+    )
+    if vector_copy is None:
+        return rejected("copied-vector-route-not-closed")
+    vector_source, vector_target, vector_size, copied_wrapper = vector_copy
     if len(seeds) != 1:
         return rejected("descriptor-seed-ambiguous")
     descriptor_file_offset, seed = seeds[0]
+    if not (vector_source <= descriptor_file_offset
+            and descriptor_file_offset + 0x1C
+            <= vector_source + vector_size):
+        return rejected("descriptor-outside-vector-copy")
+    descriptor_runtime = (
+        vector_target + descriptor_file_offset - vector_source
+    )
     status, enable, mask, masks, _second_masks, default, _reserved = seed
     handler = (default & ~1) + 0x38
     handler_shape = _normalized_thumb_sha256(image, handler, 0x178)
-    if handler_shape != (
+    handler_profiles = {
+        (
             "9744e7fc7fa096c976f16773d8cd66e80a64fd42d0ac9621be8ae6e7ef21cf1e",
-            (0x30, 0x90, 0xD4, 0xFE, 0x13A, 0x140, 0x152)):
+            (0x30, 0x90, 0xD4, 0xFE, 0x13A, 0x140, 0x152),
+        ): (
+            "legacy-msm5000-620-two-bank-read-consume-v1", 12,
+            0x72,
+            ("ccae3c22bdad57f1592f7712387f3fcbf0c2ec820f612347d95d577bfd7a910b",
+             (0x06, 0x22, 0x68)),
+            0x28,
+        ),
+        (
+            "4a21a10a9d44e4f1edf1bfe706aed5fe31b180ca271feacc5eeffe34bb4f7644",
+            (0x30, 0x90, 0xD4, 0xFE, 0x13A, 0x140, 0x152),
+        ): (
+            "legacy-msm5000-620-two-bank-read-consume-group10-v1", 10,
+            0x72,
+            ("210b20af82bd778d9f17b5b00abc5adf1530778909a55260ec00a50cf17fda11",
+             (0x06, 0x20, 0x66)),
+            0x26,
+        ),
+    }
+    profile = handler_profiles.get(handler_shape)
+    if profile is None:
         return rejected("two-bank-read-consume-handler-not-closed")
+    (controller_class, group_row_size, registrar_size,
+     registrar_expected, table_at) = profile
     literal_checks = (
         (0x00, 2, masks), (0x0E, 7, status), (0x12, 2, masks),
         (0x6C, 2, masks), (0x70, 7, status), (0x9C, 1, masks),
@@ -357,22 +451,26 @@ def _find_rex_620_static_controller_callback_candidate(
         callback = callback_pointer & ~1
         advance = _controller_callback_advance(image, callback)
         registrations = _rex_5ms_registration_targets(image, callback)
-        registrar_shape = _normalized_thumb_sha256(image, registrar, 0x72)
-        table = thumb_literal_value(image, registrar + 0x28, 1)
+        registrar_shape = _normalized_thumb_sha256(
+            image, registrar, registrar_size
+        )
+        table = thumb_literal_value(image, registrar + table_at, 1)
         if (advance is not None
                 and len(registrations) == 3
                 and set(registrations) == {registrar}
-                and registrar_shape == (
-                    "ccae3c22bdad57f1592f7712387f3fcbf0c2ec820f612347d95d577bfd7a910b",
-                    (0x06, 0x22, 0x68))
+                and registrar_shape == registrar_expected
                 and thumb_literal_value(image, registrar + 0x0E, 6) == default
                 and isinstance(table, int)
-                and 0x01000000 <= table < 0x02000000):
+                and _ram_contains(table, 4, ram_base, ram_size)):
             ticks.append((callback, advance, registrar, table))
     if len(ticks) != 1:
         return rejected("row1c-callback-route-not-unique")
     callback, advance, registrar, table = ticks[0]
+    if table != masks + 8:
+        return rejected("descriptor-table-mask-relation-mismatch")
     callback_slot = table + 0x1C * 0x1C + 0x14
+    if descriptor_runtime != callback_slot - 0x14:
+        return rejected("descriptor-runtime-row-relation-mismatch")
     if thumb_literal_value(image, handler + 0x48, 1) != callback_slot + 8:
         return rejected("handler-callback-table-not-closed")
 
@@ -393,18 +491,24 @@ def _find_rex_620_static_controller_callback_candidate(
     if len(wrappers) != 1:
         return rejected("irq-wrapper-not-unique")
     wrapper, handler_slot, wrapper_size = wrappers[0]
-    if not 0x01000000 <= handler_slot < 0x02000000:
+    if copied_wrapper != wrapper:
+        return rejected("copied-vector-wrapper-mismatch")
+    if not _ram_contains(handler_slot, 8, ram_base, ram_size):
         return rejected("handler-slot-outside-ram")
+    if not _ram_contains(callback_slot, 4, ram_base, ram_size):
+        return rejected("row1c-callback-slot-invalid")
 
     return {
         "signature": "static-msm5000-620-controller-callback-v1",
-        "controller_class":
-            "legacy-msm5000-620-two-bank-read-consume-v1",
+        "controller_class": controller_class,
         "accepted": True,
         "active": False,
+        "promotion": "experimental-only",
         "semantic_limit": semantic_limit,
         "vector": 0x18,
-        "vector_target": 0x01000000,
+        "vector_target": vector_target,
+        "vector_copy_source": vector_source,
+        "vector_copy_size": vector_size,
         "status": status,
         "enable": enable,
         "mask": mask,
@@ -413,9 +517,10 @@ def _find_rex_620_static_controller_callback_candidate(
         "mask_output_banks": (enable, enable + 4),
         "controller_aperture": (status, enable + 8),
         "status_bank_count": 2,
-        "group_row_size": 12,
+        "group_row_size": group_row_size,
         "pending_read_semantics": "consume-on-read",
         "descriptor_file_offset": descriptor_file_offset,
+        "descriptor_runtime_address": descriptor_runtime,
         "mask_table": masks,
         "handler_file_offset": handler,
         "handler_validation_size": 0x178,
@@ -435,7 +540,7 @@ def _find_rex_620_static_controller_callback_candidate(
 
 
 def find_rex_static_controller_callback_candidate(
-        image: bytes,
+        image: bytes, *, ram_base: int, ram_size: int,
 ) -> dict[str, object] | None:
     """Return a telemetry-only old-controller callback topology, if closed.
 
@@ -451,13 +556,16 @@ def find_rex_static_controller_callback_candidate(
     while (offset := image.find(prefix, offset)) >= 0:
         if offset + 28 <= len(image):
             seed = struct.unpack_from("<7I", image, offset)
-            if (seed[3] >= 0x01000000 and seed[4] == seed[3] + 6
+            if (seed[4] == seed[3] + 6
+                    and _ram_contains(seed[3], 4, ram_base, ram_size)
                     and seed[5] & 1 and (seed[5] & ~1) < len(image)
                     and seed[6] == 0):
                 seeds.append((offset, seed))
         offset += 1
     if not seeds:
-        return _find_rex_620_static_controller_callback_candidate(image)
+        return _find_rex_620_static_controller_callback_candidate(
+            image, ram_base=ram_base, ram_size=ram_size
+        )
 
     semantic_limit = (
         "static topology only; native pending, IRQ, and idle remain unproven"
@@ -472,9 +580,17 @@ def find_rex_static_controller_callback_candidate(
             "reject_reason": reason,
         }
 
-    if (arm_b_word_target(struct.unpack_from("<I", image, 0x18)[0], 0x18)
-            != 0x01000000):
-        return rejected("raw-vector-not-01000000")
+    vector_target = arm_b_word_target(
+        struct.unpack_from("<I", image, 0x18)[0], 0x18
+    )
+    vector_copy = _legacy_620_vector_copy(
+        image, ram_base=ram_base, ram_size=ram_size
+    )
+    if (vector_target is None
+            or not _ram_contains(vector_target, 4, ram_base, ram_size)):
+        return rejected("raw-vector-outside-ram")
+    if vector_copy is None:
+        return rejected("copied-vector-route-not-closed")
     if len(seeds) != 1:
         return rejected("descriptor-seed-ambiguous")
     descriptor_file_offset, seed = seeds[0]
@@ -482,6 +598,10 @@ def find_rex_static_controller_callback_candidate(
     handler = (default & ~1) + 0x68
     if not _controller_two_bank_handler_at(image, handler, masks, status):
         return rejected("two-bank-handler-not-closed")
+    handler_validation_size = (
+        0x150 if struct.unpack_from("<H", image, handler + 2)[0] == 0xB087
+        else 0x100
+    )
 
     registrations: list[tuple[int, int, int, int]] = []
     registration_positions: list[int] = []
@@ -507,13 +627,15 @@ def find_rex_static_controller_callback_candidate(
         callback = callback_pointer & ~1
         table = _controller_registrar_at(image, registrar, default)
         advance = _controller_callback_advance(image, callback)
-        if table is not None and advance is not None:
+        if (table is not None
+                and _ram_contains(table, 4, ram_base, ram_size)
+                and advance is not None):
             registrations.append((registration, callback, registrar, advance))
     if len(registrations) != 1:
         return rejected("row1e-callback-route-not-unique")
     registration, callback, registrar, advance = registrations[0]
     table = _controller_registrar_at(image, registrar, default)
-    if table is None:
+    if table is None or not _ram_contains(table, 4, ram_base, ram_size):
         return rejected("registrar-not-closed")
     wrapper_prefix = struct.pack("<4I", 0xE24EE004, 0xE92D540F,
                                  0xE14F0000, 0xE92D0001)
@@ -531,7 +653,9 @@ def find_rex_static_controller_callback_candidate(
     if len(wrappers) != 1:
         return rejected("irq-wrapper-not-unique")
     wrapper, handler_slot, wrapper_size = wrappers[0]
-    if not 0x01000000 <= handler_slot < 0x02000000:
+    if vector_copy is not None and vector_copy[3] != wrapper:
+        return rejected("copied-vector-wrapper-mismatch")
+    if not _ram_contains(handler_slot, 8, ram_base, ram_size):
         return rejected("handler-slot-outside-ram")
 
     def literal_loads(value: int, register: int) -> set[int]:
@@ -571,7 +695,7 @@ def find_rex_static_controller_callback_candidate(
     if len(setters) != 1:
         return rejected("handler-setter-not-unique")
     callback_slot = masks + 0x0C + 0x1E * 0x1C + 0x14
-    if not 0x01000000 <= callback_slot < 0x02000000:
+    if not _ram_contains(callback_slot, 4, ram_base, ram_size):
         return rejected("row1e-callback-slot-invalid")
     callback_shape = rex_legacy_5ms_callback_shape_at(image, callback)
     if callback_shape is None:
@@ -599,7 +723,9 @@ def find_rex_static_controller_callback_candidate(
         "descriptor_table": table,
         "timer_advance_file_offset": advance,
         "vector": 0x18,
-        "vector_target": 0x01000000,
+        "vector_target": vector_target,
+        "vector_copy_source": vector_copy[0] if vector_copy else None,
+        "vector_copy_size": vector_copy[2] if vector_copy else None,
         "wrapper_file_offset": wrapper,
         "handler_slot": handler_slot,
         "handler_registration_file_offset": setters[0][0],
@@ -608,7 +734,7 @@ def find_rex_static_controller_callback_candidate(
         "clear_banks": (status, status + 4),
         "controller_write_banks": (enable, enable + 4),
         "controller_aperture": (status, enable + 6),
-        "handler_validation_size": 0x100,
+        "handler_validation_size": handler_validation_size,
         "wrapper_validation_size": wrapper_size,
         "callback_delta": 5,
         "callback_validation_size": REX_LEGACY_5MS_CALLBACK_SIZE,

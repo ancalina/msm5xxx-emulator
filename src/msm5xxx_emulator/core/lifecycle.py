@@ -831,6 +831,7 @@ class LifecycleMixin:
         self._lcd_page_column = 0
         self._lcd_page_start_column = 0
         self._lcd_page_data_count = 0
+        self._lcd_page_dirty = False
         self._lcd_page_row_bytes = 0
         self._lcd_page_width = 0
         self._lcd_page_height = 0

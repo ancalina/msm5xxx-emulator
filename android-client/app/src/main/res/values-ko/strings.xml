@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MSM5xxx 에뮬레이터</string>
+    <string name="choose">펌웨어</string>
+    <string name="settings">설정</string>
+    <string name="start">실행</string>
+    <string name="stop">중지</string>
+    <string name="more">⋮</string>
+    <string name="more_actions">더보기</string>
+
+    <string name="key_menu">메뉴</string>
+    <string name="key_up">▲</string>
+    <string name="key_cancel">취소</string>
+    <string name="key_call">통화</string>
+    <string name="key_left">◀</string>
+    <string name="key_ok">OK</string>
+    <string name="key_right">▶</string>
+    <string name="key_end">종료</string>
+    <string name="key_volume_down">볼륨-</string>
+    <string name="key_down">▼</string>
+    <string name="key_volume_up">볼륨+</string>
+    <string name="key_1">1</string>
+    <string name="key_2">2</string>
+    <string name="key_3">3</string>
+    <string name="key_4">4</string>
+    <string name="key_5">5</string>
+    <string name="key_6">6</string>
+    <string name="key_7">7</string>
+    <string name="key_8">8</string>
+    <string name="key_9">9</string>
+    <string name="key_star">*</string>
+    <string name="key_0">0</string>
+    <string name="key_hash">#</string>
+
+    <string name="size_unavailable">크기 정보 없음</string>
+    <string name="size_bytes">%1$d바이트</string>
+    <string name="copying_firmware">펌웨어 복사 중…</string>
+    <string name="detecting_firmware">펌웨어 프로필 탐지 중…</string>
+    <string name="profile_header">%1$s · %2$d×%3$d · %4$s</string>
+    <string name="profile_header_without_geometry">%1$s · %2$s</string>
+    <string name="starting_session">QEMU 시작 중…</string>
+    <string name="lcd_visible">LCD 화면 표시됨</string>
+    <string name="lcd_waiting">LCD 화면 대기 중</string>
+    <string name="metric_pc_empty">PC —</string>
+    <string name="metric_run_empty">실행 —</string>
+    <string name="metric_lcd_empty">LCD —</string>
+    <string name="metric_frame_empty">프레임 —</string>
+    <string name="metric_input_empty">입력 —</string>
+    <string name="metric_reject_empty">거부 —</string>
+    <string name="metric_jni_empty">JNI —</string>
+    <string name="metric_ack_empty">ACK —</string>
+    <string name="metric_pc">PC 0x%1$08X</string>
+    <string name="metric_run">실행 %1$d</string>
+    <string name="metric_lcd">LCD %1$d</string>
+    <string name="metric_frame">프레임 %1$d</string>
+    <string name="metric_input">입력 %1$d</string>
+    <string name="metric_reject">거부 %1$d</string>
+    <string name="metric_jni">JNI %1$s</string>
+    <string name="metric_ack">ACK %1$s</string>
+    <string name="latency_pending">—</string>
+    <string name="latency_milliseconds">%1$d ms</string>
+    <string name="stopping_session">QEMU 중지 중…</string>
+    <string name="session_failed">세션 실패</string>
+
+    <string name="error_no_picker">문서 선택기를 사용할 수 없습니다.</string>
+    <string name="error_unreadable_document">선택한 문서는 읽을 수 있는 펌웨어 파일이 아닙니다.</string>
+    <string name="error_copy_failed">선택한 펌웨어를 private storage에 복사하지 못했습니다.</string>
+    <string name="error_private_copy_missing">private 펌웨어 복사본이 없습니다. 다시 선택하세요.</string>
+    <string name="error_preparation_failed">펌웨어 준비 실패</string>
+    <string name="error_unsupported_firmware">지원하지 않는 펌웨어입니다.</string>
+    <string name="error_detection_failed">펌웨어 탐지 실패</string>
+    <string name="error_backend_failed">QEMU backend를 사용할 수 없습니다.</string>
+    <string name="error_detector_runtime_failed">detector runtime을 사용할 수 없습니다.</string>
+    <string name="error_not_ready">선택한 펌웨어는 아직 실행 준비가 되지 않았습니다.</string>
+    <string name="error_session_failed">QEMU 세션을 계속할 수 없습니다.</string>
+    <string name="error_process_exited">QEMU process가 종료되었습니다.</string>
+    <string name="error_input_failed">입력을 전송하지 못했습니다.</string>
+    <string name="error_stop_failed">QEMU 세션이 정상 종료되지 않았습니다.</string>
+
+    <string name="settings_title">세션 설정</string>
+    <string name="persistent_state">기기 상태 영속 저장 (펌웨어 SHA 격리)</string>
+    <string name="experimental_rex">실험적 static REX controller</string>
+    <string name="save">저장</string>
+    <string name="cancel">취소</string>
+
+    <string name="mapping_title">%1$s 매핑</string>
+    <string name="mapping_value">0x%1$02X</string>
+    <string name="mapping_prompt">탐지된 physical input event byte를 입력하세요(예: 0x53 또는 053). 고유한 firmware matrix/sideband producer만 허용합니다. 빈 값은 매핑을 삭제합니다.</string>
+    <string name="mapping_invalid">0x00..0xFF, zero-prefixed hex 또는 decimal 0..255를 사용하세요.</string>
+    <string name="mapping_rejected">해당 event에는 고유하게 탐지된 physical input producer가 없습니다.</string>
+    <string name="mapping_saved">수동 키 매핑 저장됨</string>
+    <string name="mapping_deleted">수동 키 매핑 삭제됨</string>
+    <string name="key_detected_description">%1$s, 탐지된 입력</string>
+    <string name="key_mapped_description">%1$s, 수동 매핑</string>
+    <string name="key_mapping_description">%1$s, 탭하여 입력 매핑</string>
+
+    <string name="unnamed_firmware">이름 없는 펌웨어</string>
+</resources>

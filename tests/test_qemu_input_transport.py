@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import io
 from pathlib import Path
+import queue
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -55,6 +56,180 @@ class QEMUInputTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bad QEMU option"):
             transport._accept_qemu(listener)
         listener.settimeout.assert_called_once_with(0.1)
+
+    def test_qemu_state_directory_is_firmware_scoped(self) -> None:
+        first = SimpleNamespace(firmware_sha256="a" * 64)
+        second = SimpleNamespace(firmware_sha256="b" * 64)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(MODULE.qemu_state_directory(root, first),
+                             root / ("a" * 64))
+            (root / "primary-writable.raw").write_bytes(b"legacy")
+            self.assertEqual(MODULE.qemu_state_directory(root, first), root)
+            self.assertEqual(MODULE.qemu_state_directory(root, first), root)
+            self.assertEqual(MODULE.qemu_state_directory(root, second),
+                             root / ("b" * 64))
+            self.assertEqual(
+                (root / MODULE.LEGACY_STATE_OWNER).read_text().strip(),
+                "a" * 64,
+            )
+            self.assertIsNone(MODULE.qemu_state_directory(None, first))
+            with self.assertRaises(ValueError):
+                MODULE.qemu_state_directory(root, SimpleNamespace(
+                    firmware_sha256="../shared"
+                ))
+
+    def test_settings_restart_replaces_transport_with_saved_profile(self) -> None:
+        events: list[str] = []
+        firmware = Path("/tmp/settings.bin")
+        config = SimpleNamespace(
+            model="Detected", verified_model=None, chipset="MSM5000",
+            width=128, height=160,
+        )
+        old_transport = mock.Mock()
+        old_transport.interrupt.side_effect = lambda: events.append("interrupt")
+        old_transport.close.side_effect = lambda: events.append("close")
+        old_worker = mock.Mock()
+        worker_running = [True]
+        old_worker.is_alive.side_effect = lambda: worker_running[0]
+
+        def join_worker() -> None:
+            events.append("join")
+            worker_running[0] = False
+
+        old_worker.join.side_effect = join_worker
+        new_transport = mock.Mock(
+            config=config, decoder=mock.Mock(), replay=mock.Mock()
+        )
+        new_worker = mock.Mock()
+        new_worker.start.side_effect = lambda: events.append("start")
+
+        window = MODULE.LiveWindow.__new__(MODULE.LiveWindow)
+        window._prepared_profile = None
+        window.firmware = firmware
+        window.overrides = {"width": 128}
+        window.generation = 3
+        window.stop = mock.Mock()
+        window.root = mock.Mock()
+        window.pending_key_releases = {"5": "callback"}
+        window.keyboard_bits = {"5": 15}
+        window.keyboard_sources = {"5"}
+        window.held = {15: {"5"}}
+        window.commands = queue.SimpleQueue()
+        window.transport = old_transport
+        window.worker = old_worker
+        window.emulator = old_transport.decoder
+        window._active_firmware = firmware
+        window._active_overrides = {"width": 96}
+        window._render_cache = (object(), b"", 1, 1, 1, 1)
+        window.qemu = Path("/tmp/qemu-system-arm")
+        window.state_dir = Path("/tmp/qemu-state")
+        window.experimental_c80 = True
+        window.ui_language = "en"
+        window.model = mock.Mock()
+        window.device_details = mock.Mock()
+        window.status = mock.Mock()
+
+        def create_transport(*_args: object, **_kwargs: object) -> object:
+            events.append("create")
+            return new_transport
+
+        with mock.patch.object(MODULE, "_prepared_profile_matches",
+                               return_value=False), \
+             mock.patch.object(MODULE, "detect_profile",
+                               return_value=(config, {"width": 128})) as detect, \
+             mock.patch.object(MODULE, "Transport",
+                               side_effect=create_transport) as transport, \
+             mock.patch.object(MODULE.threading, "Thread",
+                               return_value=new_worker):
+            window._restart()
+
+        detect.assert_called_once_with(firmware, {"width": 128})
+        transport.assert_called_once_with(
+            window.qemu, firmware, window.state_dir, True, config=config
+        )
+        self.assertEqual(
+            events, ["interrupt", "join", "close", "create", "start"]
+        )
+        self.assertIs(window.transport, new_transport)
+        self.assertIs(window.emulator, new_transport.decoder)
+        self.assertEqual(window.generation, 4)
+        window.root.after_cancel.assert_called_once_with("callback")
+        self.assertEqual(window.keyboard_bits, {})
+        self.assertEqual(window.keyboard_sources, set())
+        self.assertEqual(window.held, {})
+        window.closing = False
+        window.overrides = {"framebuffer_format": "bgr565le"}
+        window.commands.put(("framebuffer-format", "bgr565le"))
+        window._forward_qemu_keys()
+        new_transport.decoder.set_framebuffer_format.assert_called_once_with(
+            "bgr565le"
+        )
+        self.assertEqual(window._active_overrides, window.overrides)
+
+    def test_settings_restart_restores_previous_transport_on_launch_error(self) -> None:
+        old_firmware = Path("/tmp/old.bin")
+        new_firmware = Path("/tmp/new.bin")
+        old_config = SimpleNamespace(
+            model="Old", verified_model=None, chipset="MSM5000",
+            width=96, height=64,
+        )
+        new_config = SimpleNamespace(
+            model="New", verified_model=None, chipset="MSM5000",
+            width=128, height=160,
+        )
+        restored = mock.Mock(
+            config=old_config, decoder=SimpleNamespace(), replay=mock.Mock()
+        )
+        worker = mock.Mock()
+        worker.is_alive.return_value = False
+
+        window = MODULE.LiveWindow.__new__(MODULE.LiveWindow)
+        window._prepared_profile = None
+        window.firmware = new_firmware
+        window.overrides = {"width": 128}
+        window._active_firmware = old_firmware
+        window._active_overrides = {"width": 96}
+        window.generation = 1
+        window.stop = mock.Mock()
+        window.root = mock.Mock()
+        window.pending_key_releases = {}
+        window.keyboard_bits = {}
+        window.keyboard_sources = set()
+        window.held = {}
+        window.commands = queue.SimpleQueue()
+        window.transport = mock.Mock()
+        window.worker = worker
+        window.emulator = window.transport.decoder
+        window._render_cache = None
+        window.qemu = Path("/tmp/qemu-system-arm")
+        window.state_dir = Path("/tmp/qemu-state")
+        window.experimental_c80 = False
+        window.ui_language = "en"
+        window.model = mock.Mock()
+        window.device_details = mock.Mock()
+        window.status = mock.Mock()
+        window._save_config = mock.Mock()
+
+        with mock.patch.object(MODULE, "_prepared_profile_matches",
+                               return_value=False), \
+             mock.patch.object(MODULE, "detect_profile",
+                               side_effect=((new_config, {"width": 128}),
+                                            (old_config, {"width": 96}))), \
+             mock.patch.object(MODULE, "Transport",
+                               side_effect=(RuntimeError("launch failed"),
+                                            restored)) as transport, \
+             mock.patch.object(MODULE.threading, "Thread",
+                               return_value=mock.Mock()), \
+             mock.patch.object(MODULE.messagebox, "showerror") as showerror:
+            window._restart()
+
+        self.assertEqual(window.firmware, old_firmware)
+        self.assertEqual(window.overrides, {"width": 96})
+        self.assertIs(window.transport, restored)
+        self.assertEqual(transport.call_count, 2)
+        window._save_config.assert_called_once_with()
+        showerror.assert_called_once()
 
     def test_memory_profile_fails_closed_outside_native_shape(self) -> None:
         config = SimpleNamespace(flash_size=0x01800000,
@@ -276,6 +451,50 @@ class QEMUInputTransportTests(unittest.TestCase):
                 bytes(range(6)),
             )
             self.assertEqual(len(limited), 4)
+            excluded = MODULE.raw_loader_arguments(
+                image, 4, root, exclude=(4, 6)
+            )
+            self.assertEqual(
+                [argument.rsplit("addr=", 1)[1].split(",", 1)[0]
+                 for argument in excluded[1::2]],
+                ["0x0", "0x6"],
+            )
+            self.assertEqual(
+                b"".join((root / f"primary-{offset:08x}.raw").read_bytes()
+                         for offset in (0, 6)),
+                bytes(range(4)) + bytes(range(6, 10)),
+            )
+
+    def test_primary_loader_uses_zero_based_sliced_seed_and_guest_ranges(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "firmware.bin"
+            prefix = b"capture-header"
+            seed = bytes(range(0x30))
+            trailer = b"ram-snapshot-trailer"
+            original.write_bytes(prefix + seed + trailer)
+
+            primary_raw = root / "primary.raw"
+            primary_raw.write_bytes(seed)
+            arguments = MODULE.raw_loader_arguments(
+                primary_raw, 0x10, root, size=0x20, exclude=(0x08, 0x10)
+            )
+            entries = {}
+            for argument in arguments[1::2]:
+                path_text, address_text = argument.split(",addr=", 1)
+                path = Path(path_text.removeprefix("loader,file="))
+                address = int(address_text.split(",", 1)[0], 16)
+                entries[address] = path.read_bytes()
+
+            self.assertEqual(entries, {
+                0x00: seed[0x00:0x08],
+                0x10: seed[0x10:0x20],
+            })
+            self.assertNotEqual(original.read_bytes()[0], seed[0])
+            emitted = b"".join(entries.values())
+            self.assertNotIn(prefix, emitted)
+            self.assertNotIn(trailer, emitted)
 
     def test_pause_timer_profile_requires_fixed_helper_and_long_caller(
             self) -> None:
@@ -449,6 +668,87 @@ class QEMUInputTransportTests(unittest.TestCase):
         candidate["wrapper_validation_size"] = 0x284
         candidate["callback_slot"] += 2
         self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
+        candidate["callback_slot"] = 0x01802000
+        candidate["handler_slot"] = 0x01801000
+        candidate["vector_target"] = 0x01800000
+        config.ram_base = 0x01800000
+        self.assertEqual(
+            MODULE.c80_rex_irq_profile(config, True),
+            "3000c80:3000c94:200:4c4b40:1800000:1000:1801000:"
+            "2000:100:1802000:3000",
+        )
+
+    def test_read_consume_route_requires_copied_vector_relation(self) -> None:
+        status = 0x03000620
+        candidate = {
+            "signature": "static-msm5000-620-controller-callback-v1",
+            "controller_class":
+                "legacy-msm5000-620-two-bank-read-consume-group10-v1",
+            "accepted": True,
+            "active": False,
+            "promotion": "experimental-only",
+            "vector": 0x18,
+            "vector_target": 0x01100000,
+            "vector_copy_source": 0x0039519C,
+            "vector_copy_size": 0xE5B0,
+            "descriptor_file_offset": 0x003987C4,
+            "descriptor_runtime_address": 0x01103628,
+            "mask_table": 0x01103310,
+            "status": status,
+            "status_banks": (status, status + 4),
+            "enable": status + 8,
+            "mask": 0x0200,
+            "mask_set_banks": (status, status + 4),
+            "mask_output_banks": (status + 8, status + 0xC),
+            "controller_aperture": (status, status + 0x10),
+            "group_row_size": 10,
+            "pending_read_semantics": "consume-on-read",
+            "time_tick_control_address": 0x030006E0,
+            "wrapper_file_offset": 0x0024BE14,
+            "wrapper_validation_size": 0x234,
+            "handler_slot": 0x0118867C,
+            "handler_file_offset": 0x00098E04,
+            "handler_validation_size": 0x178,
+            "callback_slot": 0x0110363C,
+            "callback_file_offset": 0x00016B64,
+            "callback_delta": 5,
+            "callback_validation_size": 68,
+        }
+        config = SimpleNamespace(
+            rex_static_controller_candidate=candidate,
+            load_address=0, flash_size=0x400000,
+            ram_base=0x01000000, ram_size=0x200000,
+            rex_tick_address=None, rex_irq_wrapper_address=None,
+            rex_irq_handler_address=None, rex_irq_handler_slot=None,
+            rex_irq_callback_slot=None, rex_irq_status_address=None,
+            rex_irq_enable_address=None, rex_irq_arm_address=None,
+            rex_irq_mask=0,
+        )
+
+        self.assertIsNone(MODULE.read_consume_rex_irq_profile(config, False))
+        self.assertEqual(
+            MODULE.read_consume_rex_irq_profile(config, True),
+            "3000620:3000628:30006e0:200:4c4b40:1100000:24be14:"
+            "118867c:98e04:178:110363c:16b64",
+        )
+        candidate["descriptor_runtime_address"] += 4
+        self.assertIsNone(
+            MODULE.read_consume_rex_irq_profile(config, True)
+        )
+        candidate["descriptor_runtime_address"] -= 4
+        original_copy_size = candidate["vector_copy_size"]
+        candidate["vector_copy_size"] = (
+            candidate["descriptor_file_offset"]
+            - candidate["vector_copy_source"] + 4
+        )
+        self.assertIsNone(
+            MODULE.read_consume_rex_irq_profile(config, True)
+        )
+        candidate["vector_copy_size"] = original_copy_size
+        candidate["promotion"] = "production"
+        self.assertIsNone(
+            MODULE.read_consume_rex_irq_profile(config, True)
+        )
 
 
 if __name__ == "__main__":

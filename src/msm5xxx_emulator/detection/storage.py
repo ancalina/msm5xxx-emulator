@@ -674,6 +674,60 @@ def find_fujitsu_x16_bulk_write(image: bytes, secondary_base: int) -> int | None
     return matches[0] if len(matches) == 1 else None
 
 
+def find_embedded_fujitsu_x16_nor(
+        image: bytes, flash_size: int,
+) -> tuple[int, int, int, int] | None:
+    """Return a uniquely linked Fujitsu command-bus region in the dump."""
+    device_size = 0x200000
+    device_id = FUJITSU_MB84VD2219X_IDS[0] | (
+        FUJITSU_MB84VD2219X_IDS[1] << 16
+    )
+    if (b"fs_fujitsu.c\0" not in image or flash_size <= 0
+            or flash_size > len(image)):
+        return None
+    profiles: list[tuple[int, int, int, int]] = []
+    for descriptor in find_all(image, struct.pack("<I", device_id)):
+        if descriptor & 3 or descriptor + 0x2C > flash_size:
+            continue
+        identity, reserved, banks, usable_base, usable_size = (
+            struct.unpack_from("<5I", image, descriptor)
+        )
+        command_base = usable_base - 0x10000
+        if (identity != device_id or reserved != 0 or banks != 1
+                or command_base <= 0 or command_base % device_size
+                or command_base + device_size > flash_size
+                or usable_base != command_base + 0x10000
+                or usable_size <= 0 or usable_size % 0x10000
+                or usable_base + usable_size > command_base + device_size):
+            continue
+        functions = struct.unpack_from("<6I", image, descriptor + 0x14)
+        writer = find_fujitsu_x16_bulk_write(image, command_base)
+        if (writer is None
+                or any(not pointer & 1 or pointer & ~1 >= flash_size
+                       for pointer in functions)
+                or (functions[3] & ~1) + 0x60 != writer):
+            continue
+        sectors = usable_size // 0x10000
+        geometry = (struct.pack("<I", sectors)
+                    + struct.pack(f"<{sectors}I", *(0x10000,) * sectors))
+        geometry_records: list[int] = []
+        for position in find_all(image, geometry):
+            record = position - 4
+            if record < 0:
+                continue
+            name = struct.unpack_from("<I", image, record)[0]
+            end = image.find(b"\0", name, min(flash_size, name + 64))
+            if (0 <= name < flash_size and end >= name + 4
+                    and all(0x20 <= byte <= 0x7E
+                            for byte in image[name:end])):
+                geometry_records.append(record)
+        if len(geometry_records) != 1:
+            continue
+        profiles.append((command_base, device_size,
+                         *FUJITSU_MB84VD2219X_IDS))
+    return profiles[0] if len(profiles) == 1 else None
+
+
 def find_compound_fujitsu_layout(
         image: bytes, load_address: int = 0) -> tuple[int, int] | None:
     """Return primary/secondary sizes for a complete Fujitsu 4+2 MiB dump."""
