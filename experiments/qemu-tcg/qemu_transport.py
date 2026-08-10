@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import select
 import socket
 import struct
 import subprocess
@@ -729,21 +730,26 @@ class Transport:
         )
 
         lcd_listener = loopback_listener()
+        input_listener = None
         try:
+            input_listener = loopback_listener()
             gdb_listener = loopback_listener()
         except Exception:
             lcd_listener.close()
+            if input_listener is not None:
+                input_listener.close()
             self.decoder.close()
             self.temporary.cleanup()
             raise
         lcd_host, lcd_port = lcd_listener.getsockname()
+        input_host, input_port = input_listener.getsockname()
         gdb_host, gdb_port = gdb_listener.getsockname()
         eligible = (
             self.config.chipset == "MSM5000"
             and self.config.board_adc_reader_address is not None
         )
         machine = (
-            "msm5xxx-poc,lcd-trace-chardev=lcd,"
+            "msm5xxx-poc,lcd-trace-chardev=lcd,input-chardev=input,"
             f"memory-profile={memory_profile}"
         )
         board_adc_value = self.config.board_adc_value
@@ -1049,6 +1055,9 @@ class Transport:
                     f"socket,id=lcd,host={lcd_host},port={lcd_port},"
                     "server=off,nodelay=on",
                     "-chardev",
+                    f"socket,id=input,host={input_host},port={input_port},"
+                    "server=off,nodelay=on",
+                    "-chardev",
                     f"socket,id=gdb,host={gdb_host},port={gdb_port},"
                     "server=off,nodelay=on",
                     "-nographic", "-monitor", "none", "-serial", "none",
@@ -1062,6 +1071,7 @@ class Transport:
             )
         except Exception:
             lcd_listener.close()
+            input_listener.close()
             gdb_listener.close()
             self.stderr.close()
             self.decoder.close()
@@ -1070,11 +1080,17 @@ class Transport:
         try:
             try:
                 self.lcd_socket = self._accept_qemu(lcd_listener)
+                self.input_socket = self._accept_qemu(input_listener)
                 gdb_socket = self._accept_qemu(gdb_listener)
             finally:
                 lcd_listener.close()
+                input_listener.close()
                 gdb_listener.close()
             self.lcd_socket.settimeout(0.2)
+            self.input_socket.settimeout(0.2)
+            self.input_socket.setsockopt(
+                socket.IPPROTO_TCP, socket.TCP_NODELAY, 1
+            )
             with gdb_socket:
                 gdb_socket.settimeout(10)
                 remote = Remote(gdb_socket)
@@ -1083,9 +1099,12 @@ class Transport:
                     raise RuntimeError("QEMU GDB detach failed")
         except Exception:
             lcd_listener.close()
+            input_listener.close()
             gdb_listener.close()
             if hasattr(self, "lcd_socket"):
                 self.lcd_socket.close()
+            if hasattr(self, "input_socket"):
+                self.input_socket.close()
             self._terminate_process()
             self.stderr.close()
             self.decoder.close()
@@ -1125,6 +1144,10 @@ class Transport:
         """Wake the replay worker before its owned decoder is closed."""
         try:
             self.lcd_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.input_socket.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
         self._terminate_process()
@@ -1221,24 +1244,47 @@ class Transport:
             self._replay_audio_status(record)
 
     def replay(self, stop: threading.Event) -> None:
-        pending = bytearray()
+        input_pending = bytearray()
+        lcd_pending = bytearray()
+        streams = (
+            (self.input_socket, input_pending),
+            (self.lcd_socket, lcd_pending),
+        )
         while not stop.is_set() and self.process.poll() is None:
             try:
-                chunk = self.lcd_socket.recv(65536)
-            except TimeoutError:
-                continue
-            except OSError:
+                readable, _, _ = select.select(
+                    (self.input_socket, self.lcd_socket), (), (), 0.2
+                )
+            except (OSError, ValueError):
                 if stop.is_set() or self.process.poll() is not None:
                     break
                 raise
-            if not chunk:
-                break
-            pending.extend(chunk)
-            complete = len(pending) // RECORD_SIZE * RECORD_SIZE
-            for offset in range(0, complete, RECORD_SIZE):
-                record = pending[offset:offset + RECORD_SIZE]
-                self._replay_record(record)
-            del pending[:complete]
+            for stream, pending in streams:
+                if stream not in readable:
+                    continue
+                try:
+                    chunk = stream.recv(4096)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    if stop.is_set() or self.process.poll() is not None:
+                        return
+                    raise
+                if not chunk:
+                    if not stop.is_set() and self.process.poll() is None:
+                        channel = "input" if stream is self.input_socket else "LCD"
+                        self.decoder.input_error = (
+                            f"QEMU {channel} channel closed"
+                        )
+                        self._terminate_process()
+                    return
+                pending.extend(chunk)
+                complete = len(pending) // RECORD_SIZE * RECORD_SIZE
+                for offset in range(0, complete, RECORD_SIZE):
+                    self._replay_record(
+                        pending[offset:offset + RECORD_SIZE]
+                    )
+                del pending[:complete]
 
     def _sideband_input_producer(
             self, bit: int, event_code: int | None,
@@ -1285,7 +1331,7 @@ class Transport:
             else:
                 return False
         try:
-            self.lcd_socket.sendall(packet)
+            self.input_socket.sendall(packet)
         except OSError as error:
             self.decoder.input_error = f"QEMU input transport failed: {error}"
             return False
@@ -1303,6 +1349,7 @@ class Transport:
 
     def close(self) -> None:
         self.lcd_socket.close()
+        self.input_socket.close()
         self._terminate_process()
         self.stderr.close()
         self.decoder.close()

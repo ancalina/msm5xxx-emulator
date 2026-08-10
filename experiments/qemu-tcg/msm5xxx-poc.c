@@ -205,6 +205,8 @@ struct MSM5xxxPOCMachineState {
     uint8_t *lcd_trace_backing;
     char *lcd_trace_chardev;
     CharFrontend lcd_trace_chr;
+    char *input_chardev;
+    CharFrontend input_chr;
     GByteArray *lcd_trace_buffer;
     QEMUTimer *lcd_trace_timer;
     bool ready_poll_enabled;
@@ -251,7 +253,10 @@ struct MSM5xxxPOCMachineState {
     uint8_t matrix_input_sense;
     uint8_t matrix_input_buffer[MSM5XXX_POC_HOST_INPUT_SIZE];
     unsigned matrix_input_buffer_length;
-    bool matrix_input_telemetry_priority;
+    uint8_t matrix_input_ack[MSM5XXX_POC_LCD_STREAM_RECORD_SIZE];
+    unsigned matrix_input_ack_length;
+    unsigned matrix_input_ack_offset;
+    guint matrix_input_ack_watch;
     uint64_t matrix_input_host_events;
     uint64_t matrix_input_active_reads;
     uint64_t matrix_input_rejections;
@@ -496,35 +501,55 @@ static bool msm5xxx_poc_lcd_stream_append(MSM5xxxPOCMachineState *s,
     return true;
 }
 
-static bool msm5xxx_poc_input_stream_prioritize(MSM5xxxPOCMachineState *s)
+static gboolean msm5xxx_poc_input_stream_flush(void *unused,
+                                                GIOCondition condition,
+                                                void *opaque)
 {
-    GByteArray *buffer = s->lcd_trace_buffer;
-    uint8_t record[MSM5XXX_POC_LCD_STREAM_RECORD_SIZE] = {
-        MSM5XXX_POC_INPUT_STREAM_TELEMETRY,
-        s->matrix_input_pressed,
-    };
-    guint prefix = buffer->len % MSM5XXX_POC_LCD_STREAM_RECORD_SIZE;
-    guint read_offset;
-    guint write_offset = prefix;
-    guint old_length;
+    MSM5xxxPOCMachineState *s = opaque;
+    int written;
 
-    /* Preserve a record suffix left by a partial chardev write. */
-    for (read_offset = prefix;
-         read_offset + MSM5XXX_POC_LCD_STREAM_RECORD_SIZE <= buffer->len;
-         read_offset += MSM5XXX_POC_LCD_STREAM_RECORD_SIZE) {
-        if (buffer->data[read_offset] ==
-            MSM5XXX_POC_INPUT_STREAM_TELEMETRY) {
-            continue;
-        }
-        if (write_offset != read_offset) {
-            memmove(buffer->data + write_offset,
-                    buffer->data + read_offset,
-                    MSM5XXX_POC_LCD_STREAM_RECORD_SIZE);
-        }
-        write_offset += MSM5XXX_POC_LCD_STREAM_RECORD_SIZE;
+    s->matrix_input_ack_watch = 0;
+    if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL)) {
+        s->matrix_input_host_enabled = false;
+        s->matrix_input_ack_length = 0;
+        s->matrix_input_ack_offset = 0;
+        return G_SOURCE_REMOVE;
     }
-    g_byte_array_set_size(buffer, write_offset);
-    /* Keep ordered device records; one priority record may exceed the cap. */
+    written = qemu_chr_fe_write(
+        &s->input_chr,
+        s->matrix_input_ack + s->matrix_input_ack_offset,
+        s->matrix_input_ack_length - s->matrix_input_ack_offset
+    );
+    if (written > 0) {
+        s->matrix_input_ack_offset += written;
+    }
+    if (s->matrix_input_ack_offset == s->matrix_input_ack_length) {
+        s->matrix_input_ack_length = 0;
+        s->matrix_input_ack_offset = 0;
+        qemu_chr_fe_accept_input(&s->input_chr);
+        return G_SOURCE_REMOVE;
+    }
+    s->matrix_input_ack_watch = qemu_chr_fe_add_watch(
+        &s->input_chr, G_IO_OUT | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
+        msm5xxx_poc_input_stream_flush, s
+    );
+    if (!s->matrix_input_ack_watch) {
+        s->matrix_input_host_enabled = false;
+        s->matrix_input_ack_length = 0;
+        s->matrix_input_ack_offset = 0;
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static void msm5xxx_poc_input_stream_write(MSM5xxxPOCMachineState *s)
+{
+    uint8_t *record = s->matrix_input_ack;
+
+    assert(!s->matrix_input_ack_length);
+    memset(record, 0, MSM5XXX_POC_LCD_STREAM_RECORD_SIZE);
+    record[0] = MSM5XXX_POC_INPUT_STREAM_TELEMETRY;
+    record[1] = s->matrix_input_pressed;
+
     msm5xxx_poc_backing_write(
         record, 4,
         s->matrix_input_row | (s->matrix_input_sense << 8) |
@@ -533,12 +558,9 @@ static bool msm5xxx_poc_input_stream_prioritize(MSM5xxxPOCMachineState *s)
         record, 8, s->matrix_input_host_events, 4);
     msm5xxx_poc_backing_write(
         record, 12, s->matrix_input_active_reads, 4);
-    old_length = buffer->len;
-    g_byte_array_set_size(buffer, old_length + sizeof(record));
-    memmove(buffer->data + prefix + sizeof(record),
-            buffer->data + prefix, old_length - prefix);
-    memcpy(buffer->data + prefix, record, sizeof(record));
-    return true;
+    s->matrix_input_ack_length = MSM5XXX_POC_LCD_STREAM_RECORD_SIZE;
+    s->matrix_input_ack_offset = 0;
+    msm5xxx_poc_input_stream_flush(NULL, G_IO_OUT, s);
 }
 
 static void msm5xxx_poc_audio_stream_status(MSM5xxxPOCMachineState *s)
@@ -576,21 +598,6 @@ static void msm5xxx_poc_lcd_trace_flush(void *opaque)
         s->ready_poll_phase | (s->ready_poll_cycles << 8),
         s->ready_poll_reads, s->ready_poll_responses
     );
-    if (s->matrix_input_host_enabled) {
-        if (s->matrix_input_telemetry_priority) {
-            if (msm5xxx_poc_input_stream_prioritize(s)) {
-                s->matrix_input_telemetry_priority = false;
-            }
-        } else {
-            msm5xxx_poc_lcd_stream_append(
-                s, MSM5XXX_POC_INPUT_STREAM_TELEMETRY,
-                s->matrix_input_pressed,
-                s->matrix_input_row | (s->matrix_input_sense << 8) |
-                (MIN(s->matrix_input_rejections, UINT16_MAX) << 16),
-                s->matrix_input_host_events, s->matrix_input_active_reads
-            );
-        }
-    }
     if (s->lcd_trace_buffer->len) {
         written = qemu_chr_fe_write(&s->lcd_trace_chr,
                                     s->lcd_trace_buffer->data,
@@ -608,7 +615,7 @@ static int msm5xxx_poc_host_input_can_read(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
 
-    return s->matrix_input_host_enabled ?
+    return s->matrix_input_host_enabled && !s->matrix_input_ack_length ?
         MSM5XXX_POC_HOST_INPUT_SIZE - s->matrix_input_buffer_length : 0;
 }
 
@@ -651,8 +658,8 @@ static void msm5xxx_poc_host_input_read(void *opaque, const uint8_t *buf,
             }
             s->matrix_input_host_events++;
         }
-        s->matrix_input_telemetry_priority = true;
         s->matrix_input_buffer_length = 0;
+        msm5xxx_poc_input_stream_write(s);
     }
 }
 
@@ -1817,9 +1824,7 @@ static void msm5xxx_poc_reset(void *opaque)
     s->matrix_input_pressed = false;
     s->matrix_input_row = 0;
     s->matrix_input_sense = 0;
-    memset(s->matrix_input_buffer, 0, sizeof(s->matrix_input_buffer));
-    s->matrix_input_buffer_length = 0;
-    s->matrix_input_telemetry_priority = false;
+    /* Chardev frames cross guest reset; preserve partial command and ACK. */
     s->matrix_input_host_events = 0;
     s->matrix_input_active_reads = 0;
     s->matrix_input_rejections = 0;
@@ -2170,15 +2175,27 @@ static void msm5xxx_poc_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
         qemu_chr_fe_init(&s->lcd_trace_chr, chr, &error_fatal);
-        qemu_chr_fe_set_handlers(
-            &s->lcd_trace_chr, msm5xxx_poc_host_input_can_read,
-            msm5xxx_poc_host_input_read, NULL, NULL, s, NULL, true
-        );
         s->lcd_trace_buffer = g_byte_array_sized_new(4096);
         s->lcd_trace_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                           msm5xxx_poc_lcd_trace_flush, s);
         timer_mod(s->lcd_trace_timer,
                   qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 33);
+    }
+    if (s->input_chardev) {
+        Chardev *chr = qemu_chr_find(s->input_chardev);
+
+        if (!chr) {
+            error_report("input-chardev '%s' not found", s->input_chardev);
+            exit(EXIT_FAILURE);
+        }
+        qemu_chr_fe_init(&s->input_chr, chr, &error_fatal);
+        qemu_chr_fe_set_handlers(
+            &s->input_chr, msm5xxx_poc_host_input_can_read,
+            msm5xxx_poc_host_input_read, NULL, NULL, s, NULL, true
+        );
+    } else if (s->matrix_input_host_enabled) {
+        error_report("matrix-input requires input-chardev");
+        exit(EXIT_FAILURE);
     }
     s->ready_poll_status = s->ready_poll_enabled ?
         MSM5XXX_POC_READY_OBSERVING : MSM5XXX_POC_READY_DISABLED;
@@ -2277,6 +2294,20 @@ static void msm5xxx_poc_set_lcd_trace_chardev(Object *obj, const char *value,
 
     g_free(s->lcd_trace_chardev);
     s->lcd_trace_chardev = g_strdup(value);
+}
+
+static char *msm5xxx_poc_get_input_chardev(Object *obj, Error **errp)
+{
+    return g_strdup(MSM5XXX_POC_MACHINE(obj)->input_chardev);
+}
+
+static void msm5xxx_poc_set_input_chardev(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    g_free(s->input_chardev);
+    s->input_chardev = g_strdup(value);
 }
 
 static char *msm5xxx_poc_get_ready_poll(Object *obj, Error **errp)
@@ -2935,6 +2966,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_lcd_trace_chardev);
     object_class_property_set_description(
         oc, "lcd-trace-chardev", "Stream LCD writes in 33 ms host batches");
+    object_class_property_add_str(oc, "input-chardev",
+                                  msm5xxx_poc_get_input_chardev,
+                                  msm5xxx_poc_set_input_chardev);
+    object_class_property_set_description(
+        oc, "input-chardev", "Exchange host input and acknowledgements");
     object_class_property_add_str(oc, "memory-profile",
                                   msm5xxx_poc_get_memory_profile,
                                   msm5xxx_poc_set_memory_profile);

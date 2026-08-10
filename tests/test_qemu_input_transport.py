@@ -372,7 +372,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         transport.matrix_input_sideband_producer = producer
         transport.matrix_held = {}
         transport.sideband_held = set()
-        transport.lcd_socket = SimpleNamespace(sendall=packets.append)
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
         transport.decoder = SimpleNamespace(
             input_error="",
             _direct_sideband_producer=(
@@ -402,6 +402,78 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         self.assertEqual((transport.sideband_held, transport.matrix_held),
                          (set(), {}))
+
+    def test_input_ack_preempts_lcd_replay_batch(self) -> None:
+        stop = MODULE.threading.Event()
+        seen: list[int] = []
+        input_record = bytes([MODULE.INPUT_TELEMETRY]) + bytes(15)
+        lcd_record = bytes([MODULE.LCD_WRITE]) + bytes(15)
+
+        class Stream:
+            def __init__(self, record: bytes, finish: bool = False) -> None:
+                self.record = record
+                self.finish = finish
+
+            def recv(self, size: int) -> bytes:
+                self.assert_size = size
+                if self.finish:
+                    stop.set()
+                return self.record
+
+        transport = object.__new__(MODULE.Transport)
+        transport.input_socket = Stream(input_record)
+        transport.lcd_socket = Stream(lcd_record, True)
+        transport.process = SimpleNamespace(poll=lambda: None)
+        transport._replay_record = lambda record: seen.append(record[0])
+
+        with mock.patch.object(
+                MODULE.select, "select",
+                return_value=([transport.lcd_socket,
+                               transport.input_socket], [], [])):
+            transport.replay(stop)
+
+        self.assertEqual(seen, [MODULE.INPUT_TELEMETRY, MODULE.LCD_WRITE])
+        self.assertEqual(transport.input_socket.assert_size, 4096)
+        self.assertEqual(transport.lcd_socket.assert_size, 4096)
+
+    def test_input_eof_stops_qemu(self) -> None:
+        stop = MODULE.threading.Event()
+        input_socket = SimpleNamespace(recv=lambda size: b"")
+        transport = object.__new__(MODULE.Transport)
+        transport.input_socket = input_socket
+        transport.lcd_socket = SimpleNamespace()
+        transport.process = SimpleNamespace(poll=lambda: None)
+        transport.decoder = SimpleNamespace(input_error="")
+        terminated: list[bool] = []
+        transport._terminate_process = lambda: terminated.append(True)
+
+        with mock.patch.object(
+                MODULE.select, "select",
+                return_value=([input_socket], [], [])):
+            transport.replay(stop)
+
+        self.assertEqual(transport.decoder.input_error,
+                         "QEMU input channel closed")
+        self.assertEqual(terminated, [True])
+
+    def test_qemu_input_framing_survives_reset_and_reentry(self) -> None:
+        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        read_start = source.index("static void msm5xxx_poc_host_input_read")
+        read_end = source.index("\nstatic ", read_start + 1)
+        read_body = source[read_start:read_end]
+        self.assertLess(
+            read_body.index("s->matrix_input_buffer_length = 0;"),
+            read_body.index("msm5xxx_poc_input_stream_write(s);"),
+        )
+
+        reset_start = source.index("static void msm5xxx_poc_reset")
+        reset_end = source.index("\nstatic ", reset_start + 1)
+        reset_body = source[reset_start:reset_end]
+        self.assertNotIn("matrix_input_buffer_length = 0", reset_body)
+        self.assertNotIn("matrix_input_ack_length = 0", reset_body)
+        self.assertNotIn("g_source_remove(s->matrix_input_ack_watch)",
+                         reset_body)
+        self.assertIn("G_IO_HUP | G_IO_ERR | G_IO_NVAL", source)
 
     def test_legacy_state_import_reads_copy_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
