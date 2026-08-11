@@ -12,6 +12,7 @@ build and install the arm64-v8a app with Android SDK 35 and Gradle 9.4:
 MSM5XXX_DTC_SOURCE=/path/to/pinned/dtc \
   ./build_qemu_android.sh /new/qemu-build-work
 ./build_unicorn_android.sh
+./build_numpy_android.sh
 ./prepare_runtime.sh
 gradle --offline --max-workers=1 :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk

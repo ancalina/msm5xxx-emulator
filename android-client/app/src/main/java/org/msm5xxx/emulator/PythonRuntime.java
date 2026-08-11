@@ -71,6 +71,10 @@ final class PythonRuntime {
         return nativeFrame();
     }
 
+    static synchronized byte[] audio() {
+        return nativeAudio();
+    }
+
     static synchronized String status() {
         return nativeStatus();
     }
@@ -170,6 +174,7 @@ final class PythonRuntime {
     private static native String nativeDetect(String firmware);
     private static native String nativeStart(String request);
     private static native byte[] nativeFrame();
+    private static native byte[] nativeAudio();
     private static native String nativeStatus();
     private static native String nativeCanKey(String request);
     private static native String nativeKey(String request);

@@ -134,6 +134,7 @@ class AudioTransport:
         self._ma2_render_timebase: int | None = None
         self._ma2_render_control = 0
         self._ma2_render_epoch = 0
+        self._ma2_render_dirty = False
         self._ma2_render_snapshots: deque[
             tuple[
                 int, int, int | None, tuple[bytearray, ...],
@@ -226,9 +227,13 @@ class AudioTransport:
                     self.counts["ma2-render-discarded-bytes"] += 1
                 elif len(fifo) < _MA2_RENDER_FIFO_LIMIT:
                     fifo.append(value)
+                    if self._ma2_render_control & 1:
+                        self._ma2_render_dirty = True
                 else:
                     self._ma2_render_fifos[index] = bytearray()
                     self._ma2_render_overflow[index] = True
+                    if self._ma2_render_control & 1:
+                        self._ma2_render_dirty = True
                     self.counts["ma2-render-overflows"] += 1
             self._emit({
                 "kind": "ma2-fifo-write",
@@ -252,24 +257,32 @@ class AudioTransport:
             self._ma2_render_set_timebase(value)
         elif self.ma2_bank == 1 and index == 1:
             prior = self._ma2_render_control
+            if prior & 1 and not value & 1 and self._ma2_render_dirty:
+                self._ma2_render_capture()
             self._ma2_render_control = value
             if not prior & 1 and value & 1:
-                if (self._ma2_render_snapshots.maxlen is not None
-                        and len(self._ma2_render_snapshots)
-                        == self._ma2_render_snapshots.maxlen):
-                    self.counts["ma2-render-snapshot-drops"] += 1
-                self._ma2_render_snapshots.append((
-                    self._ma2_render_epoch,
-                    self.sequence,
-                    self._ma2_render_timebase,
-                    tuple(self._ma2_render_fifos),
-                    tuple(len(fifo) for fifo in self._ma2_render_fifos),
-                    tuple(self._ma2_render_overflow),
-                ))
+                self._ma2_render_capture()
                 self.counts["ma2-render-start-edges"] += 1
+
+    def _ma2_render_capture(self) -> None:
+        if (self._ma2_render_snapshots.maxlen is not None
+                and len(self._ma2_render_snapshots)
+                == self._ma2_render_snapshots.maxlen):
+            self.counts["ma2-render-snapshot-drops"] += 1
+        self._ma2_render_snapshots.append((
+            self._ma2_render_epoch,
+            self.sequence,
+            self._ma2_render_timebase,
+            tuple(self._ma2_render_fifos),
+            tuple(len(fifo) for fifo in self._ma2_render_fifos),
+            tuple(self._ma2_render_overflow),
+        ))
+        self._ma2_render_dirty = False
 
     def _ma2_render_set_timebase(self, value: int) -> None:
         prior = self._ma2_render_timebase
+        if self._ma2_render_dirty:
+            self._ma2_render_capture()
         if prior is not None and prior != value:
             self._ma2_render_epoch += 1
             self._ma2_render_fifos = [bytearray() for _ in range(4)]
@@ -282,6 +295,8 @@ class AudioTransport:
         self._ma2_render_timebase = value
 
     def drain_renderer_snapshots(self) -> tuple[dict[str, object], ...]:
+        if self.family == "ma2" and self._ma2_render_dirty:
+            self._ma2_render_capture()
         pending = tuple(self._ma2_render_snapshots)
         self._ma2_render_snapshots.clear()
         if not pending or self.family != "ma2":

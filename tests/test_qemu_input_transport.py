@@ -330,6 +330,25 @@ class QEMUInputTransportTests(unittest.TestCase):
             bytes.fromhex("80000000"),
         )
 
+    def test_gui_preserves_one_debounce_window_between_key_edges(self) -> None:
+        window = MODULE.LiveWindow.__new__(MODULE.LiveWindow)
+        window.closing = False
+        window.root = mock.Mock()
+        window.transport = mock.Mock()
+        window.commands = queue.SimpleQueue()
+        window.commands.put((15, True))
+        window.commands.put((15, False))
+
+        window._forward_qemu_keys()
+
+        window.transport.set_key.assert_called_once_with(15, True, None)
+        window.root.after.assert_called_once_with(20, window._forward_qemu_keys)
+        window._forward_qemu_keys()
+        self.assertEqual(
+            window.transport.set_key.call_args_list,
+            [mock.call(15, True, None), mock.call(15, False, None)],
+        )
+
     def test_invalid_detector_position_fails_closed(self) -> None:
         for position in (None, (0x53, 6, 0), (0x53, 1, 4)):
             with self.subTest(position=position), self.assertRaises(ValueError):

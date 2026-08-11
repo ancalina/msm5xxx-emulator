@@ -132,11 +132,14 @@ static jbyteArray call_python_bytes(JNIEnv *env, const char *function_name) {
         return NULL;
     }
     jsize size = (jsize)PyBytes_GET_SIZE(result);
-    jbyteArray response = (*env)->NewByteArray(env, size);
+    const jbyte *data = (const jbyte *)PyBytes_AS_STRING(result);
+    jbyteArray response;
+    Py_BEGIN_ALLOW_THREADS
+    response = (*env)->NewByteArray(env, size);
     if (response != NULL) {
-        (*env)->SetByteArrayRegion(env, response, 0, size,
-                                  (const jbyte *)PyBytes_AS_STRING(result));
+        (*env)->SetByteArrayRegion(env, response, 0, size, data);
     }
+    Py_END_ALLOW_THREADS
     Py_DECREF(result);
     Py_DECREF(function);
     Py_DECREF(module);
@@ -206,6 +209,13 @@ Java_org_msm5xxx_emulator_PythonRuntime_nativeFrame(
         JNIEnv *env, jclass type) {
     (void)type;
     return call_python_bytes(env, "session_frame");
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_org_msm5xxx_emulator_PythonRuntime_nativeAudio(
+        JNIEnv *env, jclass type) {
+    (void)type;
+    return call_python_bytes(env, "session_audio");
 }
 
 JNIEXPORT jstring JNICALL

@@ -13,24 +13,29 @@ _session_stop = None
 _session_thread = None
 _session_error = None
 _frame_sequence_sent = None
+_PCM_PACKET = struct.Struct("<4sIQQ")
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def probe():
+    import numpy
     import unicorn
     from gdb_remote import Remote
     from qemu_transport import Transport
     from unicorn import UC_ARCH_ARM, UC_MODE_ARM, Uc
     from msm5xxx_emulator.detection.firmware import detect
+    from msm5xxx_emulator.e170_gm_audio import ApproximateSmafPlayer
 
     engine = Uc(UC_ARCH_ARM, UC_MODE_ARM)
     engine.mem_map(0x1000, 0x1000)
     engine.mem_write(0x1000, b"\0\0\0\0")
     del engine
     return _json({
+        "audio_renderer": callable(ApproximateSmafPlayer),
         "detector_entry": callable(detect),
         "gdb_remote": callable(getattr(Remote, "command", None)),
+        "numpy": numpy.__version__,
         "python": platform.python_version(),
         "qemu_transport": callable(Transport),
         "schema": 1,
@@ -164,6 +169,38 @@ def session_status():
         "process_running": _session.process.poll() is None,
         "schema": 1,
     })
+
+
+def session_audio():
+    if _session is None:
+        raise RuntimeError("session is not running")
+    if _session_error is not None or _session.process.poll() is not None:
+        return b""
+    metadata = _session.config.audio_transport
+    transport = getattr(_session.decoder, "audio_transport", None)
+    player = getattr(_session.decoder, "audio_player", None)
+    if (not isinstance(metadata, dict)
+            or metadata.get("family") != "ma2"
+            or metadata.get("static_status") != "accepted"
+            or not _session.audio_stream_enabled
+            or _session.audio_stream_status == "rejected"
+            or getattr(transport, "family", None) != "ma2"
+            or getattr(transport, "static_status", None) != "accepted"
+            or getattr(transport, "renderer_status", None) != "submitted"
+            or getattr(transport, "renderer_reject_reason", None) is not None
+            or not callable(getattr(player, "take_latest_pcm", None))):
+        return b""
+    raw = player.take_latest_pcm()
+    if not isinstance(raw, bytes) or len(raw) < _PCM_PACKET.size:
+        return b""
+    magic, schema, revision, start_frame = _PCM_PACKET.unpack_from(raw)
+    payload_bytes = len(raw) - _PCM_PACKET.size
+    if (magic != b"M5P1" or schema != 1 or revision == 0
+            or payload_bytes == 0 or payload_bytes % 4 != 0
+            or payload_bytes > 44_100 * 30 * 4
+            or start_frame != 0):
+        return b""
+    return raw
 
 
 def can_session_key(request_json):

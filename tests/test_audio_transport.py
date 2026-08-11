@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import struct
+import threading
+import time
 import unittest
 from unittest.mock import patch
+
+import numpy as np
 
 from msm5xxx_emulator.detection.audio import _marker_families
 from msm5xxx_emulator.detection.audio import find_audio_transport
@@ -238,6 +242,200 @@ class AudioTransportTests(unittest.TestCase):
              for note in _Ma2SnapshotDecoder().decode(snapshots[0])],
             [(37, 1)],
         )
+
+    def test_ma2_running_fifo_refill_emits_incremental_snapshot(self) -> None:
+        transport = AudioTransport({
+            "family": "ma2", "grammar": "ma2-command-v1",
+            "static_status": "accepted", "reject_reason": None,
+            "base": 0x02080000, "data_offset": 2,
+            "sites": {"write_0": [0x100], "write_2": [0x102]},
+            "block_write_offsets": [],
+        })
+
+        def write(index: int, value: int) -> None:
+            self.assertTrue(transport.write(0x100, 0x02080000, 1, index))
+            self.assertTrue(transport.write(0x102, 0x02080002, 1, value))
+
+        write(0x0F, 1)
+        write(2, 0x22)
+        write(0x0F, 0)
+        self.assertTrue(transport.write(0x100, 0x02080000, 1, 0))
+        for value in bytes.fromhex("00fff000000101"):
+            self.assertTrue(transport.write(0x102, 0x02080002, 1, value))
+        write(0x0F, 1)
+        write(1, 1)
+
+        first = transport.drain_renderer_snapshots()
+        self.assertEqual(len(first), 1)
+        write(0x0F, 0)
+        self.assertTrue(transport.write(0x100, 0x02080000, 1, 0))
+        for value in bytes.fromhex("640201"):
+            self.assertTrue(transport.write(0x102, 0x02080002, 1, value))
+        second = transport.drain_renderer_snapshots()
+
+        self.assertEqual(len(second), 1)
+        decoder = _Ma2SnapshotDecoder()
+        self.assertEqual(
+            [(note.tick, note.note) for note in decoder.decode(first[0])],
+            [(0, 37)],
+        )
+        self.assertEqual(
+            [(note.tick, note.note) for note in decoder.decode(second[0])],
+            [(100, 38)],
+        )
+        self.assertEqual(transport.drain_renderer_snapshots(), ())
+
+    def test_ma2_batch_renders_one_same_epoch_timeline(self) -> None:
+        first = bytes.fromhex("00fff000000101")
+        second = bytes.fromhex("00fff000000101640201")
+        snapshots = tuple(
+            {
+                "kind": "ma2-fifo-snapshot",
+                "epoch": 0,
+                "sequence": sequence,
+                "timebase": 0x22,
+                "fifos": (fifo, b"", b"", b""),
+            }
+            for sequence, fifo in enumerate((first, second), 1)
+        )
+        player = ApproximateSmafPlayer()
+        player.backend = "render-only"
+        player.set_muted(True)
+        try:
+            with patch(
+                    "msm5xxx_emulator.e170_gm_audio.render_notes",
+                    wraps=render_notes) as renderer:
+                self.assertTrue(player.play_ma2_snapshots(snapshots))
+                deadline = time.monotonic() + 2
+                while player.last_pcm is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIsNotNone(player.last_pcm)
+                self.assertEqual(renderer.call_count, 1)
+                notes = renderer.call_args.args[1]
+                self.assertEqual(
+                    [(note.tick, note.note) for note in notes],
+                    [(0, 37), (100, 38)],
+                )
+        finally:
+            player.close()
+
+    def test_ma2_pcm_revisions_keep_the_complete_timeline(self) -> None:
+        fifos = (
+            bytes.fromhex("00fff000000101"),
+            bytes.fromhex("00fff000000101640201"),
+        )
+        snapshots = tuple({
+            "kind": "ma2-fifo-snapshot",
+            "epoch": 0,
+            "sequence": sequence,
+            "timebase": 0x22,
+            "fifos": (fifo, b"", b"", b""),
+        } for sequence, fifo in enumerate(fifos, 1))
+        player = ApproximateSmafPlayer()
+        player.backend = "desktop-test"
+        try:
+            with (patch.object(player, "_play_pcm") as playback,
+                  patch(
+                      "msm5xxx_emulator.e170_gm_audio.render_notes",
+                      wraps=render_notes) as renderer):
+                self.assertTrue(player.play_ma2_snapshot(snapshots[0]))
+                deadline = time.monotonic() + 2
+                while player._pcm_sequence < 1 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                first = player.take_latest_pcm()
+
+                self.assertTrue(player.play_ma2_snapshot(snapshots[1]))
+                deadline = time.monotonic() + 2
+                while player._pcm_sequence < 2 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                second = player.take_latest_pcm()
+
+                self.assertEqual(renderer.call_count, 4)
+                self.assertEqual(
+                    [(note.tick, note.note)
+                     for note in renderer.call_args_list[2].args[1]],
+                    [(0, 37), (100, 38)],
+                )
+                self.assertEqual(
+                    [(note.tick, note.note)
+                     for note in renderer.call_args_list[3].args[1]],
+                    [(100, 38)],
+                )
+                self.assertEqual(playback.call_count, 2)
+                self.assertEqual(
+                    struct.unpack_from("<4sIQQ", first),
+                    (b"M5P1", 1, 1, 0),
+                )
+                self.assertEqual(
+                    struct.unpack_from("<4sIQQ", second),
+                    (b"M5P1", 1, 2, 0),
+                )
+                self.assertGreater(len(second), len(first))
+
+                self.assertTrue(player.play_ma2_snapshot(snapshots[0]))
+                time.sleep(0.05)
+                self.assertEqual(player._pcm_sequence, 2)
+
+                epoch_change = {**snapshots[1], "epoch": 1, "sequence": 3}
+                self.assertFalse(player.play_ma2_snapshot(epoch_change))
+                self.assertTrue(player._ma2_timeline_rejected)
+                self.assertEqual(player._pcm_sequence, 2)
+                self.assertFalse(player.play_ma2_snapshot(epoch_change))
+                self.assertEqual(
+                    player.last_submit_error,
+                    "ma2-epoch-change-unsupported",
+                )
+        finally:
+            player.close()
+
+    def test_mmf_does_not_drop_or_publish_the_ma2_timeline(self) -> None:
+        blocked = threading.Event()
+        release = threading.Event()
+        first_mmf = b"MMMD-first"
+        second_mmf = b"MMMD-second"
+
+        def render_mmf(data: bytes):
+            if data == first_mmf:
+                blocked.set()
+                self.assertTrue(release.wait(1))
+            return np.zeros((1, 2), dtype="<i2"), {}
+
+        snapshot = {
+            "kind": "ma2-fifo-snapshot",
+            "epoch": 0,
+            "sequence": 1,
+            "timebase": 0x22,
+            "fifos": (bytes.fromhex("00fff000000101"), b"", b"", b""),
+        }
+        player = ApproximateSmafPlayer()
+        player.backend = "render-only"
+        player._soundfont = object()
+        try:
+            with (patch.object(player, "render_now", side_effect=render_mmf),
+                  patch.object(player, "_play_pcm"),
+                  patch(
+                      "msm5xxx_emulator.e170_gm_audio.render_notes",
+                      return_value=np.ones((2, 2), dtype="<i2"),
+                  ) as renderer):
+                player.play_mmf(first_mmf)
+                self.assertTrue(blocked.wait(1))
+                self.assertTrue(player.play_ma2_snapshot(snapshot))
+                player.play_mmf(second_mmf)
+                release.set()
+                deadline = time.monotonic() + 2
+                while (player.last_mmf != second_mmf
+                       or renderer.call_count != 1) \
+                        and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(renderer.call_count, 1)
+                self.assertEqual(player._pcm_sequence, 1)
+                self.assertEqual(
+                    struct.unpack_from("<4sIQQ", player.take_latest_pcm()),
+                    (b"M5P1", 1, 1, 0),
+                )
+        finally:
+            release.set()
+            player.close()
 
     def test_ma2_player_rejects_malformed_and_stays_closed(self) -> None:
         player = ApproximateSmafPlayer()

@@ -9,7 +9,8 @@ add_library(msm5xxx_python SHARED msm5xxx_python.c)
 get_filename_component(ANDROID_CLIENT_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
 foreach(path IN ITEMS "${PYTHON_PREFIX_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
-                      "${CMAKE_CURRENT_BINARY_DIR}" "${ANDROID_CLIENT_ROOT}")
+                      "${CMAKE_CURRENT_BINARY_DIR}" "${ANDROID_CLIENT_ROOT}"
+                      "${ANDROID_NDK}")
     target_compile_options(msm5xxx_python PRIVATE
         "-ffile-prefix-map=${path}=."
         "-fmacro-prefix-map=${path}=.")

@@ -51,7 +51,9 @@ final class BackendBridge {
             if (result.getInt("schema") != 1
                     || !"3.14.4".equals(result.getString("python"))
                     || !"2.1.4".equals(result.getString("unicorn"))
+                    || !"2.5.1".equals(result.getString("numpy"))
                     || !result.getBoolean("unicorn_arm")
+                    || !result.getBoolean("audio_renderer")
                     || !result.getBoolean("detector_entry")
                     || !result.getBoolean("gdb_remote")
                     || !result.getBoolean("qemu_transport")) {
@@ -235,6 +237,7 @@ final class BackendBridge {
 
     interface Session extends AutoCloseable {
         byte[] frame() throws IOException;
+        byte[] audio() throws IOException;
         Status status() throws IOException;
         String identity();
         boolean supportsKey(int bit);
@@ -261,6 +264,16 @@ final class BackendBridge {
                 return PythonRuntime.frame();
             } catch (RuntimeException | LinkageError error) {
                 throw new IOException("Backend frame read failed.", error);
+            }
+        }
+
+        @Override
+        public byte[] audio() throws IOException {
+            requireOpen();
+            try {
+                return PythonRuntime.audio();
+            } catch (RuntimeException | LinkageError error) {
+                throw new IOException("Backend audio read failed.", error);
             }
         }
 

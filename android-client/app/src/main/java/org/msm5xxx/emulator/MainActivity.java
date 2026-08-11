@@ -15,6 +15,9 @@ import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -26,6 +29,7 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -47,6 +51,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayDeque;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -637,6 +642,7 @@ public final class MainActivity extends Activity {
                             int generation) {
         BackendBridge.Session opened = null;
         FramePacket latestFrame = null;
+        PcmAudioSink audioSink = new PcmAudioSink();
         boolean failed = false;
         try {
             opened = BackendBridge.open(context, firmware, profile,
@@ -645,6 +651,7 @@ public final class MainActivity extends Activity {
                 return;
             }
             session = opened;
+            updateSessionKeepScreenOn(true, generation);
             sessionStarting = false;
             BackendBridge.Session active = opened;
             handler.post(() -> {
@@ -656,9 +663,22 @@ public final class MainActivity extends Activity {
             });
             long nextFrameUpdate = 0;
             long nextMetricUpdate = 0;
+            long nextBackendUpdate = 0;
             long publishedInputEvents = -1;
             long publishedRejections = -1;
             while (generation == sessionGeneration) {
+                if (!audioSink.disabled) {
+                    try {
+                        audioSink.offer(opened.audio());
+                    } catch (IOException | RuntimeException audioError) {
+                        audioSink.disable();
+                    }
+                }
+                long now = SystemClock.elapsedRealtimeNanos();
+                if (now < nextBackendUpdate) {
+                    Thread.sleep(20);
+                    continue;
+                }
                 FramePacket frame = FrameView.decodePacket(opened.frame());
                 if (frame != null) {
                     if (latestFrame != null) {
@@ -667,9 +687,10 @@ public final class MainActivity extends Activity {
                     latestFrame = frame;
                 }
                 BackendBridge.Status status = opened.status();
-                long now = SystemClock.elapsedRealtimeNanos();
+                long ackNow = SystemClock.elapsedRealtimeNanos();
                 InputTimingSnapshot timing = inputTiming.observe(
-                        status.inputHostEvents, now);
+                        status.inputHostEvents, ackNow);
+                now = SystemClock.elapsedRealtimeNanos();
                 boolean inputChanged = status.inputHostEvents
                         != publishedInputEvents
                         || status.inputRejections != publishedRejections;
@@ -688,13 +709,15 @@ public final class MainActivity extends Activity {
                 if (!status.processRunning) {
                     throw new IOException("QEMU process exited");
                 }
-                Thread.sleep(100);
+                nextBackendUpdate = now + FRAME_UPDATE_INTERVAL_NS;
+                Thread.sleep(20);
             }
         } catch (IOException | RuntimeException | LinkageError error) {
             failed = true;
             if (generation == sessionGeneration) {
                 session = null;
                 sessionStarting = false;
+                updateSessionKeepScreenOn(false, generation);
                 handler.post(() -> {
                     if (generation == sessionGeneration) {
                         updateKeypad(null);
@@ -707,6 +730,8 @@ public final class MainActivity extends Activity {
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
         } finally {
+            updateSessionKeepScreenOn(false, generation);
+            audioSink.close();
             if (latestFrame != null) {
                 latestFrame.recycle();
             }
@@ -996,6 +1021,7 @@ public final class MainActivity extends Activity {
 
     private void stopSession(boolean visible) {
         int generation = ++sessionGeneration;
+        updateSessionKeepScreenOn(false, generation);
         autoStartToken = null;
         releaseHeldKey(false);
         FrameUpdate staleFrame = pendingFrame.getAndSet(null);
@@ -1038,6 +1064,25 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void updateSessionKeepScreenOn(boolean enabled, int generation) {
+        Runnable update = () -> {
+            if (generation != sessionGeneration
+                    || (enabled && session == null)) {
+                return;
+            }
+            if (enabled) {
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            update.run();
+        } else {
+            handler.post(update);
+        }
     }
 
     private static void closeQuietly(BackendBridge.Session value) {
@@ -1406,6 +1451,217 @@ public final class MainActivity extends Activity {
             int top = (getHeight() - height) / 2;
             canvas.drawBitmap(current, null,
                     new Rect(left, top, left + width, top + height), paint);
+        }
+    }
+
+    private static final class PcmAudioSink implements AutoCloseable {
+        private static final int SAMPLE_RATE = 44_100;
+        private static final int FRAME_BYTES = 4;
+        private static final int HEADER_BYTES = 24;
+        private static final int PACKET_MAGIC = 0x3150354d;
+        private static final int MAX_BYTES = HEADER_BYTES
+                + SAMPLE_RATE * 30 * FRAME_BYTES;
+        private final ArrayBlockingQueue<PcmPacket> pending =
+                new ArrayBlockingQueue<>(1);
+        private final Thread worker;
+        private volatile boolean closed;
+        private volatile boolean disabled;
+
+        PcmAudioSink() {
+            worker = new Thread(this::run, "msm5xxx-audio-output");
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        void offer(byte[] pcm) {
+            if (closed || disabled || pcm == null || pcm.length == 0) {
+                return;
+            }
+            PcmPacket packet = PcmPacket.decode(pcm);
+            if (packet == null) {
+                return;
+            }
+            pending.clear();
+            pending.offer(packet);
+        }
+
+        private void run() {
+            AudioTrack track = null;
+            long trackStartFrame = 0;
+            long revision = 0;
+            try {
+                while (!closed) {
+                    PcmPacket packet = pending.take();
+                    if (closed) {
+                        break;
+                    }
+                    if (packet.revision <= revision) {
+                        continue;
+                    }
+                    long playedFrame = packet.startFrame;
+                    if (track != null) {
+                        track.pause();
+                        playedFrame = trackStartFrame
+                                + Integer.toUnsignedLong(
+                                        track.getPlaybackHeadPosition());
+                        releaseTrack(track);
+                    }
+                    track = createTrack();
+                    trackStartFrame = Math.max(packet.startFrame,
+                            Math.min(playedFrame, packet.endFrame));
+                    int offset = packet.byteOffset(trackStartFrame);
+                    revision = packet.revision;
+                    while (!closed && offset < packet.data.length) {
+                        PcmPacket newer = pending.poll();
+                        if (newer != null) {
+                            if (newer.revision <= revision) {
+                                continue;
+                            }
+                            track.pause();
+                            playedFrame = trackStartFrame
+                                    + Integer.toUnsignedLong(
+                                            track.getPlaybackHeadPosition());
+                            releaseTrack(track);
+                            track = createTrack();
+                            packet = newer;
+                            trackStartFrame = Math.max(packet.startFrame,
+                                    Math.min(playedFrame, packet.endFrame));
+                            offset = packet.byteOffset(trackStartFrame);
+                            revision = packet.revision;
+                            continue;
+                        }
+                        int requested = Math.min(packet.data.length - offset,
+                                SAMPLE_RATE * FRAME_BYTES / 50);
+                        int written = track.write(packet.data, offset, requested,
+                                AudioTrack.WRITE_BLOCKING);
+                        if (written < 0) {
+                            throw new IllegalStateException(
+                                    "AudioTrack write failed: " + written);
+                        }
+                        if (written == 0) {
+                            Thread.sleep(1);
+                        } else {
+                            offset += written;
+                        }
+                    }
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            } catch (RuntimeException error) {
+                disabled = true;
+            } finally {
+                releaseTrack(track);
+            }
+        }
+
+        private static AudioTrack createTrack() {
+            int minimum = AudioTrack.getMinBufferSize(
+                    SAMPLE_RATE, AudioFormat.CHANNEL_OUT_STEREO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+            if (minimum <= 0) {
+                throw new IllegalStateException("AudioTrack is unavailable");
+            }
+            AudioFormat format = new AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .build();
+            AudioTrack track = new AudioTrack.Builder()
+                    .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_GAME)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build())
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(minimum)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                    .build();
+            if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+                releaseTrack(track);
+                throw new IllegalStateException("AudioTrack init failed");
+            }
+            try {
+                track.play();
+            } catch (RuntimeException error) {
+                releaseTrack(track);
+                throw error;
+            }
+            return track;
+        }
+
+        void disable() {
+            disabled = true;
+            closed = true;
+            pending.clear();
+            worker.interrupt();
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+            pending.clear();
+            worker.interrupt();
+            try {
+                worker.join(1_000);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private static void releaseTrack(AudioTrack track) {
+            if (track == null) {
+                return;
+            }
+            try {
+                track.pause();
+                track.flush();
+            } catch (IllegalStateException ignored) {
+                // Releasing an unavailable sink must not stop emulation.
+            }
+            try {
+                track.release();
+            } catch (RuntimeException ignored) {
+                // Audio teardown is isolated from QEMU session teardown.
+            }
+        }
+
+        private static final class PcmPacket {
+            final byte[] data;
+            final long revision;
+            final long startFrame;
+            final long endFrame;
+
+            private PcmPacket(byte[] data, long revision, long startFrame) {
+                this.data = data;
+                this.revision = revision;
+                this.startFrame = startFrame;
+                this.endFrame = startFrame
+                        + (data.length - HEADER_BYTES) / FRAME_BYTES;
+            }
+
+            static PcmPacket decode(byte[] data) {
+                if (data.length <= HEADER_BYTES || data.length > MAX_BYTES
+                        || (data.length - HEADER_BYTES) % FRAME_BYTES != 0) {
+                    return null;
+                }
+                ByteBuffer header = ByteBuffer.wrap(data)
+                        .order(ByteOrder.LITTLE_ENDIAN);
+                if (header.getInt() != PACKET_MAGIC || header.getInt() != 1) {
+                    return null;
+                }
+                long revision = header.getLong();
+                long startFrame = header.getLong();
+                long frames = (data.length - HEADER_BYTES) / FRAME_BYTES;
+                if (revision <= 0 || startFrame != 0
+                        || startFrame > Long.MAX_VALUE - frames) {
+                    return null;
+                }
+                return new PcmPacket(data, revision, startFrame);
+            }
+
+            int byteOffset(long frame) {
+                return HEADER_BYTES + (int) ((frame - startFrame) * FRAME_BYTES);
+            }
         }
     }
 

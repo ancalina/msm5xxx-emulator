@@ -11,6 +11,7 @@ import os
 import logging
 import queue
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
@@ -26,6 +27,8 @@ from .smaf_audio import OUTPUT_RATE, render_mmf_bytes, write_wav
 LOGGER = logging.getLogger("audio")
 _MA2_TIMEBASE_CODE = (0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13)
 _MA2_SNAPSHOT_FIFO_LIMIT = 0x10000
+_PCM_PACKET = struct.Struct("<4sIQQ")
+_PCM_PACKET_MAGIC = b"M5P1"
 
 
 class _Ma2SnapshotDecoder:
@@ -63,9 +66,9 @@ class _Ma2SnapshotDecoder:
 class ApproximateSmafPlayer:
     """Asynchronous SMAF-to-PCM player used by the Unicorn thread.
 
-    Audio rendering and process I/O never run on the emulation thread.  A
-    newest-item queue matches phone UI behaviour: repeated key sounds replace
-    stale queued sounds rather than building an audible backlog.
+    Audio rendering and process I/O never run on the emulation thread.  MMF
+    key sounds keep newest-item semantics; cumulative MA2 snapshots are merged
+    so a renderer update cannot discard an earlier FIFO generation.
     """
 
     def __init__(self) -> None:
@@ -109,6 +112,13 @@ class ApproximateSmafPlayer:
         self.last_stats: dict[str, int | float] = {}
         self.last_submit_error: str | None = None
         self.last_pcm: np.ndarray | None = None
+        self._latest_pcm_bytes = b""
+        self._pcm_sequence = 0
+        self._pcm_consumed = 0
+        self._ma2_last_snapshot_sequence = -1
+        self._ma2_epoch: int | None = None
+        self._ma2_notes: list[object] = []
+        self._ma2_timeline_rejected = False
         self.last_mmf: bytes | None = None
         self._queue: queue.Queue[bytes | dict[str, object] | None] = queue.Queue(maxsize=2)
         self._queue_lock = threading.Lock()
@@ -144,11 +154,22 @@ class ApproximateSmafPlayer:
 
     def play_ma2_snapshots(
             self, snapshots: tuple[dict[str, object], ...]) -> bool:
+        if self._ma2_timeline_rejected:
+            self.last_submit_error = "ma2-epoch-change-unsupported"
+            return False
         if (not self.enabled or not snapshots
                 or not all(self._valid_ma2_snapshot(item)
                            for item in snapshots)):
             self.last_submit_error = "ma2-snapshot-invalid"
             return False
+        epochs = {int(snapshot["epoch"]) for snapshot in snapshots}
+        if (len(epochs) != 1
+                or self._ma2_epoch is not None
+                and self._ma2_epoch not in epochs):
+            self._ma2_timeline_rejected = True
+            self.last_submit_error = "ma2-epoch-change-unsupported"
+            return False
+        self._ma2_epoch = epochs.pop()
         return self._replace_request({
             "kind": "ma2-fifo-snapshot-batch",
             "snapshots": snapshots,
@@ -184,13 +205,31 @@ class ApproximateSmafPlayer:
             if self._closed:
                 self.last_submit_error = "audio-player-closed"
                 return False
-            # Keep only the most recent request.
+            retained_snapshots: list[dict[str, object]] = []
+            retained_other: bytes | dict[str, object] | None = None
             while True:
                 try:
-                    self._queue.get_nowait()
+                    pending = self._queue.get_nowait()
                 except queue.Empty:
                     break
+                if (isinstance(request, dict)
+                        and isinstance(pending, dict)
+                        and request.get("kind") == "ma2-fifo-snapshot-batch"
+                        and pending.get("kind") == request.get("kind")):
+                    retained_snapshots.extend(pending["snapshots"])
+                elif isinstance(request, bytes) == isinstance(pending, bytes):
+                    continue
+                else:
+                    retained_other = pending
+            if retained_snapshots:
+                request = {
+                    "kind": "ma2-fifo-snapshot-batch",
+                    "snapshots": tuple(retained_snapshots)
+                    + tuple(request["snapshots"]),
+                }
             try:
+                if retained_other is not None:
+                    self._queue.put_nowait(retained_other)
                 self._queue.put_nowait(request)
             except queue.Full:
                 self.last_submit_error = "audio-queue-full"
@@ -241,19 +280,24 @@ class ApproximateSmafPlayer:
         write_wav(path, pcm, OUTPUT_RATE)
         return True
 
+    def take_latest_pcm(self) -> bytes:
+        """Return the newest versioned stereo PCM timeline once."""
+        with self._lock:
+            if (self._closed or self.last_pcm is None
+                    or self._pcm_consumed == self._pcm_sequence):
+                return b""
+            self._pcm_consumed = self._pcm_sequence
+            if self.muted:
+                return b""
+            return self._latest_pcm_bytes
+
     def render_now(self, data: bytes) -> tuple[np.ndarray, dict[str, int | float]]:
         return render_mmf_bytes(data, soundfont=self._soundfont,
                                 output_rate=OUTPUT_RATE)
 
-    def _play_pcm(self, pcm: np.ndarray) -> None:
+    def _play_pcm(self, scaled: np.ndarray) -> None:
         if self._closed or self.muted:
             return
-        gain = self.volume
-        if gain < 0.999:
-            scaled = np.clip(pcm.astype(np.float32) * gain,
-                             -32768, 32767).astype("<i2")
-        else:
-            scaled = pcm
         self.stop()
         if self._ffplay or self._afplay or self._aplay:
             write_wav(self._wav_path, scaled, OUTPUT_RATE)
@@ -310,32 +354,57 @@ class ApproximateSmafPlayer:
             try:
                 if isinstance(request, bytes):
                     pcm, stats = self.render_now(request)
+                    playback_pcm = pcm
+                    publish_timeline = False
                     self.last_mmf = request
                 else:
                     snapshots = request["snapshots"]
-                    note_groups = [
-                        self._ma2_decoder.decode(snapshot)
-                        for snapshot in snapshots
-                    ]
-                    notes = [note for group in note_groups for note in group]
+                    changed = False
+                    note_groups = []
+                    for snapshot in snapshots:
+                        sequence = int(snapshot["sequence"])
+                        if sequence <= self._ma2_last_snapshot_sequence:
+                            continue
+                        self._ma2_last_snapshot_sequence = sequence
+                        epoch = int(snapshot["epoch"])
+                        if epoch != self._ma2_epoch:
+                            self._ma2_timeline_rejected = True
+                            self.last_error = "ma2-epoch-change-unsupported"
+                            with self._lock:
+                                self._latest_pcm_bytes = b""
+                            break
+                        decoded = self._ma2_decoder.decode(snapshot)
+                        changed = changed or bool(decoded)
+                        if decoded:
+                            note_groups.append(decoded)
+                        self._ma2_notes.extend(decoded)
                     self.last_stats = {
-                        "notes": len(notes),
+                        "notes": len(self._ma2_notes),
                         "duplicates": self._ma2_decoder.duplicates,
                         "snapshots": len(snapshots),
                     }
-                    if not notes or self._soundfont is None:
+                    if (self._ma2_timeline_rejected or not changed
+                            or not self._ma2_notes
+                            or self._soundfont is None):
                         continue
-                    rendered = [
-                        render_notes(
-                            self._soundfont, group, sample_rate=OUTPUT_RATE,
-                            max_seconds=30.0,
-                        )
-                        for group in note_groups if group
-                    ]
-                    pcm = (
-                        np.concatenate(rendered)
-                        if len(rendered) > 1 else rendered[0]
+                    pcm = render_notes(
+                        self._soundfont, self._ma2_notes,
+                        sample_rate=OUTPUT_RATE, max_seconds=30.0,
                     )
+                    playback_pcm = None
+                    if self.backend != "render-only":
+                        rendered = [
+                            render_notes(
+                                self._soundfont, notes,
+                                sample_rate=OUTPUT_RATE, max_seconds=30.0,
+                            )
+                            for notes in note_groups
+                        ]
+                        playback_pcm = (
+                            np.concatenate(rendered)
+                            if len(rendered) > 1 else rendered[0]
+                        )
+                    publish_timeline = True
                     stats = {
                         **self.last_stats,
                         "output_frames": len(pcm),
@@ -343,10 +412,40 @@ class ApproximateSmafPlayer:
                     }
                 if self._closed:
                     return
-                self.last_pcm = pcm
+                gain = self.volume
+                scaled = (
+                    np.clip(pcm.astype(np.float32) * gain,
+                            -32768, 32767).astype("<i2")
+                    if gain < 0.999 else pcm
+                )
+                raw = (
+                    np.ascontiguousarray(scaled, dtype="<i2").tobytes()
+                    if (scaled.ndim == 2 and scaled.shape[1] == 2
+                        and scaled.dtype == np.dtype("<i2")) else b""
+                )
+                if len(raw) > OUTPUT_RATE * 30 * 4:
+                    raw = b""
+                with self._lock:
+                    self.last_pcm = pcm
+                    if publish_timeline:
+                        self._pcm_sequence += 1
+                        self._latest_pcm_bytes = (
+                            _PCM_PACKET.pack(
+                                _PCM_PACKET_MAGIC, 1,
+                                self._pcm_sequence, 0,
+                            ) + raw
+                            if raw else b""
+                        )
                 self.last_stats = stats
                 self.last_error = ""
-                self._play_pcm(pcm)
+                if playback_pcm is not None:
+                    playback_scaled = (
+                        scaled if playback_pcm is pcm else
+                        np.clip(playback_pcm.astype(np.float32) * gain,
+                                -32768, 32767).astype("<i2")
+                        if gain < 0.999 else playback_pcm
+                    )
+                    self._play_pcm(playback_scaled)
             except Exception as exc:  # audio must never stop the emulator
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 LOGGER.exception("audio worker failed")

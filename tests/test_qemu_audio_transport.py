@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 import struct
 import sys
 import time
+from types import SimpleNamespace
 import unittest
 
 from msm5xxx_emulator.devices.audio import AudioMixin
@@ -18,8 +20,65 @@ from qemu_transport import (  # noqa: E402
     AUDIO_STATUS, AUDIO_STATUS_OVERFLOW, AUDIO_WRITE, TELEMETRY, Transport,
 )
 
+ANDROID_RUNTIME = (
+    Path(__file__).parents[1]
+    / "android-client/app/src/main/python/msm5xxx_android_runtime.py"
+)
+
 
 class QEMUAudioTransportTests(unittest.TestCase):
+    def test_android_audio_only_exposes_accepted_ma2_pcm(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "msm5xxx_android_audio_test", ANDROID_RUNTIME
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        packet = struct.pack("<4sIQQ", b"M5P1", 1, 1, 0) \
+            + b"\x01\0\x02\0"
+        player = SimpleNamespace(take_latest_pcm=lambda: packet)
+        metadata = {"family": "ma2", "static_status": "accepted"}
+        transport = SimpleNamespace(
+            family="ma2", static_status="accepted",
+            renderer_status="submitted", renderer_reject_reason=None,
+        )
+        process = SimpleNamespace(poll=lambda: None)
+        runtime._session = SimpleNamespace(
+            config=SimpleNamespace(audio_transport=metadata),
+            decoder=SimpleNamespace(
+                audio_transport=transport,
+                audio_player=player,
+            ),
+            audio_stream_enabled=True,
+            audio_stream_status="active",
+            process=process,
+        )
+        try:
+            self.assertEqual(runtime.session_audio(), packet)
+            metadata["family"] = "ma5"
+            self.assertEqual(runtime.session_audio(), b"")
+            metadata["family"] = "ma2"
+            runtime._session.audio_stream_status = "rejected"
+            self.assertEqual(runtime.session_audio(), b"")
+            runtime._session.audio_stream_status = "active"
+            player.take_latest_pcm = lambda: b"bad"
+            self.assertEqual(runtime.session_audio(), b"")
+            player.take_latest_pcm = lambda: packet[:24]
+            self.assertEqual(runtime.session_audio(), b"")
+            player.take_latest_pcm = lambda: packet
+            transport.family = "ma5"
+            self.assertEqual(runtime.session_audio(), b"")
+            transport.family = "ma2"
+            runtime._session_error = "RuntimeError"
+            self.assertEqual(runtime.session_audio(), b"")
+            runtime._session_error = None
+            process.poll = lambda: 1
+            self.assertEqual(runtime.session_audio(), b"")
+        finally:
+            runtime._session = None
+            runtime._session_error = None
+
     def test_ma2_sideband_renders_pcm_and_rejects_order_gap(self) -> None:
         owner = AudioMixin()
         owner.audio_transport = AudioTransport({
@@ -74,6 +133,16 @@ class QEMUAudioTransportTests(unittest.TestCase):
             self.assertIsNotNone(owner.audio_player.last_pcm)
             self.assertTrue(owner.audio_player.last_pcm.any())
             self.assertEqual(owner.audio_transport.renderer_status, "submitted")
+            owner.audio_player.muted = False
+            pcm = owner.audio_player.take_latest_pcm()
+            self.assertGreater(len(pcm), 24)
+            self.assertEqual(
+                struct.unpack_from("<4sIQQ", pcm),
+                (b"M5P1", 1, 1, 0),
+            )
+            self.assertEqual((len(pcm) - 24) % 4, 0)
+            self.assertEqual(owner.audio_player.take_latest_pcm(), b"")
+            owner.audio_player.muted = True
             raw_writes = owner.audio_transport.counts["raw-writes"]
 
             order += 2

@@ -171,6 +171,7 @@ class LiveWindow(Window):
         if transport is None:
             self.root.after(5, self._forward_qemu_keys)
             return
+        delay = 5
         while True:
             try:
                 command = self.commands.get_nowait()
@@ -181,10 +182,13 @@ class LiveWindow(Window):
                 transport.set_key(
                     int(command[0]), bool(command[1]), event_code
                 )
+                # Keep a fast click observable across the guest's debounce scan.
+                delay = 20
+                break
             elif command[0] == "framebuffer-format" and len(command) == 2:
                 transport.decoder.set_framebuffer_format(str(command[1]))
                 self._active_overrides = dict(self.overrides)
-        self.root.after(5, self._forward_qemu_keys)
+        self.root.after(delay, self._forward_qemu_keys)
 
     def _refresh_qemu_metrics(self) -> None:
         if self.closing:
