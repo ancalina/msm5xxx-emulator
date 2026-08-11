@@ -39,15 +39,15 @@ run_windows.bat "C:\path\phone.bin"
 
 ## 영속 state
 
-재시작 후에도 writable NOR와 EEPROM을 유지하려면 `--state-dir`를 사용합니다.
+Writable NOR와 EEPROM은 firmware SHA-256별 directory에 자동 보존됩니다.
+다른 state root를 쓰려면 `--state-dir`를 지정합니다.
 
 ```sh
 ./run_linux.sh /path/to/phone.bin --state-dir /path/to/qemu-state
 ```
 
-Cold boot 후 warm boot가 필요한 경우 같은 directory를 재사용합니다.
-`--state-dir`를 생략하면 writable state는 종료 시 폐기됩니다.
-Android는 firmware SHA-256별 state를 app-private storage에 보존합니다.
+Desktop 기본 경로는 `~/.msm5xxx-emulator/qemu-state`입니다. Android는
+app-private storage를 사용합니다. Firmware 원본은 계속 read-only입니다.
 
 ## 요구사항
 

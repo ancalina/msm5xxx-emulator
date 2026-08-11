@@ -11,6 +11,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -45,6 +46,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_MMIO_SIZE 0x1000
 #define MSM5XXX_POC_NOR_SIZE (16 * MiB)
 #define MSM5XXX_POC_NOR_MAX_SIZE (32 * MiB)
+#define MSM5XXX_POC_NOR_MAX_REGIONS 4
 #define MSM5XXX_POC_UPPER_NOR_BASE 0x02800000
 #define MSM5XXX_POC_UPPER_NOR_SIZE (8 * MiB)
 #define MSM5XXX_POC_UPPER_NOR_SECTOR_SIZE 0x10000
@@ -147,6 +149,9 @@ struct MSM5xxxPOCMachineState {
     uint32_t primary_x16_nor_base;
     uint32_t primary_x16_nor_size;
     uint32_t primary_x16_nor_sector_size;
+    uint32_t primary_x16_nor_region_count;
+    uint32_t primary_x16_nor_block_count[MSM5XXX_POC_NOR_MAX_REGIONS];
+    uint32_t primary_x16_nor_region_size[MSM5XXX_POC_NOR_MAX_REGIONS];
     uint16_t primary_x16_nor_id0;
     uint16_t primary_x16_nor_id1;
     bool fujitsu_x16_nor_enabled;
@@ -1943,6 +1948,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     memory_region_add_subregion(get_system_memory(), 0, &s->nor);
     if (s->primary_x16_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
+        unsigned region;
 
         if (s->primary_x16_nor_base + s->primary_x16_nor_size >
             s->primary_nor_size) {
@@ -1955,12 +1961,29 @@ static void msm5xxx_poc_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
         qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(dinfo));
-        qdev_prop_set_uint32(
-            dev, "num-blocks",
-            s->primary_x16_nor_size / s->primary_x16_nor_sector_size
-        );
-        qdev_prop_set_uint32(dev, "sector-length",
-                             s->primary_x16_nor_sector_size);
+        if (s->primary_x16_nor_region_count) {
+            for (region = 0; region < s->primary_x16_nor_region_count;
+                 region++) {
+                g_autofree char *blocks =
+                    g_strdup_printf("num-blocks%u", region);
+                g_autofree char *length =
+                    g_strdup_printf("sector-length%u", region);
+
+                qdev_prop_set_uint32(
+                    dev, blocks, s->primary_x16_nor_block_count[region]
+                );
+                qdev_prop_set_uint32(
+                    dev, length, s->primary_x16_nor_region_size[region]
+                );
+            }
+        } else {
+            qdev_prop_set_uint32(
+                dev, "num-blocks",
+                s->primary_x16_nor_size / s->primary_x16_nor_sector_size
+            );
+            qdev_prop_set_uint32(dev, "sector-length",
+                                 s->primary_x16_nor_sector_size);
+        }
         qdev_prop_set_uint8(dev, "width", 2);
         qdev_prop_set_uint8(dev, "mappings", 1);
         qdev_prop_set_uint8(dev, "big-endian", 0);
@@ -2406,15 +2429,25 @@ static char *msm5xxx_poc_get_fujitsu_x16_nor(Object *obj, Error **errp)
 static char *msm5xxx_poc_get_primary_x16_nor(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *value;
+    unsigned region;
 
     if (!s->primary_x16_nor_enabled) {
         return g_strdup("");
     }
-    return g_strdup_printf("%x:%x:%x:%x:%x", s->primary_x16_nor_base,
-                           s->primary_x16_nor_size,
-                           s->primary_x16_nor_sector_size,
-                           s->primary_x16_nor_id0,
-                           s->primary_x16_nor_id1);
+    value = g_string_new(NULL);
+    g_string_printf(value, "%x:%x:%x:%x:%x", s->primary_x16_nor_base,
+                    s->primary_x16_nor_size,
+                    s->primary_x16_nor_sector_size,
+                    s->primary_x16_nor_id0,
+                    s->primary_x16_nor_id1);
+    for (region = 0; region < s->primary_x16_nor_region_count; region++) {
+        g_string_append_printf(
+            value, ":%x:%x", s->primary_x16_nor_block_count[region],
+            s->primary_x16_nor_region_size[region]
+        );
+    }
+    return g_string_free(value, false);
 }
 
 static char *msm5xxx_poc_get_matrix_input(Object *obj, Error **errp)
@@ -2586,24 +2619,72 @@ static void msm5xxx_poc_set_primary_x16_nor(Object *obj, const char *value,
                                              Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    unsigned base, size, sector_size, id0, id1;
-    char trailing;
+    g_auto(GStrv) fields = g_strsplit(value, ":", -1);
+    uint32_t parsed[5 + MSM5XXX_POC_NOR_MAX_REGIONS * 2];
+    uint32_t block_count[MSM5XXX_POC_NOR_MAX_REGIONS] = { 0 };
+    uint32_t region_size[MSM5XXX_POC_NOR_MAX_REGIONS] = { 0 };
+    uint64_t region_bytes = 0;
+    size_t field_count = g_strv_length(fields);
+    unsigned region_count;
+    unsigned index;
 
-    if (sscanf(value, "%x:%x:%x:%x:%x%c", &base, &size, &sector_size,
-               &id0, &id1, &trailing) != 5 || !base || !size ||
-            base >= s->primary_nor_size ||
-            size > s->primary_nor_size - base ||
-            sector_size < 0x1000 || size % sector_size ||
-            base % sector_size || id0 > UINT16_MAX || id1 > UINT16_MAX) {
+    if (field_count != 5 &&
+            (field_count < 7 || field_count > ARRAY_SIZE(parsed) ||
+             (field_count - 5) % 2)) {
         error_setg(errp,
-                   "primary-x16-nor must be BASE:SIZE:SECTOR:ID0:ID1");
+                   "primary-x16-nor must be BASE:SIZE:SECTOR:ID0:ID1"
+                   "[:COUNT:LENGTH...]");
         return;
     }
-    s->primary_x16_nor_base = base;
-    s->primary_x16_nor_size = size;
-    s->primary_x16_nor_sector_size = sector_size;
-    s->primary_x16_nor_id0 = id0;
-    s->primary_x16_nor_id1 = id1;
+    for (index = 0; index < field_count; index++) {
+        unsigned long number;
+
+        if (qemu_strtoul(fields[index], NULL, 16, &number) < 0 ||
+                number > UINT32_MAX) {
+            error_setg(errp, "invalid primary-x16-nor number");
+            return;
+        }
+        parsed[index] = number;
+    }
+    region_count = (field_count - 5) / 2;
+    if (!parsed[0] || !parsed[1] || parsed[0] >= s->primary_nor_size ||
+            parsed[1] > s->primary_nor_size - parsed[0] ||
+            parsed[2] < 0x1000 || parsed[2] & (parsed[2] - 1) ||
+            parsed[0] % parsed[2] || parsed[3] > UINT16_MAX ||
+            parsed[4] > UINT16_MAX) {
+        error_setg(errp, "invalid primary-x16-nor geometry");
+        return;
+    }
+    for (index = 0; index < region_count; index++) {
+        uint32_t count = parsed[5 + index * 2];
+        uint32_t length = parsed[6 + index * 2];
+
+        if (!count || length < 0x1000 || length & (length - 1) ||
+                region_bytes % length ||
+                count > (UINT64_MAX - region_bytes) / length) {
+            error_setg(errp, "invalid primary-x16-nor region geometry");
+            return;
+        }
+        block_count[index] = count;
+        region_size[index] = length;
+        region_bytes += (uint64_t)count * length;
+    }
+    if ((region_count && (parsed[2] != region_size[0] ||
+                          region_bytes != parsed[1])) ||
+            (!region_count && parsed[1] % parsed[2])) {
+        error_setg(errp, "primary-x16-nor regions do not match SIZE");
+        return;
+    }
+    s->primary_x16_nor_base = parsed[0];
+    s->primary_x16_nor_size = parsed[1];
+    s->primary_x16_nor_sector_size = parsed[2];
+    s->primary_x16_nor_region_count = region_count;
+    memcpy(s->primary_x16_nor_block_count, block_count,
+           sizeof(block_count));
+    memcpy(s->primary_x16_nor_region_size, region_size,
+           sizeof(region_size));
+    s->primary_x16_nor_id0 = parsed[3];
+    s->primary_x16_nor_id1 = parsed[4];
     s->primary_x16_nor_enabled = true;
 }
 

@@ -5,12 +5,15 @@ import importlib.util
 import io
 from pathlib import Path
 import queue
+import struct
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
+
+from msm5xxx_emulator.detection.boot import PRIMARY_FLASH_PROBE_SIGNATURE
 
 
 EXPERIMENT = Path(__file__).parents[1] / "experiments/qemu-tcg"
@@ -46,6 +49,31 @@ class QEMUInputTransportTests(unittest.TestCase):
         chooser.assert_called_once_with()
         transport.assert_not_called()
 
+    def test_launcher_uses_persistent_state_by_default(self) -> None:
+        argv = [
+            "live-display.py", "phone.bin",
+            "--qemu", "qemu-system-arm",
+        ]
+        state_root = Path("/tmp/msm5xxx-state-root")
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", state_root), \
+             mock.patch.object(MODULE.tk, "Tk") as make_root, \
+             mock.patch.object(MODULE, "LiveWindow") as make_window:
+            self.assertEqual(MODULE.main(), 0)
+        make_window.assert_called_once_with(
+            make_root.return_value,
+            Path("phone.bin").resolve(),
+            Path("qemu-system-arm").resolve(),
+            (state_root / "qemu-state").resolve(),
+            False,
+        )
+        make_window.return_value._close.assert_called_once_with()
+
+    def test_qemu_gui_disables_partial_source_updates(self) -> None:
+        with mock.patch.object(MODULE.threading, "Thread") as thread:
+            MODULE.LiveWindow._check_for_update(object())
+        thread.assert_not_called()
+
     def test_transport_accept_reports_early_qemu_exit(self) -> None:
         transport = object.__new__(MODULE.Transport)
         transport.process = SimpleNamespace(poll=lambda: 2)
@@ -78,6 +106,87 @@ class QEMUInputTransportTests(unittest.TestCase):
                 MODULE.qemu_state_directory(root, SimpleNamespace(
                     firmware_sha256="../shared"
                 ))
+
+    def test_primary_x16_detectors_must_agree(self) -> None:
+        legacy = (0x10000, 0x40000, 0x10000, 0x98, 0x84)
+        uniform = (0x10000, 0x40000, ((4, 0x10000),), 0x98, 0x84)
+        segmented = (
+            0x10000, 0x40000,
+            ((2, 0x10000), (16, 0x2000)), 0x98, 0x84,
+        )
+        self.assertEqual(
+            MODULE.select_primary_x16_nor_profile(legacy, uniform),
+            (legacy, uniform[2], None),
+        )
+        self.assertEqual(
+            MODULE.select_primary_x16_nor_profile(legacy, segmented),
+            (None, None, "detector-conflict"),
+        )
+        self.assertEqual(
+            MODULE.select_primary_x16_nor_profile(None, segmented),
+            ((0x10000, 0x40000, 0x10000, 0x98, 0x84), segmented[2], None),
+        )
+
+    def test_qemu_detector_image_matches_canonical_normalization(self) -> None:
+        header = b"dump-header"
+        flash_size = ram_image_offset = 0x80000
+        ram_base, ram_image_size = 0x01000000, 0x100
+        image = bytearray(b"\xff" * (flash_size + ram_image_size))
+        struct.pack_into("<I", image, 0, 0xEA000006)
+        for index in range(1, 8):
+            target = 0x4000 + index * 4
+            displacement = (target - (index * 4 + 8)) // 4
+            struct.pack_into(
+                "<I", image, index * 4,
+                0xEA000000 | (displacement & 0xFFFFFF),
+            )
+        boot_table_loop = bytes.fromhex(
+            "c1002e4a515800290bd0c10089188988c2002a4b9a581180"
+            "411c0904090c081ceee7"
+        )
+        image[0x11C:0x11C + len(boot_table_loop)] = boot_table_loop
+        struct.pack_into("<I", image, 0x1D8, 0x1158)
+        struct.pack_into(
+            "<8I", image, 0x1158,
+            0x048000A0, 6, 0x03000738, 0x1F,
+            0x0300073C, 0x2001, 0, 0,
+        )
+        for index in range(8):
+            struct.pack_into("<I", image, 0x4000 + index * 4, 0xEA000000)
+
+        probe, entry = 0x800, 0x2000
+        sectors = 71 * [0x1000]
+        descriptor, name = entry + 0x124, entry + 0x15C
+        image[probe:probe + len(PRIMARY_FLASH_PROBE_SIGNATURE)] = (
+            PRIMARY_FLASH_PROBE_SIGNATURE
+        )
+        struct.pack_into(
+            "<3I", image, probe + len(PRIMARY_FLASH_PROBE_SIGNATURE),
+            descriptor - 0x24, ram_base + 0x10, ram_base + 0x20,
+        )
+        struct.pack_into("<2I", image, entry, name, len(sectors))
+        struct.pack_into(f"<{len(sectors)}I", image, entry + 8, *sectors)
+        struct.pack_into(
+            "<14I", image, descriptor,
+            0x00840098, 0, 1, 0, sum(sectors) // 2,
+            *[0x301 + index * 0x20 for index in range(9)],
+        )
+        image[name:name + 8] = b"NOR X16\0"
+        struct.pack_into("<I", image, ram_image_offset + 0x10, 0x10000)
+        struct.pack_into("<2I", image, ram_image_offset + 0x20, entry, 0)
+
+        sparse = bytes(image[:0x1000] + image[0x1020:])
+        normalized = MODULE.detector_firmware_image(header + sparse, len(header))
+        self.assertEqual(normalized, bytes(image))
+        self.assertEqual(
+            MODULE.primary_probe_x16_nor_profile(
+                normalized, probe, 0, flash_size, 0, ram_base,
+                ram_image_offset, ram_image_size,
+            ),
+            ((0x10000, sum(sectors), ((71, 0x1000),), 0x98, 0x84), None),
+        )
+        with self.assertRaisesRegex(ValueError, "image offset"):
+            MODULE.detector_firmware_image(header + sparse, len(header + sparse))
 
     def test_settings_restart_replaces_transport_with_saved_profile(self) -> None:
         events: list[str] = []

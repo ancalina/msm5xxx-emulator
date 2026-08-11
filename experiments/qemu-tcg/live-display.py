@@ -15,6 +15,7 @@ ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from qemu_transport import *  # noqa: E402,F403
+from msm5xxx_emulator.detection.firmware import DEFAULT_STATE_ROOT  # noqa: E402
 from msm5xxx_emulator.gui.app import Window, choose_firmware  # noqa: E402
 from msm5xxx_emulator.gui.controls import detect_profile  # noqa: E402
 from msm5xxx_emulator.gui.locale import display_model_name  # noqa: E402
@@ -37,6 +38,10 @@ class LiveWindow(Window):
         )
         self.root.after(100, self._refresh_qemu_metrics)
         self.root.after(5, self._forward_qemu_keys)
+
+    def _check_for_update(self) -> None:
+        # QEMU binaries and their Python transport must update as one bundle.
+        pass
 
     def _restart(self) -> None:
         requested_firmware = self.firmware
@@ -231,9 +236,10 @@ def main() -> int:
         if firmware is None:
             return 0
     root = tk.Tk()
+    state_dir = args.state_dir or DEFAULT_STATE_ROOT / "qemu-state"
     window = LiveWindow(
         root, firmware.resolve(), args.qemu.resolve(),
-        args.state_dir.resolve() if args.state_dir is not None else None,
+        state_dir.resolve(),
         args.experimental_c80_controller,
     )
     try:

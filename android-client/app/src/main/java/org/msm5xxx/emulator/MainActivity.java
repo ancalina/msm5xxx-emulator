@@ -19,6 +19,7 @@ import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,6 +30,7 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -62,6 +64,7 @@ public final class MainActivity extends Activity {
     private static final int MORE_CHOOSE = 1;
     private static final int MORE_SETTINGS = 2;
     private static final int MORE_RUN_STOP = 3;
+    private static final int MORE_EDIT_MAPPING = 4;
     private static final String PREFS = "launcher";
     private static final String KEY_URI = "uri";
     private static final String KEY_NAME = "name";
@@ -143,6 +146,7 @@ public final class MainActivity extends Activity {
     private boolean activityResumed;
     private boolean sessionStarting;
     private boolean canStartSession;
+    private boolean editingInputMapping;
     private int heldKeyBit = -1;
     private Integer heldEventCode;
     private int mappingTapBit = -1;
@@ -283,8 +287,19 @@ public final class MainActivity extends Activity {
                 0, LinearLayout.LayoutParams.MATCH_PARENT, 1.5f));
         controls.addView(keypad, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.MATCH_PARENT, 3));
-        content.addView(controls, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(280)));
+        LinearLayout.LayoutParams controlsLayout = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(280));
+        content.addView(controls, controlsLayout);
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
+            int bottom = Build.VERSION.SDK_INT >= 30
+                    ? insets.getInsets(WindowInsets.Type.systemBars()).bottom
+                    : insets.getSystemWindowInsetBottom();
+            if (controlsLayout.bottomMargin != bottom) {
+                controlsLayout.bottomMargin = bottom;
+                controls.setLayoutParams(controlsLayout);
+            }
+            return insets;
+        });
         return content;
     }
 
@@ -720,6 +735,7 @@ public final class MainActivity extends Activity {
                 updateSessionKeepScreenOn(false, generation);
                 handler.post(() -> {
                     if (generation == sessionGeneration) {
+                        setInputMappingEditing(false);
                         updateKeypad(null);
                         sessionView.setText(R.string.session_failed);
                         showError(getString(R.string.error_session_failed));
@@ -802,6 +818,10 @@ public final class MainActivity extends Activity {
         }
         if (action == MotionEvent.ACTION_DOWN) {
             if (heldKeyBit >= 0) {
+                return true;
+            }
+            if (editingInputMapping) {
+                mappingTapBit = bit;
                 return true;
             }
             Integer mapped = manualKeyEvent(current.identity(), bit);
@@ -1024,6 +1044,7 @@ public final class MainActivity extends Activity {
         updateSessionKeepScreenOn(false, generation);
         autoStartToken = null;
         releaseHeldKey(false);
+        setInputMappingEditing(false);
         FrameUpdate staleFrame = pendingFrame.getAndSet(null);
         if (staleFrame != null) {
             staleFrame.recycle();
@@ -1116,13 +1137,20 @@ public final class MainActivity extends Activity {
     }
 
     private void showMoreMenu() {
+        if (editingInputMapping) {
+            setInputMappingEditing(false);
+            return;
+        }
         boolean busy = session != null || sessionStarting;
         PopupMenu popup = new PopupMenu(this, moreButton);
         popup.getMenu().add(0, MORE_CHOOSE, 0, R.string.choose)
                 .setEnabled(!busy);
         popup.getMenu().add(0, MORE_SETTINGS, 1, R.string.settings)
                 .setEnabled(!busy);
-        popup.getMenu().add(0, MORE_RUN_STOP, 2,
+        popup.getMenu().add(0, MORE_EDIT_MAPPING, 2,
+                R.string.edit_input_mapping).setEnabled(
+                        session != null && !sessionStarting);
+        popup.getMenu().add(0, MORE_RUN_STOP, 3,
                 busy ? R.string.stop : R.string.start)
                 .setEnabled(busy || canStartSession);
         popup.setOnMenuItemClickListener(item -> {
@@ -1132,6 +1160,10 @@ public final class MainActivity extends Activity {
             }
             if (item.getItemId() == MORE_SETTINGS) {
                 showSettings();
+                return true;
+            }
+            if (item.getItemId() == MORE_EDIT_MAPPING) {
+                setInputMappingEditing(true);
                 return true;
             }
             if (item.getItemId() == MORE_RUN_STOP) {
@@ -1145,6 +1177,20 @@ public final class MainActivity extends Activity {
             return false;
         });
         popup.show();
+    }
+
+    private void setInputMappingEditing(boolean enabled) {
+        boolean editing = enabled && session != null && !sessionStarting;
+        if (editingInputMapping == editing) {
+            return;
+        }
+        releaseHeldKey(false);
+        editingInputMapping = editing;
+        moreButton.setText(editing ? R.string.done_editing : R.string.more);
+        moreButton.setTextSize(editing ? 11 : 20);
+        moreButton.setContentDescription(getString(
+                editing ? R.string.done_editing : R.string.more_actions));
+        updateKeypad(session);
     }
 
     private void showSettings() {
@@ -1199,6 +1245,13 @@ public final class MainActivity extends Activity {
             }
             boolean mapped = manualKeyEvent(active.identity(), key.bit) != null;
             boolean detected = !mapped && active.supportsKey(key.bit);
+            if (editingInputMapping) {
+                button.setAlpha(1f);
+                target.setContentDescription(getString(
+                        R.string.key_mapping_description,
+                        getString(key.labelResource)));
+                continue;
+            }
             button.setAlpha(detected || mapped ? 1f : 0.72f);
             target.setContentDescription(getString(
                     mapped ? R.string.key_mapped_description
@@ -1487,7 +1540,7 @@ public final class MainActivity extends Activity {
 
         private void run() {
             AudioTrack track = null;
-            long trackStartFrame = 0;
+            long writeFrame = 0;
             long revision = 0;
             try {
                 while (!closed) {
@@ -1498,18 +1551,15 @@ public final class MainActivity extends Activity {
                     if (packet.revision <= revision) {
                         continue;
                     }
-                    long playedFrame = packet.startFrame;
-                    if (track != null) {
-                        track.pause();
-                        playedFrame = trackStartFrame
-                                + Integer.toUnsignedLong(
-                                        track.getPlaybackHeadPosition());
-                        releaseTrack(track);
+                    if (track == null) {
+                        track = createTrack();
+                        writeFrame = packet.startFrame;
                     }
-                    track = createTrack();
-                    trackStartFrame = Math.max(packet.startFrame,
-                            Math.min(playedFrame, packet.endFrame));
-                    int offset = packet.byteOffset(trackStartFrame);
+                    if (packet.startFrame > writeFrame) {
+                        throw new IllegalStateException("PCM timeline gap");
+                    }
+                    int offset = packet.byteOffset(Math.min(
+                            writeFrame, packet.endFrame));
                     revision = packet.revision;
                     while (!closed && offset < packet.data.length) {
                         PcmPacket newer = pending.poll();
@@ -1517,16 +1567,13 @@ public final class MainActivity extends Activity {
                             if (newer.revision <= revision) {
                                 continue;
                             }
-                            track.pause();
-                            playedFrame = trackStartFrame
-                                    + Integer.toUnsignedLong(
-                                            track.getPlaybackHeadPosition());
-                            releaseTrack(track);
-                            track = createTrack();
                             packet = newer;
-                            trackStartFrame = Math.max(packet.startFrame,
-                                    Math.min(playedFrame, packet.endFrame));
-                            offset = packet.byteOffset(trackStartFrame);
+                            if (packet.startFrame > writeFrame) {
+                                throw new IllegalStateException(
+                                        "PCM timeline gap");
+                            }
+                            offset = packet.byteOffset(Math.min(
+                                    writeFrame, packet.endFrame));
                             revision = packet.revision;
                             continue;
                         }
@@ -1541,7 +1588,12 @@ public final class MainActivity extends Activity {
                         if (written == 0) {
                             Thread.sleep(1);
                         } else {
+                            if (written % FRAME_BYTES != 0) {
+                                throw new IllegalStateException(
+                                        "unaligned AudioTrack write");
+                            }
                             offset += written;
+                            writeFrame += written / FRAME_BYTES;
                         }
                     }
                 }

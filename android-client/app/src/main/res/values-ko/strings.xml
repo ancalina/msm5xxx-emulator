@@ -7,6 +7,8 @@
     <string name="stop">중지</string>
     <string name="more">⋮</string>
     <string name="more_actions">더보기</string>
+    <string name="edit_input_mapping">입력 매핑 편집</string>
+    <string name="done_editing">편집 완료</string>
 
     <string name="key_menu">메뉴</string>
     <string name="key_up">▲</string>

@@ -16,6 +16,7 @@ from msm5xxx_emulator.detection.boot import (
     DMD_DOWNLOAD_SIGNATURE,
     DMD_DOWNLOAD_5500_LITERALS,
     DMD_DOWNLOAD_5500_SIZE,
+    PRIMARY_FLASH_PROBE_SIGNATURE,
     detect_dmd_download_5500,
 )
 from msm5xxx_emulator.detection.storage import (
@@ -26,6 +27,7 @@ from msm5xxx_emulator.detection.storage import (
     find_24lc64_class_b_driver,
     find_embedded_fujitsu_x16_nor,
     find_primary_fsd_amd_x16_nor,
+    primary_probe_x16_nor_profile,
 )
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
@@ -1056,6 +1058,68 @@ class DetectionTests(unittest.TestCase):
         image[writer + 4] ^= 1
         self.assertIsNone(
             find_primary_fsd_amd_x16_nor(bytes(image), flash_id, len(image))
+        )
+
+    def test_primary_probe_x16_nor_preserves_nonuniform_geometry(self) -> None:
+        image_offset = 0x20
+        flash_size = ram_image_offset = 0x100000
+        ram_base, ram_image_size = 0x200000, 0x10000
+        image = bytearray(b"\xff" * (
+            image_offset + ram_image_offset + ram_image_size
+        ))
+        probe, entry = 0x100, 0x2000
+        sectors = (32 * [0x2000] + 8 * [0x1000] + 31 * [0x2000])
+        descriptor = entry + 0x124
+        name = descriptor + 0x38
+        flash_base_global = ram_base + 0x10
+        table_global = ram_base + 0x20
+        raw_probe = image_offset + probe
+        image[raw_probe:raw_probe + len(PRIMARY_FLASH_PROBE_SIGNATURE)] = (
+            PRIMARY_FLASH_PROBE_SIGNATURE
+        )
+        struct.pack_into(
+            "<3I", image, raw_probe + len(PRIMARY_FLASH_PROBE_SIGNATURE),
+            descriptor - 0x24, flash_base_global, table_global,
+        )
+        struct.pack_into("<2I", image, image_offset + entry, name, len(sectors))
+        struct.pack_into(
+            f"<{len(sectors)}I", image, image_offset + entry + 8, *sectors
+        )
+        struct.pack_into(
+            "<14I", image, image_offset + descriptor,
+            0x00840098, 0, 1, 0, sum(sectors) // 2,
+            *[0x301 + index * 0x20 for index in range(9)],
+        )
+        image[image_offset + name:image_offset + name + 8] = b"NOR X16\0"
+        ram = image_offset + ram_image_offset
+        struct.pack_into("<I", image, ram + 0x10, 0x10000)
+        struct.pack_into("<2I", image, ram + 0x20, entry, 0)
+
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, flash_size, image_offset, ram_base,
+                ram_image_offset, ram_image_size,
+            ),
+            ((0x10000, sum(sectors),
+              ((32, 0x2000), (8, 0x1000), (31, 0x2000)),
+              0x98, 0x84), None),
+        )
+        struct.pack_into("<I", image, ram + 0x10, 0x10001)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, flash_size, image_offset, ram_base,
+                ram_image_offset, ram_image_size,
+            ),
+            (None, "geometry-base-alignment-mismatch"),
+        )
+        struct.pack_into("<I", image, ram + 0x10, 0x10000)
+        struct.pack_into("<I", image, ram + 0x24, 1)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, flash_size, image_offset, ram_base,
+                ram_image_offset, ram_image_size,
+            ),
+            (None, "descriptor-table-mismatch"),
         )
 
     def test_complete_compound_fujitsu_dump_splits_and_seeds_secondary_nor(self) -> None:

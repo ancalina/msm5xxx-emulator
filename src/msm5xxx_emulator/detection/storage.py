@@ -6,7 +6,7 @@ import re
 import struct
 
 from .arm import arm_vector_score, thumb_bl_target, thumb_literal_value
-from .boot import FLASH_ID_SIGNATURE
+from .boot import FLASH_ID_SIGNATURE, PRIMARY_FLASH_PROBE_SIGNATURE
 from .signatures import find_all
 
 
@@ -346,6 +346,117 @@ def find_primary_fsd_amd_x16_nor(
             continue
         profiles.append((base, size, sector_size, manufacturer, device))
     return profiles[0] if len(profiles) == 1 else None
+
+
+def primary_probe_x16_nor_profile(
+        image: bytes, probe_address: int | None, load_address: int,
+        flash_size: int, image_offset: int, ram_base: int,
+        ram_image_offset: int, ram_image_size: int,
+) -> tuple[
+    tuple[int, int, tuple[tuple[int, int], ...], int, int] | None,
+    str | None,
+]:
+    """Decode one descriptor-linked primary x16 NOR probe profile."""
+    if probe_address is None:
+        return None, None
+    flash_end = load_address + flash_size
+    ram_end = ram_base + ram_image_size
+    signature = PRIMARY_FLASH_PROBE_SIGNATURE
+    primary_end = min(len(image), image_offset + flash_size)
+
+    def primary_offset(address: int, size: int) -> int | None:
+        offset = image_offset + address - load_address
+        if (load_address <= address <= flash_end - size
+                and image_offset <= offset <= len(image) - size):
+            return offset
+        return None
+
+    def ram_offset(address: int, size: int) -> int | None:
+        relative = address - ram_base
+        offset = image_offset + ram_image_offset + relative
+        return offset if (0 <= relative <= ram_image_size - size
+                          and 0 <= offset <= len(image) - size) else None
+
+    probe = primary_offset(probe_address, len(signature) + 12)
+    if (flash_size <= 0 or ram_image_size <= 0 or probe is None
+            or image[probe:probe + len(signature)] != signature
+            or image.find(signature, image_offset, primary_end) != probe
+            or image.find(signature, probe + 1, primary_end) >= 0):
+        return None, "probe-shape-mismatch"
+    descriptor_base, flash_base_global, table_global = struct.unpack_from(
+        "<3I", image, probe + len(signature)
+    )
+
+    if (not ram_base <= flash_base_global <= ram_end - 4
+            or not ram_base <= table_global <= ram_end - 8):
+        return None, "probe-global-range-mismatch"
+    base_offset = ram_offset(flash_base_global, 4)
+    table_offset = ram_offset(table_global, 8)
+    if base_offset is None or table_offset is None:
+        return None, "probe-runtime-snapshot-missing"
+    flash_base = struct.unpack_from("<I", image, base_offset)[0]
+    entry, terminator = struct.unpack_from("<2I", image, table_offset)
+    entry_offset = primary_offset(entry, 8)
+    if (terminator != 0 or entry_offset is None
+            or not load_address <= entry < flash_end):
+        return None, "descriptor-table-mismatch"
+    name_address, sector_count = struct.unpack_from(
+        "<2I", image, entry_offset
+    )
+    if not 1 <= sector_count <= 512:
+        return None, "geometry-count-mismatch"
+    sectors_offset = entry_offset + 8
+    descriptor = entry + 8 + sector_count * 4
+    descriptor_offset = primary_offset(descriptor, 0x38)
+    name_offset = primary_offset(name_address, 4)
+    if (descriptor != entry + 0x124
+            or descriptor_base != descriptor - 0x24
+            or descriptor_offset is None or name_offset is None
+            or name_address != descriptor + 0x38
+            or sectors_offset + sector_count * 4 > len(image)):
+        return None, "descriptor-shape-mismatch"
+    sectors = struct.unpack_from(
+        f"<{sector_count}I", image, sectors_offset
+    )
+    (device_id, reserved, banks, base_words, usable_words,
+     *functions) = struct.unpack_from("<14I", image, descriptor_offset)
+    manufacturer, device = device_id & 0xFFFF, device_id >> 16
+    base_address = flash_base + base_words * 2
+    size = usable_words * 2
+    name_end = image.find(b"\0", name_offset,
+                          min(name_offset + 64, primary_end))
+    if (reserved != 0 or banks != 1 or len(functions) != 9
+            or any(not (pointer & 1)
+                   or not load_address <= (pointer & ~1) < flash_end
+                   for pointer in functions)
+            or name_end < name_offset + 4
+            or any(not 0x20 <= byte <= 0x7E
+                   for byte in image[name_offset:name_end])
+            or manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)
+            or size <= 0 or not load_address <= base_address < flash_end
+            or size > flash_end - base_address or sum(sectors) != size):
+        return None, "descriptor-content-mismatch"
+    regions: list[tuple[int, int]] = []
+    offset = 0
+    for sector_size in sectors:
+        if (sector_size < PAGE or sector_size > 0x100000
+                or sector_size & (sector_size - 1)
+                or offset % sector_size):
+            return None, "geometry-sector-mismatch"
+        if regions and regions[-1][1] == sector_size:
+            count, _ = regions[-1]
+            regions[-1] = count + 1, sector_size
+        else:
+            regions.append((1, sector_size))
+        offset += sector_size
+    if not 1 <= len(regions) <= 4:
+        return None, "geometry-region-count-mismatch"
+    if (base_address - load_address) % regions[0][1]:
+        return None, "geometry-base-alignment-mismatch"
+    return (
+        base_address - load_address, size, tuple(regions),
+        manufacturer, device,
+    ), None
 
 
 def qualcomm_efs_seed(size: int, chipset: str) -> bytes:

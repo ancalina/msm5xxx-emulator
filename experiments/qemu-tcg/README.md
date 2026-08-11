@@ -31,12 +31,11 @@ register/memory seeding, and transports LCD writes plus accepted physical input
 edges over a loopback TCP chardev. A second loopback chardev releases the paused
 QEMU startup through GDB. Per-MMIO Python callbacks are not used.
 
-Persistent QEMU NOR/EEPROM files are separate from Unicorn state. Omitting
-`--state-dir` makes an isolated temporary copy and discards it on exit.
-Applying boot settings restarts QEMU. Keep the same state directory when a
-cold storage initialization requires a warm boot; different firmware images
-use separate state subdirectories. Existing root-level state stays with the
-first firmware opened after upgrading.
+Persistent QEMU NOR/EEPROM files are separate from Unicorn state. The desktop
+default is `~/.msm5xxx-emulator/qemu-state`; `--state-dir` overrides that root.
+Applying boot settings restarts QEMU. Different firmware images use separate
+SHA-256 subdirectories. Existing root-level state stays with the first
+firmware opened after upgrading.
 
 Current representative firmware status and release gates are documented in
 [../../docs/QEMU_TCG_BACKEND.md](../../docs/QEMU_TCG_BACKEND.md). A visible frame or live process is not by itself a

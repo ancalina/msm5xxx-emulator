@@ -39,15 +39,15 @@ The firmware file is read-only.
 
 ## Persistent state
 
-Use `--state-dir` to retain writable NOR and EEPROM data across restarts:
+Writable NOR and EEPROM data persist across restarts in a firmware SHA-256
+scoped directory. Use `--state-dir` to choose a different state root:
 
 ```sh
 ./run_linux.sh /path/to/phone.bin --state-dir /path/to/qemu-state
 ```
 
-Reuse the same directory for a cold boot followed by a warm boot. Without
-`--state-dir`, writable state is temporary and is discarded on exit.
-Android keeps SHA-256-scoped state in app-private storage.
+The desktop default is `~/.msm5xxx-emulator/qemu-state`. Android uses
+app-private storage. The original firmware file remains read-only.
 
 ## Requirements
 

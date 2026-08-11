@@ -22,6 +22,8 @@ from msm5xxx_emulator.detection.boot import (
     DMD_DOWNLOAD_SIGNATURE,
     find_ma2_silent_boot_wait,
 )
+from msm5xxx_emulator.detection.firmware_image import load_firmware_image
+from msm5xxx_emulator.detection.memory_layout import restore_sparse_nor_gap
 from msm5xxx_emulator.detection.storage import (
     EEPROM_24LCXX_READ_SIGNATURE,
     EEPROM_24LCXX_X430_READ_PREFIX,
@@ -30,6 +32,7 @@ from msm5xxx_emulator.detection.storage import (
     fujitsu_x16_flash_ids,
     find_embedded_fujitsu_x16_nor,
     find_primary_fsd_amd_x16_nor,
+    primary_probe_x16_nor_profile,
 )
 from msm5xxx_emulator.detection.upper_nor import (
     UPPER_FLASH_ADDRESS,
@@ -207,6 +210,37 @@ def load_legacy_raw_state(seed: bytes, path: Path) -> tuple[bytes, bool]:
     if len(data) != len(seed):
         raise ValueError(f"persistent state size mismatch: {path}")
     return data, True
+
+
+def detector_firmware_image(image: bytes, image_offset: int) -> bytes:
+    """Match the canonical detector's header and sparse-gap normalization."""
+    if not 0 <= image_offset < len(image):
+        raise ValueError("image offset outside firmware")
+    return restore_sparse_nor_gap(image[image_offset:])[0]
+
+
+def select_primary_x16_nor_profile(
+        legacy: tuple[int, int, int, int, int] | None,
+        probe: tuple[
+            int, int, tuple[tuple[int, int], ...], int, int,
+        ] | None,
+) -> tuple[
+    tuple[int, int, int, int, int] | None,
+    tuple[tuple[int, int], ...] | None,
+    str | None,
+]:
+    """Prefer exact probe geometry only when detectors agree."""
+    if probe is None:
+        return legacy, None, None
+    base, size, regions, id0, id1 = probe
+    profile = base, size, regions[0][1], id0, id1
+    if legacy is not None:
+        legacy_base, legacy_size, sector_size, legacy_id0, legacy_id1 = legacy
+        if ((legacy_base, legacy_size, legacy_id0, legacy_id1)
+                != (base, size, id0, id1)
+                or regions != ((size // sector_size, sector_size),)):
+            return None, None, "detector-conflict"
+    return profile, regions, None
 
 
 def raw_loader_arguments(image: Path, max_size: int,
@@ -690,7 +724,7 @@ class Transport:
         temporary = Path(self.temporary.name)
         if state_dir is not None:
             state_dir.mkdir(parents=True, exist_ok=True)
-        firmware_image = firmware.read_bytes()
+        firmware_image = load_firmware_image(firmware).image
         self.rex_c80_profile = c80_rex_irq_profile(
             self.config, experimental_c80
         )
@@ -872,10 +906,31 @@ class Transport:
                 ",rex-static-read-consume="
                 f"{self.rex_read_consume_profile}"
             )
+        detector_image = detector_firmware_image(
+            firmware_image, self.config.image_offset
+        )
         primary_profile = find_primary_fsd_amd_x16_nor(
-            firmware_image[:self.config.flash_size],
+            detector_image[:self.config.flash_size],
             self.config.flash_id_address, self.config.flash_size,
         )
+        probe_profile, probe_reject = primary_probe_x16_nor_profile(
+            detector_image, self.config.primary_flash_probe_address,
+            self.config.load_address, self.config.flash_size,
+            0, self.config.ram_base,
+            self.config.ram_image_offset, self.config.ram_image_size,
+        )
+        primary_profile, primary_regions, profile_reject = (
+            select_primary_x16_nor_profile(primary_profile, probe_profile)
+        )
+        if profile_reject is not None:
+            self.config.detection_notes.append(
+                "primary x16 detectors conflict; native NOR fallback retained"
+            )
+        elif primary_profile is None and probe_reject is not None:
+            self.config.detection_notes.append(
+                f"primary x16 probe detector rejected: {probe_reject}; "
+                "native NOR fallback retained"
+            )
         primary_seed, primary_imported = load_legacy_nor_state(
             bytes(self.decoder.flash.data), (legacy_primary_state,)
         )
@@ -935,23 +990,37 @@ class Transport:
                 f",primary-x16-nor={base:x}:{size:x}:{sector_size:x}:"
                 f"{id0:x}:{id1:x}"
             )
+            if primary_regions is not None:
+                machine += "".join(
+                    f":{count:x}:{length:x}"
+                    for count, length in primary_regions
+                )
             storage_args.extend((
                 "-drive",
                 f"file={primary_state},if=pflash,format=raw,unit=0",
             ))
-            loader_size = base
+            if base + size == self.config.flash_size:
+                loader_size = base
+            else:
+                loader_exclude = base, base + size
             pflash_unit = 1
-            self.config.detection_notes.append(
-                "primary x16 NOR writable tail selected from unique "
-                "fsd_amd descriptor/writer/ID linkage"
-            )
+            if primary_regions is None:
+                self.config.detection_notes.append(
+                    "primary x16 NOR writable tail selected from unique "
+                    "fsd_amd descriptor/writer/ID linkage"
+                )
+            else:
+                self.config.detection_notes.append(
+                    "primary x16 NOR selected from unique "
+                    "probe/table/descriptor/geometry linkage"
+                )
         secondary = self.decoder.secondary_flash
         secondary_base = self.config.secondary_flash_address
         secondary_size = self.config.secondary_flash_size
         embedded_secondary = None
         if secondary_base is None and primary_profile is None:
             embedded_secondary = find_embedded_fujitsu_x16_nor(
-                firmware_image, self.config.flash_size,
+                detector_image, self.config.flash_size,
             )
             if embedded_secondary is not None:
                 secondary_base, secondary_size, id0, id1 = embedded_secondary
@@ -962,7 +1031,7 @@ class Transport:
                 and self.config.secondary_flash_write_address is not None):
             candidate = self.config.load_address + self.config.flash_size
             candidate_ids = fujitsu_x16_flash_ids(
-                firmware_image,
+                detector_image,
                 self.config.secondary_flash_write_address,
                 self.config.load_address, candidate,
             )
@@ -973,7 +1042,7 @@ class Transport:
         secondary_ids = (
             (id0, id1) if embedded_secondary is not None else
             fujitsu_x16_flash_ids(
-                firmware_image, self.config.secondary_flash_write_address,
+                detector_image, self.config.secondary_flash_write_address,
                 self.config.load_address, int(secondary_base or 0),
             )
         )
@@ -1042,7 +1111,7 @@ class Transport:
                 f"file={upper_state},if=pflash,format=raw,unit={pflash_unit}",
             ))
         eeprom_profile, eeprom_reject = eeprom_gpio_profile(
-            firmware_image, self.config
+            detector_image, self.config
         )
         if eeprom_reject is not None:
             self.config.detection_notes.append(

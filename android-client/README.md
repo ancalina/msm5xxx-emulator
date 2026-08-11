@@ -20,4 +20,5 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 Launch the app and choose a firmware through the system picker. Use the **⋮**
 menu to choose another firmware, change session settings, run, or stop. Tapping
-an unmapped keypad button opens its validated manual mapping dialog.
+an unmapped keypad button opens its validated manual mapping dialog. Choose
+**Edit input mapping** to override or remove mappings for any keypad button.
