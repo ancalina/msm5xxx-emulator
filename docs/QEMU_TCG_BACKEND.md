@@ -15,11 +15,17 @@ The prototype currently provides:
 
 - ARMv4T execution with explicit reset CPSR and detected RAM/SP geometry;
 - deterministic instruction-counted virtual time;
-- native IRQ, SBI/DC0, LCD, ready-poll, matrix, MA2 aperture, REX timer,
+- native IRQ, SBI/DC0, LCD, ready-poll, matrix, exact-site MA2 command bus,
+  REX timer,
   Fujitsu x16 NOR, and GPIO 24LC256 boundaries;
 - persistent raw NOR/EEPROM images separated from Unicorn state;
 - a batched full-duplex LCD/input transport;
 - native fallback or rejection when a detector cannot close a protocol class.
+
+The MA2 path currently models the indexed command bus, physical FIFOs,
+virtual-time compact sequencer, channel assignment, controls, and exact
+voice-record decode. It does not yet synthesize native FM/ADPCM PCM; playback
+remains approximate until the chip renderer and PCM transport are proven.
 
 No detector uses a firmware filename or model-name branch. Device properties
 come from firmware signatures, call shapes, consumers, and runtime readback.

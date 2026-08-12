@@ -36,6 +36,8 @@
 #include "target/arm/cpu.h"
 #include "target/arm/cpu-qom.h"
 
+#include "msm5xxx-ma2-audio.h"
+
 #define TYPE_MSM5XXX_POC_MACHINE MACHINE_TYPE_NAME("msm5xxx-poc")
 OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxxPOCMachineState, MSM5XXX_POC_MACHINE)
 
@@ -66,6 +68,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_LCD_SIZE 0x1000
 #define MSM5XXX_POC_LCD_PORTS 4
 #define MSM5XXX_POC_AUDIO_MAX_PORTS 16
+#define MSM5XXX_POC_AUDIO_MAX_SITES 64
 #define MSM5XXX_POC_LCD_TRACE_BASE 0x10001000
 #define MSM5XXX_POC_LCD_TRACE_RECORD_SIZE 12
 #define MSM5XXX_POC_LCD_TRACE_CAPACITY 65536
@@ -80,6 +83,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_AUDIO_STREAM_STATUS 6
 #define MSM5XXX_POC_AUDIO_STATUS_OVERFLOW 1
 #define MSM5XXX_POC_AUDIO_STATUS_RESET 2
+#define MSM5XXX_POC_AUDIO_STATUS_REJECTED 3
 #define MSM5XXX_POC_HOST_INPUT 0x80
 #define MSM5XXX_POC_HOST_INPUT_SIZE 4
 #define MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW UINT8_MAX
@@ -172,7 +176,6 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion pause_timer;
     MemoryRegion board_status_input;
     MemoryRegion matrix_input;
-    MemoryRegion audio;
     MemoryRegion mmio;
     qemu_irq cpu_irq;
     uint32_t value;
@@ -266,15 +269,27 @@ struct MSM5xxxPOCMachineState {
     uint64_t matrix_input_active_reads;
     uint64_t matrix_input_rejections;
     bool audio_enabled;
+    bool audio_ma2;
     uint32_t audio_base;
     uint8_t audio_data_offset;
     uint8_t audio_index;
     uint8_t audio_backing[MSM5XXX_POC_AUDIO_MAX_PORTS];
+    bool audio_site_write[MSM5XXX_POC_AUDIO_MAX_SITES];
+    uint8_t audio_site_port[MSM5XXX_POC_AUDIO_MAX_SITES];
+    uint32_t audio_site_pc[MSM5XXX_POC_AUDIO_MAX_SITES];
+    unsigned audio_site_count;
+    bool audio_sites_enabled;
     uint32_t audio_stream_order;
     uint32_t audio_stream_dropped;
     uint8_t audio_stream_status_pending;
     bool audio_stream_started;
     bool audio_stream_rejected;
+    MSM5xxxMA2Audio ma2_audio;
+    QEMUTimer *ma2_audio_timer;
+    uint64_t ma2_audio_events;
+    uint64_t ma2_audio_gate_offs;
+    uint64_t ma2_audio_ends;
+    bool ma2_audio_timer_rejected;
     bool rex_irq_enabled;
     bool rex_irq_c80;
     bool rex_irq_read_consume;
@@ -939,35 +954,112 @@ static const MemoryRegionOps msm5xxx_poc_matrix_input_ops = {
     .valid.max_access_size = 1,
 };
 
-static uint64_t msm5xxx_poc_audio_read(void *opaque, hwaddr offset,
-                                       unsigned size)
+static void msm5xxx_poc_ma2_audio_tick(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    MSM5xxxMA2Output output;
+    uint64_t deadline;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    if (size != 1 || offset > s->audio_data_offset) {
-        return 0;
+    do {
+        if (!msm5xxx_ma2_scheduler_step(&s->ma2_audio, now, &output)) {
+            s->ma2_audio_timer_rejected = true;
+            s->audio_stream_rejected = true;
+            s->audio_stream_status_pending =
+                MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            return;
+        }
+        switch (output.kind) {
+        case MSM5XXX_MA2_OUTPUT_EVENT:
+            s->ma2_audio_events++;
+            break;
+        case MSM5XXX_MA2_OUTPUT_GATE_OFF:
+            s->ma2_audio_gate_offs++;
+            break;
+        case MSM5XXX_MA2_OUTPUT_END:
+            s->ma2_audio_ends++;
+            break;
+        case MSM5XXX_MA2_OUTPUT_NONE:
+            break;
+        }
+    } while (output.kind != MSM5XXX_MA2_OUTPUT_NONE);
+
+    if (msm5xxx_ma2_scheduler_next_deadline(&s->ma2_audio, &deadline)) {
+        if (deadline > INT64_MAX) {
+            s->ma2_audio_timer_rejected = true;
+            s->audio_stream_rejected = true;
+            s->audio_stream_status_pending =
+                MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            return;
+        }
+        timer_mod_ns(s->ma2_audio_timer, deadline);
     }
-    return s->audio_backing[offset];
 }
 
-static void msm5xxx_poc_audio_write(void *opaque, hwaddr offset,
-                                    uint64_t value, unsigned size)
+static void msm5xxx_poc_ma2_audio_kick(MSM5xxxPOCMachineState *s)
 {
-    MSM5xxxPOCMachineState *s = opaque;
+    if (s->ma2_audio_timer && !s->ma2_audio_timer_rejected &&
+        !msm5xxx_ma2_rejected(&s->ma2_audio)) {
+        timer_mod_ns(s->ma2_audio_timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+}
+
+static bool msm5xxx_poc_audio_site_owned(const MSM5xxxPOCMachineState *s,
+                                         bool write, hwaddr offset,
+                                         uint32_t pc)
+{
+    unsigned index;
+
+    for (index = 0; index < s->audio_site_count; index++) {
+        if (s->audio_site_write[index] == write &&
+            s->audio_site_port[index] == offset &&
+            s->audio_site_pc[index] == pc) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
+                                          hwaddr offset, uint64_t value,
+                                          unsigned size)
+{
     CPUState *cpu = current_cpu;
     CPUClass *cc;
-    uint32_t pc;
+    uint32_t pc = 0;
+    bool in_vcpu;
+    bool native_site;
+    bool accepted = false;
 
     if (size != 1 || offset > s->audio_data_offset) {
-        return;
+        return false;
+    }
+    in_vcpu = qemu_in_vcpu_thread() && cpu == CPU(s->cpu) && cpu->running &&
+               cpu->neg.can_do_io;
+    if (in_vcpu) {
+        cc = CPU_GET_CLASS(cpu);
+        pc = cc->get_pc(cpu) & ~1U;
+    }
+    native_site = in_vcpu && s->audio_sites_enabled &&
+                  msm5xxx_poc_audio_site_owned(s, true, offset, pc);
+    if (!native_site) {
+        return false;
     }
     s->audio_backing[offset] = value;
-    if (!offset) {
+    if (s->audio_ma2 && !msm5xxx_ma2_rejected(&s->ma2_audio) && !offset) {
         s->audio_index = value;
+        accepted = msm5xxx_ma2_index_write(&s->ma2_audio, value);
+    } else if (s->audio_ma2 && !msm5xxx_ma2_rejected(&s->ma2_audio) &&
+               offset == s->audio_data_offset) {
+        accepted = msm5xxx_ma2_data_write(&s->ma2_audio, value);
     }
-    if (!qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
-        !cpu->neg.can_do_io) {
-        return;
+    if (accepted) {
+        msm5xxx_poc_ma2_audio_kick(s);
+    } else if (s->audio_ma2 && msm5xxx_ma2_rejected(&s->ma2_audio)) {
+        s->audio_stream_rejected = true;
+        s->audio_stream_status_pending =
+            MSM5XXX_POC_AUDIO_STATUS_REJECTED;
     }
     s->audio_stream_started = true;
     s->audio_stream_order++;
@@ -975,10 +1067,8 @@ static void msm5xxx_poc_audio_write(void *opaque, hwaddr offset,
         if (s->audio_stream_dropped != UINT32_MAX) {
             s->audio_stream_dropped++;
         }
-        return;
+        return true;
     }
-    cc = CPU_GET_CLASS(cpu);
-    pc = cc->get_pc(cpu) & ~1U;
     if (!s->lcd_trace_buffer || !msm5xxx_poc_lcd_stream_append(
             s, MSM5XXX_POC_AUDIO_STREAM_WRITE, size, pc,
             offset | ((value & UINT8_MAX) << 8),
@@ -987,15 +1077,37 @@ static void msm5xxx_poc_audio_write(void *opaque, hwaddr offset,
         s->audio_stream_dropped = 1;
         s->audio_stream_status_pending = MSM5XXX_POC_AUDIO_STATUS_OVERFLOW;
     }
+    return true;
 }
 
-static const MemoryRegionOps msm5xxx_poc_audio_ops = {
-    .read = msm5xxx_poc_audio_read,
-    .write = msm5xxx_poc_audio_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 1,
-};
+static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
+                                         hwaddr offset, unsigned size,
+                                         uint64_t *value)
+{
+    CPUState *cpu = current_cpu;
+    CPUClass *cc;
+    uint8_t data;
+    uint32_t pc;
+
+    if (size != 1 || offset != s->audio_data_offset || !s->audio_ma2 ||
+        !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io) {
+        return false;
+    }
+    cc = CPU_GET_CLASS(cpu);
+    pc = cc->get_pc(cpu) & ~1U;
+    if (!s->audio_sites_enabled ||
+        !msm5xxx_poc_audio_site_owned(s, false, offset, pc) ||
+        s->ma2_audio.page != MSM5XXX_MA2_PAGE_REG1 ||
+        s->ma2_audio.index < MSM5XXX_MA2_FM_CHANNEL_ASSIGN ||
+        s->ma2_audio.index >= MSM5XXX_MA2_FM_CHANNEL_ASSIGN +
+                              MSM5XXX_MA2_FM_ASSIGNMENT_COUNT ||
+        !msm5xxx_ma2_data_read(&s->ma2_audio, &data)) {
+        return false;
+    }
+    *value = data;
+    return true;
+}
 
 static bool msm5xxx_poc_arm_b_target(uint32_t word, uint32_t address,
                                     uint32_t *target)
@@ -1577,9 +1689,17 @@ static uint64_t msm5xxx_poc_lcd_aperture_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    hwaddr address = MSM5XXX_POC_LCD_APERTURE_BASE + offset;
+    uint64_t value;
 
     if (offset + size > MSM5XXX_POC_LCD_APERTURE_SIZE) {
         return 0;
+    }
+    if (s->audio_enabled && address >= s->audio_base &&
+        address <= s->audio_base + s->audio_data_offset &&
+        msm5xxx_poc_audio_read_owned(s, address - s->audio_base, size,
+                                     &value)) {
+        return value;
     }
     s->lcd_aperture_reads++;
     return msm5xxx_poc_backing_read(s->lcd_aperture_backing, offset, size);
@@ -1589,13 +1709,20 @@ static void msm5xxx_poc_lcd_aperture_write(void *opaque, hwaddr offset,
                                            uint64_t value, unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    hwaddr address = MSM5XXX_POC_LCD_APERTURE_BASE + offset;
 
     if (offset + size > MSM5XXX_POC_LCD_APERTURE_SIZE) {
         return;
     }
+    if (s->audio_enabled && address >= s->audio_base &&
+        address <= s->audio_base + s->audio_data_offset &&
+        msm5xxx_poc_audio_write_owned(s, address - s->audio_base,
+                                      value, size)) {
+        return;
+    }
     s->lcd_aperture_writes++;
     msm5xxx_poc_lcd_trace_write(
-        s, MSM5XXX_POC_LCD_APERTURE_BASE + offset, value, size
+        s, address, value, size
     );
     msm5xxx_poc_backing_write(
         s->lcd_aperture_backing, offset, value, size
@@ -1728,6 +1855,18 @@ static uint64_t msm5xxx_poc_read(void *opaque, hwaddr offset, unsigned size)
         return (uint32_t)s->pause_timer_added_ns;
     case 0x84:
         return s->pause_timer_added_ns >> 32;
+    case 0x88:
+        return s->ma2_audio_events;
+    case 0x8c:
+        return s->ma2_audio_gate_offs;
+    case 0x90:
+        return s->ma2_audio_ends;
+    case 0x94:
+        return msm5xxx_ma2_reject_reason(&s->ma2_audio);
+    case 0x98:
+        return s->ma2_audio_timer_rejected;
+    case 0x9c:
+        return s->ma2_audio.fm_state_unhandled;
     default:
         return 0;
     }
@@ -1762,12 +1901,34 @@ static const MemoryRegionOps msm5xxx_poc_ops = {
     .impl.max_access_size = 4,
 };
 
+static void msm5xxx_poc_audio_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    bool was_started = s->audio_stream_started;
+
+    if (s->ma2_audio_timer) {
+        timer_del(s->ma2_audio_timer);
+    }
+    s->audio_index = 0;
+    memset(s->audio_backing, 0, sizeof(s->audio_backing));
+    s->audio_stream_order = 0;
+    s->audio_stream_dropped = 0;
+    s->audio_stream_started = false;
+    s->audio_stream_rejected = was_started;
+    s->audio_stream_status_pending = was_started ?
+        MSM5XXX_POC_AUDIO_STATUS_RESET : 0;
+    s->ma2_audio_events = 0;
+    s->ma2_audio_gate_offs = 0;
+    s->ma2_audio_ends = 0;
+    s->ma2_audio_timer_rejected = false;
+    msm5xxx_ma2_reset(&s->ma2_audio);
+}
+
 static void msm5xxx_poc_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
     CPUARMState *env = &s->cpu->env;
     uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
-    bool audio_was_started = s->audio_stream_started;
 
     if (s->rex_irq_timer) {
         timer_del(s->rex_irq_timer);
@@ -1833,14 +1994,7 @@ static void msm5xxx_poc_reset(void *opaque)
     s->matrix_input_host_events = 0;
     s->matrix_input_active_reads = 0;
     s->matrix_input_rejections = 0;
-    s->audio_index = 0;
-    memset(s->audio_backing, 0, sizeof(s->audio_backing));
-    s->audio_stream_order = 0;
-    s->audio_stream_dropped = 0;
-    s->audio_stream_started = false;
-    s->audio_stream_rejected = audio_was_started;
-    s->audio_stream_status_pending = audio_was_started ?
-        MSM5XXX_POC_AUDIO_STATUS_RESET : 0;
+    msm5xxx_poc_audio_reset(s);
     memset(s->rex_irq_backing, 0, sizeof(s->rex_irq_backing));
     s->rex_irq_arm_backing = 0;
     memset(s->rex_irq_pending, 0, sizeof(s->rex_irq_pending));
@@ -2256,13 +2410,33 @@ static void msm5xxx_poc_init(MachineState *machine)
             &s->matrix_input, 1
         );
     }
+    if (s->audio_sites_enabled) {
+        bool have_index_site = false;
+        bool have_data_site = false;
+        unsigned index;
+
+        for (index = 0; index < s->audio_site_count; index++) {
+            if (!s->audio_enabled ||
+                s->audio_site_port[index] > s->audio_data_offset) {
+                error_report("audio-sites port is outside audio-aperture");
+                exit(EXIT_FAILURE);
+            }
+            have_index_site |= s->audio_site_write[index] &&
+                               s->audio_site_port[index] == 0;
+            have_data_site |= s->audio_site_write[index] &&
+                              s->audio_site_port[index] ==
+                              s->audio_data_offset;
+        }
+        if (!have_index_site || !have_data_site) {
+            error_report("audio-sites requires index and data write sites");
+            exit(EXIT_FAILURE);
+        }
+    }
     if (s->audio_enabled) {
-        memory_region_init_io(&s->audio, OBJECT(machine),
-                              &msm5xxx_poc_audio_ops, s,
-                              "msm5xxx-poc.audio",
-                              s->audio_data_offset + 1);
-        memory_region_add_subregion(get_system_memory(), s->audio_base,
-                                    &s->audio);
+        if (s->audio_ma2 && s->audio_sites_enabled) {
+            s->ma2_audio_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                              msm5xxx_poc_ma2_audio_tick, s);
+        }
     }
     memory_region_init_io(&s->mmio, OBJECT(machine), &msm5xxx_poc_ops, s,
                           "msm5xxx-poc.mmio", MSM5XXX_POC_MMIO_SIZE);
@@ -2271,6 +2445,9 @@ static void msm5xxx_poc_init(MachineState *machine)
     if (s->memory_profile_enabled) {
         qemu_register_reset(msm5xxx_poc_reset, s);
         msm5xxx_poc_reset(s);
+    } else if (s->audio_enabled) {
+        qemu_register_reset(msm5xxx_poc_audio_reset, s);
+        msm5xxx_poc_audio_reset(s);
     }
 }
 
@@ -2510,8 +2687,8 @@ static char *msm5xxx_poc_get_audio_aperture(Object *obj, Error **errp)
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
     return s->audio_enabled ?
-        g_strdup_printf("%x:%x", s->audio_base, s->audio_data_offset) :
-        g_strdup("");
+        g_strdup_printf("%x:%x:%s", s->audio_base, s->audio_data_offset,
+                        s->audio_ma2 ? "ma2" : "ma5") : g_strdup("");
 }
 
 static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
@@ -2519,17 +2696,106 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
     unsigned base, data_offset;
+    char family[4];
     char trailing;
+    bool legacy, tagged, ma2;
 
-    if (sscanf(value, "%x:%x%c", &base, &data_offset, &trailing) != 2 ||
-            base < 0x02001000 || base >= MSM5XXX_POC_MSM_BASE ||
-            !data_offset || data_offset >= MSM5XXX_POC_AUDIO_MAX_PORTS) {
-        error_setg(errp, "audio-aperture must be BASE:DATA_OFFSET");
+    legacy = sscanf(value, "%x:%x%c", &base, &data_offset, &trailing) == 2;
+    tagged = sscanf(value, "%x:%x:%3[a-z0-9]%c", &base, &data_offset,
+                    family, &trailing) == 3;
+    ma2 = legacy || (tagged && !strcmp(family, "ma2"));
+    if (!ma2 || base < 0x02001000 ||
+            base > MSM5XXX_POC_LCD_APERTURE_BASE +
+                   MSM5XXX_POC_LCD_APERTURE_SIZE - 3 ||
+            data_offset != 2 ||
+            !(base + data_offset < msm5xxx_poc_lcd_bases[3] ||
+              base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE)) {
+        error_setg(errp, "audio-aperture must be LCD-BASE:2[:ma2]");
         return;
     }
     s->audio_base = base;
     s->audio_data_offset = data_offset;
+    s->audio_ma2 = true;
     s->audio_enabled = true;
+}
+
+static char *msm5xxx_poc_get_audio_sites(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *value;
+    unsigned index;
+
+    if (!s->audio_sites_enabled) {
+        return g_strdup("");
+    }
+    value = g_string_new("");
+    for (index = 0; index < s->audio_site_count; index++) {
+        g_string_append_printf(value, "%s%c%x/%x", index ? ";" : "",
+                               s->audio_site_write[index] ? 'w' : 'r',
+                               s->audio_site_port[index],
+                               s->audio_site_pc[index]);
+    }
+    return g_string_free(value, false);
+}
+
+static void msm5xxx_poc_set_audio_sites(Object *obj, const char *value,
+                                        Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) entries = NULL;
+    bool writes[MSM5XXX_POC_AUDIO_MAX_SITES];
+    uint8_t ports[MSM5XXX_POC_AUDIO_MAX_SITES];
+    uint32_t pcs[MSM5XXX_POC_AUDIO_MAX_SITES];
+    size_t count;
+    size_t index;
+
+    if (!value || !*value) {
+        s->audio_site_count = 0;
+        s->audio_sites_enabled = false;
+        return;
+    }
+    entries = g_strsplit(value, ";", -1);
+    count = g_strv_length(entries);
+    if (!count || count > MSM5XXX_POC_AUDIO_MAX_SITES) {
+        error_setg(errp, "audio-sites must contain 1..%u sites",
+                   MSM5XXX_POC_AUDIO_MAX_SITES);
+        return;
+    }
+    for (index = 0; index < count; index++) {
+        const char *slash = strchr(entries[index], '/');
+        const char *end;
+        uint64_t port;
+        uint64_t pc;
+        size_t prior;
+        bool write = entries[index][0] == 'w';
+
+        if ((entries[index][0] != 'r' && !write) || !slash ||
+            slash == entries[index] + 1 || !slash[1] ||
+            !g_ascii_isxdigit(entries[index][1]) ||
+            !g_ascii_isxdigit(slash[1]) ||
+            qemu_strtou64(entries[index] + 1, &end, 16, &port) < 0 ||
+            end != slash ||
+            qemu_strtou64(slash + 1, &end, 16, &pc) < 0 || *end ||
+            port >= MSM5XXX_POC_AUDIO_MAX_PORTS || pc > UINT32_MAX ||
+            (pc & 1)) {
+            error_setg(errp, "audio-sites must be [rw]PORT/PC;... even hex");
+            return;
+        }
+        for (prior = 0; prior < index; prior++) {
+            if (pcs[prior] == pc) {
+                error_setg(errp, "audio-sites contains a duplicate site");
+                return;
+            }
+        }
+        writes[index] = write;
+        ports[index] = (uint8_t)port;
+        pcs[index] = (uint32_t)pc;
+    }
+    memcpy(s->audio_site_write, writes, count * sizeof(writes[0]));
+    memcpy(s->audio_site_port, ports, count * sizeof(ports[0]));
+    memcpy(s->audio_site_pc, pcs, count * sizeof(pcs[0]));
+    s->audio_site_count = (unsigned)count;
+    s->audio_sites_enabled = true;
 }
 
 static void msm5xxx_poc_set_matrix_input(Object *obj, const char *value,
@@ -3085,6 +3351,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_audio_aperture);
     object_class_property_set_description(
         oc, "audio-aperture", "Detector-provided audio transport aperture");
+    object_class_property_add_str(oc, "audio-sites",
+                                  msm5xxx_poc_get_audio_sites,
+                                  msm5xxx_poc_set_audio_sites);
+    object_class_property_set_description(
+        oc, "audio-sites", "Detector-provided audio bus access PCs");
     object_class_property_add_str(oc, "primary-x16-nor",
                                   msm5xxx_poc_get_primary_x16_nor,
                                   msm5xxx_poc_set_primary_x16_nor);

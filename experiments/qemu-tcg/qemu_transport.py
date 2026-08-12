@@ -52,6 +52,7 @@ AUDIO_WRITE = 5
 AUDIO_STATUS = 6
 AUDIO_STATUS_OVERFLOW = 1
 AUDIO_STATUS_RESET = 2
+AUDIO_STATUS_REJECTED = 3
 HOST_INPUT = 0x80
 REGISTER_NAMES = tuple(f"r{index}" for index in range(13)) + (
     "sp", "lr", "pc", "cpsr",
@@ -70,6 +71,7 @@ PAUSE_TIMER_FIXED_HELPER = bytes.fromhex(
     "081ce9e70028d0dd00211423041c5c431f23e3189b1105d414214843031c1f21"
     "5918891100481980bfe7"
 )
+AUDIO_SITE_LIMIT = 64
 
 
 def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
@@ -119,6 +121,64 @@ def qemu_upper_nor_enabled(config: object) -> bool:
     if address != UPPER_FLASH_ADDRESS or size != UPPER_FLASH_SIZE:
         raise ValueError("QEMU cannot represent the detected upper NOR")
     return True
+
+
+def qemu_audio_sites(audio: object) -> str | None:
+    """Serialize detector-owned MA2 bus PCs for the native QEMU gate."""
+    if not isinstance(audio, dict):
+        return None
+    family = audio.get("family")
+    base = audio.get("base")
+    data_offset = audio.get("data_offset")
+    sites = audio.get("sites")
+    if (family != "ma2"
+            or type(base) is not int or not 0x02001000 <= base < 0x02800000
+            or type(data_offset) is not int
+            or data_offset != 2 or base + data_offset >= 0x02800000
+            or not (base + data_offset < 0x02200000
+                    or base >= 0x02201000)
+            or not isinstance(sites, dict)):
+        return None
+
+    entries: list[tuple[str, int, int]] = []
+    seen: set[int] = set()
+    write_ports: set[int] = set()
+    for name, values in sites.items():
+        if not isinstance(name, str):
+            return None
+        is_write = name.startswith("write_")
+        is_data_read = name == f"read_{data_offset}"
+        if not is_write and not is_data_read:
+            continue
+        suffix = name[name.index("_") + 1:]
+        if (not suffix or len(suffix) > 2
+                or any(character not in "0123456789"
+                               for character in suffix)):
+            return None
+        port = int(suffix, 10)
+        if (str(port) != suffix or port > data_offset or port >= 16
+                or not isinstance(values, (list, tuple)) or not values):
+            return None
+        if is_write:
+            write_ports.add(port)
+        if len(values) > AUDIO_SITE_LIMIT:
+            return None
+        for value in values:
+            if (type(value) is not int or not 0 <= value <= 0xFFFFFFFF
+                    or value & 1):
+                return None
+            if value in seen:
+                return None
+            seen.add(value)
+            entry = ("w" if is_write else "r", port, value)
+            entries.append(entry)
+            if len(entries) > AUDIO_SITE_LIMIT:
+                return None
+    if 0 not in write_ports or data_offset not in write_ports:
+        return None
+    entries.sort()
+    return ";".join(f"{kind}{port:x}/{pc:x}"
+                    for kind, port, pc in entries)
 
 
 def matrix_input_command(profile: dict[str, object],
@@ -875,16 +935,22 @@ class Transport:
                 self.matrix_input_profile = direct
                 self.matrix_input_sideband_producer = sideband
         audio = self.config.audio_transport
+        audio_family = audio.get("family") if audio is not None else None
+        audio_grammar = audio.get("grammar") if audio is not None else None
         if (audio is not None
                 and audio.get("static_status") == "accepted"
-                and audio.get("family") == "ma2"
+                and audio_family == "ma2"
+                and audio_grammar == "ma2-command-v1"
                 and self.config.ma2_silent_boot_address is not None):
-            machine += (
-                f",audio-aperture={int(audio['base']):x}:"
-                f"{int(audio['data_offset']):x}"
-            )
-            self.audio_stream_enabled = True
-            self.audio_stream_status = "pending"
+            audio_sites = qemu_audio_sites(audio)
+            if audio_sites is not None:
+                machine += (
+                    f",audio-aperture={int(audio['base']):x}:"
+                    f"{int(audio['data_offset']):x}:{audio_family}"
+                    f",audio-sites={audio_sites}"
+                )
+                self.audio_stream_enabled = True
+                self.audio_stream_status = "pending"
         rex_fields = (
             self.config.rex_irq_status_address,
             self.config.rex_irq_enable_address,
@@ -1305,6 +1371,8 @@ class Transport:
             self._reject_audio_stream("qemu-audio-overflow", dropped)
         elif status == AUDIO_STATUS_RESET and order == dropped == 0:
             self._reject_audio_stream("qemu-audio-reset")
+        elif status == AUDIO_STATUS_REJECTED and order == dropped == 0:
+            self._reject_audio_stream("qemu-audio-core-rejected")
         else:
             self._reject_audio_stream("qemu-audio-status-shape")
 

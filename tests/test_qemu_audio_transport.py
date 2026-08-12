@@ -17,7 +17,8 @@ from msm5xxx_emulator.e170_gm_audio import ApproximateSmafPlayer
 EXPERIMENT = Path(__file__).parents[1] / "experiments/qemu-tcg"
 sys.path.insert(0, str(EXPERIMENT))
 from qemu_transport import (  # noqa: E402
-    AUDIO_STATUS, AUDIO_STATUS_OVERFLOW, AUDIO_WRITE, TELEMETRY, Transport,
+    AUDIO_STATUS, AUDIO_STATUS_OVERFLOW, AUDIO_STATUS_REJECTED, AUDIO_WRITE,
+    TELEMETRY, Transport, qemu_audio_sites,
 )
 
 ANDROID_RUNTIME = (
@@ -27,6 +28,67 @@ ANDROID_RUNTIME = (
 
 
 class QEMUAudioTransportTests(unittest.TestCase):
+    def test_qemu_audio_sites_are_canonical_and_fail_closed(self) -> None:
+        metadata = {
+            "family": "ma2", "base": 0x02080000,
+            "data_offset": 2,
+            "sites": {
+                "read_0": [0x10],
+                "read_2": [0x14],
+                "write_2": [0x102, 0x100],
+                "write_0": [0x12],
+            },
+        }
+        self.assertEqual(
+            qemu_audio_sites(metadata), "r2/14;w0/12;w2/100;w2/102"
+        )
+        invalid = (
+            {**metadata, "sites": {"write_2": [0x100]}},
+            {**metadata, "sites": {"write_0": [0x100]}},
+            {**metadata, "sites": {
+                "write_0": [0x100], "write_2": [0x101],
+            }},
+            {**metadata, "sites": {
+                "write_0": [0x100], "write_2": [0x100],
+            }},
+            {**metadata, "sites": {
+                "write_0": [0x100], "write_2": [0x100000000],
+            }},
+            {**metadata, "sites": {
+                "write_0": [0x100], "write_3": [0x102],
+                "write_2": [0x104],
+            }},
+            {**metadata, "base": 0x02000000},
+            {**metadata, "family": "ma2", "data_offset": 4},
+            {**metadata, "family": "ma5", "data_offset": 1},
+            {**metadata, "family": "ma5", "data_offset": 2},
+            {**metadata, "base": 0x02200000},
+            {**metadata, "base": 0x021FFFFF},
+            {**metadata, "base": 0x027FFFFE},
+        )
+        for value in invalid:
+            with self.subTest(value=value):
+                self.assertIsNone(qemu_audio_sites(value))
+        overflow = {
+            "family": "ma2", "base": 0x02080000,
+            "data_offset": 2,
+            "sites": {
+                "write_0": [0x100],
+                "write_2": list(range(0x200, 0x200 + 64 * 2, 2)),
+            },
+        }
+        self.assertIsNone(qemu_audio_sites(overflow))
+        source = (EXPERIMENT / "qemu_transport.py").read_text(
+            encoding="utf-8"
+        )
+        audio_block = source[source.index("audio = self.config.audio_transport"):]
+        audio_block = audio_block[:audio_block.index("        rex_fields =")]
+        sites_gate = audio_block.index("if audio_sites is not None:")
+        self.assertGreater(audio_block.index("audio-aperture=", sites_gate),
+                           sites_gate)
+        self.assertGreater(audio_block.index("self.audio_stream_enabled = True",
+                                             sites_gate), sites_gate)
+
     def test_android_audio_only_exposes_accepted_ma2_pcm(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "msm5xxx_android_audio_test", ANDROID_RUNTIME
@@ -195,6 +257,16 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertEqual(
             owner.audio_transport.counts["ma2-render-submission-rejections"],
             1,
+        )
+
+        transport.audio_stream_status = "active"
+        rejected = bytearray(16)
+        rejected[0:2] = bytes((AUDIO_STATUS, AUDIO_STATUS_REJECTED))
+        transport._replay_record(rejected)
+        self.assertEqual(transport.audio_stream_status, "rejected")
+        self.assertEqual(
+            transport.audio_stream_reject_reason,
+            "qemu-audio-core-rejected",
         )
 
 
