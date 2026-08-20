@@ -179,6 +179,9 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_streamed = 0
         emulator._lcd_data_byte_latch = {}
         emulator._lcd_028_direct_probe = []
+        emulator._lcd_028_be_word_events = []
+        emulator._lcd_028_be_word_qualified = False
+        emulator._lcd_028_be_word_replaying = False
         emulator._lcd_028_rgb332_probe = []
         emulator._lcd_028_rgb332_window = (0, 0, 0, 0)
         emulator._lcd_028_rgb332_qualified = False
@@ -806,6 +809,35 @@ class LCDGeometryTests(unittest.TestCase):
             emulator.display_frame,
             bytes((255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255)),
         )
+
+    def test_028_be_word_packets_require_initializer_and_stream_22(self) -> None:
+        def packet(target: GenericMSMEmulator, command: int, data: int) -> None:
+            for address, value in (
+                    (0x02800000, command >> 8),
+                    (0x02800000, command & 0xFF),
+                    (0x02800002, data >> 8),
+                    (0x02800002, data & 0xFF)):
+                target._lcd_write(None, 0, address, 1, value, None)
+
+        miss = self._routing_emulator(width=176, height=220)
+        packet(miss, 0, 2)
+        self.assertFalse(miss._lcd_028_be_word_qualified)
+        self.assertEqual(miss._lcd_028_be_word_events, [])
+
+        emulator = self._routing_emulator(width=176, height=220)
+        for command, data in ((0, 1), (3, 0x6478), (12, 1),
+                              (4, 0x0648), (3, 0x6C78)):
+            packet(emulator, command, data)
+        self.assertTrue(emulator._lcd_028_be_word_qualified)
+        for command, data in ((0x16, 0x7F00), (0x17, 0x8E00),
+                              (0x21, 0), (0x22, 0xF800),
+                              (0x22, 0x07E0), (0x07, 0)):
+            packet(emulator, command, data)
+
+        self.assertEqual((emulator.config.width, emulator.config.height),
+                         (128, 143))
+        self.assertEqual(emulator.display_frame[:6],
+                         bytes((255, 0, 0, 0, 255, 0)))
 
     def test_028_byte_rgb332_requires_complete_full_window(self) -> None:
         emulator = self._routing_emulator(width=176, height=220)

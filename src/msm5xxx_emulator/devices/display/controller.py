@@ -378,6 +378,9 @@ class DisplayControllerMixin:
                     self._lcd_selector_reacquire_replay(protocol, words)
                 else:
                     self._lcd_selector_reacquire_finish(replay=True)
+        if (not getattr(self, "_lcd_028_be_word_replaying", False)
+                and self._lcd_028_be_word_write(address, size, value)):
+            return
         self._lcd_lowbyte_page_event(address, size, value)
         if address == 0x02000078:
             self._lcd_lgfa_register(size, value)

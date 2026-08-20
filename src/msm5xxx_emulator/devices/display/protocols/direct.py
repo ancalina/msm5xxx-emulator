@@ -26,8 +26,92 @@ _SPLIT_PREFIXES = (
     ),
 )
 
+_028_BE_WORD_COMMAND_PORT = 0x02800000
+_028_BE_WORD_DATA_PORT = 0x02800002
+_028_BE_WORD_PREFIX = (
+    (0x0000, 0x0001),
+    (0x0003, 0x6478),
+    (0x000C, 0x0001),
+    (0x0004, 0x0648),
+    (0x0003, 0x6C78),
+)
+
 
 class DirectProtocolMixin:
+    def _lcd_028_be_word_replay(self,
+                                 events: tuple[tuple[int, int, int], ...]) -> None:
+        """Return an unproven byte packet stream to the existing 0x028 paths."""
+        replaying = getattr(self, "_lcd_028_be_word_replaying", False)
+        self._lcd_028_be_word_replaying = True
+        try:
+            for address, size, value in events:
+                self._lcd_route_write(None, 0, address, size, value, None)
+        finally:
+            self._lcd_028_be_word_replaying = replaying
+
+    def _lcd_028_be_word_emit(self, command: int, value: int) -> None:
+        """Feed one proven big-endian command/data pair to the common LCD path."""
+        self._lcd_protocol = "parallel-2"
+        if not (command == 0x22 and self._lcd_command == 0x22
+                and self._lcd_expected):
+            self._lcd_begin_command(command)
+        self._lcd_feed_parallel_data(_028_BE_WORD_DATA_PORT, 2, value)
+
+    def _lcd_028_be_word_write(self, address: int, size: int,
+                               value: int) -> bool:
+        """Promote only a zero-prefixed 16-bit 0x028 command/data grammar."""
+        event = (address, size, value)
+        events = getattr(self, "_lcd_028_be_word_events", None)
+        if events is None:
+            events = []
+            self._lcd_028_be_word_events = events
+        qualified = getattr(self, "_lcd_028_be_word_qualified", False)
+        if not events:
+            if event != (_028_BE_WORD_COMMAND_PORT, 1, 0):
+                return False
+            events.append(event)
+            return True
+
+        slot = len(events) % 4
+        expected_port = (_028_BE_WORD_COMMAND_PORT if slot < 2
+                         else _028_BE_WORD_DATA_PORT)
+        if (address != expected_port or size != 1 or not 0 <= value <= 0xFF
+                or (slot == 0 and value != 0)):
+            held = tuple(events) + (event,)
+            events.clear()
+            self._lcd_028_be_word_qualified = False
+            self._lcd_028_be_word_replay(held)
+            return True
+
+        events.append(event)
+        if len(events) % 4:
+            return True
+        command = events[-3][2]
+        data = events[-2][2] << 8 | events[-1][2]
+        if not qualified:
+            prefix_index = len(events) // 4 - 1
+            if (prefix_index >= len(_028_BE_WORD_PREFIX)
+                    or (command, data) != _028_BE_WORD_PREFIX[prefix_index]):
+                held = tuple(events)
+                events.clear()
+                self._lcd_028_be_word_qualified = False
+                self._lcd_028_be_word_replay(held)
+                return True
+            if prefix_index + 1 < len(_028_BE_WORD_PREFIX):
+                return True
+            self._lcd_028_be_word_qualified = True
+            for index in range(0, len(events), 4):
+                self._lcd_028_be_word_emit(
+                    events[index + 1][2],
+                    events[index + 2][2] << 8 | events[index + 3][2],
+                )
+            events.clear()
+            return True
+
+        events.clear()
+        self._lcd_028_be_word_emit(command, data)
+        return True
+
     def _lcd_028_rgb332_replay(self, events: list[tuple[int, int, int]]) -> None:
         """Return an unproven stream to the established 0x028 decoders."""
         for address, size, value in events:

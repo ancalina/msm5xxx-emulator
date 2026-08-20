@@ -790,6 +790,9 @@ class LifecycleMixin:
         # short grammar until it proves itself; all other traffic stays on
         # the existing parallel/page path.
         self._lcd_028_direct_probe: list[tuple[int, int, int]] = []
+        self._lcd_028_be_word_events: list[tuple[int, int, int]] = []
+        self._lcd_028_be_word_qualified = False
+        self._lcd_028_be_word_replaying = False
         self._lcd_028_rgb332_probe: list[tuple[int, int, int]] = []
         self._lcd_028_rgb332_window = (0, 0, 0, 0)
         self._lcd_028_rgb332_qualified = False
