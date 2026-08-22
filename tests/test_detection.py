@@ -11,7 +11,10 @@ import unittest
 from unittest.mock import patch
 
 import condition_report
-from msm5xxx_emulator.detection.memory_layout import infer_ram_base
+from msm5xxx_emulator.core.config import LinkerLayout
+from msm5xxx_emulator.detection.memory_layout import (
+    has_dual_sdram_bootstrap, has_high_bank_reader_bootstrap, infer_ram_base,
+)
 from msm5xxx_emulator.detection.boot import (
     DMD_DOWNLOAD_SIGNATURE,
     DMD_DOWNLOAD_5500_LITERALS,
@@ -87,6 +90,90 @@ from msm5xxx_emulator.detection.rex import (
 
 
 class DetectionTests(unittest.TestCase):
+    def test_dual_sdram_bootstrap_requires_unique_closed_high_bank_shape(
+            self) -> None:
+        image = bytearray(b"\xff" * 0x2000)
+        position = 0x100
+        signature = bytes.fromhex(
+            "8c009fe50000d0e5020000e2020050e30300000a7c009fe5"
+            "0010d0e5011081e30010c0e570209fe512ff2fe1"
+        )
+        image[position:position + len(signature)] = signature
+        struct.pack_into(
+            "<3I", image, position + 0x94,
+            0x0300072C, 0x01000110, 0x1201,
+        )
+        layout = LinkerLayout(
+            0, 0x200, 0x01FA0670, 12, 0x01FA067C, 0xA34,
+        )
+        self.assertTrue(has_dual_sdram_bootstrap(bytes(image), layout))
+
+        changed = bytearray(image)
+        changed[position + 0x24] ^= 1
+        self.assertFalse(has_dual_sdram_bootstrap(bytes(changed), layout))
+        changed = bytearray(image)
+        struct.pack_into("<I", changed, position + 0x98, 0x01000114)
+        self.assertFalse(has_dual_sdram_bootstrap(bytes(changed), layout))
+        changed = bytearray(image)
+        changed[0x400:0x400 + len(signature)] = signature
+        struct.pack_into(
+            "<3I", changed, 0x494,
+            0x0300072C, 0x01000110, 0x1201,
+        )
+        self.assertFalse(has_dual_sdram_bootstrap(bytes(changed), layout))
+        low_layout = LinkerLayout(
+            0, 0x200, 0x017A0670, 12, 0x017A067C, 0xA34,
+        )
+        self.assertFalse(has_dual_sdram_bootstrap(bytes(image), low_layout))
+
+    def test_high_bank_reader_bootstrap_requires_complete_unique_call_shape(
+            self) -> None:
+        def branch(call: int, target: int) -> bytes:
+            displacement = target - (call + 4)
+            self.assertEqual(displacement & 1, 0)
+            if displacement < 0:
+                displacement += 1 << 23
+            return struct.pack(
+                "<2H", 0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        def write_outer(image: bytearray, outer: int, entry: int,
+                        follow_one: int, follow_two: int) -> None:
+            image[outer:outer + 8] = bytes.fromhex("0321c905081c00b5")
+            image[outer + 8:outer + 12] = branch(outer + 8, entry)
+            image[outer + 12:outer + 16] = branch(outer + 12, follow_one)
+            image[outer + 16:outer + 20] = branch(outer + 16, follow_two)
+            image[outer + 20:outer + 26] = bytes.fromhex("002008bc1847")
+
+        image = bytearray(b"\xff" * 0x1000)
+        outer, entry, reader, consumer = 0x100, 0x300, 0x500, 0x700
+        write_outer(image, outer, entry, 0x800, 0x900)
+        image[entry:entry + 10] = bytes.fromhex("f3b5184e0d1c30780128")
+        image[entry + 0x3C:entry + 0x40] = branch(entry + 0x3C, reader)
+        image[reader:reader + 10] = bytes.fromhex("ffb5061c1c1c86b00025")
+        image[reader + 0x5C:reader + 0x66] = bytes.fromhex(
+            "b8631c2000ab1870381c"
+        )
+        image[reader + 0x66:reader + 0x6A] = branch(reader + 0x66, consumer)
+        image[consumer:consumer + 22] = bytes.fromhex(
+            "b8b5041c002000ab1870084d0027a06ba26f291c"
+        )
+
+        self.assertTrue(has_high_bank_reader_bootstrap(bytes(image)))
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "high-bank-reader.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware)
+            self.assertEqual((config.ram_base, config.ram_size),
+                             (0x01000000, 0x01000000))
+
+        broken = bytearray(image)
+        broken[reader + 0x5C] ^= 1
+        self.assertFalse(has_high_bank_reader_bootstrap(bytes(broken)))
+        write_outer(image, 0xA00, entry, 0x800, 0x900)
+        self.assertFalse(has_high_bank_reader_bootstrap(bytes(image)))
+
     def test_5500_dmd_precedes_legacy_and_falls_back(self) -> None:
         routine = bytearray(b"\xff" * DMD_DOWNLOAD_5500_SIZE)
         for offset, value in {

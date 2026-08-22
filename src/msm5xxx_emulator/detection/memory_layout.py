@@ -5,7 +5,7 @@ import struct
 
 from ..core.config import CopyLayout, LinkerLayout
 
-from .arm import arm_vector_score, thumb_literal_value
+from .arm import arm_vector_score, thumb_bl_target, thumb_literal_value
 from .signatures import find_all
 
 
@@ -31,6 +31,31 @@ ARM_MEMORY_COPY_TAIL_OFFSET = 0xF8
 
 _BOOTSTRAP_PROGRESS_CLEAR = bytes.fromhex(
     "b4420dd202e0201d041cf9e700202060a003f8d1"
+)
+
+# ARM reset helper: read 0x0300072C bit 1, then set bit 0 in the low SDRAM
+# boot flag before dispatching into the firmware image.
+_DUAL_SDRAM_BOOTSTRAP = bytes.fromhex(
+    "8c009fe50000d0e5020000e2020050e30300000a7c009fe5"
+    "0010d0e5011081e30010c0e570209fe512ff2fe1"
+)
+_DUAL_SDRAM_STATUS_LITERAL_OFFSET = 0x94
+_DUAL_SDRAM_FLAG_LITERAL_OFFSET = 0x98
+_DUAL_SDRAM_DISPATCH_LITERAL_OFFSET = 0x9C
+_DUAL_SDRAM_LOW_BASE = 0x01000000
+_DUAL_SDRAM_HIGH_BASE = 0x01800000
+_DUAL_SDRAM_END = 0x02000000
+
+# Thumb bootstrap: materialize 0x01800000, pass it to one reader entry, then
+# call the reader's two post-read continuations.  The nested reader and its
+# consumer are checked below so a literal alone cannot widen RAM.
+_HIGH_BANK_READER_BOOTSTRAP = bytes.fromhex("0321c905081c00b5")
+_HIGH_BANK_READER_BOOTSTRAP_TAIL = bytes.fromhex("002008bc1847")
+_HIGH_BANK_READER_ENTRY = bytes.fromhex("f3b5184e0d1c30780128")
+_HIGH_BANK_READER = bytes.fromhex("ffb5061c1c1c86b00025")
+_HIGH_BANK_READER_ASSIGN = bytes.fromhex("b8631c2000ab1870381c")
+_HIGH_BANK_READER_CONSUMER = bytes.fromhex(
+    "b8b5041c002000ab1870084d0027a06ba26f291c"
 )
 
 
@@ -170,6 +195,67 @@ def infer_ram_base(layout: LinkerLayout | None, chipset: str,
             if counts[1] >= counts[0] * 3:
                 return 0x01800000
     return 0x01000000 if chipset in ("MSM5000", "MSM5500") else 0x01800000
+
+
+def has_dual_sdram_bootstrap(image: bytes,
+                             layout: LinkerLayout | None) -> bool:
+    """Require one closed reset path before widening high-bank SDRAM."""
+    if layout is None:
+        return False
+    high_end = layout.bss_target + layout.bss_size
+    if not (_DUAL_SDRAM_HIGH_BASE <= layout.data_target
+            and layout.data_target + layout.data_size <= high_end
+            and high_end <= _DUAL_SDRAM_END):
+        return False
+    matches: list[int] = []
+    for position in find_all(image, _DUAL_SDRAM_BOOTSTRAP):
+        dispatch_offset = position + _DUAL_SDRAM_DISPATCH_LITERAL_OFFSET
+        if dispatch_offset + 4 > len(image):
+            continue
+        status = struct.unpack_from(
+            "<I", image, position + _DUAL_SDRAM_STATUS_LITERAL_OFFSET
+        )[0]
+        flag = struct.unpack_from(
+            "<I", image, position + _DUAL_SDRAM_FLAG_LITERAL_OFFSET
+        )[0]
+        dispatch = struct.unpack_from("<I", image, dispatch_offset)[0]
+        if (status != 0x0300072C
+                or flag != _DUAL_SDRAM_LOW_BASE + 0x110
+                or (dispatch & 1) == 0
+                or not 0x1000 <= (dispatch & ~1) < len(image)):
+            continue
+        matches.append(position)
+    return len(matches) == 1
+
+
+def has_high_bank_reader_bootstrap(image: bytes) -> bool:
+    """Accept one complete Thumb bootstrap that consumes high-bank SDRAM."""
+    matches: list[int] = []
+    for position in find_all(image, _HIGH_BANK_READER_BOOTSTRAP):
+        if image[position + 20:position + 26] != _HIGH_BANK_READER_BOOTSTRAP_TAIL:
+            continue
+        reader_entry = thumb_bl_target(image, position + 8)
+        if (reader_entry is None
+                or image[reader_entry:reader_entry + len(_HIGH_BANK_READER_ENTRY)]
+                != _HIGH_BANK_READER_ENTRY):
+            continue
+        reader = thumb_bl_target(image, reader_entry + 0x3C)
+        if (reader is None
+                or image[reader:reader + len(_HIGH_BANK_READER)]
+                != _HIGH_BANK_READER
+                or image[reader + 0x5C:reader + 0x5C
+                         + len(_HIGH_BANK_READER_ASSIGN)]
+                != _HIGH_BANK_READER_ASSIGN):
+            continue
+        consumer = thumb_bl_target(image, reader + 0x66)
+        if (consumer is None
+                or image[consumer:consumer + len(_HIGH_BANK_READER_CONSUMER)]
+                != _HIGH_BANK_READER_CONSUMER
+                or thumb_bl_target(image, position + 12) is None
+                or thumb_bl_target(image, position + 16) is None):
+            continue
+        matches.append(position)
+    return len(matches) == 1
 
 
 def plausible_ram_seed_size(image_size: int, flash_size: int,

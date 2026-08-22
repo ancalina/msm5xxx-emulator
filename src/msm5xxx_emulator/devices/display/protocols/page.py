@@ -407,6 +407,37 @@ class PageProtocolMixin:
         # evidence than the filename fallback.  Known model geometry is left
         # untouched, as a 128x160 transfer can also be a rectangle update.
         if self.frame_sequence == 0:
+            # One observed FIFO carries one RGB666 pixel as a two-halfword
+            # pair: a two-bit high fragment followed by the lower 16 bits.
+            # Keep this narrower than the ordinary RGB565 fallback: all
+            # 19,200 first words must fit the exact two-bit lane.
+            if (getattr(self.config, "display_geometry_source", "external-config")
+                    == "auto-default"
+                    and port == (0x02000080, 2)
+                    and count == 2 * 120 * 160):
+                values = tuple(stream)
+                packed_rgb666 = (
+                    len(values) == 2 * 120 * 160 and any(values)
+                    and all(not (first & ~0x3) for first in values[::2])
+                )
+                if packed_rgb666:
+                    self._set_display_geometry(
+                        120, 160, source="runtime:packed-fifo-rgb666"
+                    )
+                    framebuffer = self.framebuffer
+                    for offset in range(0, len(values), 2):
+                        pixel = values[offset] << 16 | values[offset + 1]
+                        output = offset // 2 * 3
+                        framebuffer[output] = (pixel >> 12 & 0x3F) * 255 // 63
+                        framebuffer[output + 1] = (
+                            (pixel >> 6 & 0x3F) * 255 // 63
+                        )
+                        framebuffer[output + 2] = (pixel & 0x3F) * 255 // 63
+                    self._lcd_raw_frames[port] += 1
+                    self._lcd_raw_port = port
+                    self._lcd_protocol = "packed-fifo-rgb666"
+                    self._publish_frame()
+                    return
             if (getattr(self.config, "display_geometry_source", "external-config")
                     == "auto-default"
                     and address in (0x02000004, 0x02800004, 0x02C00004)

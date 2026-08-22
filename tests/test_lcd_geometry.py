@@ -1090,6 +1090,30 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.frame_sequence, 8)
         self.assertEqual(emulator._lcd_raw_frames[port], 1)
 
+    def test_packed_fifo_rgb666_requires_two_bit_first_word(self) -> None:
+        def write_pair(target: GenericMSMEmulator, pixel: int) -> None:
+            target._capture_raw_lcd_stream(0x02000080, 2, pixel >> 16)
+            target._capture_raw_lcd_stream(0x02000080, 2, pixel & 0xFFFF)
+
+        emulator = self._routing_emulator(width=176, height=220)
+        emulator.frame_sequence = 0
+        pixels = (0x3F000, 0x00FC0, 0x0003F)
+        for index in range(120 * 160):
+            write_pair(emulator, pixels[index % len(pixels)])
+
+        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
+        self.assertEqual(emulator._lcd_frame_protocol, "packed-fifo-rgb666")
+        self.assertEqual(emulator.display_frame[:9], b"\xff\0\0\0\xff\0\0\0\xff")
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        near_miss.frame_sequence = 0
+        for index in range(120 * 160):
+            pixel = pixels[index % len(pixels)]
+            write_pair(near_miss, pixel | (0x40000 if index == 0 else 0))
+
+        self.assertEqual((near_miss.config.width, near_miss.config.height), (160, 240))
+        self.assertEqual(near_miss._lcd_frame_protocol, "raw-fifo@0x02000080")
+
 
 if __name__ == "__main__":
     unittest.main()
