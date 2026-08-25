@@ -192,6 +192,96 @@ def find_board_adc_reader(image: bytes) -> int | None:
     return matches[0] if len(matches) == 1 else None
 
 
+SBI_BOOTSTRAP_BASE = 0x03000780
+SBI_BOOTSTRAP = [
+    [0, 1, 0x45], [0, 1, 0xC5], [4, 2, 0x085F], [0x0C, 2, 0x041F],
+    [0x10, 1, 0], [0x10, 1, 1],
+]
+SBI_BOOTSTRAP_VALIDATION = [[0, 2, None], [0x0C, 2, 0x0900], [0, 2, None]]
+
+
+def _sbi_words_match(image: bytes, position: int,
+                     expected: dict[int, int]) -> bool:
+    """Match one fixed Thumb SBI bootstrap layout without loose literals."""
+    return (position >= 0
+            and all(position + offset <= len(image) - 2
+                    and struct.unpack_from("<H", image, position + offset)[0]
+                    == word
+                    for offset, word in expected.items()))
+
+
+def _sbi_literals_match(image: bytes, position: int,
+                        expected: tuple[tuple[int, int, int], ...]) -> bool:
+    return all(thumb_literal_value(image, position + offset, register) == value
+               for offset, register, value in expected)
+
+
+def _sbi_bootstrap_layout_at(image: bytes, position: int) -> str | None:
+    """Recognize only the two static layouts that close bootstrap plus R/W/R."""
+    m330_words = {
+        0: 0x2045, 4: 0x7008, 6: 0x20C5, 8: 0x7008,
+        0x0C: 0x303D, 0x0E: 0x8088, 0x12: 0x38F4, 0x14: 0x8188,
+        0x16: 0x2000, 0x1A: 0x3110, 0x1C: 0x7008, 0x1E: 0x2001,
+        0x20: 0x7008, 0x24: 0x8800, 0x26: 0x0840, 0x28: 0xD2FB,
+        0x2C: 0x30DE, 0x30: 0x8188, 0x34: 0x8800, 0x36: 0x0840,
+        0x38: 0xD306,
+    }
+    if (_sbi_words_match(image, position, m330_words)
+            and _sbi_literals_match(image, position, (
+                (2, 1, SBI_BOOTSTRAP_BASE), (0x0A, 0, 0x0822),
+                (0x10, 0, 0x0513), (0x18, 1, SBI_BOOTSTRAP_BASE),
+                (0x22, 0, SBI_BOOTSTRAP_BASE), (0x2A, 0, 0x0822),
+                (0x2E, 1, SBI_BOOTSTRAP_BASE),
+                (0x32, 0, SBI_BOOTSTRAP_BASE),
+            ))):
+        return "thumb-sbi-bootstrap-literal-arithmetic-v1"
+    sd100_words = {
+        0: 0x2045, 4: 0x7008, 6: 0x20C5, 8: 0x7008,
+        0x0C: 0x8088, 0x10: 0x8188, 0x12: 0x2000, 0x16: 0x7008,
+        0x18: 0x2001, 0x1A: 0x7008, 0x1E: 0x8800, 0x20: 0x07C0,
+        0x22: 0x0FC0, 0x24: 0x2801, 0x26: 0xD100, 0x28: 0xE7F8,
+        0x2A: 0x2009, 0x2C: 0x0200, 0x30: 0x8188, 0x34: 0x8800,
+        0x36: 0x07C0, 0x38: 0x0FC0, 0x3A: 0x2801, 0x3C: 0xD100,
+        0x3E: 0xE7F8,
+    }
+    if (_sbi_words_match(image, position, sd100_words)
+            and _sbi_literals_match(image, position, (
+                (2, 1, SBI_BOOTSTRAP_BASE), (0x0A, 0, 0x085F),
+                (0x0E, 0, 0x041F), (0x14, 1, SBI_BOOTSTRAP_BASE + 0x10),
+                (0x1C, 0, SBI_BOOTSTRAP_BASE),
+                (0x2E, 1, SBI_BOOTSTRAP_BASE),
+                (0x32, 0, SBI_BOOTSTRAP_BASE),
+            ))):
+        return "thumb-sbi-bootstrap-direct-literal-v1"
+    return None
+
+
+def find_sbi_bootstrap_profile(image: bytes) -> dict[str, object] | None:
+    """Admit one exact SBI bootstrap; all later SBI semantics stay fail-closed."""
+    matches: list[tuple[int, str]] = []
+    position = 0
+    while (position := image.find(b"\x45\x20", position)) >= 0:
+        candidate = position
+        position += 2
+        if candidate & 1:
+            continue
+        if (layout := _sbi_bootstrap_layout_at(image, candidate)) is not None:
+            matches.append((candidate, layout))
+    if len(matches) != 1:
+        return None
+    entry, layout = matches[0]
+    return {
+        "signature": "thumb-sbi-bootstrap-only-v1",
+        "admission": "temporary-evidence-gated",
+        "accepted": True,
+        "base_address": SBI_BOOTSTRAP_BASE,
+        "bootstrap": SBI_BOOTSTRAP,
+        "validation": SBI_BOOTSTRAP_VALIDATION,
+        "entries": [entry],
+        "layout": layout,
+    }
+
+
 def _dc0_board_adc_profile_at(
         image: bytes, scale: int,
 ) -> tuple[dict[str, object] | None, str]:

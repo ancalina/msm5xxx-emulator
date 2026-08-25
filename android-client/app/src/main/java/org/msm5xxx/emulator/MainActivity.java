@@ -51,11 +51,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -192,6 +195,7 @@ public final class MainActivity extends Activity {
         activityResumed = false;
         handler.removeCallbacks(refreshWhileCopying);
         releaseHeldKey(false);
+        stopSession(false);
         super.onPause();
     }
 
@@ -658,6 +662,8 @@ public final class MainActivity extends Activity {
         BackendBridge.Session opened = null;
         FramePacket latestFrame = null;
         PcmAudioSink audioSink = new PcmAudioSink();
+        boolean audioStarted = false;
+        boolean audioRejected = false;
         boolean failed = false;
         try {
             opened = BackendBridge.open(context, firmware, profile,
@@ -682,13 +688,6 @@ public final class MainActivity extends Activity {
             long publishedInputEvents = -1;
             long publishedRejections = -1;
             while (generation == sessionGeneration) {
-                if (!audioSink.disabled) {
-                    try {
-                        audioSink.offer(opened.audio());
-                    } catch (IOException | RuntimeException audioError) {
-                        audioSink.disable();
-                    }
-                }
                 long now = SystemClock.elapsedRealtimeNanos();
                 if (now < nextBackendUpdate) {
                     Thread.sleep(20);
@@ -702,6 +701,15 @@ public final class MainActivity extends Activity {
                     latestFrame = frame;
                 }
                 BackendBridge.Status status = opened.status();
+                if (!audioRejected && !audioStarted
+                        && "native".equals(status.audioStatus)) {
+                    audioSink.start(opened);
+                    audioStarted = true;
+                } else if (!audioRejected
+                        && "rejected".equals(status.audioStatus)) {
+                    audioSink.close();
+                    audioRejected = true;
+                }
                 long ackNow = SystemClock.elapsedRealtimeNanos();
                 InputTimingSnapshot timing = inputTiming.observe(
                         status.inputHostEvents, ackNow);
@@ -714,7 +722,7 @@ public final class MainActivity extends Activity {
                 boolean metricDue = now >= nextMetricUpdate;
                 if (frameDue || inputChanged || metricDue) {
                     enqueueFrame(new FrameUpdate(generation, latestFrame,
-                            status, timing));
+                            status, timing, audioSink.failureCount()));
                     latestFrame = null;
                     publishedInputEvents = status.inputHostEvents;
                     publishedRejections = status.inputRejections;
@@ -771,7 +779,7 @@ public final class MainActivity extends Activity {
         FrameUpdate update = pendingFrame.getAndSet(null);
         if (update != null) {
             showSessionFrame(update.generation, update.frame, update.status,
-                    update.timing);
+                    update.timing, update.localAudioFailures);
         }
         framePosted.set(false);
         if (pendingFrame.get() != null
@@ -782,14 +790,15 @@ public final class MainActivity extends Activity {
 
     private void showSessionFrame(int generation, FramePacket frame,
                                   BackendBridge.Status status,
-                                  InputTimingSnapshot timing) {
+                                  InputTimingSnapshot timing,
+                                  long localAudioFailures) {
         if (generation != sessionGeneration || session == null) {
             if (frame != null) {
                 frame.recycle();
             }
             return;
         }
-        frameView.setFrame(frame);
+        frameView.setFrame(frame, generation);
         setTextIfChanged(pcView, getString(R.string.metric_pc, status.pc));
         setTextIfChanged(runView, getString(
                 R.string.metric_run, status.instructions));
@@ -800,7 +809,11 @@ public final class MainActivity extends Activity {
         setTextIfChanged(inputView, getString(
                 R.string.metric_input, status.inputHostEvents));
         setTextIfChanged(rejectView, getString(
-                R.string.metric_reject, status.inputRejections));
+                R.string.metric_reject, status.inputRejections,
+                status.audioUnderflowFrames, status.audioOverflowFrames,
+                status.audioEpoch, localAudioFailures,
+                status.audioRejectReason.isEmpty()
+                        ? status.audioStatus : status.audioRejectReason));
         setTextIfChanged(jniView, getString(
                 R.string.metric_jni, latency(timing.dispatchMillis)));
         setTextIfChanged(ackView, getString(
@@ -1434,6 +1447,8 @@ public final class MainActivity extends Activity {
     }
 
     private static final class FrameView extends View {
+        private static final String LOG_TAG = "MSM5xxxFrame";
+        private static final char[] HEX = "0123456789abcdef".toCharArray();
         private final Paint paint = new Paint();
         private Bitmap bitmap;
 
@@ -1452,7 +1467,7 @@ public final class MainActivity extends Activity {
             int schema = buffer.getInt();
             int width = buffer.getInt();
             int height = buffer.getInt();
-            buffer.getInt();
+            int sequence = buffer.getInt();
             long pixels = (long) width * height;
             if (schema != 1 || width < 1 || width > 2048
                     || height < 1 || height > 2048
@@ -1472,15 +1487,40 @@ public final class MainActivity extends Activity {
             Bitmap bitmap = Bitmap.createBitmap(colors, width, height,
                     Bitmap.Config.ARGB_8888);
             bitmap.setDensity(Bitmap.DENSITY_NONE);
-            return new FramePacket(bitmap, visible);
+            return new FramePacket(bitmap, visible, sequence,
+                    sha256(packet, 16));
         }
 
-        void setFrame(FramePacket frame) {
+        private static String sha256(byte[] packet, int offset) {
+            final MessageDigest digest;
+            try {
+                digest = MessageDigest.getInstance("SHA-256");
+            } catch (NoSuchAlgorithmException error) {
+                throw new IllegalStateException(error);
+            }
+            digest.update(packet, offset, packet.length - offset);
+            byte[] value = digest.digest();
+            char[] result = new char[value.length * 2];
+            for (int index = 0; index < value.length; index++) {
+                int octet = value[index] & 0xff;
+                result[index * 2] = HEX[octet >>> 4];
+                result[index * 2 + 1] = HEX[octet & 0x0f];
+            }
+            return new String(result);
+        }
+
+        void setFrame(FramePacket frame, int generation) {
             if (frame == null) {
                 return;
             }
             Bitmap previous = bitmap;
             bitmap = frame.bitmap;
+            android.util.Log.i(LOG_TAG, "visible swap generation=" + generation
+                    + " sequence=" + Integer.toUnsignedString(frame.sequence)
+                    + " sha256=" + frame.sha256
+                    + " nonBlank=" + frame.nonBlank
+                    + " geometry=" + bitmap.getWidth() + "x"
+                    + bitmap.getHeight());
             setContentDescription(getContext().getString(frame.nonBlank
                     ? R.string.lcd_visible : R.string.lcd_waiting));
             if (previous != null) {
@@ -1508,17 +1548,26 @@ public final class MainActivity extends Activity {
     }
 
     private static final class PcmAudioSink implements AutoCloseable {
+        private static final String LOG_TAG = "MSM5xxxAudio";
         private static final int SAMPLE_RATE = 44_100;
         private static final int FRAME_BYTES = 4;
-        private static final int HEADER_BYTES = 24;
-        private static final int PACKET_MAGIC = 0x3150354d;
-        private static final int MAX_BYTES = HEADER_BYTES
-                + SAMPLE_RATE * 30 * FRAME_BYTES;
+        private static final int PREBUFFER_MILLIS = 60;
+        private static final int BUFFER_MILLIS = 80;
+        private static final int HEADER_BYTES = 32;
+        private static final int PACKET_MAGIC = 0x3250354d;
+        private static final int PACKET_BYTES = HEADER_BYTES
+                + SAMPLE_RATE / 100 * FRAME_BYTES;
         private final ArrayBlockingQueue<PcmPacket> pending =
-                new ArrayBlockingQueue<>(1);
+                new ArrayBlockingQueue<>(4);
         private final Thread worker;
+        private volatile Thread producer;
         private volatile boolean closed;
         private volatile boolean disabled;
+        private volatile AudioTrack activeTrack;
+        private boolean firstPacketLogged;
+        private long lastOfferNanos;
+        private int cadenceLogs;
+        private long localFailures;
 
         PcmAudioSink() {
             worker = new Thread(this::run, "msm5xxx-audio-output");
@@ -1526,57 +1575,120 @@ public final class MainActivity extends Activity {
             worker.start();
         }
 
+        synchronized void start(BackendBridge.Session source) {
+            if (closed || disabled || producer != null) {
+                return;
+            }
+            producer = new Thread(() -> pump(source),
+                    "msm5xxx-audio-input");
+            producer.setDaemon(true);
+            producer.start();
+        }
+
+        private void pump(BackendBridge.Session source) {
+            try {
+                while (!closed) {
+                    if (!hasCapacity()) {
+                        Thread.sleep(1);
+                        continue;
+                    }
+                    byte[] pcm = source.audio();
+                    if (pcm.length == 0) {
+                        Thread.sleep(1);
+                        continue;
+                    }
+                    offer(pcm);
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            } catch (IOException | RuntimeException error) {
+                disable();
+            }
+        }
+
+        boolean hasCapacity() {
+            return !closed && !disabled && pending.remainingCapacity() > 0;
+        }
+
         void offer(byte[] pcm) {
             if (closed || disabled || pcm == null || pcm.length == 0) {
                 return;
             }
-            PcmPacket packet = PcmPacket.decode(pcm);
+            long offerNanos = SystemClock.elapsedRealtimeNanos();
+            long offerGapMillis = lastOfferNanos == 0 ? 0
+                    : TimeUnit.NANOSECONDS.toMillis(offerNanos - lastOfferNanos);
+            lastOfferNanos = offerNanos;
+            PcmPacket packet = PcmPacket.decode(pcm, offerGapMillis);
             if (packet == null) {
+                disable();
                 return;
             }
-            pending.clear();
-            pending.offer(packet);
+            if (!firstPacketLogged) {
+                firstPacketLogged = true;
+                android.util.Log.i(LOG_TAG, "first M5P2 packet epoch="
+                        + packet.epoch + " sequence=" + packet.sequence
+                        + " startFrame=" + packet.startFrame);
+            }
+            if (!pending.offer(packet)) {
+                disable();
+            }
         }
 
         private void run() {
             AudioTrack track = null;
             long writeFrame = 0;
-            long revision = 0;
+            long epoch = 0;
+            long sequence = 0;
+            long spanStartFrame = -1;
+            long spanStartNanos = 0;
+            int prebufferFrames = 0;
+            int underruns = 0;
+            int underrunLogs = 0;
+            boolean playing = false;
             try {
+                android.os.Process.setThreadPriority(
+                        android.os.Process.THREAD_PRIORITY_AUDIO);
                 while (!closed) {
                     PcmPacket packet = pending.take();
                     if (closed) {
                         break;
                     }
-                    if (packet.revision <= revision) {
-                        continue;
-                    }
-                    if (track == null) {
-                        track = createTrack();
-                        writeFrame = packet.startFrame;
-                    }
-                    if (packet.startFrame > writeFrame) {
-                        throw new IllegalStateException("PCM timeline gap");
-                    }
-                    int offset = packet.byteOffset(Math.min(
-                            writeFrame, packet.endFrame));
-                    revision = packet.revision;
-                    while (!closed && offset < packet.data.length) {
-                        PcmPacket newer = pending.poll();
-                        if (newer != null) {
-                            if (newer.revision <= revision) {
-                                continue;
+                    if (packet.epoch != epoch) {
+                        if (track == null) {
+                            track = createTrack();
+                            android.util.Log.i(LOG_TAG,
+                                    "AudioTrack created epoch=" + packet.epoch);
+                            if (!publishActiveTrack(track)) {
+                                break;
                             }
-                            packet = newer;
-                            if (packet.startFrame > writeFrame) {
-                                throw new IllegalStateException(
-                                        "PCM timeline gap");
-                            }
-                            offset = packet.byteOffset(Math.min(
-                                    writeFrame, packet.endFrame));
-                            revision = packet.revision;
-                            continue;
+                        } else {
+                            track.pause();
+                            track.flush();
+                            android.util.Log.i(LOG_TAG,
+                                    "AudioTrack resynced epoch=" + packet.epoch);
                         }
+                        epoch = packet.epoch;
+                        sequence = 0;
+                        writeFrame = packet.startFrame;
+                        spanStartFrame = packet.startFrame;
+                        spanStartNanos = SystemClock.elapsedRealtimeNanos();
+                        prebufferFrames = 0;
+                        playing = false;
+                    }
+                    if (packet.sequence != sequence + 1
+                            || packet.startFrame != writeFrame) {
+                        throw new IllegalStateException("PCM sequence gap");
+                    }
+                    if (packet.offerGapMillis > 40 && cadenceLogs < 8) {
+                        cadenceLogs++;
+                        android.util.Log.i(LOG_TAG, "M5P2 ingress gapMs="
+                                + packet.offerGapMillis + " epoch=" + epoch
+                                + " sequence=" + packet.sequence
+                                + " pending=" + pending.size());
+                    }
+                    int offset = HEADER_BYTES;
+                    sequence = packet.sequence;
+                    while (!closed && offset < packet.data.length) {
                         int requested = Math.min(packet.data.length - offset,
                                 SAMPLE_RATE * FRAME_BYTES / 50);
                         int written = track.write(packet.data, offset, requested,
@@ -1594,14 +1706,48 @@ public final class MainActivity extends Activity {
                             }
                             offset += written;
                             writeFrame += written / FRAME_BYTES;
+                            if (!playing) {
+                                prebufferFrames += written / FRAME_BYTES;
+                                if (prebufferFrames >= SAMPLE_RATE
+                                        * PREBUFFER_MILLIS / 1000) {
+                                    track.play();
+                                    playing = true;
+                                    android.util.Log.i(LOG_TAG,
+                                            "AudioTrack started epoch=" + epoch
+                                            + " sequence=" + sequence
+                                            + " writeFrame=" + writeFrame);
+                                }
+                            }
                         }
                     }
+                    int currentUnderruns = track.getUnderrunCount();
+                    if (currentUnderruns != underruns && underrunLogs < 8) {
+                        underrunLogs++;
+                        android.util.Log.i(LOG_TAG, "AudioTrack underruns="
+                                + currentUnderruns + " delta="
+                                + (currentUnderruns - underruns) + " epoch="
+                                + epoch + " sequence=" + sequence
+                                + " ingressGapMs=" + packet.offerGapMillis);
+                    }
+                    underruns = currentUnderruns;
                 }
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
             } catch (RuntimeException error) {
-                disabled = true;
+                android.util.Log.e(LOG_TAG, "PCM sink disabled", error);
+                disable();
             } finally {
+                if (spanStartFrame >= 0 && writeFrame >= spanStartFrame) {
+                    android.util.Log.i(LOG_TAG, "AudioTrack span epoch=" + epoch
+                            + " startFrame=" + spanStartFrame
+                            + " writeFrame=" + writeFrame
+                            + " elapsedNanos="
+                            + (SystemClock.elapsedRealtimeNanos()
+                            - spanStartNanos)
+                            + " sequence=" + sequence
+                            + " underruns=" + underruns);
+                }
+                clearActiveTrack(track);
                 releaseTrack(track);
             }
         }
@@ -1624,7 +1770,8 @@ public final class MainActivity extends Activity {
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build())
                     .setAudioFormat(format)
-                    .setBufferSizeInBytes(minimum)
+                    .setBufferSizeInBytes(Math.max(minimum,
+                            SAMPLE_RATE * FRAME_BYTES * BUFFER_MILLIS / 1000))
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .build();
@@ -1632,31 +1779,86 @@ public final class MainActivity extends Activity {
                 releaseTrack(track);
                 throw new IllegalStateException("AudioTrack init failed");
             }
-            try {
-                track.play();
-            } catch (RuntimeException error) {
-                releaseTrack(track);
-                throw error;
-            }
             return track;
         }
 
         void disable() {
-            disabled = true;
-            closed = true;
-            pending.clear();
+            AudioTrack track;
+            Thread input;
+            synchronized (this) {
+                if (disabled || closed) {
+                    return;
+                }
+                disabled = true;
+                closed = true;
+                localFailures++;
+                pending.clear();
+                track = activeTrack;
+                input = producer;
+            }
+            pauseTrack(track);
+            if (input != null) {
+                input.interrupt();
+            }
             worker.interrupt();
+        }
+
+        synchronized long failureCount() {
+            return localFailures;
         }
 
         @Override
         public void close() {
-            closed = true;
-            pending.clear();
+            AudioTrack track;
+            Thread input;
+            synchronized (this) {
+                closed = true;
+                pending.clear();
+                track = activeTrack;
+                input = producer;
+            }
+            pauseTrack(track);
+            if (input != null) {
+                input.interrupt();
+            }
             worker.interrupt();
             try {
+                if (input != null) {
+                    input.join(1_000);
+                }
                 worker.join(1_000);
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
+            }
+            if (worker.isAlive() || (input != null && input.isAlive())) {
+                synchronized (this) {
+                    localFailures++;
+                }
+            }
+        }
+
+        private synchronized boolean publishActiveTrack(AudioTrack track) {
+            if (closed) {
+                return false;
+            }
+            activeTrack = track;
+            return true;
+        }
+
+        private synchronized void clearActiveTrack(AudioTrack track) {
+            if (activeTrack == track) {
+                activeTrack = null;
+            }
+        }
+
+        private static void pauseTrack(AudioTrack track) {
+            if (track == null) {
+                return;
+            }
+            try {
+                track.pause();
+            } catch (IllegalStateException ignored) {
+                // Audio-only teardown must not stop QEMU.
             }
         }
 
@@ -1679,40 +1881,39 @@ public final class MainActivity extends Activity {
 
         private static final class PcmPacket {
             final byte[] data;
-            final long revision;
+            final long epoch;
+            final long sequence;
             final long startFrame;
-            final long endFrame;
+            final long offerGapMillis;
 
-            private PcmPacket(byte[] data, long revision, long startFrame) {
+            private PcmPacket(byte[] data, long epoch, long sequence,
+                              long startFrame, long offerGapMillis) {
                 this.data = data;
-                this.revision = revision;
+                this.epoch = epoch;
+                this.sequence = sequence;
                 this.startFrame = startFrame;
-                this.endFrame = startFrame
-                        + (data.length - HEADER_BYTES) / FRAME_BYTES;
+                this.offerGapMillis = offerGapMillis;
             }
 
-            static PcmPacket decode(byte[] data) {
-                if (data.length <= HEADER_BYTES || data.length > MAX_BYTES
-                        || (data.length - HEADER_BYTES) % FRAME_BYTES != 0) {
+            static PcmPacket decode(byte[] data, long offerGapMillis) {
+                if (data.length != PACKET_BYTES) {
                     return null;
                 }
                 ByteBuffer header = ByteBuffer.wrap(data)
                         .order(ByteOrder.LITTLE_ENDIAN);
-                if (header.getInt() != PACKET_MAGIC || header.getInt() != 1) {
+                if (header.getInt() != PACKET_MAGIC || header.getInt() != 2) {
                     return null;
                 }
-                long revision = header.getLong();
+                long epoch = header.getLong();
+                long sequence = header.getLong();
                 long startFrame = header.getLong();
                 long frames = (data.length - HEADER_BYTES) / FRAME_BYTES;
-                if (revision <= 0 || startFrame != 0
+                if (epoch <= 0 || sequence <= 0 || startFrame < 0
                         || startFrame > Long.MAX_VALUE - frames) {
                     return null;
                 }
-                return new PcmPacket(data, revision, startFrame);
-            }
-
-            int byteOffset(long frame) {
-                return HEADER_BYTES + (int) ((frame - startFrame) * FRAME_BYTES);
+                return new PcmPacket(data, epoch, sequence, startFrame,
+                        offerGapMillis);
             }
         }
     }
@@ -1720,10 +1921,15 @@ public final class MainActivity extends Activity {
     private static final class FramePacket {
         final Bitmap bitmap;
         final boolean nonBlank;
+        final int sequence;
+        final String sha256;
 
-        FramePacket(Bitmap bitmap, boolean nonBlank) {
+        FramePacket(Bitmap bitmap, boolean nonBlank, int sequence,
+                    String sha256) {
             this.bitmap = bitmap;
             this.nonBlank = nonBlank;
+            this.sequence = sequence;
+            this.sha256 = sha256;
         }
 
         void recycle() {
@@ -1736,14 +1942,16 @@ public final class MainActivity extends Activity {
         final FramePacket frame;
         final BackendBridge.Status status;
         final InputTimingSnapshot timing;
+        final long localAudioFailures;
 
         FrameUpdate(int generation, FramePacket frame,
                     BackendBridge.Status status,
-                    InputTimingSnapshot timing) {
+                    InputTimingSnapshot timing, long localAudioFailures) {
             this.generation = generation;
             this.frame = frame;
             this.status = status;
             this.timing = timing;
+            this.localAudioFailures = localAudioFailures;
         }
 
         void recycle() {

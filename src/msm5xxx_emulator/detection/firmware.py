@@ -22,6 +22,9 @@ from .boot import (
     NAND_BAD_BLOCK_SIGNATURE, NAND_READ_SIGNATURE, NAND_WRITE_SIGNATURE,
     MSM5500_REVISION_BLOCK, MSM5500_REVISION_F025_RAW,
     MSM5500_REVISION_REGISTER,
+    DIRECT_INTEL_X16_PROBE_SIGNATURE,
+    PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE,
+    PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE,
     PRIMARY_FLASH_PROBE_SIGNATURE, REGISTER_RAMP_PREFIX,
     SECONDARY_FLASH_WRAPPER_PATTERN, find_ma2_silent_boot_wait,
     detect_dmd_download_5500, detect_guest_owned_status_72c,
@@ -31,7 +34,7 @@ from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout
 from .firmware_image import load_firmware_image
 from .input import (find_board_adc_reader, find_board_status_input,
-                    find_dc0_board_adc_profile)
+                    find_dc0_board_adc_profile, find_sbi_bootstrap_profile)
 from .memory_layout import (
     find_arm_memory_copy_addresses, find_arm_vector_offset, find_linker_layout,
     find_missing_overlays, find_overlays, find_runtime_overlays,
@@ -43,16 +46,19 @@ from .model import (detect_model, embedded_model_scores,
                     verified_embedded_model)
 from .rex import (REX_TICK_SIGNATURE, find_rex_5ms_irq_arm,
                   find_rex_5ms_irq_route, find_rex_5ms_sleep_timer,
-                  find_rex_idle_address,
+                  find_rex_idle_address, find_uis_idle_pair,
                   find_rex_static_c40_controller_observation,
-                  find_rex_static_controller_callback_candidate)
+                  find_rex_static_controller_callback_candidate,
+                  find_rex_static_overlay_controller_callback_candidate)
 from .ready_poll import find_ready_poll_profile
 from .signatures import find_all
 from .storage import (
     EEPROM_24LC64_CLASS_B_READ_PREFIX, EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
     find_24lc64_class_b_driver, find_24lcxx_driver,
-    find_compound_fujitsu_layout, find_fujitsu_x16_bulk_write,
-    find_fs_device_flash_id, flash_id_for_size,
+    find_adjacent_amd_x16_nor, find_adjacent_fujitsu_x16_nor,
+    find_compound_fujitsu_layout,
+    find_fujitsu_x16_bulk_write,
+    find_fs_device_flash_id, flash_id_for_size, primary_probe_x16_nor_profile,
 )
 from .upper_nor import UPPER_FLASH_ADDRESS, UPPER_FLASH_SIZE, find_upper_nor
 
@@ -508,11 +514,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         elif has_high_bank_reader_bootstrap(primary_image):
             ram_base = 0x01000000
             ram_size = 0x01000000
-            detection_notes.append("closed high-bank reader bootstrap detected")
+            detection_notes.append(
+                "closed high-bank reader bootstrap detected"
+            )
     ready_poll = find_ready_poll_profile(primary_image)
     if ready_poll is not None:
         detection_notes.append(
-            "exact Thumb byte-ready/pulse poll class detected"
+            "exact firmware ready-poll class detected"
         )
     rex_static_controller_candidate = (
         find_rex_static_controller_callback_candidate(
@@ -524,7 +532,14 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     )
     if rex_static_controller_candidate is not None:
         if rex_static_controller_candidate["accepted"]:
-            if (rex_static_controller_candidate.get("signature")
+            if (rex_static_controller_candidate.get("controller_class")
+                    == "legacy-msm5000-620-two-bank-w1c-8call-v1"):
+                detection_notes.append(
+                    "static MSM5000 0x620 two-bank clear/write controller "
+                    "class detected; 5-unit service cadence is a temporary "
+                    "evidence-gated physical-tick approximation"
+                )
+            elif (rex_static_controller_candidate.get("signature")
                     == "static-msm5000-620-controller-callback-v1"):
                 detection_notes.append(
                     "static MSM5000 0x620 two-bank delta-5 controller "
@@ -594,6 +609,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     board_adc_address = direct_signature("board_adc_address", BOARD_ADC_SIGNATURE)
     board_adc_reader_position = find_board_adc_reader(primary_image)
     dc0_board_adc_profile = find_dc0_board_adc_profile(primary_image)
+    sbi_bootstrap_profile = find_sbi_bootstrap_profile(primary_image)
     if dc0_board_adc_profile is not None:
         if dc0_board_adc_profile["accepted"]:
             detection_notes.append(
@@ -605,6 +621,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 "selector-2 DC0 battery policy rejected: "
                 f"{dc0_board_adc_profile['reject_reason']}"
             )
+    if sbi_bootstrap_profile is not None:
+        detection_notes.append(
+            "temporary exact SBI bootstrap-only class detected"
+        )
     overlays = find_overlays(primary_image, requested_load_address)
 
     def mapped_position(position: int) -> tuple[int | None, bool]:
@@ -629,6 +649,63 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         if address is not None and relative:
             address += requested_load_address
         return address
+
+    def mapped_file(address: int) -> int | None:
+        positions: list[int] = []
+        for overlay in overlays:
+            if overlay.target <= address < overlay.target + overlay.size:
+                positions.append(overlay.source + address - overlay.target)
+        if (linker is not None
+                and linker.data_target <= address
+                < linker.data_target + linker.data_size):
+            positions.append(linker.data_source + address - linker.data_target)
+        direct = address - requested_load_address
+        if 0 <= direct < len(primary_image):
+            positions.append(direct)
+        candidates = {
+            position for position in positions
+            if mapped_runtime(position) == address
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    uis_idle_entry_address = None
+    uis_idle_body_address = None
+    uis_idle_pair = find_uis_idle_pair(
+        primary_image, mapped_runtime, mapped_file
+    )
+    if uis_idle_pair is not None:
+        uis_idle_entry_address = runtime_position(
+            "uis_idle_entry_address", uis_idle_pair[0]
+        )
+        uis_idle_body_address = runtime_position(
+            "uis_idle_body_address", uis_idle_pair[1]
+        )
+        if uis_idle_entry_address is not None and uis_idle_body_address is not None:
+            detection_notes.append(
+                "firmware UI-idle entry/body call shape detected; observation only"
+            )
+        else:
+            uis_idle_entry_address = None
+            uis_idle_body_address = None
+
+    if rex_static_controller_candidate is None:
+        rex_static_controller_candidate = (
+            find_rex_static_overlay_controller_callback_candidate(
+                primary_image, mapped_runtime, mapped_file,
+                ram_base=ram_base, ram_size=ram_size,
+            )
+        )
+        if rex_static_controller_candidate is not None:
+            if rex_static_controller_candidate["accepted"]:
+                detection_notes.append(
+                    "static C80 index-0x2B copied-handler delta-5 controller "
+                    "candidate detected; first-bank TIME_TICK only"
+                )
+            else:
+                detection_notes.append(
+                    "static C80 copied-handler controller candidate rejected: "
+                    f"{rex_static_controller_candidate['reject_reason']}"
+                )
 
     audio_transport = find_audio_transport(primary_image)
     if audio_transport["static_status"] == "accepted":
@@ -744,9 +821,25 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             dmd_download_address = runtime_signature(
                 "dmd_download_address", DMD_DOWNLOAD_510X_SIGNATURE
             )
-    primary_flash_probe_address = runtime_signature(
-        "primary_flash_probe_address", PRIMARY_FLASH_PROBE_SIGNATURE
+    primary_probe_positions = sorted({
+        position
+        for signature in (
+            PRIMARY_FLASH_PROBE_SIGNATURE,
+            PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE,
+            PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE,
+            DIRECT_INTEL_X16_PROBE_SIGNATURE,
+        )
+        for position in find_all(primary_image, signature)
+    })
+    primary_flash_probe_address = (
+        runtime_position("primary_flash_probe_address",
+                         primary_probe_positions[0])
+        if len(primary_probe_positions) == 1 else None
     )
+    if len(primary_probe_positions) > 1:
+        detection_notes.append(
+            "primary flash probe detector rejected: ambiguous exact grammar"
+        )
     secondary_flash_read_address = None
     secondary_flash_write_address = None
     legacy_efs_page_read_address = runtime_signature(
@@ -885,7 +978,41 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                   normalised_flash_size(
                       max(len(image), required_flash_extent), ram_base
                   ))
+    adjacent_fujitsu = find_adjacent_fujitsu_x16_nor(
+        primary_image, flash_size
+    )
+    adjacent_amd = (find_adjacent_amd_x16_nor(primary_image, flash_size)
+                    if scan_chipset == "MSM5100" else None)
+    if adjacent_fujitsu is not None and adjacent_amd is not None:
+        detection_notes.append(
+            "adjacent x16 NOR detectors conflict; native fallback retained"
+        )
+        adjacent_fujitsu = adjacent_amd = None
+    if (adjacent_fujitsu is not None
+            and adjacent_fujitsu[0] + adjacent_fujitsu[1] > ram_base):
+        detection_notes.append(
+            "adjacent Fujitsu x16 NOR rejected because it overlaps SDRAM"
+        )
+        adjacent_fujitsu = None
+    if adjacent_fujitsu is not None:
+        detection_notes.append(
+            "adjacent Fujitsu x16 NOR selected from unique "
+            "writer/descriptor/usable/physical-geometry linkage"
+        )
+    if (adjacent_amd is not None
+            and adjacent_amd[0] + adjacent_amd[1] > ram_base):
+        detection_notes.append(
+            "adjacent AMD x16 NOR rejected because it overlaps SDRAM"
+        )
+        adjacent_amd = None
+    if adjacent_amd is not None:
+        detection_notes.append(
+            "temporary exact adjacent AMD x16 NOR selected from unique "
+            "writer/record-init/geometry linkage"
+        )
+    adjacent = adjacent_fujitsu or adjacent_amd
     compound_secondary_size = compound_fujitsu[1] if compound_fujitsu else None
+    adjacent_secondary_size = adjacent[1] if adjacent else None
     compound_secondary_offset = flash_size if compound_fujitsu else None
     compound_secondary_seed = (
         image[compound_secondary_offset:
@@ -895,7 +1022,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     )
     default_flash_state, default_secondary_state = default_state_paths(
         path, image, flash_size,
-        compound_secondary_size or flash_size,
+        compound_secondary_size or adjacent_secondary_size or flash_size,
         secondary_seed=compound_secondary_seed,
     )
     config = FirmwareConfig(
@@ -918,9 +1045,12 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         board_status_input=board_status_input,
         image_offset=image_offset, load_address=0,
         flash_size=flash_size,
-        secondary_flash_address=(requested_load_address + flash_size
-                                 if compound_fujitsu else None),
-        secondary_flash_size=compound_secondary_size or flash_size,
+        secondary_flash_address=(
+            requested_load_address + flash_size if compound_fujitsu else
+            adjacent[0] if adjacent else None
+        ),
+        secondary_flash_size=(compound_secondary_size
+                              or adjacent_secondary_size or flash_size),
         secondary_flash_image=None,
         secondary_flash_image_offset=compound_secondary_offset,
         secondary_flash_state=default_secondary_state,
@@ -974,6 +1104,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         flash_id_value=(
             descriptor_flash_id
             if descriptor_flash_id is not None
+            else (adjacent_amd[2] | adjacent_amd[3] << 16)
+            if adjacent_amd is not None
             else (flash_id_for_size(flash_size)
                   if flash_id_address is not None else None)
         ),
@@ -993,6 +1125,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         rex_static_c40_controller_observation=rex_static_c40_controller_observation,
         ready_poll=ready_poll,
         dc0_board_adc_profile=dc0_board_adc_profile,
+        sbi_bootstrap_profile=sbi_bootstrap_profile,
+        uis_idle_entry_address=uis_idle_entry_address,
+        uis_idle_body_address=uis_idle_body_address,
     )
     if overrides is not None:
         _apply_overrides(
@@ -1003,6 +1138,31 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             copy_layout=copy_layout, ramp_layout=ramp_layout,
             descriptor_flash_id=descriptor_flash_id,
         )
+    if requested_flash_size is None:
+        probe_profile, _probe_reject = primary_probe_x16_nor_profile(
+            image, config.primary_flash_probe_address, config.load_address,
+            config.flash_size, 0, config.ram_base, config.ram_image_offset,
+            config.ram_image_size, config.ram_size,
+        )
+        if probe_profile is not None:
+            tail_base, tail_size, _regions, _id0, _id1 = probe_profile
+            physical_flash_size = tail_base + tail_size
+            if physical_flash_size > config.flash_size:
+                config.flash_size = physical_flash_size
+                if (config.secondary_flash_address is None
+                        and (overrides is None or getattr(
+                            overrides, "secondary_flash_size", None) is None)):
+                    config.secondary_flash_size = physical_flash_size
+                if (overrides is None or getattr(
+                        overrides, "ram_image_offset", None) is None):
+                    config.ram_image_offset = physical_flash_size
+                if overrides is None or getattr(overrides, "ram_image_size", None) is None:
+                    config.ram_image_size = plausible_ram_seed_size(
+                        len(image), physical_flash_size, config.ram_size
+                    )
+                config.detection_notes.append(
+                    "descriptor-linked x16 NOR extends partial primary physical span"
+                )
     _infer_secondary_nor(
         config, image, overrides, descriptor_flash_id
     )

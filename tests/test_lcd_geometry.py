@@ -7,6 +7,7 @@ import threading
 import unittest
 
 from msm5xxx import GenericMSMEmulator, detect_lcd_width_hint
+from msm5xxx_emulator.devices.display.protocols.direct import _028_SPLIT16_PREFIX
 
 
 class LCDGeometryTests(unittest.TestCase):
@@ -162,6 +163,18 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_byte_raster_stage = ""
         emulator._lcd_byte_raster_row = 0
         emulator._lcd_byte_raster_pixels = bytearray()
+        emulator._lcd_window_raw8_header = []
+        emulator._lcd_window_raw8_payload = bytearray()
+        emulator._lcd_window_raw8_window = None
+        emulator._lcd_window_raw8_qualified = False
+        emulator._lcd_window_raw8_ram = bytearray(128 * 128)
+        emulator._lcd_window_raw8_separate_events = []
+        emulator._lcd_window_raw8_separate_stage = ""
+        emulator._lcd_window_raw8_separate_axis = []
+        emulator._lcd_window_raw8_separate_window = None
+        emulator._lcd_window_raw8_separate_payload = bytearray()
+        emulator._lcd_window_raw8_separate_qualified = False
+        emulator._lcd_window_raw8_separate_ram = bytearray(64 * 96)
         return emulator
 
     def _routing_emulator(self, *, width: int = 128,
@@ -182,6 +195,17 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_028_be_word_events = []
         emulator._lcd_028_be_word_qualified = False
         emulator._lcd_028_be_word_replaying = False
+        emulator._lcd_028_split16_events = []
+        emulator._lcd_028_split16_qualified = False
+        emulator._lcd_028_split16_replaying = False
+        emulator._lcd_028_split16_disabled = False
+        emulator._lcd_028_split16_pending_x = None
+        emulator._lcd_028_split16_window = None
+        emulator._lcd_028_split16_expected = 0
+        emulator._lcd_028_split16_streamed = 0
+        emulator._lcd_028_split16_bootstrap_stage = 0
+        emulator._lcd_028_split16_frame_ready = False
+        emulator._lcd_028_split16_ram = bytearray(128 * 160 * 2)
         emulator._lcd_028_rgb332_probe = []
         emulator._lcd_028_rgb332_window = (0, 0, 0, 0)
         emulator._lcd_028_rgb332_qualified = False
@@ -196,6 +220,7 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_x = [0, width - 1]
         emulator._lcd_y = [0, height - 1]
         emulator._lcd_window_axis_mask = 0
+        emulator._lcd_020_compact_44 = None
         emulator._lcd_direct_cursor = [0, 0]
         emulator._lcd_direct_window = [width, height]
         emulator._lcd_direct_origin = [0, 0]
@@ -210,13 +235,38 @@ class LCDGeometryTests(unittest.TestCase):
         emulator = self._routing_emulator(width=176, height=220)
         for value in (0x0200, 0x0300, 0x0477, 0x059F):
             emulator._lcd_write(None, 0, 0x02000078, 2, value, None)
-        for index in range(120 * 160):
-            emulator._lcd_write(None, 0, 0x020000FA, 2, index & 3, None)
-            emulator._lcd_write(None, 0, 0x020000FA, 2, 0xFFFF, None)
+        pixels = (0xF800, 0x07E0, 0x001F) + (0,) * (120 * 160 - 3)
+        for pixel in pixels:
+            first = ((pixel & 0xF800) | ((pixel & 0x07E0) >> 1)
+                     | ((pixel & 0x001E) >> 1))
+            emulator._lcd_write(None, 0, 0x020000FA, 2, first, None)
+            emulator._lcd_write(
+                None, 0, 0x020000FA, 2, (pixel & 1) << 1, None
+            )
 
         self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
         self.assertEqual(emulator.frame_sequence, 8)
         self.assertEqual(emulator._lcd_frame_protocol, "lg-paired-rgb565")
+        self.assertEqual(
+            emulator.display_frame[:9],
+            bytes((255, 0, 0, 0, 255, 0, 0, 0, 255)),
+        )
+
+        xy_window = self._routing_emulator(width=176, height=220)
+        for value in (0x0800, 0x0977, 0x0A00, 0x0B9F):
+            xy_window._lcd_write(None, 0, 0x02000078, 2, value, None)
+        xy_window._lcd_write(None, 0, 0x020000FA, 2, 0, None)
+        self.assertEqual((xy_window.config.width, xy_window.config.height),
+                         (120, 160))
+
+        xy_near_miss = self._routing_emulator(width=176, height=220)
+        for value in (0x0801, 0x0977, 0x0A00, 0x0B9F):
+            xy_near_miss._lcd_write(None, 0, 0x02000078, 2, value, None)
+        xy_near_miss._lcd_write(None, 0, 0x020000FA, 2, 0, None)
+        self.assertEqual(
+            (xy_near_miss.config.width, xy_near_miss.config.height),
+            (176, 220),
+        )
 
         near_miss = self._routing_emulator(width=176, height=220)
         for value in (0x0201, 0x0300, 0x0477, 0x059F):
@@ -296,6 +346,78 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertFalse(emulator._lcd_split_port_qualified)
         self.assertEqual((emulator.config.width, emulator.config.height), (176, 220))
         self.assertEqual(emulator.frame_sequence, 7)
+
+    @staticmethod
+    def _write_028_split16_packet(emulator: GenericMSMEmulator,
+                                  command: int, value: int,
+                                  high_lane_low: int = 0) -> None:
+        for address, packed in (
+                (0x02800000, 0), (0x02800000, command << 8),
+                (0x02800080, value & 0xFF00 | high_lane_low),
+                (0x02800080, value << 8 & 0xFF00)):
+            emulator._lcd_write(None, 0, address, 2, packed, None)
+
+    def test_028_split16_requires_exact_init_and_full_physical_raster(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        for command, value in _028_SPLIT16_PREFIX:
+            self._write_028_split16_packet(emulator, command, value)
+        for _ in range(4 * 160):
+            self._write_028_split16_packet(emulator, 0x22, 0)
+        for command, value in ((0x44, 0x7F7C), (0x45, 0x9F00), (0x21, 0x007C)):
+            self._write_028_split16_packet(emulator, command, value)
+        for _ in range(4 * 160):
+            self._write_028_split16_packet(emulator, 0x22, 0)
+        for command, value in ((0x44, 0x7B04), (0x45, 0x9F00), (0x21, 0x0004)):
+            self._write_028_split16_packet(emulator, command, value)
+        for index in range(120 * 160 - 1):
+            self._write_028_split16_packet(
+                emulator, 0x22,
+                (0xF800, 0x07E0, 0x001F)[index] if index < 3 else 0,
+                high_lane_low=0xFF,
+            )
+
+        self.assertEqual(emulator.frame_sequence, 7)
+        self.assertEqual((emulator.config.width, emulator.config.height), (176, 220))
+        self._write_028_split16_packet(emulator, 0x22, 0)
+        self.assertTrue(emulator._lcd_028_split16_qualified)
+        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
+        self.assertEqual(emulator._lcd_frame_protocol, "split-halfword-rgb565")
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(emulator.display_frame[:9],
+                         bytes((255, 0, 0, 0, 255, 0, 0, 0, 255)))
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        self._write_028_split16_packet(near_miss, 0x00, 0x0002)
+        self.assertFalse(near_miss._lcd_028_split16_qualified)
+        self.assertEqual((near_miss.config.width, near_miss.config.height),
+                         (176, 220))
+        self.assertEqual(near_miss.frame_sequence, 7)
+        self.assertEqual(near_miss._lcd_raw_counts[(0x02800080, 2)], 2)
+
+        for name, bad_slot in (("nonzero-packet-head", 0),
+                               ("dirty-command-low-byte", 1),
+                               ("dirty-data-low-low-byte", 3)):
+            with self.subTest(name=name):
+                malformed = self._routing_emulator(width=176, height=220)
+                for index, (command, value) in enumerate(_028_SPLIT16_PREFIX):
+                    packet = [
+                        (0x02800000, 0),
+                        (0x02800000, command << 8),
+                        (0x02800080, value & 0xFF00),
+                        (0x02800080, value << 8 & 0xFF00),
+                    ]
+                    if index == 0:
+                        address, packed = packet[bad_slot]
+                        packet[bad_slot] = (address, packed | 1)
+                    for address, packed in packet:
+                        malformed._lcd_write(
+                            None, 0, address, 2, packed, None
+                        )
+                self.assertFalse(malformed._lcd_028_split16_qualified)
+                self.assertEqual(
+                    (malformed.config.width, malformed.config.height),
+                    (176, 220),
+                )
 
     def test_split_port_rgb565_rejects_near_misses(self) -> None:
         cases = (
@@ -913,6 +1035,28 @@ class LCDGeometryTests(unittest.TestCase):
         write(legacy, 0x21, 0x2006)
         self.assertEqual(legacy._lcd_gram_cursor, [0, 6])
 
+    def test_parallel_44_45_window_promotes_full_geometry(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        for command, value in ((0x44, 0x7F00), (0x45, 0x9F00)):
+            emulator._lcd_write(None, 0, 0x02000000, 2, command, None)
+            emulator._lcd_write(None, 0, 0x02000002, 2, value, None)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x22, None)
+
+        self.assertEqual((emulator.config.width, emulator.config.height),
+                         (128, 160))
+        self.assertEqual(emulator.config.display_geometry_source,
+                         "runtime:direct-window")
+        self.assertEqual(emulator._lcd_expected, 128 * 160)
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        for command, value in ((0x44, 0x7E00), (0x45, 0x9F00)):
+            near_miss._lcd_write(None, 0, 0x02000000, 2, command, None)
+            near_miss._lcd_write(None, 0, 0x02000002, 2, value, None)
+        near_miss._lcd_write(None, 0, 0x02000000, 2, 0x22, None)
+        self.assertEqual((near_miss.config.width, near_miss.config.height),
+                         (176, 220))
+        self.assertEqual(near_miss._lcd_window_axis_mask, 0)
+
     def test_parallel_subwindow_beats_stale_gram_cursor(self) -> None:
         emulator = self._routing_emulator(width=6, height=4)
         emulator._lcd_protocol = "parallel-2"
@@ -1090,6 +1234,66 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.frame_sequence, 8)
         self.assertEqual(emulator._lcd_raw_frames[port], 1)
 
+    def test_paired_fifo_rgb565_requires_every_word_pair(self) -> None:
+        def write_pair(target: GenericMSMEmulator, pixel: int) -> None:
+            target._capture_raw_lcd_stream(
+                0x02000080, 2, (pixel & 0xF800) | ((pixel & 0x07FF) >> 1)
+            )
+            target._capture_raw_lcd_stream(0x02000080, 2, pixel << 1 & 0xFFFF)
+
+        emulator = self._routing_emulator(width=176, height=220)
+        emulator.frame_sequence = 0
+        for index in range(120 * 160):
+            write_pair(emulator, (0xF81F, 0x07E0)[index & 1])
+
+        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
+        self.assertEqual(emulator._lcd_frame_protocol, "paired-fifo-rgb565")
+        self.assertEqual(emulator.display_frame[:6], b"\xff\0\xff\0\xff\0")
+
+        first_sequence = emulator.frame_sequence
+        for _ in range(120 * 160):
+            write_pair(emulator, 0x001F)
+        self.assertEqual(emulator.frame_sequence, first_sequence + 1)
+        self.assertEqual(emulator._lcd_frame_protocol, "paired-fifo-rgb565")
+        self.assertEqual(emulator.display_frame[:3], b"\0\0\xff")
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        near_miss.frame_sequence = 0
+        for index in range(120 * 160):
+            pixel = 0x001F
+            first = (pixel & 0xF800) | ((pixel & 0x07FF) >> 1)
+            second = pixel << 1 & 0xFFFF
+            near_miss._capture_raw_lcd_stream(0x02000080, 2, first)
+            near_miss._capture_raw_lcd_stream(
+                0x02000080, 2, second ^ (4 if index == 120 * 160 - 1 else 0)
+            )
+
+        self.assertEqual((near_miss.config.width, near_miss.config.height), (160, 240))
+        self.assertEqual(near_miss._lcd_frame_protocol, "raw-fifo@0x02000080")
+
+    def test_020_raw_120x160_requires_full_word_terminator(self) -> None:
+        def write_frame(target: GenericMSMEmulator, pixel: int) -> None:
+            for _ in range(120 * 160):
+                target._lcd_write(None, 0, 0x02000002, 2, pixel, None)
+            target._lcd_write(None, 0, 0x02000000, 2, 0x1002, None)
+
+        emulator = self._routing_emulator(width=176, height=220)
+        write_frame(emulator, 0)
+        self.assertEqual((emulator.config.width, emulator.config.height), (176, 220))
+        self.assertEqual(emulator.frame_sequence, 7)
+
+        write_frame(emulator, 0xF81F)
+        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
+        self.assertEqual(emulator._lcd_frame_protocol, "raw-fifo@0x02000002")
+        self.assertEqual(emulator.display_frame[:3], b"\xff\0\xff")
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        for _ in range(120 * 160 - 1):
+            near_miss._lcd_write(None, 0, 0x02000002, 2, 0xF81F, None)
+        near_miss._lcd_write(None, 0, 0x02000000, 2, 0x1002, None)
+        self.assertEqual((near_miss.config.width, near_miss.config.height), (176, 220))
+        self.assertEqual(near_miss.frame_sequence, 7)
+
     def test_packed_fifo_rgb666_requires_two_bit_first_word(self) -> None:
         def write_pair(target: GenericMSMEmulator, pixel: int) -> None:
             target._capture_raw_lcd_stream(0x02000080, 2, pixel >> 16)
@@ -1105,6 +1309,13 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator._lcd_frame_protocol, "packed-fifo-rgb666")
         self.assertEqual(emulator.display_frame[:9], b"\xff\0\0\0\xff\0\0\0\xff")
 
+        first_sequence = emulator.frame_sequence
+        for _ in range(120 * 160):
+            write_pair(emulator, 0x0003F)
+        self.assertEqual(emulator.frame_sequence, first_sequence + 1)
+        self.assertEqual(emulator._lcd_frame_protocol, "packed-fifo-rgb666")
+        self.assertEqual(emulator.display_frame[:3], b"\0\0\xff")
+
         near_miss = self._routing_emulator(width=176, height=220)
         near_miss.frame_sequence = 0
         for index in range(120 * 160):
@@ -1113,6 +1324,125 @@ class LCDGeometryTests(unittest.TestCase):
 
         self.assertEqual((near_miss.config.width, near_miss.config.height), (160, 240))
         self.assertEqual(near_miss._lcd_frame_protocol, "raw-fifo@0x02000080")
+
+    @staticmethod
+    def _write_window_raw8_separate(emulator: GenericMSMEmulator,
+                                    x0: int, x1: int, y0: int, y1: int,
+                                    payload: bytes) -> None:
+        for command, values in ((0x07, (x0, x1)), (0x06, (y0, y1)),
+                                (0x08, payload)):
+            emulator._lcd_write(None, 0, 0x02000000, 1, command, None)
+            for value in values:
+                emulator._lcd_write(None, 0, 0x02200002, 1, value, None)
+
+    def test_window_raw8_separate_requires_full_panel_before_publish(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        self._write_window_raw8_separate(emulator, 0, 1, 0, 1,
+                                         b"\xff\xff\xff\xff")
+        self.assertEqual((emulator.config.width, emulator.config.height), (176, 220))
+        self.assertEqual(emulator.frame_sequence, 7)
+
+        payload = bytearray(64 * 96)
+        payload[0] = 0xFF
+        payload[2 * 64 + 3] = 0x7F
+        self._write_window_raw8_separate(emulator, 0, 63, 0, 95, payload)
+        self.assertEqual((emulator.config.width, emulator.config.height), (64, 96))
+        self.assertEqual(emulator.config.display_geometry_source, "runtime:window-raw8")
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(emulator._lcd_frame_protocol, "window-raw8-gray")
+        self.assertEqual(emulator.framebuffer[:3], b"\xff\xff\xff")
+        offset = (2 * 64 + 3) * 3
+        self.assertEqual(emulator.framebuffer[offset:offset + 3],
+                         b"\x7f\x7f\x7f")
+
+        self._write_window_raw8_separate(emulator, 1, 2, 3, 4,
+                                         b"\x20\x40\x60\x80")
+        self.assertEqual(emulator.frame_sequence, 9)
+        offset = (3 * 64 + 1) * 3
+        self.assertEqual(emulator.framebuffer[offset:offset + 3],
+                         b"\x20\x20\x20")
+
+        mismatch = self._routing_emulator(width=176, height=220)
+        mismatch._lcd_write(None, 0, 0x02000000, 1, 0x07, None)
+        mismatch._lcd_write(None, 0, 0x02200000, 1, 0, None)
+        self.assertEqual((mismatch.config.width, mismatch.config.height),
+                         (176, 220))
+        self.assertEqual(mismatch.frame_sequence, 7)
+
+    def test_window_raw8_separate_replays_invalid_endpoint(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        replayed = []
+        emulator._lcd_route_write = (
+            lambda _uc, _access, address, size, value, _data:
+            replayed.append((address, size, value))
+        )
+        for address, value in ((0x02000000, 0x07), (0x02200002, 63),
+                               (0x02200002, 64)):
+            emulator._lcd_write(None, 0, address, 1, value, None)
+
+        self.assertEqual(replayed, [
+            (0x02000000, 1, 0x07), (0x02200002, 1, 63),
+            (0x02200002, 1, 64),
+        ])
+        self.assertEqual(emulator._lcd_window_raw8_separate_stage, "")
+        self.assertFalse(emulator._lcd_window_raw8_separate_events)
+
+    def test_window_raw8_requires_full_frame_then_accepts_subwindows(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+
+        for value in (0x31, 0, 127, 0x21, 0, 127):
+            emulator._lcd_write(None, 0, 0x02000000, 1, value, None)
+        for index in range(128 * 128):
+            if index == 10:
+                emulator._lcd_write(
+                    None, 0, 0x02000000, 1, 0x0E, None
+                )
+            emulator._lcd_write(
+                None, 0, 0x02000002, 1, index & 0xFF, None
+            )
+
+        self.assertEqual((emulator.config.width, emulator.config.height),
+                         (128, 128))
+        self.assertEqual(emulator._lcd_frame_protocol,
+                         "window-raw8-preview")
+        self.assertEqual(emulator.display_frame[3:6], b"\x01\x01\x01")
+
+        for value in (0x31, 0, 5, 0x21, 32, 47):
+            emulator._lcd_write(None, 0, 0x02000000, 1, value, None)
+        for _ in range(16 * 6):
+            emulator._lcd_write(None, 0, 0x02000002, 1, 0xE0, None)
+        offset = 32 * 3
+        self.assertEqual(emulator.display_frame[offset:offset + 3],
+                         b"\xE0\xE0\xE0")
+
+        for value in (0x21, 0, 10, 0x31, 0, 127):
+            emulator._lcd_write(None, 0, 0x02000000, 1, value, None)
+        payload = bytearray(b"\xff" * (128 * 11))
+        payload[0], payload[1], payload[127], payload[128] = (
+            0xE0, 0x1C, 0x03, 0x00
+        )
+        for packed in payload:
+            emulator._lcd_write(None, 0, 0x02000002, 1, packed, None)
+        self.assertEqual(emulator.frame_sequence, 10)
+        self.assertEqual(emulator._lcd_frame_protocol, "window-raw8-rgb332")
+        self.assertEqual(emulator.display_frame[:6], b"\xff\0\0\0\xff\0")
+        self.assertEqual(emulator.display_frame[127 * 3:128 * 3], b"\0\0\xff")
+        self.assertEqual(emulator.display_frame[128 * 3:129 * 3], b"\0\0\0")
+
+        mismatch = self._routing_emulator(width=176, height=220)
+        replayed = []
+        mismatch._lcd_route_write = (
+            lambda _uc, _access, address, size, value, _data:
+            replayed.append((address, size, value))
+        )
+        for value in (0x31, 0, 127, 0x20):
+            self.assertTrue(mismatch._lcd_window_raw8_write(
+                0x02000000, 1, value
+            ))
+        self.assertEqual(replayed, [
+            (0x02000000, 1, 0x31), (0x02000000, 1, 0),
+            (0x02000000, 1, 127), (0x02000000, 1, 0x20),
+        ])
 
 
 if __name__ == "__main__":

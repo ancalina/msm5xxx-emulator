@@ -5,6 +5,8 @@ from collections import defaultdict
 import re
 import struct
 
+from .arm import thumb_bl_target
+
 
 _STRONG_MARKERS = {
     "ma2": (b"ma2main.c", b"ma2lib.c", b"ma2_smw", b"smwemu2"),
@@ -18,6 +20,7 @@ _STRONG_MARKERS = {
     ),
 }
 _BASE_PREFIX = re.compile(rb"(?=(.[\x20-\x27].[\x00-\x07]))", re.DOTALL)
+_THUMB_BL = re.compile(rb"(?=.[\xf0-\xf7].[\xf8-\xff])", re.DOTALL)
 _MMIO_MIN = 0x02000000
 _MMIO_MAX = 0x03000000
 _SEARCH_BYTES = 64
@@ -158,6 +161,15 @@ def _transport_clusters(image: bytes) -> list[dict[str, object]]:
                 "data_offset": data_ports[0] if indexed else 2 if ma2 else None,
                 "grammars": kinds,
                 "sites": cluster,
+                "aperture_write_sites": {
+                    f"write_{port}": [
+                        int(access["offset"])
+                        for access in accesses
+                        if access["kind"] == "write"
+                        and int(access["port_offset"]) == port
+                    ]
+                    for port in ((0, data_ports[0]) if indexed else ())
+                },
                 "block_write_offsets": [
                     offset
                     for port in data_ports
@@ -168,30 +180,81 @@ def _transport_clusters(image: bytes) -> list[dict[str, object]]:
     return result
 
 
+def _command_status_candidates(image: bytes) -> list[dict[str, object]]:
+    """Recognize the closed four-wrapper command/status/data call shape."""
+    if b"MMMD" not in image:
+        return []
+    result: list[dict[str, object]] = []
+    for candidate in _transport_clusters(image):
+        begin = int(candidate["begin"])
+        sites = candidate["sites"]
+        if (candidate["base"] != 0x02880000
+                or [(int(site["offset"]) - begin,
+                     int(site["port_offset"]), site["kind"])
+                    for site in sites] != [
+                        (0, 0, "write"), (0x10, 0, "read"),
+                        (0x24, 2, "write"), (0x34, 2, "read"),
+                    ]):
+            continue
+        delay_targets = {
+            thumb_bl_target(image, begin + offset)
+            for offset in (2, 0x12, 0x26, 0x36)
+        }
+        if len(delay_targets) != 1 or None in delay_targets:
+            continue
+        entries = {
+            begin - 6: "write_0", begin + 0x0A: "read_0",
+            begin + 0x1E: "write_2", begin + 0x2E: "read_2",
+        }
+        calls: defaultdict[str, int] = defaultdict(int)
+        commands: set[int] = set()
+        for match in _THUMB_BL.finditer(image):
+            call = match.start()
+            if call & 1:
+                continue
+            kind = entries.get(thumb_bl_target(image, call))
+            if kind is None:
+                continue
+            calls[kind] += 1
+            if kind == "write_0" and call >= 2:
+                previous = struct.unpack_from("<H", image, call - 2)[0]
+                if previous & 0xFF00 == 0x2000:
+                    commands.add(previous & 0xFF)
+        if (set(range(7)) <= commands
+                and all(calls[kind] for kind in entries.values())):
+            result.append({**candidate, "data_offset": 2})
+    return result
+
+
 def find_audio_transport(image: bytes) -> dict[str, object]:
     """Return static ownership evidence; rejected classes stay fail-closed."""
     families = _marker_families(image)
     if not families:
-        return {
-            "family": "unknown", "grammar": None, "static_status": "not-detected",
-            "reject_reason": "marker-none",
-        }
-    if len(families) != 1:
+        family = "opaque"
+        grammar = "command-status-data-v1"
+        candidates = _command_status_candidates(image)
+        if not candidates:
+            return {
+                "family": "unknown", "grammar": None,
+                "static_status": "not-detected", "reject_reason": "marker-none",
+            }
+    elif len(families) != 1:
         return {
             "family": "unknown", "grammar": None, "static_status": "rejected",
             "reject_reason": "marker-ambiguous",
         }
-    family = families[0]
-    if family == "ma3":
-        return {
-            "family": family, "grammar": None, "static_status": "rejected",
-            "reject_reason": "protocol-unsupported",
-        }
-    grammar = "ma2-command-v1" if family == "ma2" else "indexed-rw-v1"
-    candidates = [
-        candidate for candidate in _transport_clusters(image)
-        if grammar in candidate["grammars"]
-    ]
+    else:
+        family = families[0]
+        if family == "ma3":
+            return {
+                "family": family, "grammar": None, "static_status": "rejected",
+                "reject_reason": "protocol-unsupported",
+            }
+        grammar = "ma2-command-v1" if family == "ma2" else "indexed-rw-v1"
+        candidates = [
+            candidate for candidate in _transport_clusters(image)
+            if grammar in candidate["grammars"]
+        ]
     if len(candidates) != 1:
         return {
             "family": family, "grammar": grammar, "static_status": "rejected",
@@ -221,6 +284,8 @@ def find_audio_transport(image: bytes) -> dict[str, object]:
                    for site in sites)
         },
         "block_write_offsets": selected["block_write_offsets"],
+        **({"aperture_write_sites": selected["aperture_write_sites"]}
+           if family == "ma5" else {}),
     }
 
 

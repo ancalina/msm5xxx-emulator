@@ -6,20 +6,24 @@ from pathlib import Path
 
 
 class TestMA5CAudioCore(unittest.TestCase):
-    def test_qemu_keeps_unowned_ma5_native(self):
+    def test_qemu_maps_only_site_owned_ma5_boot_writes(self):
         repo = Path(__file__).resolve().parents[1]
         machine = (repo / "experiments" / "qemu-tcg" /
                    "msm5xxx-poc.c").read_text(encoding="utf-8")
-        setter = machine[
-            machine.index("static void msm5xxx_poc_set_audio_aperture"):
-        ]
-        setter = setter[:setter.index("\nstatic ", 1)]
         launcher = (repo / "experiments" / "qemu-tcg" /
-                    "qemu_transport.py").read_text(encoding="utf-8")
+                   "qemu_transport.py").read_text(encoding="utf-8")
         self.assertNotIn("msm5xxx_ma5_data_write", machine)
-        self.assertNotIn("ma5", setter)
-        self.assertNotIn('audio_family == "ma5"', launcher)
-        self.assertIn('family != "ma2"', launcher)
+        self.assertIn("msm5xxx_poc_audio_opaque_write", machine)
+        self.assertIn("msm5xxx_poc_audio_site_owned", machine)
+        self.assertIn(".read_with_attrs = msm5xxx_poc_audio_opaque_read",
+                      machine)
+        self.assertIn("return MEMTX_ERROR;", machine)
+        self.assertIn('audio_family == "ma5"', launcher)
+        self.assertIn('(\"ma5\", \"indexed-rw-v1\")', launcher)
+        self.assertIn('"aperture_write_sites"', launcher)
+        self.assertIn('"qemu-audio-adapter-unsupported"', launcher)
+        self.assertIn("base == 0x02840000", machine)
+        self.assertIn("data_offset == 2", machine)
 
     def test_transport_contract(self):
         repo = Path(__file__).resolve().parents[1]

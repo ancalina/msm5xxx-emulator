@@ -3,9 +3,15 @@
 """Fail-closed finder for the admitted relocatable upper-NOR grammar."""
 from __future__ import annotations
 
+from .storage import (
+    ADJACENT_AMD_X16_WRITER_PREFIX,
+    _adjacent_amd_x16_writer_at,
+)
+
 
 UPPER_FLASH_ADDRESS = 0x02800000
 UPPER_FLASH_SIZE = 0x00800000
+UPPER_FLASH_SECTOR_SIZE = 0x00010000
 _CASE4 = bytes.fromhex("14a04860002088601320c004c8600120c00508610120c0024a618861")
 _INIT_HEAD = bytes.fromhex("90b4184a9268174b5b689a4227d2154b9b68002b01d100270ae0")
 _INIT_STORE = bytes.fromhex("0c4b9c681c2363430a4c24681a19516090604318013bd36017617b18013b5361c31b9361")
@@ -18,6 +24,17 @@ _INIT_SHAPES = tuple(bytes.fromhex(value) for value in (
     "0721c9041520c004", "0321490509204005", "0121c9050520c005",
 ))
 _CALLER_WINDOW = bytes.fromhex("0d9005980e9006980f900798109000ab188c10ab988000ab588c10abd88009a800f037f8dbe712b090bc08bc184700b5")
+_UPPER_X16_BUILDER_PREFIX = bytes.fromhex(
+    "b0b40127bf02ba011f2464045503072800d384e001a31b5c"
+)
+_UPPER_X16_CAMERA_CASE = bytes.fromhex(
+    "20a0486000208860ad200004c8600f20c004103185c11a481c395438c8615320"
+    "0884012048840120b0bc7047"
+)
+_UPPER_X16_MAPPER_PREFIX = bytes.fromhex("80b50b4f02203968")
+_UPPER_X16_ERASE_COMMAND = bytes.fromhex(
+    "0024aa2318012018438155221521890161188a828026468143818a8230203880"
+)
 
 
 def _all(raw: bytes, needle: bytes) -> list[int]:
@@ -83,3 +100,59 @@ def find_upper_nor(raw: bytes) -> tuple[bool, str]:
     if len(pairs) != 1 or pairs[0][0] < window:
         return False, "enumerator-materializer-loop"
     return True, "accepted"
+
+
+def find_upper_amd_x16_nor(raw: bytes) -> tuple[int, int, int] | None:
+    """Return one temporary exact mapped upper AMD x16 NOR profile."""
+    builders = [
+        at for at in _all(raw, _UPPER_X16_BUILDER_PREFIX)
+        if (raw[at + 0xCC:at + 0xCC + len(_UPPER_X16_CAMERA_CASE)]
+            == _UPPER_X16_CAMERA_CASE
+            and raw[at + 0x150:at + 0x15C] == b"CAMERA\0\0LMS\0")
+    ]
+    mappers = [
+        at for at in _all(raw, _UPPER_X16_MAPPER_PREFIX)
+        if (raw[at + 0x0C:at + 0x16]
+            == bytes.fromhex("a52109047b2000047a68")
+            and raw[at + 0x1A:at + 0x24]
+            == bytes.fromhex("0121c9050520c0057a68")
+            and raw[at + 0x28:at + 0x30]
+            == bytes.fromhex("80bc08bc01201847"))
+    ]
+    materials = [
+        at for at in _all(raw, bytes.fromhex("b0b592b0"))
+        if (raw[at + 8:at + 0x0C] == bytes.fromhex("051c281c")
+            and raw[at + 0x10:at + 0x14] == bytes.fromhex("1c491d48")
+            and raw[at + 0x22:at + 0x26] == bytes.fromhex("041c201c")
+            and raw[at + 0x2A:at + 0x3C]
+            == bytes.fromhex("0027a74224da02e0781c071cf9e76946381c"))
+    ]
+    writers = [
+        at for at in _all(raw, ADJACENT_AMD_X16_WRITER_PREFIX)
+        if _adjacent_amd_x16_writer_at(raw, at)
+    ]
+    if any(len(group) != 1 for group in (
+            builders, mappers, materials, writers)):
+        return None
+    builder, mapper, material, writer = (
+        builders[0], mappers[0], materials[0], writers[0]
+    )
+    bridge = _bl(raw, mapper + 0x50)
+    erase = _bl(raw, mapper + 0x5A)
+    wrapper_starts = (0x3A, 0x44, 0x4E, 0x58)
+    if (_bl(raw, material + 0x1A) != mapper
+            or _bl(raw, material + 0x3C) != builder
+            or any(raw[mapper + offset:mapper + offset + 2] != b"\0\xb5"
+                   or raw[mapper + offset + 6:mapper + offset + 10]
+                   != bytes.fromhex("08bc1847")
+                   for offset in wrapper_starts)
+            or bridge is None
+            or raw[bridge:bridge + 2] != b"\0\xb5"
+            or raw[bridge + 6:bridge + 10] != bytes.fromhex("08bc1847")
+            or _bl(raw, bridge + 2) != writer
+            or erase is None
+            or raw[erase:erase + 4] != bytes.fromhex("f0b5071c")
+            or raw[erase + 0x94:erase + 0x94 + len(_UPPER_X16_ERASE_COMMAND)]
+            != _UPPER_X16_ERASE_COMMAND):
+        return None
+    return UPPER_FLASH_ADDRESS, UPPER_FLASH_SIZE, UPPER_FLASH_SECTOR_SIZE

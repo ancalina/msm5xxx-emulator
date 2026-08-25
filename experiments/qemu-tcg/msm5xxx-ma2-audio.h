@@ -68,10 +68,12 @@
 #define MSM5XXX_MA2_COMPACT_EVENT_CAPACITY 260u
 #define MSM5XXX_MA2_SEQUENCE_COUNT 5u
 #define MSM5XXX_MA2_FM_CHANNEL_COUNT 16u
+#define MSM5XXX_MA2_FM_GATE_COUNT 32u
 #define MSM5XXX_MA2_FM_VOICE_COUNT 16u
 #define MSM5XXX_MA2_FM_ASSIGNMENT_COUNT 8u
 #define MSM5XXX_MA2_FM_OPERATOR_COUNT 4u
 #define MSM5XXX_MA2_FM_DECODED_VOICE_SIZE 78u
+#define MSM5XXX_MA2_FM_WAVE_SAMPLES 1024u
 
 typedef enum MSM5xxxMA2Fifo {
     MSM5XXX_MA2_FIFO_FM0 = 0,
@@ -93,6 +95,7 @@ typedef enum MSM5xxxMA2RejectReason {
     MSM5XXX_MA2_REJECT_INVALID_FIFO,
     MSM5XXX_MA2_REJECT_CLOCK_ROLLBACK,
     MSM5XXX_MA2_REJECT_TIME_OVERFLOW,
+    MSM5XXX_MA2_REJECT_GATE_FULL,
 } MSM5xxxMA2RejectReason;
 
 typedef enum MSM5xxxMA2CompactResult {
@@ -141,10 +144,35 @@ typedef struct MSM5xxxMA2FMVoice {
     uint8_t decoded[MSM5XXX_MA2_FM_DECODED_VOICE_SIZE];
 } MSM5xxxMA2FMVoice;
 
+/* Mutable fixed-point state supplied by the renderer owner. */
+typedef struct MSM5xxxMA2FMRenderOperator {
+    const int16_t *wave;
+    uint32_t phase;
+    uint32_t phase_step;
+    uint32_t envelope;
+    uint32_t attack_step;
+    uint32_t decay_factor;
+    uint32_t sustain_factor;
+    uint32_t release_factor;
+    uint32_t threshold;
+    uint32_t output_gain;
+    uint8_t envelope_state;
+    bool state1_uses_sustain;
+} MSM5xxxMA2FMRenderOperator;
+
+typedef struct MSM5xxxMA2FMRenderVoice {
+    uint8_t algorithm;
+    uint8_t operator_count;
+    bool extended_mode;
+    bool feedback0_enabled;
+    bool feedback2_enabled;
+    MSM5xxxMA2FMRenderOperator operation[MSM5XXX_MA2_FM_OPERATOR_COUNT];
+} MSM5xxxMA2FMRenderVoice;
+
 typedef struct MSM5xxxMA2FMChannel {
     uint8_t program;
     uint8_t bank;
-    uint8_t octave_shift;
+    int8_t octave_shift;
     uint8_t modulation;
     uint8_t pitch_bend;
     uint8_t volume;
@@ -154,6 +182,7 @@ typedef struct MSM5xxxMA2FMChannel {
     uint8_t active_voice_slot;
     uint8_t note_octave;
     uint8_t note_id;
+    uint8_t note;
     bool voice_slot_valid;
     bool key_on;
 } MSM5xxxMA2FMChannel;
@@ -185,6 +214,8 @@ typedef struct MSM5xxxMA2SequenceState {
 
 typedef struct MSM5xxxMA2GateState {
     uint64_t deadline_ns;
+    uint8_t channel;
+    uint8_t note;
     bool active;
 } MSM5xxxMA2GateState;
 
@@ -199,7 +230,9 @@ typedef struct MSM5xxxMA2Output {
     MSM5xxxMA2OutputKind kind;
     uint64_t timestamp_ns;
     MSM5xxxMA2Fifo stream;
+    uint8_t voice_id;
     uint8_t channel;
+    uint8_t note;
     MSM5xxxMA2CompactEvent event;
 } MSM5xxxMA2Output;
 
@@ -225,6 +258,7 @@ typedef struct MSM5xxxMA2Audio {
     uint8_t repeat_flags;
     uint8_t gend_status;
     bool fm_start_pending;
+    bool fm_stop_pending;
     bool adpcm_start_pending;
     uint8_t register_shadow[2][256];
 
@@ -237,7 +271,7 @@ typedef struct MSM5xxxMA2Audio {
     uint16_t fifo_count[MSM5XXX_MA2_FIFO_COUNT];
 
     MSM5xxxMA2SequenceState sequence[MSM5XXX_MA2_SEQUENCE_COUNT];
-    MSM5xxxMA2GateState fm_gate[MSM5XXX_MA2_FM_CHANNEL_COUNT];
+    MSM5xxxMA2GateState fm_gate[MSM5XXX_MA2_FM_GATE_COUNT];
     MSM5xxxMA2GateState adpcm_gate;
     MSM5xxxMA2FMVoice fm_voice[MSM5XXX_MA2_FM_VOICE_COUNT];
     MSM5xxxMA2FMChannel fm_channel[MSM5XXX_MA2_FM_CHANNEL_COUNT];
@@ -264,6 +298,7 @@ size_t msm5xxx_ma2_fifo_occupancy(const MSM5xxxMA2Audio *audio,
                                   MSM5xxxMA2Fifo fifo);
 size_t msm5xxx_ma2_fifo_capacity(MSM5xxxMA2Fifo fifo);
 bool msm5xxx_ma2_take_fm_start(MSM5xxxMA2Audio *audio);
+bool msm5xxx_ma2_take_fm_stop(MSM5xxxMA2Audio *audio);
 bool msm5xxx_ma2_take_adpcm_start(MSM5xxxMA2Audio *audio);
 bool msm5xxx_ma2_scheduler_step(MSM5xxxMA2Audio *audio,
                                 uint64_t now_ns,
@@ -291,5 +326,8 @@ void msm5xxx_ma2_adpcm_decoder_reset(MSM5xxxMA2AdpcmDecoder *decoder);
 bool msm5xxx_ma2_adpcm_decode_byte(MSM5xxxMA2AdpcmDecoder *decoder,
                                    uint8_t value,
                                    int16_t samples[2]);
+bool msm5xxx_ma2_fm_render(MSM5xxxMA2FMRenderVoice *voice,
+                           int32_t *samples,
+                           size_t frames);
 
 #endif

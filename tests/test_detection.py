@@ -11,25 +11,38 @@ import unittest
 from unittest.mock import patch
 
 import condition_report
+import msm5xxx_emulator.detection.storage as storage_detection
 from msm5xxx_emulator.core.config import LinkerLayout
 from msm5xxx_emulator.detection.memory_layout import (
     has_dual_sdram_bootstrap, has_high_bank_reader_bootstrap, infer_ram_base,
+    referenced_flash_extent,
 )
 from msm5xxx_emulator.detection.boot import (
+    DIRECT_INTEL_X16_PROBE_SIGNATURE,
     DMD_DOWNLOAD_SIGNATURE,
     DMD_DOWNLOAD_5500_LITERALS,
     DMD_DOWNLOAD_5500_SIZE,
+    PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE,
+    PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE,
     PRIMARY_FLASH_PROBE_SIGNATURE,
     detect_dmd_download_5500,
 )
 from msm5xxx_emulator.detection.storage import (
+    DIRECT_AMD_X16_CALLER_PREFIX,
+    DIRECT_AMD_X16_PROBE_SIGNATURE,
     EEPROM_24LC64_CLASS_B_BOUND,
     EEPROM_24LC64_CLASS_B_READ_PREFIX,
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
     EEPROM_24LCXX_F6F7_WRITE_PREFIX,
+    MAPPED_PRIMARY_INTEL_X16_SIGNATURES,
+    direct_amd_x16_nor_profile,
+    direct_intel_x16_nor_profile,
     find_24lc64_class_b_driver,
+    find_adjacent_amd_x16_nor,
+    find_adjacent_fujitsu_x16_nor,
     find_embedded_fujitsu_x16_nor,
     find_primary_fsd_amd_x16_nor,
+    mapped_primary_intel_x16_nor_profile,
     primary_probe_x16_nor_profile,
 )
 
@@ -173,6 +186,38 @@ class DetectionTests(unittest.TestCase):
         self.assertFalse(has_high_bank_reader_bootstrap(bytes(broken)))
         write_outer(image, 0xA00, entry, 0x800, 0x900)
         self.assertFalse(has_high_bank_reader_bootstrap(bytes(image)))
+
+    def test_partial_nor_extent_requires_closed_upper_sentinel_consumer(
+            self) -> None:
+        image = bytearray(b"\xff" * 0x100)
+        struct.pack_into(
+            "<5H", image, 0x40,
+            0x480F, 0x4B10, 0x6800, 0x4298, 0xD001,
+        )
+        struct.pack_into("<2I", image, 0x80, 0x00FFE000, 0xF71A2928)
+
+        self.assertEqual(referenced_flash_extent(bytes(image)), 0x00FFE004)
+
+        struct.pack_into("<H", image, 0x48, 0xD101)
+        self.assertEqual(referenced_flash_extent(bytes(image)), 0)
+        struct.pack_into("<H", image, 0x48, 0xD001)
+        struct.pack_into("<I", image, 0x84, 0xFFFFFFFF)
+        self.assertEqual(referenced_flash_extent(bytes(image)), 0)
+        struct.pack_into("<I", image, 0x84, 0xF71A2928)
+        struct.pack_into("<H", image, 0x48, 0xD080)
+        self.assertEqual(referenced_flash_extent(bytes(image)), 0)
+
+        struct.pack_into("<H", image, 0x48, 0xD001)
+        struct.pack_into("<I", image, 0x80, 0x01FFE000)
+        self.assertEqual(
+            referenced_flash_extent(bytes(image), 0x01000000), 0x00FFE004
+        )
+        struct.pack_into(
+            "<5H", image, 0xA0,
+            0x480F, 0x4B10, 0x6800, 0x4298, 0xD001,
+        )
+        struct.pack_into("<2I", image, 0xE0, 0x01FFF000, 0x471A2928)
+        self.assertEqual(referenced_flash_extent(bytes(image), 0x01000000), 0)
 
     def test_5500_dmd_precedes_legacy_and_falls_back(self) -> None:
         routine = bytearray(b"\xff" * DMD_DOWNLOAD_5500_SIZE)
@@ -986,6 +1031,30 @@ class DetectionTests(unittest.TestCase):
         no_marker[0x2100:0x2116] = b"\xff" * 0x16
         self.assertIsNone(find_24lcxx_driver(bytes(no_marker)))
 
+    def test_24lcxx_f7f6_variant_requires_paired_geometry(self) -> None:
+        image = bytearray(b"\xff" * 0x2200)
+        write, read, initializer = 0x40, 0x800, 0xC00
+        geometry = 0x01208494
+        image[write:write + len(EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
+            EEPROM_24LCXX_X7700_WRITE_PREFIX
+        )
+        image[read:read + len(EEPROM_24LCXX_X430_READ_PREFIX)] = (
+            EEPROM_24LCXX_X430_READ_PREFIX
+        )
+        image[initializer:initializer + len(EEPROM_24LCXX_X7700_INIT_SIGNATURE)] = (
+            EEPROM_24LCXX_X7700_INIT_SIGNATURE
+        )
+        for position in (write + 0x3EC, read + 0x3E8,
+                         initializer + 0x14):
+            struct.pack_into("<I", image, position, geometry)
+        image[0x2100:0x210B] = b"nv24lcxx.c\0"
+
+        self.assertEqual(find_24lcxx_driver(bytes(image)),
+                         (read, write, geometry))
+
+        struct.pack_into("<I", image, read + 0x3E8, geometry + 4)
+        self.assertIsNone(find_24lcxx_driver(bytes(image)))
+
     def test_5105_clock_bsp_beats_inherited_dec5000_module(self) -> None:
         image = b"dec5000.c\0mclk_5105.c\0"
 
@@ -1053,6 +1122,17 @@ class DetectionTests(unittest.TestCase):
                 "d0d80120c005f5f777fd08490848893913f0e1fb002095e7bc191801044c1e01"
                 "a0aa200040552000"
             ), 0x200000, 0x3000),
+            (bytes.fromhex(
+                "f8b5041c8818171c3b4a12688032536b5b00984205d8394b1879002805d00228"
+                "03d00120f8bc08bc1847106b1a6880184518600800d352e0480800d34fe07808"
+                "00d34ce01be026882ef112fe2c4aaa2151812c4b55219982a02151812e800028"
+                "01d12ef111fe0221281cfff769fd002802d0254925482ce002340235023f012f"
+                "e1d82ee06e087600217830886a0802d2ff22120201e00902ff22114301400091"
+                "2ef1e6fd164aaa215181164b55219982a021518100993180002801d12ef1e4fd"
+                "0221301cfff73cfd002805d00f480e493130f7f7f9fca4e701340135013f002f"
+                "d0d80120c005f7f76bfe08490848ba3919f029f8002095e7541918011ce91f01"
+                "a0aa400040554000"
+            ), 0x400000, 0x300),
         )
         for body, secondary_base, padding in variants:
             image = b"\xff" * padding + body + b"fs_fujitsu.c\0"
@@ -1147,6 +1227,191 @@ class DetectionTests(unittest.TestCase):
             find_primary_fsd_amd_x16_nor(bytes(image), flash_id, len(image))
         )
 
+    def test_direct_intel_x16_probe_uses_ordered_descriptor(self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        caller, probe, entry = 0x400, 0x800, 0x2000
+        sector_count, sector_size = 64, 0x10000
+        descriptor_view = entry + sector_count * 4
+        descriptor = descriptor_view + 8
+        name = descriptor + 0x30
+        flash_base_global = 0x019E5EA8
+        table_global = 0x01947950
+
+        def write_bl(source: int, target: int) -> None:
+            displacement = target - source - 4
+            struct.pack_into(
+                "<2H", image, source,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        image[probe:probe + len(DIRECT_INTEL_X16_PROBE_SIGNATURE)] = (
+            DIRECT_INTEL_X16_PROBE_SIGNATURE
+        )
+        struct.pack_into(
+            "<3I", image, probe + len(DIRECT_INTEL_X16_PROBE_SIGNATURE),
+            descriptor_view, flash_base_global, table_global,
+        )
+        image[caller:caller + 14] = bytes.fromhex(
+            "b0b50e4d00240e4f2c6000203860"
+        )
+        write_bl(caller + 14, probe)
+        image[caller + 18:caller + 24] = bytes.fromhex("3860002806d1")
+        write_bl(caller + 24, 0x3000)
+        image[caller + 28:caller + 34] = bytes.fromhex("ff2089300849")
+        write_bl(caller + 34, 0x3100)
+        image[caller + 38:caller + 46] = bytes.fromhex(
+            "3868ff300130c069"
+        )
+        write_bl(caller + 46, 0x3200)
+        image[caller + 50:caller + 58] = bytes.fromhex(
+            "2c71b0bc08bc1847"
+        )
+        struct.pack_into(
+            "<2I", image, caller + 60,
+            flash_base_global, 0x019478BC,
+        )
+        struct.pack_into("<2I", image, entry, name, sector_count)
+        struct.pack_into(
+            f"<{sector_count}I", image, entry + 8,
+            *([sector_size] * sector_count),
+        )
+        struct.pack_into(
+            "<12I", image, descriptor,
+            0x88560089, 0, 1, 0x01000000, 0x00200000,
+            *[0x1001 + index * 0x20 for index in range(7)],
+        )
+        image[name:name + 10] = b"Intel x16\0"
+
+        self.assertEqual(
+            direct_intel_x16_nor_profile(
+                bytes(image), probe, 0, 0x800000, 0,
+                0x01000000, 0x01000000,
+            ),
+            ((0x02000000, 0x400000, 0x10000, 0x89, 0x8856), None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "direct-intel-probe.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware, argparse.Namespace(ram_base=0x01000000))
+            self.assertEqual(config.primary_flash_probe_address, probe)
+
+        image[caller + 18] ^= 1
+        self.assertEqual(
+            direct_intel_x16_nor_profile(
+                bytes(image), probe, 0, 0x800000, 0,
+                0x01000000, 0x01000000,
+            ),
+            (None, "probe-caller-mismatch"),
+        )
+
+    def test_direct_amd_x16_probe_uses_ordered_descriptor(self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        caller, probe, entry = 0x400, 0x800, 0x2000
+        sector_count, sector_size = 64, 0x10000
+        descriptor_view = entry + sector_count * 4
+        descriptor = descriptor_view + 8
+        name = descriptor + 0x30
+        flash_base_global = 0x019DEEF8
+        table_global = 0x019478C0
+
+        def write_bl(source: int, target: int) -> None:
+            displacement = target - source - 4
+            struct.pack_into(
+                "<2H", image, source,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        image[probe:probe + len(DIRECT_AMD_X16_PROBE_SIGNATURE)] = (
+            DIRECT_AMD_X16_PROBE_SIGNATURE
+        )
+        struct.pack_into(
+            "<3I", image, probe + len(DIRECT_AMD_X16_PROBE_SIGNATURE),
+            descriptor_view, flash_base_global, table_global,
+        )
+        image[caller:caller + len(DIRECT_AMD_X16_CALLER_PREFIX)] = (
+            DIRECT_AMD_X16_CALLER_PREFIX
+        )
+        write_bl(caller + 0x10, 0x3000)
+        image[caller + 0x14:caller + 0x18] = bytes.fromhex("002804d1")
+        write_bl(caller + 0x18, probe)
+        image[caller + 0x1C:caller + 0x1E] = bytes.fromhex("2860")
+        write_bl(caller + 0x1E, 0x3100)
+        image[caller + 0x22:caller + 0x2E] = bytes.fromhex(
+            "2868002800d13760002806d1"
+        )
+        write_bl(caller + 0x2E, 0x3200)
+        image[caller + 0x32:caller + 0x38] = bytes.fromhex(
+            "ff2089300549"
+        )
+        write_bl(caller + 0x38, 0x3300)
+        image[caller + 0x3C:caller + 0x44] = bytes.fromhex(
+            "3471f0bc08bc1847"
+        )
+        struct.pack_into(
+            "<3I", image, caller + 0x44,
+            flash_base_global, 0x0194782C, 0x2400,
+        )
+        struct.pack_into("<2I", image, entry, name, sector_count)
+        struct.pack_into(
+            f"<{sector_count}I", image, entry + 8,
+            *([sector_size] * sector_count),
+        )
+        struct.pack_into(
+            "<12I", image, descriptor,
+            0x00840098, 0, 1, 0x00900000, 0x00200000,
+            *[0x1001 + index * 0x20 for index in range(7)],
+        )
+        image[name:name + 8] = b"AMD x16\0"
+
+        self.assertEqual(
+            direct_amd_x16_nor_profile(
+                bytes(image), 0, 0x4000, 0,
+                0x01000000, 0x01000000,
+            ),
+            ((0x01200000, 0x400000, 0x10000, 0x98, 0x84, 1), None),
+        )
+        struct.pack_into("<I", image, descriptor + 8, 0)
+        self.assertEqual(
+            direct_amd_x16_nor_profile(
+                bytes(image), 0, 0x4000, 0,
+                0x01000000, 0x01000000,
+            ),
+            (None, "descriptor-content-mismatch"),
+        )
+        struct.pack_into("<I", image, descriptor + 8, 1)
+        image[caller + 0x22] ^= 1
+        self.assertEqual(
+            direct_amd_x16_nor_profile(
+                bytes(image), 0, 0x4000, 0,
+                0x01000000, 0x01000000,
+            ),
+            (None, "probe-caller-mismatch"),
+        )
+
+    def test_mapped_primary_intel_x16_nor_requires_exact_code_shape(self) -> None:
+        image = bytearray(b"\xff" * 0x800000)
+        anchor = 0x400000
+        for delta, signature in MAPPED_PRIMARY_INTEL_X16_SIGNATURES:
+            position = anchor + delta
+            image[position:position + len(signature)] = signature
+
+        self.assertEqual(
+            mapped_primary_intel_x16_nor_profile(
+                bytes(image), len(image), 0x01000000,
+            ),
+            ((0x00000000, 0x00800000, 0x00800000, 0x00010000), None),
+        )
+        position = anchor + MAPPED_PRIMARY_INTEL_X16_SIGNATURES[-1][0]
+        image[position + 8] ^= 1
+        self.assertEqual(
+            mapped_primary_intel_x16_nor_profile(
+                bytes(image), len(image), 0x01000000,
+            ),
+            (None, "code-signature-6-mismatch"),
+        )
+
     def test_primary_probe_x16_nor_preserves_nonuniform_geometry(self) -> None:
         image_offset = 0x20
         flash_size = ram_image_offset = 0x100000
@@ -1209,6 +1474,337 @@ class DetectionTests(unittest.TestCase):
             (None, "descriptor-table-mismatch"),
         )
 
+    def test_primary_probe_x16_nor_recovers_static_scatter_table(self) -> None:
+        image = bytearray(b"\xff" * 0x5000)
+        flash_size, ram_base, ram_size = 0x1000000, 0x1800000, 0x800000
+        caller, consumer, probe = 0x400, 0x600, 0x800
+        wrapper, entry = probe - 0x4C, 0x2000
+        sectors = 32 * [0x10000] + 8 * [0x2000] + 31 * [0x10000]
+        descriptor = entry + 0x124
+        name = descriptor + 0x38
+        flash_base_global = ram_base + 0x2000
+        table_global = ram_base + 0x1100
+        object_global = table_global - 0x78
+
+        def write_bl(source: int, target: int) -> None:
+            displacement = target - source - 4
+            struct.pack_into(
+                "<2H", image, source,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        image[probe:probe + len(PRIMARY_FLASH_PROBE_SIGNATURE)] = (
+            PRIMARY_FLASH_PROBE_SIGNATURE
+        )
+        struct.pack_into(
+            "<3I", image, probe + len(PRIMARY_FLASH_PROBE_SIGNATURE),
+            descriptor - 0x24, flash_base_global, table_global,
+        )
+        image[wrapper:wrapper + 2] = b"\x00\xb5"
+        write_bl(wrapper + 2, probe)
+        image[wrapper + 6:wrapper + 10] = b"\x08\xbc\x18\x47"
+        image[caller:caller + 16] = bytes.fromhex(
+            "b0b5072040050c4c0c4f002520603d60"
+        )
+        write_bl(caller + 16, wrapper)
+        image[caller + 20:caller + 22] = b"\x38\x60"
+        write_bl(caller + 22, consumer)
+        image[caller + 26:caller + 30] = b"\x38\x68\x00\x28"
+        struct.pack_into(
+            "<2I", image, caller + 0x38,
+            flash_base_global, object_global,
+        )
+        image[consumer:consumer + 12] = bytes.fromhex(
+            "044800b50068ff3041300069"
+        )
+        write_bl(consumer + 12, 0x1000)
+        image[consumer + 16:consumer + 20] = b"\x08\xbc\x18\x47"
+        struct.pack_into("<I", image, consumer + 0x14, object_global)
+        struct.pack_into("<2I", image, entry, name, len(sectors))
+        struct.pack_into(f"<{len(sectors)}I", image, entry + 8, *sectors)
+        struct.pack_into(
+            "<14I", image, descriptor,
+            0x00840098, 0, 1, 0, sum(sectors) // 2,
+            *[0x1001 + index * 0x20 for index in range(9)],
+        )
+        image[name:name + 8] = b"NOR X16\0"
+        struct.pack_into(
+            "<5I", image, 0x100,
+            0x3000, ram_base + 0x1000, 0x200,
+            ram_base + 0x1200, 0x100,
+        )
+        struct.pack_into("<2I", image, 0x3100, entry, 0)
+
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, flash_size, 0, ram_base,
+                len(image), 0, ram_size,
+            ),
+            ((0xE00000, 0x400000,
+              ((32, 0x10000), (8, 0x2000), (31, 0x10000)),
+              0x98, 0x84), None),
+        )
+        struct.pack_into("<I", image, 0x3104, 1)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, flash_size, 0, ram_base,
+                len(image), 0, ram_size,
+            ),
+            (None, "probe-global-linkage-mismatch"),
+        )
+
+    def test_descriptor_probe_x16_nor_uses_static_initializer_fail_closed(
+            self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        probe, caller, entry = 0x800, 0x400, 0x2000
+        wrapper = probe - 0x4C
+        flash_base_global = 0x01001000
+        table_global = 0x01002000
+        object_global = 0x01003000
+        descriptor_base = entry + 0x180
+        sectors = 96 * [0x10000]
+        descriptor = entry + 0x188
+        name = descriptor + 0x38
+        copy = 0x100
+
+        def write_bl(source: int, target: int) -> None:
+            displacement = target - source - 4
+            struct.pack_into(
+                "<2H", image, source,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        image[probe:probe + len(PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE)] = (
+            PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE
+        )
+        struct.pack_into(
+            "<3I", image,
+            probe + len(PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE),
+            descriptor_base, flash_base_global, table_global,
+        )
+        image[wrapper:wrapper + 2] = b"\x00\xb5"
+        write_bl(wrapper + 2, probe)
+        image[wrapper + 6:wrapper + 10] = b"\x08\xbc\x18\x47"
+        image[caller:caller + 16] = bytes.fromhex(
+            "b0b50120c0050c4c0c4f002520603d60"
+        )
+        write_bl(caller + 16, wrapper)
+        image[caller + 20:caller + 22] = b"\x38\x60"
+        write_bl(caller + 22, 0x700)
+        image[caller + 26:caller + 30] = b"\x38\x68\x00\x28"
+        struct.pack_into(
+            "<2I", image, caller + 0x38,
+            flash_base_global, object_global,
+        )
+        struct.pack_into("<2I", image, entry, name, len(sectors))
+        struct.pack_into(f"<{len(sectors)}I", image, entry + 8, *sectors)
+        struct.pack_into(
+            "<14I", image, descriptor,
+            0x00580098, 0, 1, 0x80000, 0x300000,
+            *[0x901 + index * 0x20 for index in range(9)],
+        )
+        image[name:name + 8] = b"NOR X16\0"
+        struct.pack_into("<2I", image, 0x3000, entry, 0)
+        image[copy:copy + 26] = bytes.fromhex(
+            "1048026800921048006810490968009a8a18f8c8f8c19142fbdb"
+        )
+        struct.pack_into("<3I", image, copy + 0x44,
+                         0x3808, 0x3800, 0x3804)
+        struct.pack_into(
+            "<5I", image, 0x3800,
+            0x3000, table_global, 0x100,
+            table_global + 0x100, 0x100,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "descriptor-probe.bin"
+            firmware.write_bytes(image)
+            self.assertEqual(
+                detect(firmware).primary_flash_probe_address, probe
+            )
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, 0x1000000, 0, 0x01000000,
+                len(image), 0, 0x800000,
+            ),
+            ((0x900000, 0x600000, ((96, 0x10000),), 0x98, 0x58), None),
+        )
+        changed = bytearray(image)
+        changed_sectors = 95 * [0x10000]
+        changed_descriptor = entry + 8 + len(changed_sectors) * 4
+        changed_name = changed_descriptor + 0x38
+        struct.pack_into(
+            "<I", changed,
+            probe + len(PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE),
+            changed_descriptor - 8,
+        )
+        struct.pack_into("<2I", changed, entry,
+                         changed_name, len(changed_sectors))
+        struct.pack_into(f"<{len(changed_sectors)}I", changed, entry + 8,
+                         *changed_sectors)
+        struct.pack_into(
+            "<14I", changed, changed_descriptor,
+            0x00580098, 0, 1, 0x80000, 0x2F8000,
+            *[0x901 + index * 0x20 for index in range(9)],
+        )
+        changed[changed_name:changed_name + 8] = b"NOR X16\0"
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            ((0x900000, 0x5F0000, ((95, 0x10000),), 0x98, 0x58), None),
+        )
+
+        changed = bytearray(image)
+        struct.pack_into(
+            "<I", changed,
+            probe + len(PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE) + 8,
+            table_global + 1,
+        )
+        struct.pack_into("<2I", changed, 0x3001, entry, 0)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-global-alignment-mismatch"),
+        )
+
+        changed = bytearray(image)
+        struct.pack_into(
+            "<I", changed,
+            probe + len(PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE) + 8,
+            table_global + 8,
+        )
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-global-linkage-mismatch"),
+        )
+
+        changed = bytearray(image)
+        duplicate = copy + 0x100
+        changed[duplicate:duplicate + 26] = image[copy:copy + 26]
+        struct.pack_into("<3I", changed, duplicate + 0x44,
+                         0x3808, 0x3800, 0x3804)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-global-linkage-mismatch"),
+        )
+        changed = bytearray(image)
+        changed[caller + 4] ^= 1
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-static-initializer-mismatch"),
+        )
+        changed = bytearray(image)
+        struct.pack_into("<I", changed, caller + 0x3C, object_global + 1)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-static-initializer-mismatch"),
+        )
+        changed = bytearray(image)
+        changed[0x3004] = 1
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-global-linkage-mismatch"),
+        )
+        changed = bytearray(image)
+        changed[copy + 18] ^= 1
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-global-linkage-mismatch"),
+        )
+        changed = bytearray(image)
+        struct.pack_into("<I", changed, 0x3800, len(changed) - 0x80)
+        struct.pack_into("<2I", changed, len(changed) - 0x80, entry, 0)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(changed), probe, 0, 0x1000000, 0, 0x01000000,
+                len(changed), 0, 0x800000,
+            ),
+            (None, "probe-global-linkage-mismatch"),
+        )
+
+    def test_external_descriptor_probe_extends_partial_primary_nor(self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        probe, wrapper, entry = 0x800, 0x7BC, 0x2000
+        sectors = 32 * [0x10000]
+        descriptor = entry + 8 + len(sectors) * 4
+        name = descriptor + 0x38
+        flash_base_global = 0x01000100
+        table_global = 0x01000104
+
+        def write_bl(source: int, target: int) -> None:
+            displacement = target - source - 4
+            struct.pack_into(
+                "<2H", image, source,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        image[probe:probe + len(PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE)] = (
+            PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE
+        )
+        struct.pack_into(
+            "<3I", image,
+            probe + len(PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE),
+            descriptor - 8, flash_base_global, table_global,
+        )
+        image[wrapper:wrapper + 2] = b"\x00\xb5"
+        write_bl(wrapper + 2, probe)
+        image[wrapper + 6:wrapper + 10] = b"\x08\xbc\x18\x47"
+        struct.pack_into("<2I", image, entry, name, len(sectors))
+        struct.pack_into(f"<{len(sectors)}I", image, entry + 8, *sectors)
+        struct.pack_into(
+            "<14I", image, descriptor,
+            0x00840098, 0, 1, 0x700000, 0x100000,
+            *[0x3001 + index * 0x20 for index in range(9)],
+        )
+        image[name:name + 8] = b"NOR X16\0"
+
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, 0x800000, 0, 0x01000000,
+                len(image), 0, 0x800000,
+            ),
+            ((0xE00000, 0x200000, ((32, 0x10000),), 0x98, 0x84), None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "external-descriptor-probe.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware, argparse.Namespace(ram_base=0x01000000))
+            self.assertEqual(config.primary_flash_probe_address, probe)
+            self.assertEqual(config.flash_size, 0x1000000)
+        image[wrapper] ^= 1
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, 0x800000, 0, 0x01000000,
+                len(image), 0, 0x800000,
+            ),
+            (None, "probe-external-wrapper-mismatch"),
+        )
+
     def test_complete_compound_fujitsu_dump_splits_and_seeds_secondary_nor(self) -> None:
         primary_size, secondary_size = 0x400000, 0x200000
         writer = bytes.fromhex(
@@ -1257,6 +1853,175 @@ class DetectionTests(unittest.TestCase):
         image[marker] = 0x0B
         image[0x3000:0x3000 + len(writer)] = writer
         self.assertIsNone(find_compound_fujitsu_layout(bytes(image)))
+
+    def test_adjacent_fujitsu_nor_requires_linked_physical_geometry(self) -> None:
+        primary_size = secondary_size = 0x400000
+        writer_offset = 0x1000
+        writer = bytearray(bytes.fromhex(
+            "f0b50f1c041c151c400803d2780801d2680802d31a491b481ce00120c005f5f7"
+            "ddfa1a4e1849301c23e0268876f196ff174aa02151813e80002801d176f19cff"
+            "0122311c381cfff73ffc002808d00d480b491130f5f7eaf80120f0bc08bc1847"
+            "02340237023d0120c005f5f7b7fa064906481cf0a3fe002dd7d10020ede70000"
+            "6cc32000e3050000c5030000c8711701a00a8000"
+        ))
+        struct.pack_into("<I", writer, 0x90, primary_size + 0xAA0)
+        image = bytearray(b"\xff" * primary_size)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", image, offset, 0xEA000000)
+        image[writer_offset:writer_offset + len(writer)] = writer
+        marker = b"fs_fujitsu.c\0"
+        image[0x1800:0x1800 + len(marker)] = marker
+        label = b"Fujitsu command bus\0"
+        image[0x1820:0x1820 + len(label)] = label
+        boundaries = (
+            list(range(primary_size, primary_size + 0x10000, 0x2000))
+            + list(range(primary_size + 0x10000,
+                         primary_size + secondary_size, 0x10000))
+            + [0]
+        )
+        struct.pack_into(f"<{len(boundaries)}I", image, 0x2000, *boundaries)
+        struct.pack_into("<2I", image, 0x3000, 0x1820, 48)
+        struct.pack_into("<48I", image, 0x3008, *(0x10000,) * 48)
+        struct.pack_into("<5I", image, 0x4000, 0x005F0004, 0, 1,
+                         primary_size + 0x10000, 0x300000)
+        struct.pack_into("<6I", image, 0x4014, 0x501, 0x601, 0x701,
+                         (writer_offset - 0x6C) | 1, 0x801, 0x901)
+
+        self.assertEqual(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size),
+            (primary_size, secondary_size, 0x0004, 0x005F),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "adjacent.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware)
+            self.assertEqual(config.secondary_flash_address, primary_size)
+            self.assertEqual(config.secondary_flash_size, secondary_size)
+            self.assertEqual(config.secondary_flash_write_address,
+                             writer_offset)
+
+        struct.pack_into("<I", image, 0x4020,
+                         (writer_offset - 0x60) | 1)
+        self.assertIsNone(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size)
+        )
+        struct.pack_into("<I", image, 0x4020,
+                         (writer_offset - 0x6C) | 1)
+        struct.pack_into("<I", image, 0x2000 + (len(boundaries) - 1) * 4, 1)
+        self.assertIsNone(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size)
+        )
+
+    def test_adjacent_amd_nor_requires_exact_writer_and_record_shape(self) -> None:
+        primary_size = 0x800000
+        writer, record = 0x400, 0x1000
+        body = bytearray(b"\0" * storage_detection.ADJACENT_AMD_X16_WRITER_SIZE)
+        prefix = storage_detection.ADJACENT_AMD_X16_WRITER_PREFIX
+        body[:len(prefix)] = prefix
+        for offset in storage_detection.ADJACENT_AMD_X16_WRITER_CALLS[1:]:
+            displacement = writer + 0x300 - (writer + offset) - 4
+            encoded = displacement & ((1 << 23) - 1)
+            struct.pack_into(
+                "<2H", body, offset,
+                0xF000 | (encoded >> 12),
+                0xF800 | (encoded >> 1 & 0x7FF),
+            )
+        normalized = bytearray(body)
+        for offset in storage_detection.ADJACENT_AMD_X16_WRITER_CALLS:
+            normalized[offset:offset + 4] = b"\0" * 4
+
+        image = bytearray(b"\xff" * primary_size)
+        image[writer:writer + len(body)] = body
+        image[0x80:0x80 + len(b"fsd_toshiba.c\0")] = b"fsd_toshiba.c\0"
+        image[record:record + 4] = storage_detection.ADJACENT_AMD_X16_RECORD_PREFIX
+        image[record + 0x10C:record + 0x10E] = (
+            storage_detection.ADJACENT_AMD_X16_RECORD_MARKER
+        )
+        image[record + 0x110:record + 0x120] = (
+            storage_detection.ADJACENT_AMD_X16_RECORD_LOG
+        )
+        body_hash = hashlib.sha256(normalized).hexdigest()
+        with patch.object(storage_detection, "ADJACENT_AMD_X16_WRITER_HASH",
+                          body_hash):
+            self.assertEqual(
+                find_adjacent_amd_x16_nor(bytes(image), primary_size),
+                (primary_size, primary_size, 0x0001, 0x227E),
+            )
+            image[writer + 0x40] ^= 1
+            self.assertIsNone(
+                find_adjacent_amd_x16_nor(bytes(image), primary_size)
+            )
+
+    def test_adjacent_fujitsu_nor_accepts_linked_reserved_boot_geometry(self) -> None:
+        primary_size = 0x400000
+        writer_offset = 0x300
+        writer = bytes.fromhex(
+            "f8b5041c8818171c3b4a12688032536b5b00984205d8394b1879002805d00228"
+            "03d00120f8bc08bc1847106b1a6880184518600800d352e0480800d34fe07808"
+            "00d34ce01be026882ef112fe2c4aaa2151812c4b55219982a02151812e800028"
+            "01d12ef111fe0221281cfff769fd002802d0254925482ce002340235023f012f"
+            "e1d82ee06e087600217830886a0802d2ff22120201e00902ff22114301400091"
+            "2ef1e6fd164aaa215181164b55219982a021518100993180002801d12ef1e4fd"
+            "0221301cfff73cfd002805d00f480e493130f7f7f9fca4e701340135013f002f"
+            "d0d80120c005f7f76bfe08490848ba3919f029f8002095e7541918011ce91f01"
+            "a0aa400040554000"
+        )
+        image = bytearray(b"\xff" * 0x5000)
+        image[writer_offset:writer_offset + len(writer)] = writer
+        image[0x1800:0x1815] = b"Fujitsu MB84VD2219X\0"
+        image[0x1900:0x190D] = b"fs_fujitsu.c\0"
+        sectors = (0x2000,) * 6 + (0x10000,) * 31
+        struct.pack_into("<I", image, 0x1FFC, 0x1800)
+        struct.pack_into("<38I", image, 0x2000, len(sectors), *sectors)
+        struct.pack_into(
+            "<5I6I", image, 0x3000,
+            0x005F0004, 0, 1, primary_size + 0x4000, 0x1FC000,
+            0x501, writer_offset | 1, 0x701, 0x801, 0x901, 0xA01,
+        )
+
+        self.assertEqual(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size),
+            (primary_size, 0x200000, 0x0004, 0x005F),
+        )
+        boundaries = (
+            list(range(primary_size, primary_size + 0x10000, 0x2000))
+            + list(range(primary_size + 0x10000,
+                         primary_size + 0x400000, 0x10000))
+        )
+        struct.pack_into(
+            f"<{len(boundaries)}I", image, 0x4000, *boundaries
+        )
+        resources = tuple(
+            primary_size + 0x200000 + index * 0x1000
+            for index in range(16)
+        )
+        struct.pack_into("<16I", image, 0x4200, *resources)
+        self.assertEqual(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size),
+            (primary_size, 0x400000, 0x0004, 0x005F),
+        )
+        boundary_end = 0x4000 + (len(boundaries) - 1) * 4
+        struct.pack_into("<I", image, boundary_end, boundaries[-1] - 0x10000)
+        self.assertEqual(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size),
+            (primary_size, 0x200000, 0x0004, 0x005F),
+        )
+        struct.pack_into("<I", image, boundary_end, boundaries[-1])
+        struct.pack_into("<I", image, 0x4204, resources[0] - 0x10)
+        self.assertEqual(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size),
+            (primary_size, 0x200000, 0x0004, 0x005F),
+        )
+        struct.pack_into("<I", image, 0x4204, resources[1])
+        struct.pack_into("<I", image, 0x3018, 0x601)
+        self.assertIsNone(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size)
+        )
+        struct.pack_into("<I", image, 0x3018, writer_offset | 1)
+        struct.pack_into("<I", image, 0x2004, 0x4000)
+        self.assertIsNone(
+            find_adjacent_fujitsu_x16_nor(bytes(image), primary_size)
+        )
 
     def test_rex_5ms_pair_requires_unique_sleep_wrapper_and_timer_shapes(self) -> None:
         sleep = bytes.fromhex(

@@ -4,6 +4,12 @@ from __future__ import annotations
 from collections import deque
 
 
+_WINDOW_RAW8_SEPARATE_COMMAND_PORT = 0x02000000
+_WINDOW_RAW8_SEPARATE_DATA_PORT = 0x02200002
+_WINDOW_RAW8_SEPARATE_WIDTH = 64
+_WINDOW_RAW8_SEPARATE_HEIGHT = 96
+
+
 class PageProtocolMixin:
     def _lcd_page_set_geometry(self) -> None:
         """Adopt a geometry proved by a byte-wide page-controller scan."""
@@ -406,24 +412,65 @@ class PageProtocolMixin:
         # that full raster before the generic 176x220 threshold, it is stronger
         # evidence than the filename fallback.  Known model geometry is left
         # untouched, as a 128x160 transfer can also be a rectangle update.
-        if self.frame_sequence == 0:
-            # One observed FIFO carries one RGB666 pixel as a two-halfword
-            # pair: a two-bit high fragment followed by the lower 16 bits.
-            # Keep this narrower than the ordinary RGB565 fallback: all
-            # 19,200 first words must fit the exact two-bit lane.
-            if (getattr(self.config, "display_geometry_source", "external-config")
-                    == "auto-default"
-                    and port == (0x02000080, 2)
-                    and count == 2 * 120 * 160):
+        source = getattr(
+            self.config, "display_geometry_source", "external-config"
+        )
+        paired_qualified = (
+            source == "runtime:paired-fifo-rgb565"
+            and (self.config.width, self.config.height) == (120, 160)
+            and self._lcd_protocol == "paired-fifo-rgb565"
+        )
+        if paired_qualified and port == (0x02000080, 2):
+            if count < 2 * 120 * 160:
+                return
+            if count == 2 * 120 * 160:
+                values = tuple(stream)
+                paired = len(values) == 2 * 120 * 160 and any(values)
+                if paired:
+                    for index in range(0, len(values), 2):
+                        first, second = values[index], values[index + 1]
+                        if (first & 0x0400 or second & 1
+                                or (first & 0x03FF)
+                                != (second >> 2 & 0x03FF)):
+                            paired = False
+                            break
+                if paired:
+                    for index in range(0, len(values), 2):
+                        first, second = values[index], values[index + 1]
+                        self._pixel(
+                            index // 2,
+                            (first & 0xF800) | (second >> 1 & 0x07FF),
+                        )
+                    self._lcd_raw_frames[port] += 1
+                    self._lcd_raw_port = port
+                    self._lcd_protocol = "paired-fifo-rgb565"
+                    self._publish_frame()
+                stream.clear()
+                self._lcd_raw_counts[port] = 0
+                return
+        packed_rgb666_qualified = (
+            source == "runtime:packed-fifo-rgb666"
+            and (self.config.width, self.config.height) == (120, 160)
+        )
+        # This FIFO stays two-halfword RGB666 after its first full frame.
+        # Hold the complete pair stream so the generic RGB565 fallback cannot
+        # publish each 19,200-word half as a separate corrupted frame.
+        if (port == (0x02000080, 2)
+                and ((self.frame_sequence == 0 and source == "auto-default")
+                     or packed_rgb666_qualified)):
+            if packed_rgb666_qualified and count < 2 * 120 * 160:
+                return
+            if count == 2 * 120 * 160:
                 values = tuple(stream)
                 packed_rgb666 = (
                     len(values) == 2 * 120 * 160 and any(values)
                     and all(not (first & ~0x3) for first in values[::2])
                 )
                 if packed_rgb666:
-                    self._set_display_geometry(
-                        120, 160, source="runtime:packed-fifo-rgb666"
-                    )
+                    if not packed_rgb666_qualified:
+                        self._set_display_geometry(
+                            120, 160, source="runtime:packed-fifo-rgb666"
+                        )
                     framebuffer = self.framebuffer
                     for offset in range(0, len(values), 2):
                         pixel = values[offset] << 16 | values[offset + 1]
@@ -437,6 +484,52 @@ class PageProtocolMixin:
                     self._lcd_raw_port = port
                     self._lcd_protocol = "packed-fifo-rgb666"
                     self._publish_frame()
+                    stream.clear()
+                    # Initial geometry promotion clears these dictionaries.
+                    self._lcd_raw_streams[port] = stream
+                    self._lcd_raw_counts[port] = 0
+                    return
+                if packed_rgb666_qualified:
+                    stream.clear()
+                    self._lcd_raw_counts[port] = 0
+                    return
+        if self.frame_sequence == 0:
+            # Some boards split one RGB565 pixel into two adjacent halfwords:
+            # the first retains red and the upper ten low-color bits, and the
+            # second is the original word shifted left once.  Require every
+            # pair before replacing the ordinary 160x240 raw-FIFO fallback.
+            if (getattr(self.config, "display_geometry_source", "external-config")
+                    == "auto-default"
+                    and port == (0x02000080, 2)
+                    and count == 2 * 120 * 160):
+                values = tuple(stream)
+                paired = len(values) == 2 * 120 * 160 and any(values)
+                if paired:
+                    for index in range(0, len(values), 2):
+                        first, second = values[index], values[index + 1]
+                        if (first & 0x0400 or second & 1
+                                or (first & 0x03FF) != (second >> 2 & 0x03FF)):
+                            paired = False
+                            break
+                if paired:
+                    self._set_display_geometry(
+                        120, 160, source="runtime:paired-fifo-rgb565"
+                    )
+                    for index in range(0, len(values), 2):
+                        first, second = values[index], values[index + 1]
+                        self._pixel(
+                            index // 2,
+                            (first & 0xF800) | (second >> 1 & 0x07FF),
+                        )
+                    self._lcd_raw_frames[port] += 1
+                    self._lcd_raw_port = port
+                    self._lcd_protocol = "paired-fifo-rgb565"
+                    self._publish_frame()
+                    stream.clear()
+                    # Geometry promotion clears the raw dictionaries. Keep
+                    # this proven port and its full-pair capacity for frame 2+.
+                    self._lcd_raw_streams[port] = stream
+                    self._lcd_raw_counts[port] = 0
                     return
             if (getattr(self.config, "display_geometry_source", "external-config")
                     == "auto-default"
@@ -471,7 +564,7 @@ class PageProtocolMixin:
         self._publish_frame()
 
     def _finish_020_raw_segment(self, incoming_command: int) -> None:
-        """Promote the one proven +2 command-delimited 128x160 raster."""
+        """Promote controller-delimited +2 raw RGB565 rasters."""
         port = (0x02000002, 2)
         count = self._lcd_raw_segment_counts[port]
         stream = self._lcd_raw_segment_streams.get(port)
@@ -491,9 +584,287 @@ class PageProtocolMixin:
                 self._lcd_raw_port = port
                 self._lcd_protocol = "raw-fifo@0x02000002"
                 self._publish_frame()
+        elif (stream is not None and count == 120 * 160
+              and incoming_command == 0x1002
+              and getattr(self.config, "display_geometry_source",
+                          "external-config") in (
+                              "auto-default", "runtime:raw-fifo-120x160")):
+            # A full-word 0x1002 terminator closes an exact 120x160 RGB565
+            # scanout on this command/data pair.  Ignore a blank clear pass;
+            # a nonzero complete pass proves both the geometry and encoding.
+            values = tuple(stream)
+            if len(values) == 120 * 160 and any(values):
+                self._set_display_geometry(
+                    120, 160, source="runtime:raw-fifo-120x160"
+                )
+                if (self.config.width, self.config.height) == (120, 160):
+                    for index, pixel in enumerate(values):
+                        self._pixel(index, pixel)
+                    self._lcd_raw_frames[port] += 1
+                    self._lcd_raw_port = port
+                    self._lcd_protocol = "raw-fifo@0x02000002"
+                    self._publish_frame()
         if stream is not None:
             stream.clear()
         self._lcd_raw_segment_counts[port] = 0
+
+    def _lcd_window_raw8_separate_reset(self, *, replay: bool) -> None:
+        """Reject an incomplete separate-data raw8 candidate without loss."""
+        events = tuple(self._lcd_window_raw8_separate_events)
+        self._lcd_window_raw8_separate_events.clear()
+        self._lcd_window_raw8_separate_stage = ""
+        self._lcd_window_raw8_separate_axis.clear()
+        self._lcd_window_raw8_separate_window = None
+        self._lcd_window_raw8_separate_payload.clear()
+        if replay:
+            for address, size, value in events:
+                self._lcd_route_write(None, 0, address, size, value, None)
+
+    def _lcd_window_raw8_separate_publish(
+        self, window: tuple[int, int, int, int], payload: bytes,
+    ) -> bool:
+        """Render a complete 64x96 raw8 window as a grayscale preview."""
+        x0, x1, y0, y1 = window
+        if not self._lcd_window_raw8_separate_qualified:
+            if window != (0, _WINDOW_RAW8_SEPARATE_WIDTH - 1,
+                          0, _WINDOW_RAW8_SEPARATE_HEIGHT - 1):
+                return False
+            self._set_display_geometry(
+                _WINDOW_RAW8_SEPARATE_WIDTH, _WINDOW_RAW8_SEPARATE_HEIGHT,
+                source="runtime:window-raw8",
+            )
+            if (self.config.width, self.config.height) != (
+                    _WINDOW_RAW8_SEPARATE_WIDTH, _WINDOW_RAW8_SEPARATE_HEIGHT):
+                return False
+            self._lcd_window_raw8_separate_qualified = True
+        elif (self.config.width, self.config.height) != (
+                _WINDOW_RAW8_SEPARATE_WIDTH, _WINDOW_RAW8_SEPARATE_HEIGHT):
+            return False
+        ram = self._lcd_window_raw8_separate_ram
+        width = x1 - x0 + 1
+        for index, shade in enumerate(payload):
+            x = x0 + index % width
+            y = y0 + index // width
+            ram[y * _WINDOW_RAW8_SEPARATE_WIDTH + x] = shade
+            offset = (y * self.config.width + x) * 3
+            self.framebuffer[offset:offset + 3] = bytes((shade,)) * 3
+        self._lcd_protocol = "window-raw8-gray"
+        self._publish_frame()
+        return True
+
+    def _lcd_window_raw8_separate_mismatch(
+        self, event: tuple[int, int, int],
+    ) -> bool:
+        self._lcd_window_raw8_separate_reset(replay=True)
+        if event == (_WINDOW_RAW8_SEPARATE_COMMAND_PORT, 1, 0x07):
+            self._lcd_window_raw8_separate_events.append(event)
+            self._lcd_window_raw8_separate_stage = "x"
+            return True
+        return False
+
+    def _lcd_window_raw8_separate_write(self, address: int, size: int,
+                                        value: int) -> bool:
+        """Recognise 07/x/06/y/08 raw8 windows on a separate data aperture."""
+        event = (address, size, value)
+        stage = self._lcd_window_raw8_separate_stage
+        data = (address == _WINDOW_RAW8_SEPARATE_DATA_PORT and size == 1
+                and 0 <= value <= 0xFF)
+        if not stage:
+            if event == (_WINDOW_RAW8_SEPARATE_COMMAND_PORT, 1, 0x07):
+                self._lcd_window_raw8_separate_events.append(event)
+                self._lcd_window_raw8_separate_stage = "x"
+                return True
+            return False
+        if stage == "x":
+            if not data:
+                return self._lcd_window_raw8_separate_mismatch(event)
+            self._lcd_window_raw8_separate_events.append(event)
+            self._lcd_window_raw8_separate_axis.append(value)
+            if len(self._lcd_window_raw8_separate_axis) < 2:
+                return True
+            x0, x1 = self._lcd_window_raw8_separate_axis
+            if not (0 <= x0 <= x1 < _WINDOW_RAW8_SEPARATE_WIDTH):
+                self._lcd_window_raw8_separate_events.pop()
+                return self._lcd_window_raw8_separate_mismatch(event)
+            self._lcd_window_raw8_separate_axis.clear()
+            self._lcd_window_raw8_separate_window = (x0, x1, -1, -1)
+            self._lcd_window_raw8_separate_stage = "y-command"
+            return True
+        if stage == "y-command":
+            if event == (_WINDOW_RAW8_SEPARATE_COMMAND_PORT, 1, 0x06):
+                self._lcd_window_raw8_separate_events.append(event)
+                self._lcd_window_raw8_separate_stage = "y"
+                return True
+            return self._lcd_window_raw8_separate_mismatch(event)
+        if stage == "y":
+            if not data:
+                return self._lcd_window_raw8_separate_mismatch(event)
+            self._lcd_window_raw8_separate_events.append(event)
+            self._lcd_window_raw8_separate_axis.append(value)
+            if len(self._lcd_window_raw8_separate_axis) < 2:
+                return True
+            y0, y1 = self._lcd_window_raw8_separate_axis
+            if not (0 <= y0 <= y1 < _WINDOW_RAW8_SEPARATE_HEIGHT):
+                self._lcd_window_raw8_separate_events.pop()
+                return self._lcd_window_raw8_separate_mismatch(event)
+            x0, x1, _, _ = self._lcd_window_raw8_separate_window
+            self._lcd_window_raw8_separate_axis.clear()
+            self._lcd_window_raw8_separate_window = (x0, x1, y0, y1)
+            self._lcd_window_raw8_separate_stage = "pixels-command"
+            return True
+        if stage == "pixels-command":
+            if event == (_WINDOW_RAW8_SEPARATE_COMMAND_PORT, 1, 0x08):
+                self._lcd_window_raw8_separate_events.append(event)
+                self._lcd_window_raw8_separate_stage = "pixels"
+                return True
+            return self._lcd_window_raw8_separate_mismatch(event)
+        if not data:
+            return self._lcd_window_raw8_separate_mismatch(event)
+        self._lcd_window_raw8_separate_events.append(event)
+        self._lcd_window_raw8_separate_payload.append(value)
+        x0, x1, y0, y1 = self._lcd_window_raw8_separate_window
+        expected = (x1 - x0 + 1) * (y1 - y0 + 1)
+        if len(self._lcd_window_raw8_separate_payload) < expected:
+            return True
+        if self._lcd_window_raw8_separate_publish(
+                self._lcd_window_raw8_separate_window,
+                bytes(self._lcd_window_raw8_separate_payload)):
+            self._lcd_window_raw8_separate_reset(replay=False)
+        else:
+            self._lcd_window_raw8_separate_reset(replay=True)
+        return True
+
+    def _lcd_window_raw8_reset(self, *, replay: bool) -> None:
+        """Drop one incomplete byte-window candidate without losing traffic."""
+        header = tuple(self._lcd_window_raw8_header)
+        payload = bytes(self._lcd_window_raw8_payload)
+        self._lcd_window_raw8_header.clear()
+        self._lcd_window_raw8_payload.clear()
+        self._lcd_window_raw8_window = None
+        if not replay:
+            return
+        for address, size, value in header:
+            self._lcd_route_write(None, 0, address, size, value, None)
+        for value in payload:
+            self._lcd_route_write(
+                None, 0, 0x02000002, 1, value, None
+            )
+
+    def _lcd_window_raw8_publish(self) -> None:
+        """Render one area-closed raw8 window as an encoding-neutral preview."""
+        window = self._lcd_window_raw8_window
+        if window is None:
+            return
+        rgb332 = bool(
+            self._lcd_window_raw8_header
+            and self._lcd_window_raw8_header[0][2] == 0x21
+        )
+        x0, y0, x1, y1 = window
+        payload = bytes(self._lcd_window_raw8_payload)
+        if not self._lcd_window_raw8_qualified:
+            self._set_display_geometry(
+                128, 128, source="runtime:window-raw8-preview"
+            )
+            if (self.config.width, self.config.height) != (128, 128):
+                self._lcd_window_raw8_reset(replay=True)
+                return
+            self._lcd_window_raw8_qualified = True
+        width = x1 - x0 + 1
+        cursor = 0
+        for y in range(y0, y1 + 1):
+            row = payload[cursor:cursor + width]
+            cursor += width
+            raw = y * 128 + x0
+            self._lcd_window_raw8_ram[raw:raw + width] = row
+            if rgb332:
+                for index, packed in enumerate(row):
+                    self._lcd_028_rgb332_pixel(raw + index, packed)
+            else:
+                rgb = bytearray(width * 3)
+                rgb[0::3] = row
+                rgb[1::3] = row
+                rgb[2::3] = row
+                offset = raw * 3
+                self.framebuffer[offset:offset + len(rgb)] = rgb
+        self._lcd_window_raw8_header.clear()
+        self._lcd_window_raw8_payload.clear()
+        self._lcd_window_raw8_window = None
+        self._lcd_protocol = (
+            "window-raw8-rgb332" if rgb332 else "window-raw8-preview"
+        )
+        self._publish_frame()
+
+    def _lcd_window_raw8_write(self, address: int, size: int,
+                               value: int) -> bool:
+        """Recognise area-closed byte windows, including proven axis reorder."""
+        start_31 = (0x02000000, 1, 0x31)
+        start_21 = (0x02000000, 1, 0x21)
+        starts = ((start_31, start_21) if self._lcd_window_raw8_qualified
+                  else (start_31,))
+        event = (address, size, value)
+        header = self._lcd_window_raw8_header
+        window = self._lcd_window_raw8_window
+        if window is not None:
+            if event in starts:
+                self._lcd_window_raw8_reset(replay=True)
+                header.append(event)
+                return True
+            if address == 0x02000000 and size == 1 and 0 <= value <= 0xFF:
+                # Observed controller commands can interleave a payload.
+                self._lcd_route_write(None, 0, address, size, value, None)
+                return True
+            if address == 0x02000002 and size == 1 and 0 <= value <= 0xFF:
+                self._lcd_window_raw8_payload.append(value)
+                x0, y0, x1, y1 = window
+                if len(self._lcd_window_raw8_payload) == (
+                        (x1 - x0 + 1) * (y1 - y0 + 1)):
+                    self._lcd_window_raw8_publish()
+                return True
+            self._lcd_window_raw8_reset(replay=True)
+            self._lcd_route_write(None, 0, address, size, value, None)
+            return True
+        if not header:
+            if event not in starts:
+                return False
+            header.append(event)
+            return True
+        expected_axis = 0x21 if header[0][2] == 0x31 else 0x31
+        if (event in starts
+                and not (len(header) == 3 and value == expected_axis)):
+            self._lcd_window_raw8_reset(replay=True)
+            header.append(event)
+            return True
+        if address != 0x02000000 or size != 1 or not 0 <= value <= 0xFF:
+            self._lcd_window_raw8_reset(replay=True)
+            self._lcd_route_write(None, 0, address, size, value, None)
+            return True
+        if len(header) == 3 and value != expected_axis:
+            header.append(event)
+            self._lcd_window_raw8_reset(replay=True)
+            return True
+        header.append(event)
+        if len(header) < 6:
+            return True
+        first0, first1, second0, second1 = (
+            header[1][2], header[2][2], header[4][2], header[5][2])
+        if header[0][2] == 0x31:
+            y0, y1, x0, x1 = first0, first1, second0, second1
+        else:
+            # The qualified UI writer uses 0x21 for its y bounds, then 0x31
+            # for x, and streams x-fast RGB332 rows.
+            y0, y1, x0, x1 = first0, first1, second0, second1
+        valid = (
+            0 <= x0 <= x1 < 128 and 0 <= y0 <= y1 < 128
+            and (self._lcd_window_raw8_qualified
+                 or (x0, y0, x1, y1) == (0, 0, 127, 127))
+            and (not self._lcd_window_raw8_qualified
+                 or (self.config.width, self.config.height) == (128, 128))
+        )
+        if not valid:
+            self._lcd_window_raw8_reset(replay=True)
+            return True
+        self._lcd_window_raw8_window = (x0, y0, x1, y1)
+        return True
 
     def _lcd_byte_020_row_reset(self, *, replay: bool) -> None:
         """Reject an incomplete byte-row candidate without swallowing traffic."""

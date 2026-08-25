@@ -303,7 +303,7 @@ def normalised_flash_size(size: int, address_limit: int) -> int:
 
 
 def referenced_flash_extent(image: bytes, load_address: int = 0) -> int:
-    """Infer NOR capacity from boot copy tables even when their source is absent."""
+    """Infer NOR capacity from closed references into an absent dump tail."""
     extent = 0
     for offset in range(0, min(len(image) - 12, 0x20000) + 1, 4):
         source_address, target, size = struct.unpack_from("<3I", image, offset)
@@ -315,6 +315,34 @@ def referenced_flash_extent(image: bytes, load_address: int = 0) -> int:
                 and source > offset + 0x20
                 and source + size <= 0x02000000):
             extent = max(extent, source + size)
+    sentinel_extents: set[int] = set()
+    for middle in find_all(image, bytes.fromhex("00689842")):
+        position = middle - 4
+        if position < 0 or position & 1 or position + 10 > len(image):
+            continue
+        first, second, _load, _compare, branch = struct.unpack_from(
+            "<5H", image, position
+        )
+        if (first & 0xFF00 != 0x4800
+                or second & 0xFF00 != 0x4B00
+                or branch & 0xFF00 != 0xD000):
+            continue
+        displacement = (branch & 0xFF) << 1
+        if displacement & 0x100:
+            displacement -= 0x200
+        success = position + 12 + displacement
+        if not 0 <= success <= len(image) - 2:
+            continue
+        address = thumb_literal_value(image, position, 0)
+        expected = thumb_literal_value(image, position + 2, 3)
+        if address is None or expected in (None, 0, 0xFFFFFFFF, address):
+            continue
+        source = address - load_address
+        if (0x00800000 <= source < 0x01000000
+                and source % PAGE == 0 and source >= len(image)):
+            sentinel_extents.add(source + 4)
+    if len(sentinel_extents) == 1:
+        extent = max(extent, next(iter(sentinel_extents)))
     return extent
 
 

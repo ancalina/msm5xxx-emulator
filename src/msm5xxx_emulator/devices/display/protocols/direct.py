@@ -36,8 +36,194 @@ _028_BE_WORD_PREFIX = (
     (0x0003, 0x6C78),
 )
 
+# A split-lane 0x028 controller sends a logical command/data pair as
+# base:0, base:command<<8, +0x80:data-high, +0x80:data-low<<8.  Keep this
+# dialect separate from the ordinary +2 and indexed 0x028 paths.
+_028_SPLIT16_COMMAND_PORT = 0x02800000
+_028_SPLIT16_DATA_PORT = 0x02800080
+_028_SPLIT16_PREFIX = (
+    (0x00, 0x0001), (0x07, 0x0000), (0x11, 0x0001), (0x12, 0x000A),
+    (0x13, 0x131F), (0x10, 0x0004), (0x10, 0x0064), (0x11, 0x0001),
+    (0x12, 0x001A), (0x13, 0x331F), (0x10, 0x0760), (0x15, 0x0002),
+    (0x01, 0x0113), (0x02, 0x0700), (0x03, 0x1030), (0x08, 0x0808),
+    (0x09, 0x0000), (0x0B, 0x000B), (0x0C, 0x0000), (0x0D, 0x3229),
+    (0x0E, 0x0000), (0x23, 0x0000), (0x24, 0x0000), (0x30, 0x0002),
+    (0x31, 0x0204), (0x32, 0x0504), (0x33, 0x0105), (0x34, 0x0000),
+    (0x35, 0x0003), (0x36, 0x0004), (0x37, 0x0701), (0x38, 0x0009),
+    (0x39, 0x0009), (0x40, 0x0000), (0x41, 0x0000), (0x42, 0x9F00),
+    (0x43, 0xFFA0), (0x44, 0x7B04), (0x45, 0x9F00), (0x44, 0x0300),
+    (0x45, 0x9F00), (0x21, 0x0000),
+)
+_028_SPLIT16_PHYSICAL_WIDTH = 128
+_028_SPLIT16_VISIBLE_X = 4
+_028_SPLIT16_VISIBLE_WIDTH = 120
+_028_SPLIT16_HEIGHT = 160
+_028_SPLIT16_BOOTSTRAP_WINDOWS = (
+    (0, 3, 0, 159), (124, 127, 0, 159), (4, 123, 0, 159),
+)
+
 
 class DirectProtocolMixin:
+    def _lcd_028_split16_replay(
+        self, events: tuple[tuple[int, int, int], ...]
+    ) -> None:
+        """Return an unproven split-lane stream to the established paths."""
+        replaying = getattr(self, "_lcd_028_split16_replaying", False)
+        self._lcd_028_split16_replaying = True
+        try:
+            for address, size, value in events:
+                self._lcd_route_write(None, 0, address, size, value, None)
+        finally:
+            self._lcd_028_split16_replaying = replaying
+
+    def _lcd_028_split16_emit(self, command: int, value: int) -> bool:
+        """Consume one qualified logical pair without touching guest state."""
+        expected = self._lcd_028_split16_expected
+        if command == 0x44:
+            x0, x1 = value & 0xFF, value >> 8
+            if expected or not 0 <= x0 <= x1 < _028_SPLIT16_PHYSICAL_WIDTH:
+                return False
+            self._lcd_028_split16_pending_x = (x0, x1)
+            return True
+        if command == 0x45:
+            pending_x = self._lcd_028_split16_pending_x
+            y0, y1 = value & 0xFF, value >> 8
+            if (expected or pending_x is None
+                    or not 0 <= y0 <= y1 < _028_SPLIT16_HEIGHT):
+                return False
+            self._lcd_028_split16_window = (*pending_x, y0, y1)
+            self._lcd_028_split16_pending_x = None
+            return True
+        if command == 0x21:
+            window = self._lcd_028_split16_window
+            if expected or window is None or value != window[0]:
+                return False
+            x0, x1, y0, y1 = window
+            self._lcd_028_split16_expected = (x1 - x0 + 1) * (y1 - y0 + 1)
+            self._lcd_028_split16_streamed = 0
+            return True
+        if command != 0x22:
+            return not expected
+
+        window = self._lcd_028_split16_window
+        streamed = self._lcd_028_split16_streamed
+        if window is None or not expected or streamed >= expected:
+            return False
+        x0, x1, y0, _y1 = window
+        width = x1 - x0 + 1
+        x, y = x0 + streamed % width, y0 + streamed // width
+        offset = (y * _028_SPLIT16_PHYSICAL_WIDTH + x) * 2
+        self._lcd_028_split16_ram[offset] = value >> 8
+        self._lcd_028_split16_ram[offset + 1] = value & 0xFF
+        if self._lcd_028_split16_frame_ready:
+            if _028_SPLIT16_VISIBLE_X <= x < (_028_SPLIT16_VISIBLE_X
+                                               + _028_SPLIT16_VISIBLE_WIDTH):
+                self._pixel(y * _028_SPLIT16_VISIBLE_WIDTH
+                            + x - _028_SPLIT16_VISIBLE_X, value)
+        self._lcd_028_split16_streamed = streamed + 1
+        if self._lcd_028_split16_streamed < expected:
+            return True
+
+        self._lcd_028_split16_expected = 0
+        if not self._lcd_028_split16_frame_ready:
+            stage = self._lcd_028_split16_bootstrap_stage
+            if (stage >= len(_028_SPLIT16_BOOTSTRAP_WINDOWS)
+                    or window != _028_SPLIT16_BOOTSTRAP_WINDOWS[stage]):
+                return False
+            self._lcd_028_split16_bootstrap_stage = stage + 1
+            if self._lcd_028_split16_bootstrap_stage < len(
+                    _028_SPLIT16_BOOTSTRAP_WINDOWS):
+                return True
+            self._set_display_geometry(
+                _028_SPLIT16_VISIBLE_WIDTH, _028_SPLIT16_HEIGHT,
+                source="runtime:split-halfword-rgb565",
+            )
+            if (self.config.width, self.config.height) != (
+                    _028_SPLIT16_VISIBLE_WIDTH, _028_SPLIT16_HEIGHT):
+                return False
+            for row in range(_028_SPLIT16_HEIGHT):
+                source = (row * _028_SPLIT16_PHYSICAL_WIDTH
+                          + _028_SPLIT16_VISIBLE_X) * 2
+                for column in range(_028_SPLIT16_VISIBLE_WIDTH):
+                    pixel = (self._lcd_028_split16_ram[source] << 8
+                             | self._lcd_028_split16_ram[source + 1])
+                    self._pixel(row * _028_SPLIT16_VISIBLE_WIDTH + column, pixel)
+                    source += 2
+            self._lcd_028_split16_frame_ready = True
+            self._lcd_protocol = "split-halfword-rgb565"
+            self._publish_frame()
+            return True
+
+        if (x0 < _028_SPLIT16_VISIBLE_X + _028_SPLIT16_VISIBLE_WIDTH
+                and x1 >= _028_SPLIT16_VISIBLE_X):
+            self._lcd_protocol = "split-halfword-rgb565"
+            self._publish_frame()
+        return True
+
+    def _lcd_028_split16_write(self, address: int, size: int,
+                               value: int) -> bool:
+        """Promote only the complete proven split-lane 128x160 grammar."""
+        if getattr(self, "_lcd_028_split16_disabled", False):
+            return False
+        event = (address, size, value)
+        events = self._lcd_028_split16_events
+        if not events:
+            if event != (_028_SPLIT16_COMMAND_PORT, 2, 0):
+                return False
+            events.append(event)
+            return True
+
+        slot = len(events) % 4
+        expected_port = (_028_SPLIT16_COMMAND_PORT if slot < 2
+                         else _028_SPLIT16_DATA_PORT)
+        if (address != expected_port or size != 2 or not 0 <= value <= 0xFFFF
+                or (slot == 0 and value != 0)
+                or (slot in (1, 3) and value & 0xFF)):
+            held = tuple(events) + (event,)
+            events.clear()
+            self._lcd_028_split16_replay(held)
+            return True
+
+        events.append(event)
+        if len(events) % 4:
+            return True
+        command = events[-3][2] >> 8
+        data = events[-2][2] & 0xFF00 | events[-1][2] >> 8
+        if not self._lcd_028_split16_qualified:
+            prefix_index = len(events) // 4 - 1
+            if (prefix_index >= len(_028_SPLIT16_PREFIX)
+                    or (command, data) != _028_SPLIT16_PREFIX[prefix_index]):
+                held = tuple(events)
+                events.clear()
+                self._lcd_028_split16_replay(held)
+                return True
+            if prefix_index + 1 < len(_028_SPLIT16_PREFIX):
+                return True
+            source = getattr(self.config, "display_geometry_source",
+                             "external-config")
+            if ((self.config.width, self.config.height) != (
+                    _028_SPLIT16_VISIBLE_WIDTH, _028_SPLIT16_HEIGHT)
+                    and (source != "auto-default"
+                         or self.framebuffer.count(0) != len(self.framebuffer))):
+                held = tuple(events)
+                events.clear()
+                self._lcd_028_split16_replay(held)
+                return True
+            self._lcd_028_split16_qualified = True
+            for prefix_command, prefix_data in _028_SPLIT16_PREFIX:
+                if not self._lcd_028_split16_emit(prefix_command, prefix_data):
+                    raise AssertionError("split-lane prefix state")
+            events.clear()
+            return True
+
+        held = tuple(events)
+        events.clear()
+        if self._lcd_028_split16_emit(command, data):
+            return True
+        self._lcd_028_split16_disabled = True
+        self._lcd_028_split16_replay(held)
+        return True
+
     def _lcd_028_be_word_replay(self,
                                  events: tuple[tuple[int, int, int], ...]) -> None:
         """Return an unproven byte packet stream to the existing 0x028 paths."""

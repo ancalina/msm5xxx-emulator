@@ -13,7 +13,10 @@ import unittest
 from unittest import mock
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
 
-from msm5xxx_emulator.detection.boot import PRIMARY_FLASH_PROBE_SIGNATURE
+from msm5xxx_emulator.detection.boot import (
+    DMD_DOWNLOAD_5500_LITERALS,
+    PRIMARY_FLASH_PROBE_SIGNATURE,
+)
 
 
 EXPERIMENT = Path(__file__).parents[1] / "experiments/qemu-tcg"
@@ -32,6 +35,299 @@ class QEMUInputTransportTests(unittest.TestCase):
         "no_key": 0x0F,
         "single_key_column_sense": (0x0E, 0x0D, 0x0B, 0x07),
     }
+
+    def test_ready_poll_property_is_explicit_and_fail_closed(self) -> None:
+        compact = {
+            "signature": "thumb-lsrs-bhs-pulse-v1",
+            "status_address": 0x030007B4,
+            "mask": 8,
+            "pulse_address": 0x03000600,
+            "entries": [0x100],
+        }
+        control = {
+            "signature": "thumb-byte-ready-pulse-control-v1",
+            "admission": "temporary-evidence-gated",
+            "status_address": 0x03000F14,
+            "mask": 8,
+            "pulse_address": 0x03000700,
+            "control_address": 0x03000F1C,
+            "control_value": 0x20,
+            "status_read_pc_offset": 4,
+            "pulse_set_pc_offset": 0x18,
+            "pulse_clear_pc_offset": 0x1C,
+            "control_pc_offset": 0x22,
+            "entries": [0xD5C],
+        }
+        control_uart = {
+            **control,
+            "signature": "thumb-byte-ready-pulse-control-uart-empty-v1",
+            "uart_rx_empty_read_pc_offset": 0x96,
+        }
+        rotated = {
+            "signature": "thumb-lsrs-bcc-pulse-rotated-v1",
+            "admission": "temporary-evidence-gated",
+            "status_address": 0x03000F14,
+            "mask": 8,
+            "pulse_address": 0x03000700,
+            "status_read_pc_offset": 0x10,
+            "pulse_set_pc_offset": 0x0C,
+            "pulse_clear_pc_offset": 0x0E,
+            "entries": [0x1100],
+        }
+        uart = {
+            "signature": "thumb-uart-csr-sr-rx-empty-v1",
+            "admission": "temporary-evidence-gated",
+            "status_address": 0x030007B4,
+            "mask": 8,
+            "pulse_address": 0x03000600,
+            "status_read_pc_offset": 2,
+            "pulse_set_pc_offset": 0x0C,
+            "pulse_clear_pc_offset": 0x10,
+            "uart_rx_empty_read_pc_offset": 0xA0,
+            "entries": [0x2314],
+        }
+        uart_framed = {
+            **uart,
+            "uart_rx_empty_frame_read_pc_offset": 0x100,
+        }
+        lcd = {
+            "signature": "thumb-lcd-halfword-busy-clear-v1",
+            "admission": "temporary-evidence-gated",
+            "status_address": 0x0280000C,
+            "mask": 8,
+            "command_address": 0x02800008,
+            "command_value": 8,
+            "status_read_pc_offset": 6,
+            "command_write_pc_offset": 4,
+            "entries": [0x1B437A],
+        }
+        self.assertEqual(MODULE.qemu_ready_poll_property(compact), (
+            "ready-poll=30007b4:8:3000600:100", None,
+        ))
+        self.assertEqual(MODULE.qemu_ready_poll_property(control), (
+            "ready-poll-control=3000f14:8:3000700:3000f1c:20:d5c:4:18:1c:22",
+            None,
+        ))
+        self.assertEqual(MODULE.qemu_ready_poll_property(control_uart), (
+            "ready-poll-control=3000f14:8:3000700:3000f1c:20:d5c:4:18:1c:22:96",
+            None,
+        ))
+        self.assertEqual(MODULE.qemu_ready_poll_property(rotated), (
+            "ready-poll=3000f14:8:3000700:1100:10:c:e", None,
+        ))
+        self.assertEqual(MODULE.qemu_ready_poll_property(uart), (
+            "ready-poll=30007b4:8:3000600:2314:2:c:10:a0", None,
+        ))
+        self.assertEqual(MODULE.qemu_ready_poll_property(uart_framed), (
+            "ready-poll=30007b4:8:3000600:2314:2:c:10:a0:100", None,
+        ))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **rotated,
+            "signature": "thumb-lsrs-bcc-pulse-rotated-followup-v1",
+            "followup_entry": 0x11A8,
+            "followup_mask": 1,
+        }), (None, "unsupported-signature"))
+        self.assertEqual(MODULE.qemu_ready_poll_property(lcd), (
+            "lcd-status-poll=280000c:8:2800008:8:1b437a:6:4", None,
+        ))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **compact, "signature": "future-ready-v2",
+        }), (None, "unsupported-signature"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **compact, "entries": [0x100, 0x200],
+        }), ("ready-poll-sites=30007b4:8:3000600:100;200", None))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **rotated, "entries": [0x100, 0x200],
+        }), (None, "ambiguous-entry-count"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **compact, "entries": [0x100, 0x100],
+        }), (None, "malformed-entries"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **compact, "entries": [0x100 + 2 * index for index in range(9)],
+        }), (None, "entry-count-limit"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **compact, "entries": (0x100,),
+        }), (None, "malformed-entries"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **compact, "mask": "8",
+        }), (None, "malformed-fields"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **control, "admission": "experimental-only",
+        }), (None, "unsupported-admission"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **rotated, "admission": "experimental-only",
+        }), (None, "unsupported-admission"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **lcd, "admission": "experimental-only",
+        }), (None, "unsupported-admission"))
+        self.assertEqual(MODULE.qemu_ready_poll_property({
+            **uart, "admission": "experimental-only",
+        }), (None, "unsupported-admission"))
+
+    def test_uart_csr_write_does_not_leak_into_sr_readback(self) -> None:
+        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        start = source.index("static uint64_t msm5xxx_poc_ready_status_read")
+        end = source.index("\nstatic ", start + 1)
+        read_body = source[start:end]
+        uart_start = read_body.index("if (s->ready_uart_rx_empty_enabled")
+        uart_end = read_body.index("if (!primary_read)", uart_start)
+        uart_body = read_body[uart_start:uart_end]
+
+        self.assertIn("#define MSM5XXX_POC_UART_SR_IDLE 0x0c", source)
+        self.assertIn("return MSM5XXX_POC_UART_SR_IDLE;", uart_body)
+        self.assertNotIn("ready_status_backing", uart_body)
+
+    def test_sbi_property_keeps_legacy_and_closes_bootstrap_only(self) -> None:
+        profile = {
+            "signature": "thumb-sbi-bootstrap-only-v1",
+            "admission": "temporary-evidence-gated",
+            "accepted": True,
+            "base_address": 0x03000780,
+            "bootstrap": [
+                [0, 1, 0x45], [0, 1, 0xC5], [4, 2, 0x085F],
+                [0x0C, 2, 0x041F], [0x10, 1, 0], [0x10, 1, 1],
+            ],
+            "validation": [[0, 2, None], [0x0C, 2, 0x0900], [0, 2, None]],
+            "entries": [0x580],
+        }
+        legacy = SimpleNamespace(
+            chipset="MSM5000", board_adc_reader_address=0x4050,
+            sbi_bootstrap_profile=profile,
+        )
+        self.assertEqual(MODULE.qemu_sbi_property(legacy), ("sbi=on", None))
+        bootstrap_only = SimpleNamespace(
+            chipset="MSM5000", board_adc_reader_address=None,
+            sbi_bootstrap_profile=profile,
+        )
+        self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only), (
+            "sbi=on,sbi-bootstrap-only=on", None,
+        ))
+        bootstrap_only.sbi_bootstrap_profile = {**profile, "entries": [0x581]}
+        self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only),
+                         (None, "malformed-entries"))
+        bootstrap_only.sbi_bootstrap_profile = profile
+        bootstrap_only.chipset = "MSM5100"
+        self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only),
+                         (None, "unsupported-chipset"))
+
+    def test_board_revision_property_is_complete_and_fail_closed(self) -> None:
+        config = SimpleNamespace(
+            board_revision_register=0x0300075C,
+            board_revision_value=0x20F5,
+        )
+        self.assertEqual(MODULE.qemu_board_revision_property(config), (
+            "board-revision=300075c:20f5", None,
+        ))
+        config.board_revision_value = None
+        self.assertEqual(MODULE.qemu_board_revision_property(config),
+                         (None, "malformed-pair"))
+        config.board_revision_register = 0x0300075D
+        config.board_revision_value = 0x20F5
+        self.assertEqual(MODULE.qemu_board_revision_property(config),
+                         (None, "unsupported-register"))
+        config.board_revision_register = 0x04000000
+        self.assertEqual(MODULE.qemu_board_revision_property(config),
+                         (None, "unsupported-register"))
+
+    def test_adjacent_amd_secondary_nor_requires_closed_class(self) -> None:
+        config = SimpleNamespace(
+            chipset="MSM5500",
+            load_address=0,
+            flash_size=0x800000,
+            secondary_flash_address=0x800000,
+            secondary_flash_size=0x800000,
+            ram_base=0x1000000,
+            flash_id_value=0x227E0001,
+        )
+        image = b"fsd_amd.c\0...\x0b$USER_DIRS\0"
+        self.assertEqual(
+            MODULE.adjacent_amd_x16_flash_ids(config, image),
+            (0x0001, 0x227E),
+        )
+        for field, value in (
+                ("chipset", "MSM5100"),
+                ("secondary_flash_address", 0x900000),
+                ("ram_base", 0x1100000),
+                ("flash_id_value", 0x22500001)):
+            rejected = SimpleNamespace(**vars(config))
+            setattr(rejected, field, value)
+            self.assertIsNone(
+                MODULE.adjacent_amd_x16_flash_ids(rejected, image)
+            )
+        self.assertIsNone(MODULE.adjacent_amd_x16_flash_ids(
+            config, b"\x0b$USER_DIRS\0",
+        ))
+        self.assertIsNone(MODULE.adjacent_amd_x16_flash_ids(
+            config, b"fsd_amd.c\0",
+        ))
+        exact = SimpleNamespace(**vars(config))
+        exact.chipset = "MSM5100"
+        profile = (0x800000, 0x800000, 0x0001, 0x227E)
+        function_globals = MODULE.adjacent_amd_x16_flash_ids.__globals__
+        with mock.patch.dict(function_globals, {
+                "find_adjacent_amd_x16_nor": mock.Mock(return_value=profile),
+        }):
+            self.assertEqual(
+                MODULE.adjacent_amd_x16_flash_ids(exact, b"firmware"),
+                (0x0001, 0x227E),
+            )
+        with mock.patch.dict(function_globals, {
+                "find_adjacent_amd_x16_nor": mock.Mock(return_value=None),
+        }):
+            self.assertIsNone(
+                MODULE.adjacent_amd_x16_flash_ids(exact, b"firmware")
+            )
+
+    def test_dmd_5500_bridge_requires_exact_static_and_runtime_class(
+            self) -> None:
+        routine = bytearray(b"\xff" * 0x54)
+        for offset, value in {
+                0: bytes.fromhex("b0b50020"),
+                4: bytes.fromhex("00f000f8"),
+                8: bytes.fromhex("002803d10c480088"),
+                16: bytes.fromhex("6c2803d00020b0bc08bc1847094800248480"),
+                34: bytes.fromhex("00f000f8"),
+                38: bytes.fromhex("084f084d02e0381c"),
+                46: bytes.fromhex("00f000f8"),
+                50: bytes.fromhex("e889064b9842f8d1ec810120eae7"),
+                64: DMD_DOWNLOAD_5500_LITERALS,
+        }.items():
+            routine[offset:offset + len(value)] = value
+        image = bytearray(b"\xff" * 0x400)
+        image[0x100:0x154] = routine
+        image[0x300:0x310] = b"dmddown_5500.c\0"
+        config = SimpleNamespace(
+            chipset="MSM5500", dmd_download_address=0x100,
+            load_address=0, flash_size=len(image),
+        )
+
+        self.assertEqual(
+            MODULE.qemu_dmd_5500_property(bytes(image), config),
+            ("dmd-5500=100:6c", None),
+        )
+        config.dmd_download_address += 2
+        self.assertEqual(
+            MODULE.qemu_dmd_5500_property(bytes(image), config),
+            (None, "address-mismatch"),
+        )
+        config.dmd_download_address -= 2
+        config.chipset = "MSM5100"
+        self.assertEqual(
+            MODULE.qemu_dmd_5500_property(bytes(image), config),
+            (None, "unsupported-chipset"),
+        )
+        image[0x100 + 17] ^= 1
+        self.assertEqual(
+            MODULE.qemu_dmd_5500_property(bytes(image), config),
+            (None, None),
+        )
+
+        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        self.assertIn("qemu_in_vcpu_thread()", source)
+        self.assertIn("msm5xxx_poc_dmd_5500_pc_is(s, 0x20)", source)
+        self.assertIn("old == UINT16_MAX", source)
+        self.assertIn("!s->dmd_5500_pending", source)
+        self.assertIn("msm5xxx_poc_dmd_5500_pc_is(s, 0x32)", source)
 
     def test_loopback_transport_and_cancelled_picker(self) -> None:
         listener = MODULE.loopback_listener()
@@ -362,6 +658,59 @@ class QEMUInputTransportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.qemu_memory_profile(config, registers)
 
+    def test_uis_idle_observer_requires_one_closed_pair(self) -> None:
+        accepted = SimpleNamespace(
+            uis_idle_entry_address=0x000CC348,
+            uis_idle_body_address=0x000CC4A6,
+        )
+        self.assertEqual(
+            MODULE.qemu_uis_idle_observer_addresses(accepted),
+            (0x000CC348, 0x000CC4A6),
+        )
+        compact = SimpleNamespace(
+            uis_idle_entry_address=0x000C1D88,
+            uis_idle_body_address=0x000C1E86,
+        )
+        self.assertEqual(
+            MODULE.qemu_uis_idle_observer_addresses(compact),
+            (0x000C1D88, 0x000C1E86),
+        )
+        for delta in (0x8B8, 0x908):
+            draw = SimpleNamespace(
+                uis_idle_entry_address=0x000F0000,
+                uis_idle_body_address=0x000F0000 + delta,
+            )
+            with self.subTest(delta=delta):
+                self.assertEqual(
+                    MODULE.qemu_uis_idle_observer_addresses(draw),
+                    (0x000F0000, 0x000F0000 + delta),
+                )
+        for changed in (
+                SimpleNamespace(uis_idle_entry_address=None,
+                                uis_idle_body_address=0x000CC4A6),
+                SimpleNamespace(uis_idle_entry_address=0x000CC349,
+                                uis_idle_body_address=0x000CC4A6),
+                SimpleNamespace(uis_idle_entry_address=0x000CC348,
+                                uis_idle_body_address=0x000CC4A8)):
+            with self.subTest(changed=changed):
+                self.assertIsNone(MODULE.qemu_uis_idle_observer_addresses(
+                    changed
+                ))
+
+    def test_rex_idle_candidate_observer_requires_even_address(self) -> None:
+        accepted = SimpleNamespace(rex_idle_address=0x000DEF50)
+        self.assertEqual(
+            MODULE.qemu_rex_idle_candidate_observer_address(accepted),
+            0x000DEF50,
+        )
+        for address in (None, 0, 0x000DEF51, 0x1_0000_0000, True):
+            with self.subTest(address=address):
+                self.assertIsNone(
+                    MODULE.qemu_rex_idle_candidate_observer_address(
+                        SimpleNamespace(rex_idle_address=address)
+                    )
+                )
+
     def test_upper_nor_accepts_only_the_detector_range(self) -> None:
         disabled = SimpleNamespace(upper_flash_address=None,
                                    upper_flash_size=0)
@@ -376,6 +725,119 @@ class QEMUInputTransportTests(unittest.TestCase):
                                 upper_flash_size=0x00400000)):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 MODULE.qemu_upper_nor_enabled(changed)
+
+    def test_raw_nand_main_profile_requires_the_complete_closed_shape(
+            self) -> None:
+        image = bytearray(b"\xff" * 0x800)
+        image[0x20:0x2B] = b"fs_ks_nand.c"
+        for site in (0x100, 0x300):
+            image[site:site + len(MODULE.RAW_NAND_STATUS_SIGNATURE)] = (
+                MODULE.RAW_NAND_STATUS_SIGNATURE
+            )
+            reset = site + 0x30
+            image[reset:reset + len(MODULE.RAW_NAND_RESET_SIGNATURE)] = (
+                MODULE.RAW_NAND_RESET_SIGNATURE
+            )
+            image[site + 0x50:site + 0x54] = bytes.fromhex("29210905")
+        for position in (0x500, 0x520):
+            image[position:position + len(MODULE.RAW_NAND_PAGE_SIGNATURE)] = (
+                MODULE.RAW_NAND_PAGE_SIGNATURE
+            )
+        image[0x600:0x606] = MODULE.RAW_NAND_BLOCK_PREFIX
+        image[0x60A:0x614] = MODULE.RAW_NAND_BLOCK_SUFFIX
+        image[0x680:0x684] = MODULE.RAW_NAND_X16_PREFIX
+        image[0x688:0x68C] = MODULE.RAW_NAND_X16_TRANSFER
+        config = SimpleNamespace(
+            nand_enabled=True, flash_size=0x800000, nand_data_size=0x800000,
+            nand_page_size=0x200, nand_pages_per_block=0x20,
+            nand_bus_width=2, upper_flash_address=None,
+        )
+
+        self.assertEqual(MODULE.qemu_raw_nand_main_profile(image, config), (
+            (0x02800000, 0x02900000, 0x02A00000,
+             0x800000, 0x200, 0x20, 2),
+            None,
+        ))
+        image[0x100] ^= 1
+        image[0x300] ^= 1
+        self.assertEqual(
+            MODULE.qemu_raw_nand_main_profile(image, config),
+            (None, "incomplete-status-reset-shape"),
+        )
+
+        low_image = bytearray(b"\xff" * 0x1000)
+        low_image[0x20:0x2B] = b"fs_ks_nand.c"
+        for position, signature in zip(
+                (0x100, 0x200, 0x300, 0x500, 0x700),
+                (MODULE.RAW_NAND_LOW_PORT_RESET_SIGNATURE,
+                 MODULE.RAW_NAND_LOW_PORT_STATUS_SIGNATURE,
+                 MODULE.RAW_NAND_LOW_PORT_READ_SIGNATURE,
+                 MODULE.RAW_NAND_LOW_PORT_ERASE_SIGNATURE,
+                 MODULE.RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE)):
+            low_image[position:position + len(signature)] = signature
+        self.assertEqual(MODULE.qemu_raw_nand_main_profile(low_image, config), (
+            (0x00800000, 0x00900000, 0x00A00000,
+             0x800000, 0x200, 0x20, 2),
+            None,
+        ))
+        low_image[0x500] ^= 1
+        self.assertEqual(
+            MODULE.qemu_raw_nand_main_profile(low_image, config),
+            (None, "incomplete-status-reset-shape"),
+        )
+
+    def test_raw_nand_main_backend_is_named_and_non_orphaned(self) -> None:
+        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        start = machine.index(
+            "s->raw_nand_blk = blk_by_name(MSM5XXX_POC_RAW_NAND_DRIVE)"
+        )
+        end = machine.index("if (s->eeprom_gpio_enabled) {", start)
+        raw_nand_init = machine[start:end]
+
+        self.assertIn(
+            "blk_by_name(MSM5XXX_POC_RAW_NAND_DRIVE)", raw_nand_init,
+        )
+        self.assertNotIn("drive_get(IF_MTD", raw_nand_init)
+        self.assertNotIn("msm5xxx_poc_raw_nand_set_ready", machine)
+        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        self.assertIn(
+            '"id=msm5xxx-raw-nand-main"', transport,
+        )
+        self.assertNotIn(
+            'f"file={raw_nand_state},if=mtd', transport,
+        )
+        setter_start = machine.index("static void msm5xxx_poc_set_raw_nand_main")
+        setter_end = machine.index("static char *msm5xxx_poc_get_eeprom_gpio",
+                                   setter_start)
+        setter = machine[setter_start:setter_end]
+        for name in ("DATA", "ADDRESS", "COMMAND"):
+            self.assertIn(
+                f"MSM5XXX_POC_RAW_NAND_LOW_PORT_{name}_BASE", setter,
+            )
+
+    def test_mapped_primary_nor_persists_upper_bank_and_aliases_intel(self) -> None:
+        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+
+        self.assertIn("mapped-primary-x16-nor-upper", machine)
+        self.assertIn("intel_x16_nor_data_alias", machine)
+        self.assertIn("mapped-primary-x16-upper.raw", transport)
+        self.assertIn("pflash_unit += 2", transport)
+
+    def test_raw_nand_state_is_observable_without_ready_synthesis(self) -> None:
+        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        start = machine.index("    case 0xac:")
+        end = machine.index("    default:", start)
+        telemetry = machine[start:end]
+
+        for field in (
+            "raw_nand_reads", "raw_nand_writes", "raw_nand_rejections",
+            "raw_nand_mode", "raw_nand_status", "raw_nand_address_count",
+            "raw_nand_cursor_valid", "raw_nand_spare_selected",
+        ):
+            self.assertIn(f"s->{field}", telemetry)
+        self.assertNotIn("board_status_input", telemetry)
+        self.assertNotIn("msm5xxx_poc_raw_nand_set_ready", machine)
 
     def test_eeprom_gpio_profile_accepts_split_bank_open_drain_shape(
             self) -> None:
@@ -422,6 +884,192 @@ class QEMUInputTransportTests(unittest.TestCase):
             ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
         )
         MODULE.struct.pack_into("<I", image, ack + 0x9A, 0x03000674)
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            (None, "gpio-line-shape-mismatch"),
+        )
+
+    def test_eeprom_gpio_profile_accepts_x270_protocol_class(self) -> None:
+        image = bytearray(b"\xff" * 0x3000)
+        write, read, initializer = 0x1000, 0x16D0, 0x2400
+        writer, reader = write - 0x2DC, read - 0x7F8
+        geometry = 0x0119BA08
+        image[write:write + len(MODULE.EEPROM_24LCXX_X270_WRITE_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X270_WRITE_PREFIX
+        )
+        image[read:read + len(MODULE.EEPROM_24LCXX_X270_READ_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X270_READ_PREFIX
+        )
+        image[initializer:initializer + 18] = bytes.fromhex(
+            "01200449c0030880012088700020c8707047"
+        )
+        for position in (write + 0x3EC, read + 0x3EC,
+                         initializer + 0x14):
+            MODULE.struct.pack_into("<I", image, position, geometry)
+        image[0x2E00:0x2E0B] = b"nv24lcxx.c\0"
+
+        shapes = (
+            (writer, "f0b5071c"),
+            (writer + 0x18, "2b7808263343"),
+            (writer + 0x28, "2b702b782372"),
+            (writer + 0x2E, "13780b43137013782373"),
+            (writer + 0x3E, "137013782373"),
+            (reader, "f0b50027"),
+            (reader + 0x0E, "0a782a430a700b78"),
+            (reader + 0x1A, "1373"),
+            (reader + 0x1C, "2678330900d38027"),
+            (reader + 0x24, "0b785b085b000b700b781373"),
+            (write + 0xBE, "08251178294311701178"),
+            (write + 0xCA, "1173"),
+            (read + 0x304, "082311789943117011"),
+            (read + 0x310, "1173"),
+            (read + 0x324, "2070"),
+        )
+        for position, value in shapes:
+            raw = bytes.fromhex(value)
+            image[position:position + len(raw)] = raw
+        MODULE.struct.pack_into("<H", image, writer + 0x12, 0x4C66)
+        MODULE.struct.pack_into("<I", image, writer + 0x1AC, 0x03000660)
+        MODULE.struct.pack_into("<H", image, reader + 0x04, 0x4C46)
+        MODULE.struct.pack_into("<H", image, reader + 0x16, 0x4A42)
+        MODULE.struct.pack_into("<I", image, reader + 0x120, 0x03000668)
+        MODULE.struct.pack_into("<H", image, write + 0xC8, 0x4A01)
+        MODULE.struct.pack_into("<I", image, write + 0xD0, 0x03000670)
+        MODULE.struct.pack_into("<H", image, read + 0x30E, 0x4A02)
+        MODULE.struct.pack_into("<I", image, read + 0x318, 0x03000670)
+        displacement = reader - (read + 0x320 + 4)
+        MODULE.struct.pack_into(
+            "<2H", image, read + 0x320,
+            0xF000 | (displacement >> 12 & 0x7FF),
+            0xF800 | (displacement >> 1 & 0x7FF),
+        )
+        config = SimpleNamespace(
+            eeprom_read_address=read, eeprom_write_address=write,
+            eeprom_geometry_address=geometry, load_address=0,
+        )
+
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            ((0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None),
+        )
+        image[reader + 0x1E] ^= 1
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            (None, "gpio-line-shape-mismatch"),
+        )
+
+    def test_eeprom_gpio_profile_accepts_f6f7_protocol_class(self) -> None:
+        image = bytearray(b"\xff" * 0x4000)
+        write, read, initializer = 0x1000, 0x16D0, 0x2400
+        geometry = 0x0119BA08
+        image[write:write + len(MODULE.EEPROM_24LCXX_F6F7_WRITE_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_F6F7_WRITE_PREFIX
+        )
+        image[read:read + len(MODULE.EEPROM_24LCXX_X270_READ_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X270_READ_PREFIX
+        )
+        image[initializer:initializer + 18] = bytes.fromhex(
+            "01200449c0030880012088700020c8707047"
+        )
+        for position in (write + 0x3E8, read + 0x3EC,
+                         initializer + 0x14):
+            MODULE.struct.pack_into("<I", image, position, geometry)
+        image[0x3A00:0x3A0B] = b"nv24lcxx.c\0"
+
+        low_write, low_read = 0x2C00, 0x2D00
+        image[low_write:low_write + 8] = bytes.fromhex(
+            "f0b5071c1e481f49"
+        )
+        MODULE.struct.pack_into("<2I", image, low_write + 0x80,
+                                0x03000660, 0x03000668)
+        image[low_read:low_read + 6] = bytes.fromhex("f0b500271e48")
+        MODULE.struct.pack_into("<I", image, low_read + 0x80, 0x03000668)
+
+        def call(position: int, target: int) -> None:
+            displacement = target - (position + 4)
+            MODULE.struct.pack_into(
+                "<2H", image, position,
+                0xF000 | (displacement >> 12 & 0x7FF),
+                0xF800 | (displacement >> 1 & 0x7FF),
+            )
+
+        for index in range(16):
+            call(0x1400 + index * 4, low_write)
+        for index in range(2):
+            call(0x1480 + index * 4, low_read)
+        config = SimpleNamespace(
+            eeprom_read_address=read, eeprom_write_address=write,
+            eeprom_geometry_address=geometry, load_address=0,
+        )
+
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            ((0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None),
+        )
+        MODULE.struct.pack_into("<I", image, low_write + 0x80, 0x03000728)
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            (None, "transport-entry-signature-mismatch"),
+        )
+
+    def test_eeprom_gpio_profile_accepts_f7f6_protocol_class(self) -> None:
+        image = bytearray(b"\xff" * 0x1800)
+        write, read, initializer = 0x400, 0xAD8, 0x1200
+        writer, ack, reader = write - 0x16C, write - 0x216, read - 0x754
+        geometry = 0x01208494
+        image[write:write + len(MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX
+        )
+        image[read:read + len(MODULE.EEPROM_24LCXX_X430_READ_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X430_READ_PREFIX
+        )
+        image[initializer:initializer + 18] = bytes.fromhex(
+            "01200449c0030880012088700020c8707047"
+        )
+        for position in (write + 0x3EC, read + 0x3E8,
+                         initializer + 0x14):
+            MODULE.struct.pack_into("<I", image, position, geometry)
+        image[0x1700:0x170B] = b"nv24lcxx.c\0"
+        shapes = (
+            (writer, "f0b5071c80260724"),
+            (writer + 0x1A, "01231178194311701178304a1171"),
+            (writer + 0x3C, "20231178194311701178"),
+            (writer + 0x5C, "20231178994311701178"),
+            (writer + 0x74, "1b4a11784908490011701178"),
+            (writer + 0x98, "20231178194311701178"),
+            (writer + 0xB8, "20231178994311701178"),
+            (ack, "f0b5"),
+            (ack + 0x06, "234a11784908490011701178214a1172"),
+            (ack + 0x24, "202229781c4c114329702978103c2170"),
+            (ack + 0x40, "21790126301c490800d2002007063f0e"),
+            (ack + 0x5C, "20239943297029782170"),
+            (ack + 0x7A, "0a7832430a700978054a1172"),
+            (reader, "f0b500271b4e0024"),
+            (reader + 0x12, "194a20231178194311701178154a043a1170"),
+            (reader + 0x30, "7800070630783f0e400801d301200743"),
+            (reader + 0x44, "0c4a20231178994311701178084a043a1170"),
+        )
+        for position, value in shapes:
+            raw = bytes.fromhex(value)
+            image[position:position + len(raw)] = raw
+        for position, operation in zip(
+                (writer + 0x46, writer + 0x66, writer + 0x80,
+                 writer + 0xA2, writer + 0xC2),
+                (0x4A28, 0x4A20, 0x4A19, 0x4A11, 0x4A09)):
+            MODULE.struct.pack_into("<H", image, position, operation)
+        MODULE.struct.pack_into("<I", image, writer + 0xE8, 0x03000660)
+        MODULE.struct.pack_into("<I", image, ack + 0x9A, 0x03000670)
+        MODULE.struct.pack_into("<I", image, reader + 0x74, 0x03000664)
+        config = SimpleNamespace(
+            eeprom_read_address=read, eeprom_write_address=write,
+            eeprom_geometry_address=geometry, load_address=0,
+        )
+
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
+        )
+        image[reader + 0x32] ^= 1
         self.assertEqual(
             MODULE.eeprom_gpio_profile(bytes(image), config),
             (None, "gpio-line-shape-mismatch"),
@@ -602,6 +1250,48 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertNotIn("g_source_remove(s->matrix_input_ack_watch)",
                          reset_body)
         self.assertIn("G_IO_HUP | G_IO_ERR | G_IO_NVAL", source)
+        self.assertIn("CPUClass *cc = CPU_GET_CLASS(s->cpu);", reset_body)
+        self.assertIn("s->reset_callbacks++;", reset_body)
+        self.assertIn(
+            "s->last_reset_callback_pc = cc->get_pc(CPU(s->cpu));",
+            reset_body,
+        )
+        self.assertLess(
+            reset_body.index("s->reset_callbacks++;"),
+            reset_body.index("cpu_reset(CPU(s->cpu));"),
+        )
+        self.assertNotIn("s->reset_callbacks = 0", reset_body)
+        self.assertNotIn("s->last_reset_callback_pc = 0", reset_body)
+
+        mmio_start = source.index("\nstatic uint64_t msm5xxx_poc_read(")
+        mmio_end = source.index("\nstatic ", mmio_start + 1)
+        mmio_read = source[mmio_start:mmio_end]
+        self.assertIn("case 0xbc:\n        return s->reset_callbacks;",
+                      mmio_read)
+        self.assertIn(
+            "case 0xc0:\n        return s->last_reset_callback_pc;",
+            mmio_read,
+        )
+
+    def test_qemu_sbi_adc_status_poll_preserves_completed_phase(self) -> None:
+        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        read_start = source.index("static uint64_t msm5xxx_poc_sbi_read")
+        read_end = source.index("\nstatic ", read_start + 1)
+        read_body = source[read_start:read_end]
+        self.assertIn("s->sbi_board_adc_phase != 5 &&", read_body)
+        self.assertIn("s->sbi_board_adc_phase != 7 &&", read_body)
+        self.assertIn("s->sbi_board_adc_phase != 9", read_body)
+
+        write_start = source.index("static void msm5xxx_poc_sbi_write")
+        write_end = source.index("\nstatic ", write_start + 1)
+        write_body = source[write_start:write_end]
+        self.assertIn("(value & 0xff80) == 0x0a80", write_body)
+        self.assertIn("s->sbi_board_adc_selector = value;", write_body)
+        self.assertIn(
+            "value == (s->sbi_board_adc_selector & ~0x0080)", write_body,
+        )
+        self.assertNotIn("value == 0x0ada", write_body)
+        self.assertNotIn("value == 0x0a5a", write_body)
 
     def test_legacy_state_import_reads_copy_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -624,6 +1314,16 @@ class QEMUInputTransportTests(unittest.TestCase):
                 MODULE.load_legacy_raw_state(b"\xff" * 8, raw),
                 (b"\x55" * 8, True),
             )
+
+            self.assertTrue(MODULE.migrate_erased_raw_state(raw, 8, 16))
+            backup = root / "legacy.bin.pre-00000008"
+            self.assertEqual(raw.read_bytes(), b"\x55" * 8 + b"\xff" * 8)
+            self.assertEqual(backup.read_bytes(), b"\x55" * 8)
+            self.assertFalse(MODULE.migrate_erased_raw_state(raw, 8, 16))
+            raw.write_bytes(b"\x44" * 8)
+            with self.assertRaisesRegex(ValueError, "backup mismatch"):
+                MODULE.migrate_erased_raw_state(raw, 8, 16)
+            self.assertEqual(backup.read_bytes(), b"\x55" * 8)
 
     def test_raw_loader_splits_at_machine_ram_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -912,6 +1612,23 @@ class QEMUInputTransportTests(unittest.TestCase):
             "3000c80:3000c94:200:4c4b40:1000000:1000:1001000:"
             "2000:100:1002000:3000",
         )
+        candidate.update({
+            "promotion": "temporary-evidence-gated",
+            "status_bank_count": 2,
+            "group_row_size": 10,
+            "pending_read_semantics": "latched-read",
+            "pending_ack_semantics": "write-one-to-clear",
+            "time_tick_status_bank": status,
+            "time_tick_clear_bank": status,
+            "time_tick_mask": 0x0200,
+        })
+        self.assertEqual(
+            MODULE.c80_rex_irq_profile(config, False),
+            MODULE.c80_rex_irq_profile(config, True),
+        )
+        candidate["time_tick_mask"] = 0x0100
+        self.assertIsNone(MODULE.c80_rex_irq_profile(config, False))
+        candidate["time_tick_mask"] = 0x0200
         candidate["wrapper_validation_size"] = config.flash_size
         self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
         candidate["wrapper_validation_size"] = 0x284
@@ -920,12 +1637,86 @@ class QEMUInputTransportTests(unittest.TestCase):
         candidate["callback_slot"] = 0x01802000
         candidate["handler_slot"] = 0x01801000
         candidate["vector_target"] = 0x01800000
-        config.ram_base = 0x01800000
+        config.ram_base = 0x01000000
+        config.ram_size = 0x01000000
         self.assertEqual(
             MODULE.c80_rex_irq_profile(config, True),
             "3000c80:3000c94:200:4c4b40:1800000:1000:1801000:"
             "2000:100:1802000:3000",
         )
+        candidate["vector_target"] = 0x02000000
+        self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
+
+    def test_c80_overlay_route_emits_runtime_addresses(self) -> None:
+        status = 0x03000C80
+        candidate = {
+            "signature": "static-c80-overlay-controller-callback-v1",
+            "controller_class": "legacy-c80-three-bank-group14-v1",
+            "accepted": True, "active": False,
+            "promotion": "temporary-evidence-gated",
+            "vector": 0x18, "vector_target": 0x01200000,
+            "status": status,
+            "status_banks": (status, status + 4, status + 0x30),
+            "enable": status + 0x14, "mask": 0x0200,
+            "clear_banks": (status, status + 4, status + 0x4C),
+            "controller_write_banks": (
+                status + 0x14, status + 0x18, status + 0x44,
+            ),
+            "controller_aperture": (status, status + 0x4E),
+            "status_bank_count": 3, "group_row_size": 14,
+            "pending_read_semantics": "latched-read",
+            "time_tick_status_bank": status,
+            "time_tick_clear_bank": status,
+            "time_tick_mask": 0x0200,
+            "wrapper_file_offset": 0x4FC0,
+            "wrapper_runtime_address": 0x4FC0,
+            "wrapper_validation_size": 0x2F8,
+            "handler_slot": 0x013466A8,
+            "handler_file_offset": 0x7B48E8,
+            "handler_runtime_address": 0x03800068,
+            "handler_validation_size": 0x1EE,
+            "callback_slot": 0x01206B80,
+            "callback_file_offset": 0x23440,
+            "callback_runtime_address": 0x23440,
+            "callback_delta": 5,
+            "callback_validation_size": 68,
+        }
+        config = SimpleNamespace(
+            rex_static_controller_candidate=candidate,
+            load_address=0, flash_size=0x800000,
+            ram_base=0x01000000, ram_size=0x800000,
+            linker=SimpleNamespace(
+                data_source=0x78F51C, data_target=0x01200000,
+                data_size=0x25364,
+            ),
+            overlays=[SimpleNamespace(
+                source=0x7B4880, target=0x03800000, size=0x15A74,
+            )],
+            rex_tick_address=0xA7E04, rex_irq_wrapper_address=None,
+            rex_irq_handler_address=None, rex_irq_handler_slot=None,
+            rex_irq_callback_slot=None, rex_irq_status_address=None,
+            rex_irq_enable_address=None, rex_irq_arm_address=None,
+            rex_irq_mask=0,
+        )
+
+        self.assertIsNone(MODULE.c80_rex_irq_profile(config, False))
+        self.assertEqual(
+            MODULE.c80_rex_irq_profile(config, True),
+            "3000c80:3000c94:200:4c4b40:1200000:4fc0:13466a8:"
+            "3800068:1ee:1206b80:23440:3",
+        )
+        config.overlays[0].target += 0x1000
+        self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
+
+    def test_c80_machine_parser_consumes_optional_bank_count(self) -> None:
+        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        start = source.index("static void msm5xxx_poc_set_rex_static_c80")
+        end = source.index("\nstatic ", start + 1)
+        setter = source[start:end]
+
+        self.assertIn("%x:%x%n", setter)
+        self.assertIn("consumed >= 0 && !value[consumed]", setter)
+        self.assertNotIn("%x%c", setter)
 
     def test_read_consume_route_requires_copied_vector_relation(self) -> None:
         status = 0x03000620
@@ -935,7 +1726,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                 "legacy-msm5000-620-two-bank-read-consume-group10-v1",
             "accepted": True,
             "active": False,
-            "promotion": "experimental-only",
+            "promotion": "temporary-evidence-gated",
             "vector": 0x18,
             "vector_target": 0x01100000,
             "vector_copy_source": 0x0039519C,
@@ -974,12 +1765,35 @@ class QEMUInputTransportTests(unittest.TestCase):
             rex_irq_mask=0,
         )
 
+        self.assertEqual(
+            MODULE.read_consume_rex_irq_profile(config, False),
+            "3000620:3000628:30006e0:200:4c4b40:1100000:24be14:"
+            "118867c:98e04:178:110363c:16b64",
+        )
+        candidate["promotion"] = "experimental-only"
         self.assertIsNone(MODULE.read_consume_rex_irq_profile(config, False))
         self.assertEqual(
             MODULE.read_consume_rex_irq_profile(config, True),
             "3000620:3000628:30006e0:200:4c4b40:1100000:24be14:"
             "118867c:98e04:178:110363c:16b64",
         )
+        candidate["promotion"] = "temporary-evidence-gated"
+        candidate.update({
+            "controller_class":
+                "legacy-msm5000-620-two-bank-read-consume-v1",
+            "group_row_size": 12,
+        })
+        self.assertEqual(
+            MODULE.read_consume_rex_irq_profile(config, False),
+            "3000620:3000628:30006e0:200:4c4b40:1100000:24be14:"
+            "118867c:98e04:178:110363c:16b64",
+        )
+        candidate.update({
+            "controller_class":
+                "legacy-msm5000-620-two-bank-read-consume-group10-v1",
+            "group_row_size": 10,
+            "promotion": "experimental-only",
+        })
         candidate["descriptor_runtime_address"] += 4
         self.assertIsNone(
             MODULE.read_consume_rex_irq_profile(config, True)
@@ -998,6 +1812,21 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertIsNone(
             MODULE.read_consume_rex_irq_profile(config, True)
         )
+        candidate.update({
+            "controller_class":
+                "legacy-msm5000-620-two-bank-w1c-8call-v1",
+            "promotion": "temporary-evidence-gated",
+            "group_row_size": 12,
+            "pending_read_semantics": "latched-read",
+            "pending_ack_semantics": "write-one-to-clear",
+            "clear_banks": (status, status + 4),
+        })
+        self.assertEqual(
+            MODULE.w1c_rex_irq_profile(config),
+            "3000620:3000628:30006e0:200:4c4b40",
+        )
+        del candidate["pending_ack_semantics"]
+        self.assertIsNone(MODULE.w1c_rex_irq_profile(config))
 
 
 if __name__ == "__main__":

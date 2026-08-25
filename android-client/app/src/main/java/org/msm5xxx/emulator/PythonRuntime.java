@@ -12,9 +12,11 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Official CPython asset layout and the one detector JSON seam. */
 final class PythonRuntime {
+    private static final ReentrantLock AUDIO_GATE = new ReentrantLock(true);
     private static File home;
 
     static {
@@ -50,20 +52,25 @@ final class PythonRuntime {
                                      File stateDirectory, String profileJson,
                                      boolean experimentalRex)
             throws IOException {
-        if (home == null) {
-            probe(context);
-        }
+        AUDIO_GATE.lock();
         try {
-            JSONObject request = new JSONObject()
-                    .put("firmware", firmware.getPath())
-                    .put("profile", new JSONObject(profileJson))
-                    .put("qemu", qemu.getPath())
-                    .put("state", stateDirectory == null
-                            ? JSONObject.NULL : stateDirectory.getPath())
-                    .put("experimental_rex", experimentalRex);
-            return nativeStart(request.toString());
-        } catch (JSONException error) {
-            throw new IOException("session request is invalid", error);
+            if (home == null) {
+                probe(context);
+            }
+            try {
+                JSONObject request = new JSONObject()
+                        .put("firmware", firmware.getPath())
+                        .put("profile", new JSONObject(profileJson))
+                        .put("qemu", qemu.getPath())
+                        .put("state", stateDirectory == null
+                                ? JSONObject.NULL : stateDirectory.getPath())
+                        .put("experimental_rex", experimentalRex);
+                return nativeStart(request.toString());
+            } catch (JSONException error) {
+                throw new IOException("session request is invalid", error);
+            }
+        } finally {
+            AUDIO_GATE.unlock();
         }
     }
 
@@ -71,15 +78,20 @@ final class PythonRuntime {
         return nativeFrame();
     }
 
-    static synchronized byte[] audio() {
-        return nativeAudio();
+    static byte[] audio() {
+        AUDIO_GATE.lock();
+        try {
+            return nativeAudio();
+        } finally {
+            AUDIO_GATE.unlock();
+        }
     }
 
     static synchronized String status() {
         return nativeStatus();
     }
 
-    static String key(int bit, Integer eventCode, boolean pressed)
+    static synchronized String key(int bit, Integer eventCode, boolean pressed)
             throws IOException {
         try {
             JSONObject request = new JSONObject()
@@ -93,7 +105,7 @@ final class PythonRuntime {
         }
     }
 
-    static String canKey(int bit, Integer eventCode)
+    static synchronized String canKey(int bit, Integer eventCode)
             throws IOException {
         try {
             JSONObject request = new JSONObject()
@@ -107,7 +119,12 @@ final class PythonRuntime {
     }
 
     static synchronized void stop() {
-        nativeStop();
+        AUDIO_GATE.lock();
+        try {
+            nativeStop();
+        } finally {
+            AUDIO_GATE.unlock();
+        }
     }
 
     private static File prepare(Context context) throws IOException {

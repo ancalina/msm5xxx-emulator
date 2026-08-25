@@ -32,6 +32,15 @@ def _access(image: bytearray, offset: int, base: int,
     struct.pack_into("<3H", image, offset, *setup, opcode | port << 6 | 1)
 
 
+def _thumb_bl(source: int, target: int) -> bytes:
+    displacement = (target - source - 4) & 0x7FFFFF
+    return struct.pack(
+        "<2H",
+        0xF000 | displacement >> 12 & 0x7FF,
+        0xF800 | displacement >> 1 & 0x7FF,
+    )
+
+
 class AudioTransportTests(unittest.TestCase):
     def test_lifecycle_uses_packaged_audio_player(self) -> None:
         self.assertIs(LifecycleAudioPlayer, ApproximateSmafPlayer)
@@ -84,16 +93,64 @@ class AudioTransportTests(unittest.TestCase):
             (0xA0, 4, "read"),
         ):
             _access(ma5, offset, 0x02C00000, port, kind)
+        _access(ma5, 0x500, 0x02C00000, 0, "write")
+        _access(ma5, 0x520, 0x02C00000, 4, "write")
         detected = find_audio_transport(bytes(ma5))
         self.assertEqual(
             (detected["family"], detected["grammar"], detected["base"],
              detected["data_offset"]),
             ("ma5", "indexed-rw-v1", 0x02C00000, 4),
         )
+        self.assertEqual(detected["aperture_write_sites"], {
+                "write_0": [0x24, 0x504],
+                "write_4": [0x64, 0x84, 0x524],
+        })
         ma5[0x710:0x719] = b"Ma2main.c"
         self.assertEqual(
             find_audio_transport(bytes(ma5))["reject_reason"],
             "marker-ambiguous",
+        )
+
+    def test_markerless_command_status_shape_requires_closed_callers(self) -> None:
+        image = bytearray(b"\xff" * 0x900)
+        write_0, read_0, write_2, read_2 = 0x400, 0x410, 0x424, 0x434
+        delay = 0x700
+        wrappers = (
+            (write_0, "5121c90400b50870", "08bc1847"),
+            (read_0, "5120c00480b50778", "381c80bc08bc1847"),
+            (write_2, "5121c90400b58870", "08bc1847"),
+            (read_2, "5120c00480b58778", "381c80bc08bc1847"),
+        )
+        for entry, prefix, suffix in wrappers:
+            image[entry:entry + 8] = bytes.fromhex(prefix)
+            image[entry + 8:entry + 12] = _thumb_bl(entry + 8, delay)
+            image[entry + 12:entry + 12 + len(bytes.fromhex(suffix))] = (
+                bytes.fromhex(suffix)
+            )
+        image[0x780:0x784] = b"MMMD"
+        for command in range(7):
+            caller = 0x40 + command * 8
+            struct.pack_into("<H", image, caller, 0x2000 | command)
+            image[caller + 2:caller + 6] = _thumb_bl(caller + 2, write_0)
+        for caller, target in zip((0x100, 0x110, 0x120),
+                                  (read_0, write_2, read_2)):
+            image[caller:caller + 4] = _thumb_bl(caller, target)
+
+        detected = find_audio_transport(bytes(image))
+        self.assertEqual(
+            (detected["family"], detected["grammar"], detected["base"],
+             detected["data_offset"], detected["begin"], detected["end"]),
+            ("opaque", "command-status-data-v1", 0x02880000, 2,
+             0x406, 0x43C),
+        )
+        self.assertEqual(detected["sites"], {
+            "read_0": [0x416], "read_2": [0x43A],
+            "write_0": [0x406], "write_2": [0x42A],
+        })
+
+        image[read_2 + 8:read_2 + 12] = _thumb_bl(read_2 + 8, delay + 0x20)
+        self.assertEqual(
+            find_audio_transport(bytes(image))["reject_reason"], "marker-none"
         )
 
     def test_ma3_marker_stays_fail_closed_without_decoder(self) -> None:

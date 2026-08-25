@@ -66,7 +66,7 @@ except ImportError:
 
 
 class LifecycleMixin:
-    def __init__(self, config: FirmwareConfig) -> None:
+    def __init__(self, config: FirmwareConfig, *, approximate_audio: bool = True) -> None:
         self.config = config
         LOGGER.info("emulator init config=%s",
                     json.dumps(config.diagnostic_config(), ensure_ascii=False,
@@ -95,7 +95,7 @@ class LifecycleMixin:
         self._init_unmapped_state()
         self._init_input_state(config)
         self._init_nor_probe_state()
-        self._init_audio_state()
+        self._init_audio_state(approximate_audio)
         self._install_remaining_hooks(config, secondary_base, eeprom_enabled)
 
     def _validate_config(
@@ -773,6 +773,7 @@ class LifecycleMixin:
         self._lcd_x = [0, config.width - 1]
         self._lcd_y = [0, config.height - 1]
         self._lcd_window_axis_mask = 0
+        self._lcd_020_compact_44: int | None = None
         self._lcd_cursor = [0, 0]
         self._lcd_expected = 0
         self._lcd_streamed = 0
@@ -793,6 +794,17 @@ class LifecycleMixin:
         self._lcd_028_be_word_events: list[tuple[int, int, int]] = []
         self._lcd_028_be_word_qualified = False
         self._lcd_028_be_word_replaying = False
+        self._lcd_028_split16_events: list[tuple[int, int, int]] = []
+        self._lcd_028_split16_qualified = False
+        self._lcd_028_split16_replaying = False
+        self._lcd_028_split16_disabled = False
+        self._lcd_028_split16_pending_x: tuple[int, int] | None = None
+        self._lcd_028_split16_window: tuple[int, int, int, int] | None = None
+        self._lcd_028_split16_expected = 0
+        self._lcd_028_split16_streamed = 0
+        self._lcd_028_split16_bootstrap_stage = 0
+        self._lcd_028_split16_frame_ready = False
+        self._lcd_028_split16_ram = bytearray(128 * 160 * 2)
         self._lcd_028_rgb332_probe: list[tuple[int, int, int]] = []
         self._lcd_028_rgb332_window = (0, 0, 0, 0)
         self._lcd_028_rgb332_qualified = False
@@ -808,6 +820,21 @@ class LifecycleMixin:
         self._lcd_byte_raster_stage = ""
         self._lcd_byte_raster_row = 0
         self._lcd_byte_raster_pixels = bytearray()
+        # One byte-wide controller sends 31,y0,y1,21,x0,x1 at 0x02000000
+        # and one raw byte per coordinate at +2.  Physical colour encoding
+        # remains unknown, so the qualified framebuffer is a gray preview.
+        self._lcd_window_raw8_header: list[tuple[int, int, int]] = []
+        self._lcd_window_raw8_payload = bytearray()
+        self._lcd_window_raw8_window: tuple[int, int, int, int] | None = None
+        self._lcd_window_raw8_qualified = False
+        self._lcd_window_raw8_ram = bytearray(128 * 128)
+        self._lcd_window_raw8_separate_events: list[tuple[int, int, int]] = []
+        self._lcd_window_raw8_separate_stage = ""
+        self._lcd_window_raw8_separate_axis: list[int] = []
+        self._lcd_window_raw8_separate_window: tuple[int, int, int, int] | None = None
+        self._lcd_window_raw8_separate_payload = bytearray()
+        self._lcd_window_raw8_separate_qualified = False
+        self._lcd_window_raw8_separate_ram = bytearray(64 * 96)
         # The E370-class +8/+C controller packs two RGB332 pixels into one
         # data word.  Keep it wholly separate from the ordinary 0x020/+4
         # command state: unrelated LCD traffic must not turn register 0x22
@@ -870,8 +897,11 @@ class LifecycleMixin:
         self._parallel_nor_direct_probe: dict[str, int] | None = None
         self.primary_parallel_nor_direct_id_probes: list[dict[str, int]] = []
 
-    def _init_audio_state(self) -> None:
-        self.audio_player = ApproximateSmafPlayer() if ApproximateSmafPlayer is not None else None
+    def _init_audio_state(self, approximate_audio: bool) -> None:
+        self.audio_player = (
+            ApproximateSmafPlayer()
+            if approximate_audio and ApproximateSmafPlayer is not None else None
+        )
         self.audio_transport = AudioTransport(self.config.audio_transport)
         self.audio_play_requests = 0
         self.audio_last_size = 0

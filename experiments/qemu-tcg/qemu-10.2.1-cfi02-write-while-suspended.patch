@@ -1,0 +1,27 @@
+diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
+--- a/hw/block/pflash_cfi02.c
++++ b/hw/block/pflash_cfi02.c
+@@ -78,6 +78,7 @@ struct PFlashCFI02 {
+     uint8_t mappings;
+     uint8_t width;
+     uint8_t be;
++    bool write_while_suspended;
+     int wcycle; /* if 0, the flash is read normally */
+     int bypass;
+     int ro;
+@@ -540,4 +541,5 @@ static void pflash_write(PFlashCFI02 *pfl, hwaddr offset,
+         case 0xA0: /* Program */
+-            if (pflash_erase_suspend_mode(pfl) &&
++            if (!pfl->write_while_suspended &&
++                pflash_erase_suspend_mode(pfl) &&
+                 pflash_sector_is_erasing(pfl, offset)) {
+                 /* Ignore writes to erasing sectors. */
+@@ -952,6 +954,8 @@ static const Property pflash_cfi02_properties[] = {
+     DEFINE_PROP_UINT8("width", PFlashCFI02, width, 0),
+     DEFINE_PROP_UINT8("mappings", PFlashCFI02, mappings, 0),
+     DEFINE_PROP_UINT8("big-endian", PFlashCFI02, be, 0),
++    DEFINE_PROP_BOOL("write-while-suspended", PFlashCFI02,
++                     write_while_suspended, false),
+     DEFINE_PROP_UINT16("id0", PFlashCFI02, ident0, 0),
+     DEFINE_PROP_UINT16("id1", PFlashCFI02, ident1, 0),
+     DEFINE_PROP_UINT16("id2", PFlashCFI02, ident2, 0),

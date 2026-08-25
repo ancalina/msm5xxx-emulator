@@ -56,7 +56,7 @@
     <string name="metric_lcd">LCD %1$d</string>
     <string name="metric_frame">Frame %1$d</string>
     <string name="metric_input">Input %1$d</string>
-    <string name="metric_reject">Reject %1$d</string>
+    <string name="metric_reject">Reject %1$d · Audio %6$s u%2$d/o%3$d/e%4$d/l%5$d</string>
     <string name="metric_jni">JNI %1$s</string>
     <string name="metric_ack">ACK %1$s</string>
     <string name="latency_pending">—</string>

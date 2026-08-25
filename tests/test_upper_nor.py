@@ -5,11 +5,15 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.firmware import _infer_upper_nor
 from msm5xxx_emulator.detection import upper_nor
-from msm5xxx_emulator.detection.upper_nor import find_upper_nor
+from msm5xxx_emulator.detection.upper_nor import (
+    find_upper_amd_x16_nor,
+    find_upper_nor,
+)
 from msm5xxx import GenericMSMEmulator
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1
 
@@ -75,6 +79,64 @@ class UpperNorTests(unittest.TestCase):
         at = raw.find(bytes.fromhex("f8b5041c002c03d10020f8bc08bc1847"))
         changed[at + 0xF4] ^= 1
         self.assertNotEqual(find_upper_nor(changed), (True, "accepted"))
+
+    def test_mapped_upper_x16_detector_requires_linked_driver_shape(self) -> None:
+        raw = bytearray(b"\xff" * 0xC00)
+        builder, mapper, material = 0x100, 0x300, 0x500
+        writer, bridge, erase = 0x700, 0x900, 0xA00
+        raw[builder:builder + len(upper_nor._UPPER_X16_BUILDER_PREFIX)] = (
+            upper_nor._UPPER_X16_BUILDER_PREFIX
+        )
+        raw[builder + 0xCC:builder + 0xCC + len(
+            upper_nor._UPPER_X16_CAMERA_CASE
+        )] = upper_nor._UPPER_X16_CAMERA_CASE
+        raw[builder + 0x150:builder + 0x15C] = b"CAMERA\0\0LMS\0"
+        raw[mapper:mapper + 8] = upper_nor._UPPER_X16_MAPPER_PREFIX
+        raw[mapper + 0x0C:mapper + 0x16] = bytes.fromhex(
+            "a52109047b2000047a68"
+        )
+        raw[mapper + 0x1A:mapper + 0x24] = bytes.fromhex(
+            "0121c9050520c0057a68"
+        )
+        raw[mapper + 0x28:mapper + 0x30] = bytes.fromhex(
+            "80bc08bc01201847"
+        )
+        raw[material:material + 4] = bytes.fromhex("b0b592b0")
+        raw[material + 8:material + 0x0C] = bytes.fromhex("051c281c")
+        raw[material + 0x10:material + 0x14] = bytes.fromhex("1c491d48")
+        raw[material + 0x22:material + 0x26] = bytes.fromhex("041c201c")
+        raw[material + 0x2A:material + 0x3C] = bytes.fromhex(
+            "0027a74224da02e0781c071cf9e76946381c"
+        )
+        self._bl(raw, material + 0x1A, mapper)
+        self._bl(raw, material + 0x3C, builder)
+        for offset in (0x3A, 0x44, 0x4E, 0x58):
+            raw[mapper + offset:mapper + offset + 2] = b"\0\xb5"
+            raw[mapper + offset + 6:mapper + offset + 10] = bytes.fromhex(
+                "08bc1847"
+            )
+        self._bl(raw, mapper + 0x50, bridge)
+        self._bl(raw, mapper + 0x5A, erase)
+        raw[bridge:bridge + 2] = b"\0\xb5"
+        self._bl(raw, bridge + 2, writer)
+        raw[bridge + 6:bridge + 10] = bytes.fromhex("08bc1847")
+        raw[writer:writer + len(upper_nor.ADJACENT_AMD_X16_WRITER_PREFIX)] = (
+            upper_nor.ADJACENT_AMD_X16_WRITER_PREFIX
+        )
+        raw[erase:erase + 4] = bytes.fromhex("f0b5071c")
+        raw[erase + 0x94:erase + 0x94 + len(
+            upper_nor._UPPER_X16_ERASE_COMMAND
+        )] = upper_nor._UPPER_X16_ERASE_COMMAND
+
+        with mock.patch.object(
+                upper_nor, "_adjacent_amd_x16_writer_at", return_value=True):
+            self.assertEqual(find_upper_amd_x16_nor(raw), (
+                upper_nor.UPPER_FLASH_ADDRESS,
+                upper_nor.UPPER_FLASH_SIZE,
+                upper_nor.UPPER_FLASH_SECTOR_SIZE,
+            ))
+            raw[material + 0x1A:material + 0x1E] = b"\0" * 4
+            self.assertIsNone(find_upper_amd_x16_nor(raw))
 
     def test_reject_reason_is_preserved_for_native_fallback(self) -> None:
         config = SimpleNamespace(detection_notes=[])

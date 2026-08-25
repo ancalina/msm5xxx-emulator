@@ -13,6 +13,7 @@ from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.rex import (
     _legacy_620_vector_copy,
     find_rex_static_controller_callback_candidate,
+    find_rex_static_overlay_controller_callback_candidate,
 )
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_SP
@@ -152,6 +153,79 @@ def _candidate_image() -> tuple[bytearray, dict[str, int]]:
 
 
 class StaticControllerCandidateTests(unittest.TestCase):
+    def test_overlay_b590_registrar_requires_closed_literal_relations(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares/incoming-20260814"
+        expected = {
+            "SCH-E130.bin": (0x5886A8, 0x5883C0, 0x0100A0B4),
+            "SCH-E140 (1).bin": (0x788134, 0x787E4C, 0x0100F160),
+        }
+        for name, (registrar, handler, callback_slot) in expected.items():
+            image = (root / name).read_bytes()
+            candidate = detect(root / name).rex_static_controller_candidate
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            self.assertTrue(candidate["accepted"])
+            self.assertFalse(candidate["active"])
+            self.assertEqual(candidate["signature"],
+                             "static-c80-overlay-controller-callback-v1")
+            self.assertEqual(candidate["promotion"],
+                             "temporary-evidence-gated")
+            self.assertEqual(candidate["handler_file_offset"], handler)
+            self.assertEqual(candidate["callback_slot"], callback_slot)
+            self.assertEqual(candidate["vector_target"], 0x01000000)
+
+            changed = bytearray(image)
+            struct.pack_into("<H", changed, registrar + 10, 0x4916)
+            with tempfile.TemporaryDirectory() as directory:
+                altered = Path(directory) / name
+                altered.write_bytes(changed)
+                rejected = detect(altered).rex_static_controller_candidate
+            self.assertIsNotNone(rejected)
+            assert rejected is not None
+            self.assertFalse(rejected["accepted"])
+
+    def test_overlay_vector_copy_must_branch_to_irq_wrapper(self) -> None:
+        image = bytearray((Path(__file__).resolve().parents[2]
+                           / "firmwares/incoming-20260814/SCH-E160.bin").read_bytes())
+        overlays = (
+            (0x7B4880, 0x03800000, 0x15A74),
+            (0xBEB8, 0x03817000, 0xA84),
+        )
+
+        def file_to_runtime(position: int) -> int:
+            for source, target, size in overlays:
+                if source <= position < source + size:
+                    return target + position - source
+            if 0x78F51C <= position < 0x7B4880:
+                return 0x01200000 + position - 0x78F51C
+            return position
+
+        def runtime_to_file(address: int) -> int | None:
+            positions = [source + address - target
+                         for source, target, size in overlays
+                         if target <= address < target + size]
+            if 0x01200000 <= address < 0x01225364:
+                positions.append(0x78F51C + address - 0x01200000)
+            if 0 <= address < len(image):
+                positions.append(address)
+            mapped = {position for position in positions
+                      if file_to_runtime(position) == address}
+            return next(iter(mapped)) if len(mapped) == 1 else None
+
+        def candidate(data: bytes) -> dict[str, object] | None:
+            return find_rex_static_overlay_controller_callback_candidate(
+                data, file_to_runtime, runtime_to_file, **RAM_5000,
+            )
+
+        self.assertTrue(candidate(image)["accepted"])
+        struct.pack_into("<I", image, 0x18, _arm_b(0x18, 0x01200100))
+        rejected = candidate(image)
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reject_reason"],
+                         "legacy-overlay-vector-route-not-closed")
+
     def test_620_vector_copy_requires_unique_closed_route(self) -> None:
         image = bytearray(0x1000)
         source, target, size, wrapper = 0x400, 0x01100000, 0x100, 0x800
@@ -229,7 +303,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
         self.assertEqual(emulator._rex_irq_pending, [0, 0])
         self.assertEqual(emulator.rex_controller_pending_acks, 2)
 
-    def test_620_two_peer_topology_is_telemetry_only(self) -> None:
+    def test_620_two_peer_exact_class_is_temporary_evidence_gated(self) -> None:
         root = Path(__file__).resolve().parents[2] / "firmwares"
         expected = {
             "SPH-X7509.bin": (0x92320, 0x92520, 0x1A128, 0x926BC,
@@ -248,6 +322,8 @@ class StaticControllerCandidateTests(unittest.TestCase):
             assert candidate is not None
             self.assertTrue(candidate["accepted"])
             self.assertFalse(candidate["active"])
+            self.assertEqual(candidate["promotion"],
+                             "temporary-evidence-gated")
             self.assertEqual(
                 candidate["signature"],
                 "static-msm5000-620-controller-callback-v1",
@@ -277,25 +353,28 @@ class StaticControllerCandidateTests(unittest.TestCase):
                 "two-bank-read-consume-handler-not-closed",
             )
 
-    def test_620_group10_copied_vector_is_telemetry_only(self) -> None:
+    def test_620_group10_two_peer_copied_vector_route(self) -> None:
         root = Path(__file__).resolve().parents[2] / "firmwares"
-        image = (root / "X430_VE21_Dump.bin").read_bytes()
-        candidate = find_rex_static_controller_callback_candidate(
-            image, **RAM_5000
-        )
-        self.assertIsNotNone(candidate)
-        assert candidate is not None
-        self.assertTrue(candidate["accepted"])
-        self.assertFalse(candidate["active"])
-        self.assertEqual(
-            candidate["controller_class"],
-            "legacy-msm5000-620-two-bank-read-consume-group10-v1",
-        )
-        self.assertEqual(candidate["group_row_size"], 10)
-        self.assertEqual(candidate["vector_target"], 0x01100000)
-        self.assertEqual(candidate["vector_copy_source"], 0x0039519C)
-        self.assertEqual(candidate["descriptor_runtime_address"],
-                         candidate["callback_slot"] - 0x14)
+        for name in ("X430_VE21_Dump.bin", "SCH-X430.bin"):
+            image = (root / name).read_bytes()
+            candidate = find_rex_static_controller_callback_candidate(
+                image, **RAM_5000
+            )
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            self.assertTrue(candidate["accepted"])
+            self.assertFalse(candidate["active"])
+            self.assertEqual(candidate["promotion"],
+                             "temporary-evidence-gated")
+            self.assertEqual(
+                candidate["controller_class"],
+                "legacy-msm5000-620-two-bank-read-consume-group10-v1",
+            )
+            self.assertEqual(candidate["group_row_size"], 10)
+            self.assertEqual(candidate["vector_target"], 0x01100000)
+            self.assertEqual(candidate["vector_copy_source"], 0x0039519C)
+            self.assertEqual(candidate["descriptor_runtime_address"],
+                             candidate["callback_slot"] - 0x14)
 
         copy_record = image.find(struct.pack(
             "<4I", candidate["vector_copy_source"],
@@ -330,6 +409,44 @@ class StaticControllerCandidateTests(unittest.TestCase):
             "two-bank-read-consume-handler-not-closed",
         )
 
+    def test_620_w1c_two_peer_class_closes_exact_routes(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares/incoming-20260814"
+        expected = {
+            "SCH-X290.bin": (0x01100000, 0x0009D264, 0x0000E170,
+                              0x011AE238, 0x01102B24),
+            "SPH-X2700.bin": (0x01180000, 0x000B033C, 0x00016878,
+                               0x0120FF54, 0x01184C3C),
+        }
+        for name, addresses in expected.items():
+            image = (root / name).read_bytes()
+            candidate = find_rex_static_controller_callback_candidate(
+                image, **RAM_5000
+            )
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            self.assertTrue(candidate["accepted"])
+            self.assertEqual(candidate["controller_class"],
+                             "legacy-msm5000-620-two-bank-w1c-8call-v1")
+            self.assertEqual(candidate["promotion"],
+                             "temporary-evidence-gated")
+            self.assertEqual(candidate["pending_read_semantics"],
+                             "latched-read")
+            self.assertEqual(candidate["pending_ack_semantics"],
+                             "write-one-to-clear")
+            self.assertEqual(tuple(candidate[field] for field in (
+                "vector_target", "handler_file_offset",
+                "callback_file_offset", "handler_slot", "callback_slot",
+            )), addresses)
+
+            changed = bytearray(image)
+            changed[addresses[1] + 0x20] ^= 1
+            rejected = find_rex_static_controller_callback_candidate(
+                changed, **RAM_5000
+            )
+            self.assertIsNotNone(rejected)
+            assert rejected is not None
+            self.assertFalse(rejected["accepted"])
+
     def test_c80_group10_relocated_vector_three_peer_topology(self) -> None:
         root = Path(__file__).resolve().parents[2] / "firmwares"
         expected = {
@@ -350,6 +467,11 @@ class StaticControllerCandidateTests(unittest.TestCase):
             self.assertEqual(candidate["vector_copy_size"], 0x140)
             self.assertEqual(candidate["wrapper_file_offset"], wrapper)
             self.assertEqual(candidate["handler_validation_size"], 0x150)
+            self.assertEqual(candidate["promotion"],
+                             "temporary-evidence-gated")
+            self.assertEqual(candidate["group_row_size"], 10)
+            self.assertEqual(candidate["pending_ack_semantics"],
+                             "write-one-to-clear")
 
         image = bytearray((root / "LG-SD810-General.bin").read_bytes())
         record = image.find(struct.pack(

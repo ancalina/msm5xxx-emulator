@@ -37,10 +37,19 @@ MAP_FLAGS="-ffile-prefix-map=$SOURCE=. -fmacro-prefix-map=$SOURCE=."
 MAP_FLAGS="$MAP_FLAGS -ffile-prefix-map=$BUILD=. -fmacro-prefix-map=$BUILD=."
 MAP_FLAGS="$MAP_FLAGS -ffile-prefix-map=$WORK=. -fmacro-prefix-map=$WORK=."
 
+case $(uname -s) in
+    Linux) AUDIO_FLAGS="--enable-alsa --audio-drv-list=alsa" ;;
+    Darwin) AUDIO_FLAGS="--enable-coreaudio --audio-drv-list=coreaudio" ;;
+    MINGW*|MSYS*|CYGWIN*)
+        AUDIO_FLAGS="--enable-dsound --audio-drv-list=dsound" ;;
+    *) echo "unsupported desktop audio platform" >&2; exit 1 ;;
+esac
+
 cd "$BUILD"
 "$SOURCE/configure" \
     --target-list=arm-softmmu \
     --without-default-features \
+    $AUDIO_FLAGS \
     --enable-fdt=internal \
     --disable-download \
     --disable-docs \

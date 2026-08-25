@@ -16,6 +16,21 @@ REX_5MS_CALLBACK_SIZE = 64
 REX_TIMER_ADVANCE_SIZE = 70
 REX_LEGACY_5MS_CALLBACK_SIZE = 68
 REX_TIMER_CALLBACK_DRAIN_SIZE = 40
+UIS_IDLE_ENTRY_PREFIX = bytes.fromhex("f0b5b4b009a92120")
+UIS_IDLE_BODY_PREFIX = bytes.fromhex("9748974a40780026")
+UIS_IDLE_BODY_DELTA = 0x15E
+UIS_IDLE_COMPACT_ENTRY_PREFIX = bytes.fromhex("f0b5acb000200a90")
+UIS_IDLE_COMPACT_BODY_PREFIX = bytes.fromhex("be48be4d40780021")
+UIS_IDLE_COMPACT_BODY_DELTA = 0xFE
+UIS_IDLE_DRAW_MARKER = (
+    b"[Idle_IdleP_OnDraw]Draw Idle Image in Enter Refresh\0"
+)
+UIS_IDLE_DRAW_BODY_DELTAS = (0x8B8, 0x908)
+UIS_IDLE_BODY_DELTAS = (
+    UIS_IDLE_COMPACT_BODY_DELTA,
+    UIS_IDLE_BODY_DELTA,
+    *UIS_IDLE_DRAW_BODY_DELTAS,
+)
 
 
 REX_IRQ_WRAPPER_SIGNATURE = bytes.fromhex(
@@ -407,7 +422,7 @@ def _find_rex_620_static_controller_callback_candidate(
             0x72,
             ("ccae3c22bdad57f1592f7712387f3fcbf0c2ec820f612347d95d577bfd7a910b",
              (0x06, 0x22, 0x68)),
-            0x28,
+            0x28, "consume-on-read", "temporary-evidence-gated",
         ),
         (
             "4a21a10a9d44e4f1edf1bfe706aed5fe31b180ca271feacc5eeffe34bb4f7644",
@@ -417,21 +432,61 @@ def _find_rex_620_static_controller_callback_candidate(
             0x72,
             ("210b20af82bd778d9f17b5b00abc5adf1530778909a55260ec00a50cf17fda11",
              (0x06, 0x20, 0x66)),
-            0x26,
+            0x26, "consume-on-read", "temporary-evidence-gated",
+        ),
+        (
+            "6b60312309feaba3b622488c656ee3318fa6cd5e41c547d782cabcdf18cf21bf",
+            (0x30, 0x90, 0xB6, 0xE0, 0x11C, 0x122, 0x134, 0x172),
+        ): (
+            "legacy-msm5000-620-two-bank-w1c-8call-v1", 12,
+            0x72,
+            ("ce302dcd02951cbb4ffd5a27c1062a597ddabac1e9cf78d6aa442a149a4d371d",
+             (0x06, 0x20, 0x66)),
+            0x26, "latched-read", "temporary-evidence-gated",
+        ),
+        (
+            "e06e290bb2f091c2127bfe2b68bd184380b49cfa724f6ae1eaeddf9e746cb963",
+            (0x30, 0x90, 0xB6, 0xE0, 0x11C, 0x122, 0x134, 0x172),
+        ): (
+            "legacy-msm5000-620-two-bank-w1c-8call-v1", 12,
+            0x72,
+            ("3d9f4975eaafa7a4a146d486608be5bbdd5a5f7add9d604a19ec85f89c408a9b",
+             (0x06, 0x20, 0x66)),
+            0x26, "latched-read", "temporary-evidence-gated",
         ),
     }
     profile = handler_profiles.get(handler_shape)
     if profile is None:
         return rejected("two-bank-read-consume-handler-not-closed")
     (controller_class, group_row_size, registrar_size,
-     registrar_expected, table_at) = profile
-    literal_checks = (
-        (0x00, 2, masks), (0x0E, 7, status), (0x12, 2, masks),
-        (0x6C, 2, masks), (0x70, 7, status), (0x9C, 1, masks),
-        (0xA4, 3, status), (0xBA, 1, status), (0xCA, 1, status),
-        (0xE6, 1, status), (0xEC, 3, status), (0x110, 1, status),
-        (0x148, 7, masks), (0x15C, 1, status),
-    )
+     registrar_expected, table_at, pending_read_semantics,
+     promotion) = profile
+    if pending_read_semantics == "latched-read":
+        semantic_limit = (
+            "two-peer clear/write route with a 5-unit service callback; "
+            "physical tick source remains approximated"
+        )
+        literal_checks = (
+            (0x00, 2, masks), (0x0E, 7, status), (0x12, 2, masks),
+            (0x48, 1, descriptor_runtime + 0x1C),
+            (0x6C, 2, masks), (0x70, 7, status), (0x9C, 1, masks),
+            (0xA4, 3, status), (0xC8, 1, status), (0xCE, 3, status),
+            (0xF2, 1, status), (0x12A, 7, masks), (0x13E, 1, status),
+        )
+    else:
+        if promotion == "temporary-evidence-gated":
+            semantic_limit = (
+                "ordered status-read, callback, return, and next-tick cadence "
+                "closed for this exact handler class; handset idle remains "
+                "unproven"
+            )
+        literal_checks = (
+            (0x00, 2, masks), (0x0E, 7, status), (0x12, 2, masks),
+            (0x6C, 2, masks), (0x70, 7, status), (0x9C, 1, masks),
+            (0xA4, 3, status), (0xBA, 1, status), (0xCA, 1, status),
+            (0xE6, 1, status), (0xEC, 3, status), (0x110, 1, status),
+            (0x148, 7, masks), (0x15C, 1, status),
+        )
     if any(thumb_literal_value(image, handler + relative, register) != value
            for relative, register, value in literal_checks):
         return rejected("two-bank-read-consume-literals-not-closed")
@@ -503,7 +558,7 @@ def _find_rex_620_static_controller_callback_candidate(
         "controller_class": controller_class,
         "accepted": True,
         "active": False,
-        "promotion": "experimental-only",
+        "promotion": promotion,
         "semantic_limit": semantic_limit,
         "vector": 0x18,
         "vector_target": vector_target,
@@ -513,12 +568,15 @@ def _find_rex_620_static_controller_callback_candidate(
         "enable": enable,
         "mask": mask,
         "status_banks": (status, status + 4),
-        "mask_set_banks": (status, status + 4),
+        **({"clear_banks": (status, status + 4),
+            "pending_ack_semantics": "write-one-to-clear"}
+           if pending_read_semantics == "latched-read" else
+           {"mask_set_banks": (status, status + 4)}),
         "mask_output_banks": (enable, enable + 4),
         "controller_aperture": (status, enable + 8),
         "status_bank_count": 2,
         "group_row_size": group_row_size,
-        "pending_read_semantics": "consume-on-read",
+        "pending_read_semantics": pending_read_semantics,
         "descriptor_file_offset": descriptor_file_offset,
         "descriptor_runtime_address": descriptor_runtime,
         "mask_table": masks,
@@ -704,7 +762,11 @@ def find_rex_static_controller_callback_candidate(
         "signature": "static-c80-controller-callback-v1",
         "accepted": True,
         "active": False,
-        "semantic_limit": semantic_limit,
+        "semantic_limit": (
+            "exact group-10 two-bank W1C route with a 5-unit service "
+            "callback; physical clock fidelity remains approximated"
+            if handler_validation_size == 0x150 else semantic_limit
+        ),
         "controller_class": (
             "legacy-c80-index1e-delta5-controller-candidate-v1"
         ),
@@ -739,6 +801,16 @@ def find_rex_static_controller_callback_candidate(
         "callback_delta": 5,
         "callback_validation_size": REX_LEGACY_5MS_CALLBACK_SIZE,
         "callback_validation_shape": callback_shape,
+        **({
+            "promotion": "temporary-evidence-gated",
+            "status_bank_count": 2,
+            "group_row_size": 10,
+            "pending_read_semantics": "latched-read",
+            "pending_ack_semantics": "write-one-to-clear",
+            "time_tick_status_bank": status,
+            "time_tick_clear_bank": status,
+            "time_tick_mask": mask,
+        } if handler_validation_size == 0x150 else {}),
     }
 
 
@@ -1961,10 +2033,28 @@ def find_rex_legacy_5ms_timer_bridge(
     }
 
 
+def _relocated_thumb_file_target(
+        image: bytes, callsite: int, file_to_runtime, runtime_to_file,
+) -> int | None:
+    """Map one PC-relative Thumb BL target through executable copies."""
+    raw_target = thumb_bl_target(image, callsite)
+    caller = file_to_runtime(callsite)
+    if (not isinstance(raw_target, int) or not isinstance(caller, int)
+            or not 0 <= caller <= 0xFFFFFFFF):
+        return None
+    address = caller + raw_target - callsite
+    if not 0 <= address <= 0xFFFFFFFF:
+        return None
+    target = runtime_to_file(address)
+    return (target if isinstance(target, int) and 0 <= target < len(image)
+            and file_to_runtime(target) == address else None)
+
+
 def find_rex_legacy_5ms_irq_route(
         image: bytes, bridge: dict[str, object],
         file_to_runtime=lambda position: position,
         runtime_to_file=lambda address: address,
+        *, allow_b590_registrar: bool = False,
 ) -> dict[str, object] | None:
     """Close one old-LG controller descriptor route for a legacy timer bridge.
 
@@ -2031,28 +2121,57 @@ def find_rex_legacy_5ms_irq_route(
     if (registrar + 0x70 > len(image) or runtime(registrar) is None):
         return None
     words = struct.unpack_from("<56H", image, registrar)
-    if not (
-            words[:3] == (0xB5F0, 0x1C04, 0x1C0F)
-            and words[5:14] == (
-                0x1C05, 0x2F00, words[7], 0xD100, 0x1C37, 0x2C00,
-                0xDB01, 0x2C00 | (0x1F if index == 0x1E else 0x2C),
-                words[13],
-            )):
-        return None
-    store = 0x630F if index == 0x1E else 0x620F
-    layouts = [
-        (multiply, descriptor_load)
-        for multiply, descriptor_load, stores in (
-            (21, 44, 28), (20, 42, 27),
+    b590_registrar = (
+        allow_b590_registrar and index == 0x2B
+        and words[:3] == (0xB590, 0x1C04, 0x1C0F)
+        and words[5:47] == (
+            0x4917, 0x2F00, 0xD100, 0x1C0F, 0x221C, 0x4B15,
+            0x4362, 0x18D2, 0x2C00, 0xD102, 0x4B14, 0x621F,
+            0xE000, 0x6157, 0x428F, 0xD104, 0x68D1, 0x880B,
+            0x8917, 0x43BB, 0xE00A, 0x68D1, 0x880B, 0x8911,
+            0x400B, 0xD106, 0x6813, 0x8019, 0x68D1, 0x880B,
+            0x8917, 0x433B, 0x800B, 0x68D1, 0x6913, 0x8809,
+            0x881B, 0x6852, 0x4019, 0x8011, 0x2800, 0xD101,
         )
-        if words[multiply:multiply + 4]
-        == (0x201C, words[multiply + 1], 0x4360, 0x1840)
-        and words[stores:stores + 3] == (store, 0xE000, 0x6147)
-    ]
-    if len(layouts) != 1:
-        return None
-    descriptor_base = thumb_literal_value(image, registrar + layouts[0][1], 1)
-    if descriptor_base is None:
+        and words[49:52] == (0xBC90, 0xBC08, 0x4718)
+        and all(
+            words[call] & 0xF800 == 0xF000
+            and words[call + 1] & 0xF800 == 0xF800
+            and thumb_bl_target(image, registrar + call * 2) is not None
+            for call in (3, 47)
+        )
+    )
+    global_slot = None
+    if b590_registrar:
+        descriptor_base = thumb_literal_value(image, registrar + 20, 3)
+        default_callback = thumb_literal_value(image, registrar + 10, 1)
+        global_slot = thumb_literal_value(image, registrar + 30, 3)
+    else:
+        if not (
+                words[:3] == (0xB5F0, 0x1C04, 0x1C0F)
+                and words[5:14] == (
+                    0x1C05, 0x2F00, words[7], 0xD100, 0x1C37, 0x2C00,
+                    0xDB01, 0x2C00 | (0x1F if index == 0x1E else 0x2C),
+                    words[13],
+                )):
+            return None
+        store = 0x630F if index == 0x1E else 0x620F
+        layouts = [
+            (multiply, descriptor_load)
+            for multiply, descriptor_load, stores in (
+                (21, 44, 28), (20, 42, 27),
+            )
+            if words[multiply:multiply + 4]
+            == (0x201C, words[multiply + 1], 0x4360, 0x1840)
+            and words[stores:stores + 3] == (store, 0xE000, 0x6147)
+        ]
+        if len(layouts) != 1:
+            return None
+        descriptor_base = thumb_literal_value(
+            image, registrar + layouts[0][1], 1
+        )
+        default_callback = thumb_literal_value(image, registrar + 14, 6)
+    if descriptor_base is None or default_callback is None:
         return None
 
     seed_prefix = struct.pack("<3I", 0x03000C80, 0x03000C94, 0x200)
@@ -2074,7 +2193,8 @@ def find_rex_legacy_5ms_irq_route(
                 descriptor_base - group_offsets[0],
                 descriptor_base - group_offsets[1],
             )
-            or thumb_literal_value(image, registrar + 14, 6) != seed[5]):
+            or default_callback != seed[5]
+            or (b590_registrar and global_slot != seed[4] + 0x4B8)):
         return None
     row_size = 10 if index == 0x1E else 14
     group_row = (struct.pack("<4H2B", 0x200, 0, 0x200, 4, index, index)
@@ -2089,7 +2209,7 @@ def find_rex_legacy_5ms_irq_route(
     handlers: list[int] = []
     variants = (
         ((0x17E, 0xB087), (0x150, 0xB086))
-        if index == 0x1E else ((0x214, 0xB08A),)
+        if index == 0x1E else ((0x214, 0xB08A), (0x1E6, 0xB089))
     )
     for delta, prologue in variants:
         handler = loop - delta
@@ -2107,12 +2227,15 @@ def find_rex_legacy_5ms_irq_route(
             continue
         callback_sites = [site for site in range(handler, handler + 0x180 - 4, 2)
                           if struct.unpack_from("<H", image, site)[0] == 0x6978
-                          and (target := thumb_bl_target(image, site + 2)) is not None
-                          and 0 <= target <= len(image) - 16
+                          and (target := _relocated_thumb_file_target(
+                              image, site + 2, file_to_runtime,
+                              runtime_to_file)) is not None
+                          and target <= len(image) - 16
                           and image[target:target + 2] in (b"\x00\x47", b"\x78\x47")]
         if not callback_sites:
             continue
-        if not (thumb_bl_target(image, loop) == drain
+        if not (_relocated_thumb_file_target(
+                    image, loop, file_to_runtime, runtime_to_file) == drain
                 and struct.unpack_from("<2H", image, loop + 4) == (0x2800, 0xD1FB)):
             continue
         handlers.append(handler)
@@ -2218,6 +2341,288 @@ def find_rex_legacy_5ms_irq_route(
         "drain": runtime(drain), "drain_file_offset": drain,
         "drain_loop": runtime(loop), "drain_loop_file_offset": loop,
     }
+
+
+def find_rex_static_overlay_controller_callback_candidate(
+        image: bytes, file_to_runtime, runtime_to_file, *,
+        ram_base: int, ram_size: int,
+) -> dict[str, object] | None:
+    """Close a copied C80 callback route without an input descriptor."""
+    if struct.pack("<3I", 0x03000C80, 0x03000C94, 0x0200) not in image:
+        return None
+
+    def mapped(position: int) -> bool:
+        address = file_to_runtime(position)
+        return (isinstance(address, int)
+                and runtime_to_file(address) == position)
+
+    outers: list[int] = []
+    for prefix in (b"\x80\xb5", b"\x90\xb5"):
+        position = 0
+        while (position := image.find(prefix, position)) >= 0:
+            if (rex_legacy_5ms_callback_at(image, position) is not None
+                    and mapped(position)):
+                outers.append(position)
+            position += 2
+    drains: list[int] = []
+    position = 0
+    while (position := image.find(b"\x80\xb5", position)) >= 0:
+        if (rex_timer_callback_drain_at(image, position) is not None
+                and mapped(position)):
+            drains.append(position)
+        position += 2
+    if len(outers) != 1 or len(drains) != 1:
+        return None
+    drain = drains[0]
+    loops = [site for match in THUMB_BL_PATTERN.finditer(image)
+             if not (site := match.start()) & 1
+             and site + 8 <= len(image)
+             and _relocated_thumb_file_target(
+                 image, site, file_to_runtime, runtime_to_file) == drain
+             and struct.unpack_from("<2H", image, site + 4)
+             == (0x2800, 0xD1FB)]
+    if len(loops) != 1:
+        return None
+    bridge = {
+        "outer_callback_file_offset": outers[0],
+        "drain_file_offset": drain,
+        "drain_loop_caller_file_offset": loops[0],
+    }
+    route = find_rex_legacy_5ms_irq_route(
+        image, bridge, file_to_runtime, runtime_to_file,
+        allow_b590_registrar=True,
+    )
+    semantic_limit = (
+        "first-bank 5 ms TIME_TICK delivery only; other controller banks and "
+        "handset idle remain unproven"
+    )
+    if route is None:
+        return {
+            "signature": "static-c80-overlay-controller-callback-v1",
+            "accepted": False,
+            "active": False,
+            "semantic_limit": semantic_limit,
+            "reject_reason": "legacy-overlay-irq-route-not-closed",
+        }
+    status = route.get("status")
+    enable = route.get("enable")
+    handler_slot = route.get("handler_slot")
+    callback_slot = route.get("callback_slot")
+    vector_target = route.get("vector_target")
+    wrapper = route.get("wrapper")
+    vector_source = (runtime_to_file(vector_target)
+                     if isinstance(vector_target, int) else None)
+    if (not isinstance(wrapper, int)
+            or not isinstance(vector_source, int)
+            or not 0 <= vector_source <= len(image) - 4
+            or file_to_runtime(vector_source) != vector_target
+            or arm_b_word_target(
+                struct.unpack_from("<I", image, vector_source)[0],
+                vector_target,
+            ) != wrapper):
+        return {
+            "signature": "static-c80-overlay-controller-callback-v1",
+            "accepted": False,
+            "active": False,
+            "semantic_limit": semantic_limit,
+            "reject_reason": "legacy-overlay-vector-route-not-closed",
+        }
+    required = {
+        "controller_class": "legacy-c80-three-bank-group14-v1",
+        "index": 0x2B,
+        "mask": 0x0200,
+        "status_bank_count": 3,
+        "group_row_size": 14,
+    }
+    if (any(route.get(key) != value for key, value in required.items())
+            or not isinstance(status, int) or enable != status + 0x14
+            or route.get("status_banks")
+               != (status, status + 4, status + 0x30)
+            or route.get("clear_banks")
+               != (status, status + 4, enable + 0x38)
+            or route.get("controller_write_banks")
+               != (enable, enable + 4, enable + 0x30)
+            or route.get("controller_aperture")
+               != (status, enable + 0x3A)
+            or not isinstance(handler_slot, int)
+            or not isinstance(callback_slot, int)
+            or not isinstance(vector_target, int)
+            or not _ram_contains(handler_slot, 4, ram_base, ram_size)
+            or not _ram_contains(callback_slot, 4, ram_base, ram_size)
+            or not _ram_contains(vector_target, 4, ram_base, ram_size)):
+        return {
+            "signature": "static-c80-overlay-controller-callback-v1",
+            "accepted": False,
+            "active": False,
+            "semantic_limit": semantic_limit,
+            "reject_reason": "legacy-overlay-controller-metadata-invalid",
+        }
+    callback_shape = rex_legacy_5ms_callback_shape_at(image, outers[0])
+    if callback_shape is None:
+        return None
+    return {
+        **route,
+        "signature": "static-c80-overlay-controller-callback-v1",
+        "accepted": True,
+        "active": False,
+        "promotion": "temporary-evidence-gated",
+        "semantic_limit": semantic_limit,
+        "pending_read_semantics": "latched-read",
+        "time_tick_status_bank": status,
+        "time_tick_clear_bank": status,
+        "time_tick_mask": 0x0200,
+        "wrapper_runtime_address": route["wrapper"],
+        "handler_runtime_address": route["handler"],
+        "callback_file_offset": outers[0],
+        "callback_runtime_address": route["outer_callback"],
+        "callback_validation_size": REX_LEGACY_5MS_CALLBACK_SIZE,
+        "callback_validation_shape": callback_shape,
+        "callback_delta": 5,
+    }
+
+
+def _thumb_adr_target(image: bytes, position: int, register: int) -> int | None:
+    if not 0 <= position <= len(image) - 2:
+        return None
+    word = struct.unpack_from("<H", image, position)[0]
+    if word & 0xF800 != 0xA000 or word >> 8 & 7 != register:
+        return None
+    return ((position + 4) & ~3) + (word & 0xFF) * 4
+
+
+def _uis_idle_event_prefix_at(image: bytes, position: int) -> bool:
+    if not 0 <= position <= len(image) - 32:
+        return False
+    words = struct.unpack_from("<16H", image, position)
+    return (
+        words[0] in (0xB5F8, 0xB5FC)
+        and words[1] == 0x1C04
+        and words[2] & 0xFF00 == 0x4800
+        and words[3] == 0x1C0F
+        and words[4] & 0xFF00 == 0x4900
+        and words[5] & 0xF83F == 0x6800
+        and words[6] == 0x1C15
+        and words[7] & 0xF83F == 0x6008
+        and words[8] & 0xFF00 == 0x4900
+        and words[9] & 0xFF00 == 0x4A00
+        and words[10] == 0x2000
+        and words[11] & 0xFF00 == 0x4E00
+        and words[12:] == (0x1889, 0x73C8, 0x7830, 0x2800)
+    )
+
+
+def _uis_idle_draw_prefix_at(image: bytes, position: int) -> bool:
+    if not 0 <= position <= len(image) - 26:
+        return False
+    words = struct.unpack_from("<13H", image, position)
+    return (
+        words[:2] == (0xB5F0, 0x1C0D)
+        and words[2] & 0xFF00 == 0x4900
+        and words[3:7] == (0x1C04, 0x2000, 0x6248, 0x203F)
+        and words[7] & 0xFF00 == 0x4900
+        and words[8:12] == (0x0100, 0x1808, 0x7800, 0x2800)
+        and words[12] & 0xFF00 == 0xD000
+    )
+
+
+def _uis_idle_draw_pair(
+        image: bytes, calls: list[tuple[int, int | None]], file_to_runtime,
+) -> tuple[int, int] | None:
+    """Return the registered event/draw pair for one closed idle UI class."""
+    marker = image.find(UIS_IDLE_DRAW_MARKER)
+    if marker < 0 or image.find(UIS_IDLE_DRAW_MARKER, marker + 1) >= 0:
+        return None
+    helpers: list[tuple[int, int]] = []
+    for site, target in calls:
+        if (target is None or not marker - 0x80 <= target < marker
+                or target + 4 > len(image)):
+            continue
+        first, second = struct.unpack_from("<2H", image, target)
+        if first & 0xF800 != 0x4800 or second != 0xB500:
+            continue
+        references = [
+            position for position in range(target, marker, 2)
+            if _thumb_adr_target(image, position, 0) == marker
+        ]
+        if len(references) == 1:
+            helpers.append((site, target))
+    if len(helpers) != 1:
+        return None
+    draw_call, _helper = helpers[0]
+    draws = [
+        position for position in range(max(0, draw_call - 0xC0), draw_call + 1, 2)
+        if _uis_idle_draw_prefix_at(image, position)
+    ]
+    if len(draws) != 1:
+        return None
+    draw = draws[0]
+    event_calls = [
+        site for site, target in calls
+        if (target == draw and image[site - 4:site] == b"\x29\x1c\x38\x1c"
+            and image[site + 4:site + 8] == b"\xff\x27\x01\x37")
+    ]
+    if len(event_calls) != 1:
+        return None
+    event_call = event_calls[0]
+    events = [
+        position
+        for position in range(max(0, event_call - 0x140), event_call + 1, 2)
+        if (draw - position in UIS_IDLE_DRAW_BODY_DELTAS
+            and _uis_idle_event_prefix_at(image, position))
+    ]
+    if len(events) != 1:
+        return None
+    event = events[0]
+    registration = event - 0x40
+    runtime_event = file_to_runtime(event)
+    if (type(runtime_event) is not int or registration < 0
+            or image[registration:registration + 2] != b"\x00\xb5"
+            or struct.unpack_from("<H", image, registration + 2)[0] & 0xFF00
+               != 0x4900
+            or struct.unpack_from("<H", image, registration + 4)[0] != 0x2001
+            or thumb_literal_value(image, registration + 2, 1)
+               != runtime_event | 1
+            or not any(site == registration + 6 and target is not None
+                       for site, target in calls)
+            or sum(target == registration for _site, target in calls) != 1):
+        return None
+    return event, draw
+
+
+def find_uis_idle_pair(
+        image: bytes,
+        file_to_runtime=lambda position: position,
+        runtime_to_file=lambda address: address,
+) -> tuple[int, int] | None:
+    """Return one closed firmware UI-idle entry/body pair, if unambiguous."""
+    calls = [
+        (site, _relocated_thumb_file_target(
+            image, site, file_to_runtime, runtime_to_file))
+        for match in THUMB_BL_PATTERN.finditer(image)
+        if not (site := match.start()) & 1
+    ]
+    profiles = (
+        (UIS_IDLE_ENTRY_PREFIX, UIS_IDLE_BODY_DELTA,
+         UIS_IDLE_BODY_PREFIX, 2, 1),
+        (UIS_IDLE_COMPACT_ENTRY_PREFIX, UIS_IDLE_COMPACT_BODY_DELTA,
+         UIS_IDLE_COMPACT_BODY_PREFIX, 1, 1),
+    )
+    candidates: list[tuple[int, int]] = []
+    for entry_prefix, body_delta, body_prefix, entry_calls, body_calls in profiles:
+        offset = 0
+        while (entry := image.find(entry_prefix, offset)) >= 0:
+            body = entry + body_delta
+            if (image[body:body + len(body_prefix)] == body_prefix
+                    and sum(target == entry for _site, target in calls)
+                    == entry_calls
+                    and sum(target == body for _site, target in calls)
+                    == body_calls):
+                candidates.append((entry, body))
+            offset = entry + 1
+    draw_pair = _uis_idle_draw_pair(image, calls, file_to_runtime)
+    if draw_pair is not None and draw_pair not in candidates:
+        candidates.append(draw_pair)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def find_rex_idle_address(image: bytes) -> int | None:

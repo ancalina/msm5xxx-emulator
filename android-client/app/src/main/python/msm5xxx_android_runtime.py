@@ -13,7 +13,7 @@ _session_stop = None
 _session_thread = None
 _session_error = None
 _frame_sequence_sent = None
-_PCM_PACKET = struct.Struct("<4sIQQ")
+_PCM_PACKET = struct.Struct("<4sIQQQ")
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -104,7 +104,8 @@ def start_session(request_json):
         state.mkdir(parents=True, exist_ok=True)
     transport = Transport(
         qemu, firmware, state, experimental_rex, config=config,
-        qemu_prefix=("/system/bin/nice", "-n", "10"),
+        audio_stream=True,
+        icount_shift=10,
     )
     input_bits = [
         bit for bit in range(HANDSET_KEY_COUNT)
@@ -159,8 +160,15 @@ def session_frame():
 def session_status():
     if _session is None:
         raise RuntimeError("session is not running")
+    audio_underflow, audio_overflow, audio_epoch = \
+        _session.audio_pcm_snapshot()
     return _json({
         "frame_sequence": int(_session.decoder.frame_sequence),
+        "audio_epoch": int(audio_epoch),
+        "audio_overflow_frames": int(audio_overflow),
+        "audio_reject_reason": _session.audio_stream_reject_reason or "",
+        "audio_status": str(_session.audio_stream_status),
+        "audio_underflow_frames": int(audio_underflow),
         "input_host_events": int(_session.input_host_events),
         "input_rejections": int(_session.input_rejections),
         "instructions": int(_session.instructions),
@@ -178,7 +186,6 @@ def session_audio():
         return b""
     metadata = _session.config.audio_transport
     transport = getattr(_session.decoder, "audio_transport", None)
-    player = getattr(_session.decoder, "audio_player", None)
     if (not isinstance(metadata, dict)
             or metadata.get("family") != "ma2"
             or metadata.get("static_status") != "accepted"
@@ -186,19 +193,17 @@ def session_audio():
             or _session.audio_stream_status == "rejected"
             or getattr(transport, "family", None) != "ma2"
             or getattr(transport, "static_status", None) != "accepted"
-            or getattr(transport, "renderer_status", None) != "submitted"
-            or getattr(transport, "renderer_reject_reason", None) is not None
-            or not callable(getattr(player, "take_latest_pcm", None))):
+            or not callable(getattr(_session, "take_native_audio", None))):
         return b""
-    raw = player.take_latest_pcm()
-    if not isinstance(raw, bytes) or len(raw) < _PCM_PACKET.size:
+    raw = _session.take_native_audio(0.02)
+    if not isinstance(raw, bytes) or len(raw) != 1796:
         return b""
-    magic, schema, revision, start_frame = _PCM_PACKET.unpack_from(raw)
+    magic, schema, epoch, sequence, start_frame = _PCM_PACKET.unpack_from(raw)
     payload_bytes = len(raw) - _PCM_PACKET.size
-    if (magic != b"M5P1" or schema != 1 or revision == 0
+    payload_frames = payload_bytes // 4
+    if (magic != b"M5P2" or schema != 2 or epoch == 0 or sequence == 0
             or payload_bytes == 0 or payload_bytes % 4 != 0
-            or payload_bytes > 44_100 * 30 * 4
-            or start_frame != 0):
+            or start_frame > (1 << 63) - 1 - payload_frames):
         return b""
     return raw
 

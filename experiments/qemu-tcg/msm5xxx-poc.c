@@ -14,6 +14,8 @@
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
+#include "qemu/audio.h"
+#include "qemu/thread.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "chardev/char.h"
@@ -37,6 +39,7 @@
 #include "target/arm/cpu-qom.h"
 
 #include "msm5xxx-ma2-audio.h"
+#include "msm5xxx-audio-synth.h"
 
 #define TYPE_MSM5XXX_POC_MACHINE MACHINE_TYPE_NAME("msm5xxx-poc")
 OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxxPOCMachineState, MSM5XXX_POC_MACHINE)
@@ -57,6 +60,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_BOOTSTRAP_SIZE 0x1000
 #define MSM5XXX_POC_MSM_BASE 0x03000000
 #define MSM5XXX_POC_MSM_SIZE (16 * MiB)
+#define MSM5XXX_POC_IRAM_BASE 0x03800000
+#define MSM5XXX_POC_IRAM_SIZE (2 * MiB)
 #define MSM5XXX_POC_SBI_BASE 0x03000780
 #define MSM5XXX_POC_SBI_SIZE 0x11
 #define MSM5XXX_POC_DC0_BASE 0x03000dc4
@@ -75,24 +80,62 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_LCD_TRACE_SIZE \
     (MSM5XXX_POC_LCD_TRACE_RECORD_SIZE * MSM5XXX_POC_LCD_TRACE_CAPACITY)
 #define MSM5XXX_POC_LCD_STREAM_RECORD_SIZE 16
+/* One split-lane 128x160 scanout can precede the first 33 ms virtual flush. */
+#define MSM5XXX_POC_LCD_STREAM_CAPACITY 131072
+#define MSM5XXX_POC_LCD_STREAM_SIZE \
+    (MSM5XXX_POC_LCD_STREAM_RECORD_SIZE * MSM5XXX_POC_LCD_STREAM_CAPACITY)
 #define MSM5XXX_POC_LCD_STREAM_WRITE 1
 #define MSM5XXX_POC_LCD_STREAM_TELEMETRY 2
 #define MSM5XXX_POC_DEVICE_STREAM_TELEMETRY 3
 #define MSM5XXX_POC_INPUT_STREAM_TELEMETRY 4
 #define MSM5XXX_POC_AUDIO_STREAM_WRITE 5
 #define MSM5XXX_POC_AUDIO_STREAM_STATUS 6
+#define MSM5XXX_POC_AUDIO_PCM_TELEMETRY 7
+#define MSM5XXX_POC_AUDIO_TIMING_TELEMETRY 8
+#define MSM5XXX_POC_AUDIO_REJECT_TELEMETRY 9
 #define MSM5XXX_POC_AUDIO_STATUS_OVERFLOW 1
 #define MSM5XXX_POC_AUDIO_STATUS_RESET 2
 #define MSM5XXX_POC_AUDIO_STATUS_REJECTED 3
+#define MSM5XXX_POC_AUDIO_STATUS_NATIVE 4
+#define MSM5XXX_POC_AUDIO_REJECT_SYNTH_EVENT 0x100u
+#define MSM5XXX_POC_AUDIO_REJECT_SYNTH_CLOCK 0x101u
+#define MSM5XXX_POC_AUDIO_REJECT_DEADLINE 0x102u
+#define MSM5XXX_POC_AUDIO_REJECT_COMMAND_QUEUE 0x103u
+#define MSM5XXX_POC_AUDIO_COMMAND_QUEUE_CAPACITY 4096u
+#define MSM5XXX_POC_AUDIO_PACKET_HEADER 32u
+#define MSM5XXX_POC_AUDIO_PACKET_SIZE \
+    (MSM5XXX_POC_AUDIO_PACKET_HEADER + MSM5XXX_AUDIO_CHUNK_FRAMES * 4u)
 #define MSM5XXX_POC_HOST_INPUT 0x80
 #define MSM5XXX_POC_HOST_INPUT_SIZE 4
 #define MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW UINT8_MAX
 #define MSM5XXX_POC_READY_POLL_DELAY 200000
+#define MSM5XXX_POC_READY_POLL_MAX_SITES 8
+#define MSM5XXX_POC_UART_SR_IDLE 0x0c
 #define MSM5XXX_POC_PAUSE_TIMER_SIZE 4
+#define MSM5XXX_POC_DMD5500_START 0x030f0124
+#define MSM5XXX_POC_DMD5500_COMPLETION 0x030e01ae
+#define MSM5XXX_POC_DMD5500_FIRST 0x030e0000
+#define MSM5XXX_POC_DMD5500_SIZE 2
+#define MSM5XXX_POC_DMD5500_ROUTINE_SIZE 0x54
 #define MSM5XXX_POC_REX_CONTROLLER_SIZE 0x10
 #define MSM5XXX_POC_REX_C80_CONTROLLER_SIZE 0x1a
+#define MSM5XXX_POC_REX_C80_THREE_BANK_SIZE 0x4e
+#define MSM5XXX_POC_REX_MAX_BANKS 3
 #define MSM5XXX_POC_EEPROM_GPIO_SIZE 0x20
 #define MSM5XXX_POC_24LC256_PAGE_SIZE 64
+#define MSM5XXX_POC_RAW_NAND_DATA_BASE 0x02800000
+#define MSM5XXX_POC_RAW_NAND_ADDRESS_BASE 0x02900000
+#define MSM5XXX_POC_RAW_NAND_COMMAND_BASE 0x02a00000
+#define MSM5XXX_POC_RAW_NAND_LOW_PORT_DATA_BASE 0x00800000
+#define MSM5XXX_POC_RAW_NAND_LOW_PORT_ADDRESS_BASE 0x00900000
+#define MSM5XXX_POC_RAW_NAND_LOW_PORT_COMMAND_BASE 0x00a00000
+#define MSM5XXX_POC_RAW_NAND_DATA_SIZE (8 * MiB)
+#define MSM5XXX_POC_RAW_NAND_PAGE_SIZE 0x200
+#define MSM5XXX_POC_RAW_NAND_PAGES_PER_BLOCK 0x20
+#define MSM5XXX_POC_RAW_NAND_BUS_WIDTH 2
+#define MSM5XXX_POC_RAW_NAND_STATUS_READY 0xc0
+#define MSM5XXX_POC_RAW_NAND_STATUS_FAILED 0xc1
+#define MSM5XXX_POC_RAW_NAND_DRIVE "msm5xxx-raw-nand-main"
 
 struct MSM5xxx24LCxxState {
     I2CSlave parent_obj;
@@ -135,6 +178,16 @@ typedef enum MSM5xxxPOCRexGateStatus {
     MSM5XXX_POC_REX_GATE_ACCEPTED,
 } MSM5xxxPOCRexGateStatus;
 
+typedef enum MSM5xxxPOCRawNandMode {
+    MSM5XXX_POC_RAW_NAND_IDLE,
+    MSM5XXX_POC_RAW_NAND_STATUS,
+    MSM5XXX_POC_RAW_NAND_READ_MAIN,
+    MSM5XXX_POC_RAW_NAND_READ_SPARE,
+    MSM5XXX_POC_RAW_NAND_PROGRAM_MAIN,
+    MSM5XXX_POC_RAW_NAND_PROGRAM_SPARE,
+    MSM5XXX_POC_RAW_NAND_ERASE,
+} MSM5xxxPOCRawNandMode;
+
 typedef struct MSM5xxxPOCLCDPort {
     MSM5xxxPOCMachineState *machine;
     unsigned index;
@@ -144,6 +197,8 @@ struct MSM5xxxPOCMachineState {
     MachineState parent_obj;
 
     ARMCPU *cpu;
+    uint32_t reset_callbacks;
+    uint32_t last_reset_callback_pc;
     uint32_t ram_base;
     uint32_t initial_sp;
     bool memory_profile_enabled;
@@ -158,22 +213,67 @@ struct MSM5xxxPOCMachineState {
     uint32_t primary_x16_nor_region_size[MSM5XXX_POC_NOR_MAX_REGIONS];
     uint16_t primary_x16_nor_id0;
     uint16_t primary_x16_nor_id1;
+    bool mapped_primary_x16_nor_enabled;
+    uint32_t mapped_primary_x16_nor_base;
+    uint32_t mapped_primary_x16_nor_size;
+    uint32_t mapped_primary_x16_nor_sector_size;
+    /* The mutually exclusive direct CFI01/CFI02 profiles share geometry. */
+    bool intel_x16_nor_enabled;
+    uint32_t intel_x16_nor_base;
+    uint32_t intel_x16_nor_size;
+    uint32_t intel_x16_nor_sector_size;
+    uint16_t intel_x16_nor_id0;
+    uint16_t intel_x16_nor_id1;
+    MemoryRegion intel_x16_nor_data_alias;
+    bool amd_x16_nor_enabled;
+    uint16_t amd_x16_nor_options;
     bool fujitsu_x16_nor_enabled;
     uint32_t secondary_nor_base;
     uint32_t secondary_nor_size;
     uint16_t secondary_nor_id0;
     uint16_t secondary_nor_id1;
     bool upper_x8_nor_enabled;
+    bool upper_x16_nor_enabled;
+    bool raw_nand_main_enabled;
+    uint32_t raw_nand_data_address;
+    uint32_t raw_nand_address_address;
+    uint32_t raw_nand_command_address;
+    uint32_t raw_nand_data_size;
+    uint32_t raw_nand_page_size;
+    uint32_t raw_nand_pages_per_block;
+    uint8_t raw_nand_bus_width;
+    BlockBackend *raw_nand_blk;
+    uint8_t *raw_nand_backing;
+    uint8_t *raw_nand_program;
+    MSM5xxxPOCRawNandMode raw_nand_mode;
+    uint8_t raw_nand_status;
+    uint8_t raw_nand_address_bytes[3];
+    unsigned raw_nand_address_count;
+    uint32_t raw_nand_cursor;
+    uint32_t raw_nand_page_base;
+    bool raw_nand_cursor_valid;
+    bool raw_nand_spare_selected;
+    uint64_t raw_nand_reads;
+    uint64_t raw_nand_writes;
+    uint64_t raw_nand_rejections;
+    MemoryRegion raw_nand_data;
+    MemoryRegion raw_nand_address;
+    MemoryRegion raw_nand_command;
     MemoryRegion bootstrap;
     MemoryRegion msm;
     MemoryRegion sbi;
     MemoryRegion dc0;
     MemoryRegion lcd_aperture;
+    MemoryRegion audio_opaque;
     MemoryRegion lcd[MSM5XXX_POC_LCD_PORTS];
     MemoryRegion lcd_trace;
     MemoryRegion ready_status;
     MemoryRegion ready_pulse;
+    MemoryRegion ready_control;
     MemoryRegion pause_timer;
+    MemoryRegion board_revision;
+    MemoryRegion dmd_5500_start;
+    MemoryRegion dmd_5500_completion;
     MemoryRegion board_status_input;
     MemoryRegion matrix_input;
     MemoryRegion mmio;
@@ -183,6 +283,7 @@ struct MSM5xxxPOCMachineState {
     uint64_t writes;
     bool irq_level;
     bool sbi_enabled;
+    bool sbi_bootstrap_only;
     uint8_t sbi_backing[MSM5XXX_POC_SBI_SIZE];
     MSM5xxxPOCSBIStatus sbi_status;
     unsigned sbi_bootstrap_phase;
@@ -194,6 +295,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t board_adc_value;
     uint32_t dc0_board_adc_value;
     unsigned sbi_board_adc_phase;
+    uint16_t sbi_board_adc_selector;
     uint64_t sbi_board_adc_responses;
     uint64_t sbi_reads;
     uint64_t sbi_writes;
@@ -218,12 +320,27 @@ struct MSM5xxxPOCMachineState {
     GByteArray *lcd_trace_buffer;
     QEMUTimer *lcd_trace_timer;
     bool ready_poll_enabled;
+    bool ready_poll_control_enabled;
+    bool ready_poll_lcd_enabled;
     uint32_t ready_status_address;
     uint8_t ready_status_mask;
     uint32_t ready_pulse_address;
+    uint32_t ready_control_address;
+    uint16_t ready_control_value;
     uint32_t ready_poll_entry;
+    uint32_t ready_poll_sites[MSM5XXX_POC_READY_POLL_MAX_SITES];
+    unsigned ready_poll_site_count;
+    uint32_t ready_poll_active_entry;
+    uint32_t ready_status_pc_offset;
+    uint32_t ready_pulse_set_pc_offset;
+    uint32_t ready_pulse_clear_pc_offset;
+    uint32_t ready_uart_rx_empty_read_pc_offset;
+    uint32_t ready_uart_rx_empty_frame_read_pc_offset;
+    bool ready_uart_rx_empty_enabled;
+    uint32_t ready_control_pc_offset;
     uint8_t ready_status_backing;
     uint8_t ready_pulse_backing;
+    uint8_t ready_control_backing;
     MSM5xxxPOCReadyPollStatus ready_poll_status;
     unsigned ready_poll_phase;
     uint64_t ready_poll_first_icount;
@@ -240,6 +357,16 @@ struct MSM5xxxPOCMachineState {
     uint64_t pause_timer_writes;
     uint64_t pause_timer_fallbacks;
     uint64_t pause_timer_added_ns;
+    bool board_revision_enabled;
+    uint32_t board_revision_address;
+    uint32_t board_revision_value;
+    bool dmd_5500_enabled;
+    bool dmd_5500_pending;
+    uint32_t dmd_5500_entry;
+    uint16_t dmd_5500_expected_first;
+    uint64_t dmd_5500_starts;
+    uint64_t dmd_5500_responses;
+    uint64_t dmd_5500_rejections;
     bool board_status_input_enabled;
     uint32_t board_status_input_address;
     uint8_t board_status_input_mask;
@@ -270,10 +397,16 @@ struct MSM5xxxPOCMachineState {
     uint64_t matrix_input_rejections;
     bool audio_enabled;
     bool audio_ma2;
+    bool audio_pcm_enabled;
     uint32_t audio_base;
     uint8_t audio_data_offset;
     uint8_t audio_index;
     uint8_t audio_backing[MSM5XXX_POC_AUDIO_MAX_PORTS];
+    uint8_t audio_command_pending[MSM5XXX_MA2_FM_FIFO_COUNT]
+                                 [MSM5XXX_POC_AUDIO_COMMAND_QUEUE_CAPACITY];
+    uint16_t audio_command_pending_read[MSM5XXX_MA2_FM_FIFO_COUNT];
+    uint16_t audio_command_pending_write[MSM5XXX_MA2_FM_FIFO_COUNT];
+    uint16_t audio_command_pending_count[MSM5XXX_MA2_FM_FIFO_COUNT];
     bool audio_site_write[MSM5XXX_POC_AUDIO_MAX_SITES];
     uint8_t audio_site_port[MSM5XXX_POC_AUDIO_MAX_SITES];
     uint32_t audio_site_pc[MSM5XXX_POC_AUDIO_MAX_SITES];
@@ -281,9 +414,29 @@ struct MSM5xxxPOCMachineState {
     bool audio_sites_enabled;
     uint32_t audio_stream_order;
     uint32_t audio_stream_dropped;
+    uint32_t audio_stream_reject_code;
+    uint64_t audio_stream_reset_epoch;
     uint8_t audio_stream_status_pending;
     bool audio_stream_started;
     bool audio_stream_rejected;
+    bool audio_reset_initialized;
+    char *audio_stream_chardev;
+    CharFrontend audio_stream_chr;
+    uint8_t audio_pcm_packet[MSM5XXX_POC_AUDIO_PACKET_SIZE];
+    unsigned audio_pcm_length;
+    unsigned audio_pcm_offset;
+    bool audio_pcm_failed;
+    AudioBackend *audio_backend;
+    SWVoiceOut *audio_voice;
+    int16_t audio_backend_pcm[MSM5XXX_AUDIO_CHUNK_FRAMES][2];
+    unsigned audio_backend_pcm_length;
+    unsigned audio_backend_pcm_offset;
+    QemuMutex audio_synth_lock;
+    QemuMutex audio_core_lock;
+    bool audio_synth_lock_initialized;
+    bool audio_core_lock_initialized;
+    bool audio_output_started;
+    MSM5xxxAudioSynth audio_synth;
     MSM5xxxMA2Audio ma2_audio;
     QEMUTimer *ma2_audio_timer;
     uint64_t ma2_audio_events;
@@ -300,6 +453,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t rex_irq_interval;
     uint32_t rex_idle_address;
     uint32_t rex_irq_controller_size;
+    uint8_t rex_irq_bank_count;
     uint32_t rex_irq_vector_target;
     uint32_t rex_irq_wrapper_address;
     uint32_t rex_irq_handler_slot;
@@ -309,9 +463,9 @@ struct MSM5xxxPOCMachineState {
     uint32_t rex_irq_callback_address;
     MemoryRegion rex_irq_controller;
     MemoryRegion rex_irq_arm;
-    uint8_t rex_irq_backing[MSM5XXX_POC_REX_C80_CONTROLLER_SIZE];
+    uint8_t rex_irq_backing[MSM5XXX_POC_REX_C80_THREE_BANK_SIZE];
     uint8_t rex_irq_arm_backing;
-    uint16_t rex_irq_pending[2];
+    uint16_t rex_irq_pending[MSM5XXX_POC_REX_MAX_BANKS];
     bool rex_irq_armed;
     bool rex_irq_level;
     bool rex_irq_route_active;
@@ -510,7 +664,7 @@ static bool msm5xxx_poc_lcd_stream_append(MSM5xxxPOCMachineState *s,
     uint8_t record[MSM5XXX_POC_LCD_STREAM_RECORD_SIZE] = { kind, size };
 
     if (s->lcd_trace_buffer->len + sizeof(record) >
-        MSM5XXX_POC_LCD_TRACE_SIZE) {
+        MSM5XXX_POC_LCD_STREAM_SIZE) {
         s->lcd_trace_overflow = true;
         return false;
     }
@@ -592,13 +746,56 @@ static void msm5xxx_poc_audio_stream_status(MSM5xxxPOCMachineState *s)
     }
     if (msm5xxx_poc_lcd_stream_append(
             s, MSM5XXX_POC_AUDIO_STREAM_STATUS, status,
-            status == MSM5XXX_POC_AUDIO_STATUS_OVERFLOW ?
+            status == MSM5XXX_POC_AUDIO_STATUS_RESET ?
+                (uint32_t)s->audio_stream_reset_epoch :
+            (status == MSM5XXX_POC_AUDIO_STATUS_OVERFLOW ||
+             status == MSM5XXX_POC_AUDIO_STATUS_REJECTED) ?
                 s->audio_stream_order : 0,
-            status == MSM5XXX_POC_AUDIO_STATUS_OVERFLOW ?
+            status == MSM5XXX_POC_AUDIO_STATUS_RESET ?
+                (uint32_t)(s->audio_stream_reset_epoch >> 32u) :
+            (status == MSM5XXX_POC_AUDIO_STATUS_OVERFLOW ||
+             status == MSM5XXX_POC_AUDIO_STATUS_REJECTED) ?
                 s->audio_stream_dropped : 0,
-            0)) {
+            status == MSM5XXX_POC_AUDIO_STATUS_REJECTED ?
+                s->audio_stream_reject_code : 0)) {
         s->audio_stream_status_pending = 0;
     }
+}
+
+static void msm5xxx_poc_audio_pcm_telemetry(MSM5xxxPOCMachineState *s)
+{
+    uint32_t underflow;
+    uint32_t overflow;
+    uint32_t epoch;
+    uint32_t late_events;
+    uint32_t collapsed_events;
+    uint32_t max_lateness_ns;
+
+    if (!s->lcd_trace_buffer || !s->audio_synth_lock_initialized) {
+        return;
+    }
+    qemu_mutex_lock(&s->audio_synth_lock);
+    underflow = s->audio_synth.underflow_frames > UINT32_MAX ?
+                UINT32_MAX : s->audio_synth.underflow_frames;
+    overflow = s->audio_synth.overflow_frames > UINT32_MAX ?
+               UINT32_MAX : s->audio_synth.overflow_frames;
+    epoch = s->audio_synth.epoch > UINT32_MAX ?
+            UINT32_MAX : s->audio_synth.epoch;
+    late_events = s->audio_synth.late_events > UINT32_MAX ?
+                  UINT32_MAX : s->audio_synth.late_events;
+    collapsed_events = s->audio_synth.collapsed_events > UINT32_MAX ?
+                       UINT32_MAX : s->audio_synth.collapsed_events;
+    max_lateness_ns = s->audio_synth.max_lateness_ns > UINT32_MAX ?
+                      UINT32_MAX : s->audio_synth.max_lateness_ns;
+    qemu_mutex_unlock(&s->audio_synth_lock);
+    msm5xxx_poc_lcd_stream_append(
+        s, MSM5XXX_POC_AUDIO_PCM_TELEMETRY, 0,
+        underflow, overflow, epoch
+    );
+    msm5xxx_poc_lcd_stream_append(
+        s, MSM5XXX_POC_AUDIO_TIMING_TELEMETRY, 0,
+        late_events, collapsed_events, max_lateness_ns
+    );
 }
 
 static void msm5xxx_poc_lcd_trace_flush(void *opaque)
@@ -618,6 +815,7 @@ static void msm5xxx_poc_lcd_trace_flush(void *opaque)
         s->ready_poll_phase | (s->ready_poll_cycles << 8),
         s->ready_poll_reads, s->ready_poll_responses
     );
+    msm5xxx_poc_audio_pcm_telemetry(s);
     if (s->lcd_trace_buffer->len) {
         written = qemu_chr_fe_write(&s->lcd_trace_chr,
                                     s->lcd_trace_buffer->data,
@@ -689,26 +887,80 @@ static void msm5xxx_poc_ready_reject(MSM5xxxPOCMachineState *s)
     s->ready_poll_phase = 0;
 }
 
+static bool msm5xxx_poc_ready_site_for_pc(MSM5xxxPOCMachineState *s,
+                                           uint32_t pc, uint32_t offset,
+                                           uint32_t *entry)
+{
+    unsigned index;
+
+    if (!s->ready_poll_site_count) {
+        if (pc != s->ready_poll_entry + offset) {
+            return false;
+        }
+        *entry = s->ready_poll_entry;
+        return true;
+    }
+    for (index = 0; index < s->ready_poll_site_count; index++) {
+        if (pc == s->ready_poll_sites[index] + offset) {
+            *entry = s->ready_poll_sites[index];
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
     CPUClass *cc = CPU_GET_CLASS(s->cpu);
     uint64_t now = icount_get_raw();
+    uint32_t pc;
+    uint32_t entry = 0;
+    bool primary_read;
 
     if (offset || size != 1) {
         return 0;
     }
-    if (cc->get_pc(CPU(s->cpu)) != s->ready_poll_entry + 2) {
+    pc = cc->get_pc(CPU(s->cpu));
+    primary_read = msm5xxx_poc_ready_site_for_pc(
+        s, pc, s->ready_status_pc_offset, &entry
+    );
+    if (s->ready_poll_status == MSM5XXX_POC_READY_ACCEPTED) {
+        if (s->ready_uart_rx_empty_enabled &&
+            (!s->ready_poll_control_enabled ||
+             pc == s->ready_poll_entry +
+                   s->ready_uart_rx_empty_read_pc_offset)) {
+            s->ready_poll_reads++;
+            s->ready_poll_responses++;
+            return MSM5XXX_POC_UART_SR_IDLE;
+        }
+        if (!primary_read) {
+            return s->ready_status_backing;
+        }
+        s->ready_poll_reads++;
+        s->ready_poll_responses++;
+        return s->ready_status_backing | s->ready_status_mask;
+    }
+    if (!primary_read) {
         return s->ready_status_backing;
     }
     s->ready_poll_reads++;
     if (s->ready_poll_status == MSM5XXX_POC_READY_OBSERVING) {
         s->ready_poll_status = MSM5XXX_POC_READY_CANDIDATE;
+        s->ready_poll_active_entry = entry;
         s->ready_poll_phase = 1;
         s->ready_poll_first_icount = now;
     } else if (s->ready_poll_status == MSM5XXX_POC_READY_CANDIDATE) {
-        if (s->ready_poll_phase != 3) {
+        unsigned expected_phase = s->ready_poll_control_enabled ? 4 : 3;
+
+        if (entry != s->ready_poll_active_entry) {
+            s->ready_poll_active_entry = entry;
+            s->ready_poll_phase = 1;
+            s->ready_poll_first_icount = now;
+            return s->ready_status_backing;
+        }
+        if (s->ready_poll_phase != expected_phase) {
             s->ready_poll_phase = 1;
             return s->ready_status_backing;
         }
@@ -760,13 +1012,15 @@ static void msm5xxx_poc_ready_pulse_write(void *opaque, hwaddr offset,
         return;
     }
     if (s->ready_poll_status == MSM5XXX_POC_READY_CANDIDATE) {
-        if (pc == s->ready_poll_entry + 12) {
+        if (pc == s->ready_poll_active_entry +
+                  s->ready_pulse_set_pc_offset) {
             if (value == 1) {
                 s->ready_poll_phase = 2;
             } else {
                 msm5xxx_poc_ready_reject(s);
             }
-        } else if (pc == s->ready_poll_entry + 16) {
+        } else if (pc == s->ready_poll_active_entry +
+                         s->ready_pulse_clear_pc_offset) {
             if (value != 0) {
                 msm5xxx_poc_ready_reject(s);
             } else if (s->ready_poll_phase == 2) {
@@ -794,6 +1048,155 @@ static const MemoryRegionOps msm5xxx_poc_ready_pulse_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 1,
+};
+
+static uint64_t msm5xxx_poc_ready_control_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset || size != 1) {
+        msm5xxx_poc_ready_reject(s);
+        return 0;
+    }
+    return s->ready_control_backing;
+}
+
+static void msm5xxx_poc_ready_control_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    CPUClass *cc = CPU_GET_CLASS(s->cpu);
+
+    if (offset || size != 1) {
+        msm5xxx_poc_ready_reject(s);
+        return;
+    }
+    if (s->ready_poll_status == MSM5XXX_POC_READY_CANDIDATE &&
+        cc->get_pc(CPU(s->cpu)) ==
+            s->ready_poll_entry + s->ready_control_pc_offset) {
+        if (value == s->ready_control_value && s->ready_poll_phase == 3) {
+            s->ready_poll_phase = 4;
+        } else {
+            msm5xxx_poc_ready_reject(s);
+        }
+    }
+    s->ready_control_backing = value;
+}
+
+static const MemoryRegionOps msm5xxx_poc_ready_control_ops = {
+    .read = msm5xxx_poc_ready_control_read,
+    .write = msm5xxx_poc_ready_control_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+};
+
+static uint64_t msm5xxx_poc_dmd_5500_start_read(void *opaque,
+                                                hwaddr offset,
+                                                unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+
+    return msm5xxx_poc_backing_read(
+        msm, MSM5XXX_POC_DMD5500_START - MSM5XXX_POC_MSM_BASE + offset, size
+    );
+}
+
+static bool msm5xxx_poc_dmd_5500_pc_is(MSM5xxxPOCMachineState *s,
+                                        uint32_t offset)
+{
+    CPUState *cpu = current_cpu;
+    CPUClass *cc;
+
+    if (!qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io) {
+        return false;
+    }
+    cc = CPU_GET_CLASS(cpu);
+    return (cc->get_pc(cpu) & ~1U) == s->dmd_5500_entry + offset;
+}
+
+static void msm5xxx_poc_dmd_5500_start_write(void *opaque, hwaddr offset,
+                                              uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint8_t *start = msm + MSM5XXX_POC_DMD5500_START - MSM5XXX_POC_MSM_BASE;
+    uint16_t old = msm5xxx_poc_backing_read(start, 0, 2);
+
+    msm5xxx_poc_backing_write(start, offset, value, size);
+    if (!msm5xxx_poc_dmd_5500_pc_is(s, 0x20)) {
+        return;
+    }
+    if (!offset && size == 2 && value == 0 && old == UINT16_MAX &&
+        msm5xxx_poc_backing_read(
+            msm, MSM5XXX_POC_DMD5500_FIRST - MSM5XXX_POC_MSM_BASE, 2
+        ) == s->dmd_5500_expected_first &&
+        msm5xxx_poc_backing_read(
+            msm, MSM5XXX_POC_DMD5500_COMPLETION - MSM5XXX_POC_MSM_BASE, 2
+        ) == 0 && !s->dmd_5500_pending) {
+        s->dmd_5500_pending = true;
+        s->dmd_5500_starts++;
+    } else {
+        s->dmd_5500_rejections++;
+    }
+}
+
+static uint64_t msm5xxx_poc_dmd_5500_completion_read(void *opaque,
+                                                      hwaddr offset,
+                                                      unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint8_t *completion =
+        msm + MSM5XXX_POC_DMD5500_COMPLETION - MSM5XXX_POC_MSM_BASE;
+
+    if (msm5xxx_poc_dmd_5500_pc_is(s, 0x32)) {
+        if (!offset && size == 2 && s->dmd_5500_pending) {
+            msm5xxx_poc_backing_write(completion, 0, UINT16_MAX, 2);
+            s->dmd_5500_pending = false;
+            s->dmd_5500_responses++;
+        } else {
+            s->dmd_5500_rejections++;
+        }
+    }
+    return msm5xxx_poc_backing_read(completion, offset, size);
+}
+
+static void msm5xxx_poc_dmd_5500_completion_write(void *opaque,
+                                                   hwaddr offset,
+                                                   uint64_t value,
+                                                   unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+
+    msm5xxx_poc_backing_write(
+        msm, MSM5XXX_POC_DMD5500_COMPLETION - MSM5XXX_POC_MSM_BASE + offset,
+        value, size
+    );
+}
+
+static const MemoryRegionOps msm5xxx_poc_dmd_5500_start_ops = {
+    .read = msm5xxx_poc_dmd_5500_start_read,
+    .write = msm5xxx_poc_dmd_5500_start_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 2,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 2,
+};
+
+static const MemoryRegionOps msm5xxx_poc_dmd_5500_completion_ops = {
+    .read = msm5xxx_poc_dmd_5500_completion_read,
+    .write = msm5xxx_poc_dmd_5500_completion_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 2,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 2,
 };
 
 static bool msm5xxx_poc_pause_timer_in_scope(MSM5xxxPOCMachineState *s)
@@ -879,6 +1282,31 @@ static const MemoryRegionOps msm5xxx_poc_pause_timer_ops = {
     .impl.max_access_size = 4,
 };
 
+static uint64_t msm5xxx_poc_board_revision_read(void *opaque, hwaddr offset,
+                                                unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t mask = size == 4 ? UINT32_MAX : (1u << (size * 8)) - 1u;
+
+    return ((uint64_t)s->board_revision_value >> (offset * 8)) & mask;
+}
+
+static void msm5xxx_poc_board_revision_write(void *opaque, hwaddr offset,
+                                              uint64_t value, unsigned size)
+{
+    /* Fixed device identity: match the existing per-read refresh contract. */
+}
+
+static const MemoryRegionOps msm5xxx_poc_board_revision_ops = {
+    .read = msm5xxx_poc_board_revision_read,
+    .write = msm5xxx_poc_board_revision_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
 static uint64_t msm5xxx_poc_board_status_input_read(void *opaque,
                                                      hwaddr offset,
                                                      unsigned size)
@@ -895,8 +1323,9 @@ static void msm5xxx_poc_board_status_input_write(void *opaque, hwaddr offset,
     MSM5xxxPOCMachineState *s = opaque;
 
     if (!offset && size == 1) {
-        s->board_status_input_backing = value |
-            (s->board_status_input_default & s->board_status_input_mask);
+        s->board_status_input_backing =
+            (value & ~s->board_status_input_mask) |
+            (s->board_status_input_backing & s->board_status_input_mask);
     }
 }
 
@@ -954,6 +1383,294 @@ static const MemoryRegionOps msm5xxx_poc_matrix_input_ops = {
     .valid.max_access_size = 1,
 };
 
+static void msm5xxx_poc_audio_backend_callback(void *opaque, int available)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    while (available > 0) {
+        unsigned remaining;
+        size_t written;
+
+        if (s->audio_backend_pcm_offset == s->audio_backend_pcm_length) {
+            size_t frames = MSM5XXX_AUDIO_CHUNK_FRAMES;
+
+            qemu_mutex_lock(&s->audio_synth_lock);
+            if (!msm5xxx_audio_synth_active(&s->audio_synth) &&
+                s->audio_synth.ring_count < frames) {
+                frames = s->audio_synth.ring_count;
+            }
+            if (frames != 0u) {
+                msm5xxx_audio_synth_read(
+                    &s->audio_synth, s->audio_backend_pcm, frames,
+                    NULL, NULL, NULL);
+            }
+            qemu_mutex_unlock(&s->audio_synth_lock);
+            memset(&s->audio_backend_pcm[frames], 0,
+                   (MSM5XXX_AUDIO_CHUNK_FRAMES - frames) *
+                   sizeof(s->audio_backend_pcm[0]));
+            s->audio_backend_pcm_offset = 0u;
+            s->audio_backend_pcm_length = sizeof(s->audio_backend_pcm);
+        }
+        remaining = s->audio_backend_pcm_length -
+                    s->audio_backend_pcm_offset;
+        remaining = MIN(remaining, (unsigned)available);
+        written = AUD_write(s->audio_voice,
+                            (uint8_t *)s->audio_backend_pcm +
+                            s->audio_backend_pcm_offset,
+                            remaining);
+        if (written == 0u) {
+            break;
+        }
+        s->audio_backend_pcm_offset += written;
+        available -= written;
+    }
+}
+
+static void msm5xxx_poc_audio_pcm_prepare(MSM5xxxPOCMachineState *s)
+{
+    int16_t pcm[MSM5XXX_AUDIO_CHUNK_FRAMES][2];
+    uint64_t epoch;
+    uint64_t sequence;
+    uint64_t start_frame;
+    size_t frame;
+
+    if (s->audio_pcm_length || !s->audio_stream_chardev ||
+        s->audio_stream_rejected || !s->audio_output_started) {
+        return;
+    }
+    qemu_mutex_lock(&s->audio_synth_lock);
+    if (s->audio_synth.ring_count < MSM5XXX_AUDIO_CHUNK_FRAMES) {
+        qemu_mutex_unlock(&s->audio_synth_lock);
+        return;
+    }
+    msm5xxx_audio_synth_read(&s->audio_synth, pcm,
+                             MSM5XXX_AUDIO_CHUNK_FRAMES,
+                             &epoch, &sequence, &start_frame);
+    qemu_mutex_unlock(&s->audio_synth_lock);
+
+    memcpy(s->audio_pcm_packet, "M5P2", 4u);
+    msm5xxx_poc_backing_write(s->audio_pcm_packet, 4u, 2u, 4u);
+    msm5xxx_poc_backing_write(s->audio_pcm_packet, 8u, epoch, 8u);
+    msm5xxx_poc_backing_write(s->audio_pcm_packet, 16u, sequence, 8u);
+    msm5xxx_poc_backing_write(s->audio_pcm_packet, 24u, start_frame, 8u);
+    for (frame = 0u; frame < MSM5XXX_AUDIO_CHUNK_FRAMES; frame++) {
+        msm5xxx_poc_backing_write(s->audio_pcm_packet,
+                                  MSM5XXX_POC_AUDIO_PACKET_HEADER + frame * 4u,
+                                  (uint16_t)pcm[frame][0], 2u);
+        msm5xxx_poc_backing_write(s->audio_pcm_packet,
+                                  MSM5XXX_POC_AUDIO_PACKET_HEADER +
+                                  frame * 4u + 2u,
+                                  (uint16_t)pcm[frame][1], 2u);
+    }
+    s->audio_pcm_length = sizeof(s->audio_pcm_packet);
+    s->audio_pcm_offset = 0u;
+}
+
+static void msm5xxx_poc_audio_pcm_reject(MSM5xxxPOCMachineState *s)
+{
+    s->audio_pcm_length = 0u;
+    s->audio_pcm_offset = 0u;
+    s->audio_stream_rejected = true;
+    s->audio_stream_status_pending = MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+    s->audio_output_started = false;
+    qemu_mutex_lock(&s->audio_synth_lock);
+    msm5xxx_audio_synth_resync(&s->audio_synth);
+    qemu_mutex_unlock(&s->audio_synth_lock);
+}
+
+static int msm5xxx_poc_audio_pcm_flush(MSM5xxxPOCMachineState *s)
+{
+    int written;
+
+    while (true) {
+        msm5xxx_poc_audio_pcm_prepare(s);
+        if (!s->audio_pcm_length) {
+            return 1;
+        }
+        while (s->audio_pcm_offset < s->audio_pcm_length) {
+            written = qemu_chr_fe_write(
+                &s->audio_stream_chr,
+                s->audio_pcm_packet + s->audio_pcm_offset,
+                s->audio_pcm_length - s->audio_pcm_offset);
+            if (written > 0) {
+                s->audio_pcm_offset += written;
+                continue;
+            }
+            if (written < 0 && errno == EAGAIN) {
+                return 0;
+            }
+            return -1;
+        }
+        s->audio_pcm_length = 0u;
+        s->audio_pcm_offset = 0u;
+    }
+}
+
+static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
+                                   const MSM5xxxMA2FMChannel *channel,
+                                   MSM5xxxAudioEvent *event)
+{
+    static const uint8_t descriptor[] = {
+        16u, 0u, 0u, 1u, 1u, 5u,
+        3u, 0u, 0u, 1u, 3u, 5u, 5u, 0u, 24u, 2u, 2u, 0u,
+        2u, 0u, 7u, 0u, 0u, 0u,
+        3u, 0u, 0u, 0u, 3u, 4u, 15u, 0u, 0u, 1u, 2u, 0u,
+        2u, 0u, 1u, 0u, 0u, 0u,
+        2u, 0u, 0u, 1u, 2u, 5u, 10u, 0u, 36u, 0u, 2u, 0u,
+        2u, 0u, 13u, 0u, 0u, 0u,
+        3u, 0u, 0u, 0u, 3u, 5u, 15u, 0u, 5u, 0u, 2u, 0u,
+        2u, 0u, 1u, 0u, 0u, 0u,
+    };
+    static const uint8_t multiplier[] = {7u, 1u, 12u, 1u};
+    static const uint8_t level[] = {24u, 0u, 36u, 5u};
+    const MSM5xxxMA2FMVoice *voice;
+    size_t index;
+
+    if (!channel->key_on ||
+        channel->active_voice_slot >= MSM5XXX_MA2_FM_VOICE_COUNT) {
+        return false;
+    }
+    voice = &s->ma2_audio.fm_voice[channel->active_voice_slot];
+    if (!voice->valid || voice->operator_count != 4u ||
+        memcmp(voice->decoded, descriptor, sizeof(descriptor)) != 0) {
+        return false;
+    }
+
+    /* ponytail: one proven descriptor; unmatched voices keep triangle. */
+    event->timbre_valid = true;
+    event->timbre_algorithm = 5u;
+    event->timbre_operator_count = 4u;
+    memcpy(event->timbre_multiplier, multiplier, sizeof(multiplier));
+    memcpy(event->timbre_level, level, sizeof(level));
+    for (index = 0u; index < MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT; index++) {
+        event->timbre_attack_step[index] = UINT32_C(0x0094f20a);
+        event->timbre_decay_factor[index] = UINT32_C(0x40000000);
+        event->timbre_sustain_factor[index] = UINT32_C(0x40000000);
+        event->timbre_release_factor[index] = UINT32_C(0x3eb1aa70);
+    }
+    return true;
+}
+
+static bool msm5xxx_poc_ma2_synth_output(MSM5xxxPOCMachineState *s,
+                                         const MSM5xxxMA2Output *output)
+{
+    const MSM5xxxMA2FMChannel *channel;
+    MSM5xxxAudioEvent event;
+    uint64_t timestamp_ns = output->timestamp_ns;
+
+    if (output->stream >= MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE ||
+        output->channel >= MSM5XXX_MA2_FM_CHANNEL_COUNT) {
+        return true;
+    }
+    channel = &s->ma2_audio.fm_channel[output->channel];
+    memset(&event, 0, sizeof(event));
+    event.voice_id = output->voice_id;
+    event.channel = output->channel;
+    event.note = output->note;
+    event.velocity = 127u;
+    event.volume = channel->volume;
+    event.pan = channel->pan;
+    event.expression = channel->expression;
+    event.pitch_bend = channel->pitch_bend;
+    if (output->kind == MSM5XXX_MA2_OUTPUT_GATE_OFF) {
+        event.kind = MSM5XXX_AUDIO_EVENT_NOTE_OFF;
+    } else if (output->kind == MSM5XXX_MA2_OUTPUT_EVENT &&
+               output->event.kind == MSM5XXX_MA2_COMPACT_NOTE) {
+        event.kind = MSM5XXX_AUDIO_EVENT_NOTE_ON;
+        (void)msm5xxx_poc_ma2_timbre(s, channel, &event);
+    } else if (output->kind == MSM5XXX_MA2_OUTPUT_EVENT &&
+               output->event.kind == MSM5XXX_MA2_COMPACT_CONTROL) {
+        event.kind = MSM5XXX_AUDIO_EVENT_CONTROL;
+    } else {
+        return true;
+    }
+    timestamp_ns = msm5xxx_audio_synth_clamp_event_timestamp(
+        &s->audio_synth, timestamp_ns);
+    return msm5xxx_audio_synth_event(&s->audio_synth, timestamp_ns, &event);
+}
+
+static bool msm5xxx_poc_ma2_synth_stop(MSM5xxxPOCMachineState *s)
+{
+    MSM5xxxAudioEvent event = {
+        .kind = MSM5XXX_AUDIO_EVENT_ALL_OFF,
+    };
+    uint64_t timestamp_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    qemu_mutex_lock(&s->audio_synth_lock);
+    if (s->audio_synth.clock_initialized &&
+        timestamp_ns < s->audio_synth.clock_ns) {
+        timestamp_ns = s->audio_synth.clock_ns;
+    }
+    if (!msm5xxx_audio_synth_event(&s->audio_synth, timestamp_ns, &event)) {
+        qemu_mutex_unlock(&s->audio_synth_lock);
+        return false;
+    }
+    qemu_mutex_unlock(&s->audio_synth_lock);
+    return true;
+}
+
+static void msm5xxx_poc_ma2_pending_clear(MSM5xxxPOCMachineState *s)
+{
+    memset(s->audio_command_pending_read, 0,
+           sizeof(s->audio_command_pending_read));
+    memset(s->audio_command_pending_write, 0,
+           sizeof(s->audio_command_pending_write));
+    memset(s->audio_command_pending_count, 0,
+           sizeof(s->audio_command_pending_count));
+}
+
+static bool msm5xxx_poc_ma2_pending_push(MSM5xxxPOCMachineState *s,
+                                         unsigned fifo, uint8_t value)
+{
+    uint16_t write;
+
+    if (fifo >= MSM5XXX_MA2_FM_FIFO_COUNT ||
+        s->audio_command_pending_count[fifo] >=
+        MSM5XXX_POC_AUDIO_COMMAND_QUEUE_CAPACITY) {
+        return false;
+    }
+    write = s->audio_command_pending_write[fifo];
+    s->audio_command_pending[fifo][write] = value;
+    s->audio_command_pending_write[fifo] =
+        (write + 1u) % MSM5XXX_POC_AUDIO_COMMAND_QUEUE_CAPACITY;
+    s->audio_command_pending_count[fifo]++;
+    return true;
+}
+
+static bool msm5xxx_poc_ma2_pending_refill(MSM5xxxPOCMachineState *s)
+{
+    uint8_t saved_index = s->ma2_audio.index;
+    uint8_t saved_page = s->ma2_audio.page;
+    unsigned fifo;
+    bool moved = false;
+
+    for (fifo = 0; fifo < MSM5XXX_MA2_FM_FIFO_COUNT; fifo++) {
+        while (s->audio_command_pending_count[fifo] &&
+               msm5xxx_ma2_fifo_occupancy(
+                   &s->ma2_audio, (MSM5xxxMA2Fifo)fifo) <
+               msm5xxx_ma2_fifo_capacity((MSM5xxxMA2Fifo)fifo)) {
+            uint16_t read = s->audio_command_pending_read[fifo];
+
+            s->ma2_audio.page = MSM5XXX_MA2_PAGE_REG0;
+            s->ma2_audio.index = fifo;
+            if (!msm5xxx_ma2_data_write(
+                    &s->ma2_audio,
+                    s->audio_command_pending[fifo][read])) {
+                s->ma2_audio.page = saved_page;
+                s->ma2_audio.index = saved_index;
+                return false;
+            }
+            s->audio_command_pending_read[fifo] =
+                (read + 1u) % MSM5XXX_POC_AUDIO_COMMAND_QUEUE_CAPACITY;
+            s->audio_command_pending_count[fifo]--;
+            moved = true;
+        }
+    }
+    s->ma2_audio.page = saved_page;
+    s->ma2_audio.index = saved_index;
+    return moved;
+}
+
 static void msm5xxx_poc_ma2_audio_tick(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
@@ -961,12 +1678,38 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
     uint64_t deadline;
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    do {
-        if (!msm5xxx_ma2_scheduler_step(&s->ma2_audio, now, &output)) {
+    qemu_mutex_lock(&s->audio_core_lock);
+    if (s->audio_pcm_failed) {
+        s->audio_pcm_failed = false;
+        msm5xxx_poc_audio_pcm_reject(s);
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return;
+    }
+    for (;;) {
+        if (!msm5xxx_poc_ma2_pending_refill(s) &&
+            msm5xxx_ma2_rejected(&s->ma2_audio)) {
+            s->audio_stream_reject_code =
+                msm5xxx_ma2_reject_reason(&s->ma2_audio);
             s->ma2_audio_timer_rejected = true;
             s->audio_stream_rejected = true;
             s->audio_stream_status_pending =
                 MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            qemu_mutex_unlock(&s->audio_core_lock);
+            return;
+        }
+        if (!msm5xxx_ma2_scheduler_step(&s->ma2_audio, now, &output)) {
+            if (!s->audio_stream_reject_code) {
+                s->audio_stream_reject_code =
+                    msm5xxx_ma2_reject_reason(&s->ma2_audio) |
+                    ((uint32_t)s->ma2_audio.page << 8) |
+                    ((uint32_t)s->ma2_audio.index << 16) |
+                    ((uint32_t)s->ma2_audio.control << 24);
+            }
+            s->ma2_audio_timer_rejected = true;
+            s->audio_stream_rejected = true;
+            s->audio_stream_status_pending =
+                MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            qemu_mutex_unlock(&s->audio_core_lock);
             return;
         }
         switch (output.kind) {
@@ -982,24 +1725,93 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
         case MSM5XXX_MA2_OUTPUT_NONE:
             break;
         }
-    } while (output.kind != MSM5XXX_MA2_OUTPUT_NONE);
+        if (output.kind != MSM5XXX_MA2_OUTPUT_NONE) {
+            if (s->audio_pcm_enabled) {
+                qemu_mutex_lock(&s->audio_synth_lock);
+                if (!msm5xxx_poc_ma2_synth_output(s, &output)) {
+                    qemu_mutex_unlock(&s->audio_synth_lock);
+                    s->ma2_audio_timer_rejected = true;
+                    s->audio_stream_reject_code =
+                        MSM5XXX_POC_AUDIO_REJECT_SYNTH_EVENT;
+                    s->audio_stream_rejected = true;
+                    s->audio_stream_status_pending =
+                        MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+                    qemu_mutex_unlock(&s->audio_core_lock);
+                    return;
+                }
+                qemu_mutex_unlock(&s->audio_synth_lock);
+            }
+        } else if (!msm5xxx_poc_ma2_pending_refill(s)) {
+            break;
+        }
+    }
+
+    if (s->audio_pcm_enabled) {
+        qemu_mutex_lock(&s->audio_synth_lock);
+        if (!msm5xxx_audio_synth_advance(&s->audio_synth, now)) {
+            qemu_mutex_unlock(&s->audio_synth_lock);
+            s->ma2_audio_timer_rejected = true;
+            s->audio_stream_reject_code = MSM5XXX_POC_AUDIO_REJECT_SYNTH_CLOCK;
+            s->audio_stream_rejected = true;
+            s->audio_stream_status_pending = MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            qemu_mutex_unlock(&s->audio_core_lock);
+            return;
+        }
+        if (!s->audio_output_started &&
+            s->audio_synth.ring_count >= MSM5XXX_AUDIO_TARGET_FRAMES) {
+            if (s->audio_stream_chardev) {
+                s->audio_output_started = true;
+            } else if (s->audio_voice) {
+                s->audio_output_started = true;
+                AUD_set_active_out(s->audio_voice, true);
+            }
+        }
+        qemu_mutex_unlock(&s->audio_synth_lock);
+        if (s->audio_stream_chardev && !s->audio_stream_rejected &&
+            msm5xxx_poc_audio_pcm_flush(s) < 0) {
+            s->audio_pcm_failed = true;
+        }
+    }
 
     if (msm5xxx_ma2_scheduler_next_deadline(&s->ma2_audio, &deadline)) {
         if (deadline > INT64_MAX) {
             s->ma2_audio_timer_rejected = true;
+            s->audio_stream_reject_code = MSM5XXX_POC_AUDIO_REJECT_DEADLINE;
             s->audio_stream_rejected = true;
             s->audio_stream_status_pending =
                 MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            qemu_mutex_unlock(&s->audio_core_lock);
             return;
         }
+    } else {
+        deadline = UINT64_MAX;
+    }
+    if (s->audio_pcm_enabled) {
+        qemu_mutex_lock(&s->audio_synth_lock);
+        if ((msm5xxx_audio_synth_active(&s->audio_synth) ||
+             (s->audio_output_started && s->audio_stream_chardev)) &&
+            now <= UINT64_MAX - 10000000u) {
+            deadline = MIN(deadline, now + 10000000u);
+        }
+        qemu_mutex_unlock(&s->audio_synth_lock);
+    }
+    qemu_mutex_unlock(&s->audio_core_lock);
+    if (deadline != UINT64_MAX) {
         timer_mod_ns(s->ma2_audio_timer, deadline);
     }
 }
 
 static void msm5xxx_poc_ma2_audio_kick(MSM5xxxPOCMachineState *s)
 {
-    if (s->ma2_audio_timer && !s->ma2_audio_timer_rejected &&
-        !msm5xxx_ma2_rejected(&s->ma2_audio)) {
+    bool rejected;
+    bool stream_rejected;
+
+    qemu_mutex_lock(&s->audio_core_lock);
+    rejected = msm5xxx_ma2_rejected(&s->ma2_audio);
+    stream_rejected = s->audio_stream_rejected;
+    qemu_mutex_unlock(&s->audio_core_lock);
+    if (s->ma2_audio_timer && !s->ma2_audio_timer_rejected && !rejected &&
+        !stream_rejected) {
         timer_mod_ns(s->ma2_audio_timer,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
@@ -1021,6 +1833,66 @@ static bool msm5xxx_poc_audio_site_owned(const MSM5xxxPOCMachineState *s,
     return false;
 }
 
+static MemTxResult msm5xxx_poc_audio_opaque_read(
+    void *opaque, hwaddr offset, uint64_t *value, unsigned size,
+    MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    CPUState *cpu = current_cpu;
+    CPUClass *cc;
+    uint32_t pc;
+
+    (void)attrs;
+    if (size != 1 || (offset != 0 && offset != s->audio_data_offset) ||
+        !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io) {
+        return MEMTX_ERROR;
+    }
+    cc = CPU_GET_CLASS(cpu);
+    pc = cc->get_pc(cpu) & ~1U;
+    if (!s->audio_sites_enabled ||
+        !msm5xxx_poc_audio_site_owned(s, false, offset, pc)) {
+        return MEMTX_ERROR;
+    }
+    *value = 0;
+    return MEMTX_OK;
+}
+
+static MemTxResult msm5xxx_poc_audio_opaque_write(
+    void *opaque, hwaddr offset, uint64_t value, unsigned size,
+    MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    CPUState *cpu = current_cpu;
+    CPUClass *cc;
+    uint32_t pc;
+
+    (void)attrs;
+    if (size != 1 || (offset != 0 && offset != s->audio_data_offset) ||
+        !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io) {
+        return MEMTX_ERROR;
+    }
+    cc = CPU_GET_CLASS(cpu);
+    pc = cc->get_pc(cpu) & ~1U;
+    if (!s->audio_sites_enabled ||
+        !msm5xxx_poc_audio_site_owned(s, true, offset, pc)) {
+        return MEMTX_ERROR;
+    }
+    s->audio_backing[offset] = value;
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps msm5xxx_poc_audio_opaque_ops = {
+    .read_with_attrs = msm5xxx_poc_audio_opaque_read,
+    .write_with_attrs = msm5xxx_poc_audio_opaque_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
+
 static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
                                           hwaddr offset, uint64_t value,
                                           unsigned size)
@@ -1031,6 +1903,10 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
     bool in_vcpu;
     bool native_site;
     bool accepted = false;
+    bool reject_telemetry = false;
+    uint8_t selected_page = 0;
+    uint8_t selected_index = 0;
+    uint8_t selected_control = 0;
 
     if (size != 1 || offset > s->audio_data_offset) {
         return false;
@@ -1047,22 +1923,83 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
         return false;
     }
     s->audio_backing[offset] = value;
+    qemu_mutex_lock(&s->audio_core_lock);
+    if (s->audio_ma2) {
+        selected_page = s->ma2_audio.page;
+        selected_index = s->ma2_audio.index;
+        selected_control = s->ma2_audio.control;
+    }
     if (s->audio_ma2 && !msm5xxx_ma2_rejected(&s->ma2_audio) && !offset) {
         s->audio_index = value;
         accepted = msm5xxx_ma2_index_write(&s->ma2_audio, value);
     } else if (s->audio_ma2 && !msm5xxx_ma2_rejected(&s->ma2_audio) &&
                offset == s->audio_data_offset) {
-        accepted = msm5xxx_ma2_data_write(&s->ma2_audio, value);
+        if (s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
+            s->ma2_audio.index < MSM5XXX_MA2_FM_FIFO_COUNT &&
+            (s->audio_command_pending_count[s->ma2_audio.index] ||
+             msm5xxx_ma2_fifo_occupancy(
+                 &s->ma2_audio,
+                 (MSM5xxxMA2Fifo)s->ma2_audio.index) >=
+             msm5xxx_ma2_fifo_capacity(
+                 (MSM5xxxMA2Fifo)s->ma2_audio.index))) {
+            accepted = msm5xxx_poc_ma2_pending_push(
+                s, s->ma2_audio.index, value
+            );
+            if (!accepted) {
+                s->audio_stream_reject_code =
+                    MSM5XXX_POC_AUDIO_REJECT_COMMAND_QUEUE;
+                s->audio_stream_rejected = true;
+                s->audio_stream_status_pending =
+                    MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            }
+        } else {
+            bool clear_fm =
+                s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG1 &&
+                s->ma2_audio.index == MSM5XXX_MA2_FIFO_CONTROL &&
+                (value & MSM5XXX_MA2_FM_FIFO_CLEAR);
+
+            accepted = msm5xxx_ma2_data_write(&s->ma2_audio, value);
+            if (accepted && msm5xxx_ma2_take_fm_stop(&s->ma2_audio) &&
+                s->audio_pcm_enabled &&
+                !msm5xxx_poc_ma2_synth_stop(s)) {
+                accepted = false;
+                s->audio_stream_reject_code =
+                    MSM5XXX_POC_AUDIO_REJECT_SYNTH_EVENT;
+                s->audio_stream_rejected = true;
+                s->audio_stream_status_pending =
+                    MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+            }
+            if (accepted && clear_fm) {
+                msm5xxx_poc_ma2_pending_clear(s);
+            }
+        }
     }
-    if (accepted) {
-        msm5xxx_poc_ma2_audio_kick(s);
-    } else if (s->audio_ma2 && msm5xxx_ma2_rejected(&s->ma2_audio)) {
+    if (!accepted && s->audio_ma2 &&
+        msm5xxx_ma2_rejected(&s->ma2_audio)) {
+        reject_telemetry = !s->audio_stream_rejected;
+        s->audio_stream_reject_code =
+            msm5xxx_ma2_reject_reason(&s->ma2_audio) |
+            ((uint32_t)s->ma2_audio.fifo_count[0] << 8) |
+            ((uint32_t)s->ma2_audio.fifo_count[1] << 16) |
+            ((uint32_t)s->ma2_audio.fifo_count[2] << 24);
         s->audio_stream_rejected = true;
         s->audio_stream_status_pending =
             MSM5XXX_POC_AUDIO_STATUS_REJECTED;
     }
+    qemu_mutex_unlock(&s->audio_core_lock);
+    if (accepted) {
+        msm5xxx_poc_ma2_audio_kick(s);
+    }
     s->audio_stream_started = true;
     s->audio_stream_order++;
+    if (reject_telemetry && s->lcd_trace_buffer) {
+        msm5xxx_poc_lcd_stream_append(
+            s, MSM5XXX_POC_AUDIO_REJECT_TELEMETRY, selected_control, pc,
+            s->audio_stream_order,
+            (uint32_t)offset | ((uint32_t)(value & UINT8_MAX) << 8) |
+            ((uint32_t)selected_page << 16) |
+            ((uint32_t)selected_index << 24));
+    }
     if (s->audio_stream_rejected) {
         if (s->audio_stream_dropped != UINT32_MAX) {
             s->audio_stream_dropped++;
@@ -1097,15 +2034,33 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
     cc = CPU_GET_CLASS(cpu);
     pc = cc->get_pc(cpu) & ~1U;
     if (!s->audio_sites_enabled ||
-        !msm5xxx_poc_audio_site_owned(s, false, offset, pc) ||
-        s->ma2_audio.page != MSM5XXX_MA2_PAGE_REG1 ||
-        s->ma2_audio.index < MSM5XXX_MA2_FM_CHANNEL_ASSIGN ||
-        s->ma2_audio.index >= MSM5XXX_MA2_FM_CHANNEL_ASSIGN +
-                              MSM5XXX_MA2_FM_ASSIGNMENT_COUNT ||
-        !msm5xxx_ma2_data_read(&s->ma2_audio, &data)) {
+        !msm5xxx_poc_audio_site_owned(s, false, offset, pc)) {
+        return false;
+    }
+    qemu_mutex_lock(&s->audio_core_lock);
+    if (s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
+        (s->ma2_audio.index <= MSM5XXX_MA2_ADPCM_WAVE_DATA ||
+         s->ma2_audio.index == MSM5XXX_MA2_STATUS1 ||
+         s->ma2_audio.index == MSM5XXX_MA2_WAVE_STATUS)) {
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return false;
+    }
+    if (!msm5xxx_ma2_data_read(&s->ma2_audio, &data)) {
+        if (msm5xxx_ma2_rejected(&s->ma2_audio)) {
+            s->audio_stream_reject_code =
+                msm5xxx_ma2_reject_reason(&s->ma2_audio) |
+                ((uint32_t)s->ma2_audio.page << 8) |
+                ((uint32_t)s->ma2_audio.index << 16) |
+                ((uint32_t)s->ma2_audio.control << 24);
+            s->audio_stream_rejected = true;
+            s->audio_stream_status_pending =
+                MSM5XXX_POC_AUDIO_STATUS_REJECTED;
+        }
+        qemu_mutex_unlock(&s->audio_core_lock);
         return false;
     }
     *value = data;
+    qemu_mutex_unlock(&s->audio_core_lock);
     return true;
 }
 
@@ -1245,6 +2200,14 @@ static void msm5xxx_poc_rex_irq_tick(void *opaque)
     msm5xxx_poc_rex_irq_update(s);
 }
 
+static const hwaddr msm5xxx_poc_rex_irq_status_offsets[] = {
+    0, 4, 0x30,
+};
+
+static const hwaddr msm5xxx_poc_rex_irq_clear_offsets[] = {
+    0, 4, 0x4c,
+};
+
 static uint64_t msm5xxx_poc_rex_irq_read(void *opaque, hwaddr offset,
                                          unsigned size)
 {
@@ -1264,30 +2227,35 @@ static uint64_t msm5xxx_poc_rex_irq_read(void *opaque, hwaddr offset,
         return value;
     }
     if (!s->rex_irq_read_consume) {
-        msm5xxx_poc_backing_write(s->rex_irq_backing, 0,
-                                  s->rex_irq_pending[0], 2);
-        msm5xxx_poc_backing_write(s->rex_irq_backing, 4,
-                                  s->rex_irq_pending[1], 2);
+        for (i = 0; i < s->rex_irq_bank_count; i++) {
+            msm5xxx_poc_backing_write(
+                s->rex_irq_backing, msm5xxx_poc_rex_irq_status_offsets[i],
+                s->rex_irq_pending[i], 2
+            );
+        }
         return msm5xxx_poc_backing_read(s->rex_irq_backing, offset, size);
     }
     for (i = 0; i < size; i++) {
         hwaddr byte = offset + i;
-        uint8_t pending;
+        unsigned bank;
 
-        if (byte < 2) {
-            pending = s->rex_irq_pending[0] >> (byte * 8);
-        } else if (byte >= 4 && byte < 6) {
-            pending = s->rex_irq_pending[1] >> ((byte - 4) * 8);
-        } else {
-            continue;
+        for (bank = 0; bank < s->rex_irq_bank_count; bank++) {
+            hwaddr status = msm5xxx_poc_rex_irq_status_offsets[bank];
+
+            if (byte >= status && byte < status + 2) {
+                uint8_t pending =
+                    s->rex_irq_pending[bank] >> ((byte - status) * 8);
+
+                value &= ~(UINT64_C(0xff) << (i * 8));
+                value |= (uint64_t)pending << (i * 8);
+                break;
+            }
         }
-        value &= ~(UINT64_C(0xff) << (i * 8));
-        value |= (uint64_t)pending << (i * 8);
     }
-    for (i = 0; i < 2; i++) {
-        hwaddr bank = i * 4;
+    for (i = 0; i < s->rex_irq_bank_count; i++) {
+        hwaddr status = msm5xxx_poc_rex_irq_status_offsets[i];
 
-        if (offset < bank + 2 && offset + size > bank) {
+        if (offset < status + 2 && offset + size > status) {
             touched = true;
             consumed |= s->rex_irq_pending[i] != 0;
             s->rex_irq_pending[i] = 0;
@@ -1321,13 +2289,20 @@ static void msm5xxx_poc_rex_irq_write(void *opaque, hwaddr offset,
     for (i = 0; i < size; i++) {
         hwaddr byte = offset + i;
         uint8_t incoming = value >> (i * 8);
+        unsigned bank;
+        bool clear = false;
 
-        if (byte < 2) {
-            s->rex_irq_pending[0] &= ~((uint16_t)incoming << (byte * 8));
-        } else if (byte >= 4 && byte < 6) {
-            s->rex_irq_pending[1] &=
-                ~((uint16_t)incoming << ((byte - 4) * 8));
-        } else {
+        for (bank = 0; bank < s->rex_irq_bank_count; bank++) {
+            hwaddr status = msm5xxx_poc_rex_irq_clear_offsets[bank];
+
+            if (byte >= status && byte < status + 2) {
+                s->rex_irq_pending[bank] &=
+                    ~((uint16_t)incoming << ((byte - status) * 8));
+                clear = true;
+                break;
+            }
+        }
+        if (!clear) {
             s->rex_irq_backing[byte] = incoming;
         }
     }
@@ -1465,6 +2440,7 @@ static uint64_t msm5xxx_poc_sbi_read(void *opaque, hwaddr offset,
 {
     MSM5xxxPOCMachineState *s = opaque;
     uint64_t backing;
+    bool became_accepted = false;
 
     if (offset + size > MSM5XXX_POC_SBI_SIZE) {
         return 0;
@@ -1482,10 +2458,17 @@ static uint64_t msm5xxx_poc_sbi_read(void *opaque, hwaddr offset,
         } else if (s->sbi_validation_phase == 2) {
             s->sbi_status = MSM5XXX_POC_SBI_ACCEPTED;
             s->sbi_validation_phase = 3;
+            became_accepted = true;
         } else {
             msm5xxx_poc_sbi_reject(s);
             return backing;
         }
+    }
+
+    if (s->sbi_bootstrap_only &&
+        s->sbi_status == MSM5XXX_POC_SBI_ACCEPTED && !became_accepted) {
+        msm5xxx_poc_sbi_reject(s);
+        return backing;
     }
 
     if (offset == 0 && size == 2 &&
@@ -1496,7 +2479,9 @@ static uint64_t msm5xxx_poc_sbi_read(void *opaque, hwaddr offset,
                 s->sbi_board_adc_phase == 6 ||
                 s->sbi_board_adc_phase == 8) {
                 s->sbi_board_adc_phase++;
-            } else {
+            } else if (s->sbi_board_adc_phase != 5 &&
+                       s->sbi_board_adc_phase != 7 &&
+                       s->sbi_board_adc_phase != 9) {
                 s->sbi_board_adc_phase = 0;
             }
         }
@@ -1509,6 +2494,7 @@ static uint64_t msm5xxx_poc_sbi_read(void *opaque, hwaddr offset,
             s->sbi_board_adc_responses++;
         }
         s->sbi_board_adc_phase = 0;
+        s->sbi_board_adc_selector = 0;
         s->sbi_read_full = false;
     }
     return backing;
@@ -1558,15 +2544,25 @@ static void msm5xxx_poc_sbi_write(void *opaque, hwaddr offset,
     }
 
     msm5xxx_poc_backing_write(s->sbi_backing, offset, value, size);
+    if (s->sbi_bootstrap_only &&
+        s->sbi_status == MSM5XXX_POC_SBI_ACCEPTED) {
+        msm5xxx_poc_sbi_reject(s);
+        return;
+    }
     if (offset == 4 && size == 2) {
         s->sbi_control = value & 0x0fff;
+        s->sbi_board_adc_selector = 0;
         s->sbi_board_adc_phase =
             s->sbi_status == MSM5XXX_POC_SBI_ACCEPTED && value == 0x086a;
     } else if (offset == 0x0c && size == 2 &&
                s->sbi_status == MSM5XXX_POC_SBI_ACCEPTED) {
-        if ((s->sbi_board_adc_phase == 1 && value == 0x0ada) ||
-            (s->sbi_board_adc_phase == 5 && value == 0x0a5a) ||
-            (s->sbi_board_adc_phase == 7 && value == 0x8b00)) {
+        if (s->sbi_board_adc_phase == 1 &&
+            (value & 0xff80) == 0x0a80) {
+            s->sbi_board_adc_selector = value;
+            s->sbi_board_adc_phase++;
+        } else if ((s->sbi_board_adc_phase == 5 &&
+                    value == (s->sbi_board_adc_selector & ~0x0080)) ||
+                   (s->sbi_board_adc_phase == 7 && value == 0x8b00)) {
             s->sbi_board_adc_phase++;
         } else {
             s->sbi_board_adc_phase = 0;
@@ -1685,6 +2681,311 @@ static void msm5xxx_poc_lcd_trace_write(MSM5xxxPOCMachineState *s,
     s->lcd_trace_count++;
 }
 
+static void msm5xxx_poc_raw_nand_controller_reset(
+    MSM5xxxPOCMachineState *s)
+{
+    s->raw_nand_mode = MSM5XXX_POC_RAW_NAND_IDLE;
+    s->raw_nand_status = MSM5XXX_POC_RAW_NAND_STATUS_READY;
+    s->raw_nand_address_count = 0;
+    s->raw_nand_cursor = 0;
+    s->raw_nand_page_base = 0;
+    s->raw_nand_cursor_valid = false;
+    s->raw_nand_spare_selected = false;
+    if (s->raw_nand_program) {
+        memset(s->raw_nand_program, UINT8_MAX, s->raw_nand_page_size);
+    }
+}
+
+static void msm5xxx_poc_raw_nand_reject(MSM5xxxPOCMachineState *s)
+{
+    s->raw_nand_mode = MSM5XXX_POC_RAW_NAND_STATUS;
+    s->raw_nand_status = MSM5XXX_POC_RAW_NAND_STATUS_FAILED;
+    s->raw_nand_address_count = 0;
+    s->raw_nand_cursor_valid = false;
+    s->raw_nand_rejections++;
+}
+
+static bool msm5xxx_poc_raw_nand_latch_cursor(
+    MSM5xxxPOCMachineState *s)
+{
+    uint32_t page;
+    uint32_t column;
+
+    if (s->raw_nand_address_count != 3) {
+        return false;
+    }
+    page = s->raw_nand_address_bytes[1] |
+           s->raw_nand_address_bytes[2] << 8;
+    if (page >= s->raw_nand_data_size / s->raw_nand_page_size) {
+        return false;
+    }
+    if (s->raw_nand_spare_selected) {
+        if (s->raw_nand_address_bytes[0] != 0) {
+            return false;
+        }
+        s->raw_nand_page_base = page * s->raw_nand_page_size;
+        s->raw_nand_cursor = s->raw_nand_page_base;
+    } else {
+        column = s->raw_nand_address_bytes[0] * s->raw_nand_bus_width;
+        if (column >= s->raw_nand_page_size) {
+            return false;
+        }
+        s->raw_nand_page_base = page * s->raw_nand_page_size;
+        s->raw_nand_cursor = s->raw_nand_page_base + column;
+    }
+    s->raw_nand_cursor_valid = true;
+    return true;
+}
+
+static bool msm5xxx_poc_raw_nand_program_page(
+    MSM5xxxPOCMachineState *s)
+{
+    unsigned index;
+    int ret;
+
+    if (!s->raw_nand_cursor_valid || s->raw_nand_spare_selected) {
+        return false;
+    }
+    for (index = 0; index < s->raw_nand_page_size; index++) {
+        s->raw_nand_program[index] &=
+            s->raw_nand_backing[s->raw_nand_page_base + index];
+    }
+    ret = blk_pwrite(s->raw_nand_blk, s->raw_nand_page_base,
+                     s->raw_nand_page_size, s->raw_nand_program, 0);
+    if (ret < 0) {
+        error_report("raw NAND program failed: %s", strerror(-ret));
+        return false;
+    }
+    memcpy(s->raw_nand_backing + s->raw_nand_page_base,
+           s->raw_nand_program, s->raw_nand_page_size);
+    s->raw_nand_writes += s->raw_nand_page_size;
+    return true;
+}
+
+static bool msm5xxx_poc_raw_nand_erase_block(
+    MSM5xxxPOCMachineState *s)
+{
+    g_autofree uint8_t *erased = NULL;
+    uint32_t page;
+    uint32_t block_size =
+        s->raw_nand_page_size * s->raw_nand_pages_per_block;
+    uint32_t start;
+    int ret;
+
+    if (s->raw_nand_address_count != 2) {
+        return false;
+    }
+    page = s->raw_nand_address_bytes[0] |
+           s->raw_nand_address_bytes[1] << 8;
+    start = page / s->raw_nand_pages_per_block * block_size;
+    if (start > s->raw_nand_data_size - block_size) {
+        return false;
+    }
+    erased = g_malloc(block_size);
+    memset(erased, UINT8_MAX, block_size);
+    ret = blk_pwrite(s->raw_nand_blk, start, block_size, erased, 0);
+    if (ret < 0) {
+        error_report("raw NAND erase failed: %s", strerror(-ret));
+        return false;
+    }
+    memcpy(s->raw_nand_backing + start, erased, block_size);
+    s->raw_nand_writes += block_size;
+    return true;
+}
+
+static uint64_t msm5xxx_poc_raw_nand_control_read(
+    void *opaque, hwaddr offset, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_raw_nand_reject(s);
+    return UINT8_MAX;
+}
+
+static void msm5xxx_poc_raw_nand_command_write(
+    void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t command = value;
+
+    if (offset || size != 1) {
+        msm5xxx_poc_raw_nand_reject(s);
+        return;
+    }
+    switch (command) {
+    case 0xff:
+        msm5xxx_poc_raw_nand_controller_reset(s);
+        break;
+    case 0x70:
+        s->raw_nand_mode = MSM5XXX_POC_RAW_NAND_STATUS;
+        break;
+    case 0x00:
+    case 0x50:
+        s->raw_nand_mode = command == 0x50 ?
+            MSM5XXX_POC_RAW_NAND_READ_SPARE :
+            MSM5XXX_POC_RAW_NAND_READ_MAIN;
+        s->raw_nand_status = MSM5XXX_POC_RAW_NAND_STATUS_READY;
+        s->raw_nand_spare_selected = command == 0x50;
+        s->raw_nand_address_count = 0;
+        s->raw_nand_cursor_valid = false;
+        break;
+    case 0x80:
+        if (s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_READ_MAIN &&
+            s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_READ_SPARE) {
+            msm5xxx_poc_raw_nand_reject(s);
+            break;
+        }
+        s->raw_nand_mode = s->raw_nand_spare_selected ?
+            MSM5XXX_POC_RAW_NAND_PROGRAM_SPARE :
+            MSM5XXX_POC_RAW_NAND_PROGRAM_MAIN;
+        s->raw_nand_address_count = 0;
+        s->raw_nand_cursor_valid = false;
+        memset(s->raw_nand_program, UINT8_MAX, s->raw_nand_page_size);
+        break;
+    case 0x10:
+        if ((s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_PROGRAM_MAIN &&
+             s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_PROGRAM_SPARE) ||
+            !msm5xxx_poc_raw_nand_program_page(s)) {
+            msm5xxx_poc_raw_nand_reject(s);
+            break;
+        }
+        s->raw_nand_mode = MSM5XXX_POC_RAW_NAND_STATUS;
+        s->raw_nand_status = MSM5XXX_POC_RAW_NAND_STATUS_READY;
+        break;
+    case 0x60:
+        s->raw_nand_mode = MSM5XXX_POC_RAW_NAND_ERASE;
+        s->raw_nand_status = MSM5XXX_POC_RAW_NAND_STATUS_READY;
+        s->raw_nand_spare_selected = false;
+        s->raw_nand_address_count = 0;
+        s->raw_nand_cursor_valid = false;
+        break;
+    case 0xd0:
+        if (s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_ERASE ||
+            !msm5xxx_poc_raw_nand_erase_block(s)) {
+            msm5xxx_poc_raw_nand_reject(s);
+            break;
+        }
+        s->raw_nand_mode = MSM5XXX_POC_RAW_NAND_STATUS;
+        s->raw_nand_status = MSM5XXX_POC_RAW_NAND_STATUS_READY;
+        break;
+    default:
+        msm5xxx_poc_raw_nand_reject(s);
+        break;
+    }
+}
+
+static void msm5xxx_poc_raw_nand_address_write(
+    void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    unsigned expected = s->raw_nand_mode == MSM5XXX_POC_RAW_NAND_ERASE ? 2 : 3;
+
+    if (offset || size != 1 ||
+        (s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_READ_MAIN &&
+         s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_READ_SPARE &&
+         s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_PROGRAM_MAIN &&
+         s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_PROGRAM_SPARE &&
+         s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_ERASE) ||
+        s->raw_nand_address_count >= expected) {
+        msm5xxx_poc_raw_nand_reject(s);
+        return;
+    }
+    s->raw_nand_address_bytes[s->raw_nand_address_count++] = value;
+    if (expected == 3 && s->raw_nand_address_count == expected) {
+        if (!msm5xxx_poc_raw_nand_latch_cursor(s)) {
+            msm5xxx_poc_raw_nand_reject(s);
+        } else if (s->raw_nand_mode == MSM5XXX_POC_RAW_NAND_READ_MAIN ||
+                   s->raw_nand_mode == MSM5XXX_POC_RAW_NAND_READ_SPARE) {
+        }
+    }
+}
+
+static uint64_t msm5xxx_poc_raw_nand_data_read(
+    void *opaque, hwaddr offset, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value;
+
+    if (offset || (s->raw_nand_mode == MSM5XXX_POC_RAW_NAND_STATUS &&
+                   size != 1)) {
+        msm5xxx_poc_raw_nand_reject(s);
+        return size == 1 ? UINT8_MAX : UINT16_MAX;
+    }
+    if (s->raw_nand_mode == MSM5XXX_POC_RAW_NAND_STATUS) {
+        return s->raw_nand_status;
+    }
+    if ((s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_READ_MAIN &&
+         s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_READ_SPARE) ||
+        size != 2 || !s->raw_nand_cursor_valid) {
+        msm5xxx_poc_raw_nand_reject(s);
+        return UINT16_MAX;
+    }
+    if (s->raw_nand_mode == MSM5XXX_POC_RAW_NAND_READ_SPARE) {
+        s->raw_nand_reads += size;
+        return UINT16_MAX;
+    }
+    if (s->raw_nand_cursor >
+        s->raw_nand_page_base + s->raw_nand_page_size - size) {
+        msm5xxx_poc_raw_nand_reject(s);
+        return UINT16_MAX;
+    }
+    value = s->raw_nand_backing[s->raw_nand_cursor] |
+            s->raw_nand_backing[s->raw_nand_cursor + 1] << 8;
+    s->raw_nand_cursor += size;
+    s->raw_nand_reads += size;
+    return value;
+}
+
+static void msm5xxx_poc_raw_nand_data_write(
+    void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t column;
+
+    if (offset || size != 2 ||
+        s->raw_nand_mode != MSM5XXX_POC_RAW_NAND_PROGRAM_MAIN ||
+        !s->raw_nand_cursor_valid ||
+        s->raw_nand_cursor >
+            s->raw_nand_page_base + s->raw_nand_page_size - size) {
+        msm5xxx_poc_raw_nand_reject(s);
+        return;
+    }
+    column = s->raw_nand_cursor - s->raw_nand_page_base;
+    s->raw_nand_program[column] &= value;
+    s->raw_nand_program[column + 1] &= value >> 8;
+    s->raw_nand_cursor += size;
+}
+
+static const MemoryRegionOps msm5xxx_poc_raw_nand_command_ops = {
+    .read = msm5xxx_poc_raw_nand_control_read,
+    .write = msm5xxx_poc_raw_nand_command_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
+
+static const MemoryRegionOps msm5xxx_poc_raw_nand_address_ops = {
+    .read = msm5xxx_poc_raw_nand_control_read,
+    .write = msm5xxx_poc_raw_nand_address_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
+
+static const MemoryRegionOps msm5xxx_poc_raw_nand_data_ops = {
+    .read = msm5xxx_poc_raw_nand_data_read,
+    .write = msm5xxx_poc_raw_nand_data_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 2,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 2,
+};
+
 static uint64_t msm5xxx_poc_lcd_aperture_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
@@ -1744,14 +3045,48 @@ static uint64_t msm5xxx_poc_lcd_read(void *opaque, hwaddr offset,
 {
     MSM5xxxPOCLCDPort *port = opaque;
     MSM5xxxPOCMachineState *s = port->machine;
+    uint64_t value;
+    uint32_t address;
+    CPUClass *cc;
+    uint64_t now;
 
     if (offset + size > MSM5XXX_POC_LCD_SIZE) {
         return 0;
     }
     s->lcd_reads[port->index]++;
-    return msm5xxx_poc_backing_read(
+    value = msm5xxx_poc_backing_read(
         s->lcd_backing[port->index], offset, size
     );
+    address = msm5xxx_poc_lcd_bases[port->index] + offset;
+    if (!s->ready_poll_lcd_enabled || size != 2 ||
+        address != s->ready_status_address || s->ready_poll_phase != 1) {
+        return value;
+    }
+    cc = CPU_GET_CLASS(s->cpu);
+    if (cc->get_pc(CPU(s->cpu)) !=
+        s->ready_poll_entry + s->ready_status_pc_offset) {
+        return value;
+    }
+    s->ready_poll_phase = 0;
+    s->ready_poll_reads++;
+    if (!(value & s->ready_status_mask)) {
+        return value;
+    }
+    s->ready_poll_cycles++;
+    now = icount_get_raw();
+    if (s->ready_poll_status == MSM5XXX_POC_READY_OBSERVING) {
+        s->ready_poll_status = MSM5XXX_POC_READY_CANDIDATE;
+        s->ready_poll_first_icount = now;
+    } else if (s->ready_poll_status == MSM5XXX_POC_READY_CANDIDATE &&
+               now - s->ready_poll_first_icount >=
+                   MSM5XXX_POC_READY_POLL_DELAY) {
+        s->ready_poll_status = MSM5XXX_POC_READY_ACCEPTED;
+    }
+    if (s->ready_poll_status == MSM5XXX_POC_READY_ACCEPTED) {
+        s->ready_poll_responses++;
+        return value & ~s->ready_status_mask;
+    }
+    return value;
 }
 
 static void msm5xxx_poc_lcd_write(void *opaque, hwaddr offset,
@@ -1759,9 +3094,22 @@ static void msm5xxx_poc_lcd_write(void *opaque, hwaddr offset,
 {
     MSM5xxxPOCLCDPort *port = opaque;
     MSM5xxxPOCMachineState *s = port->machine;
+    uint32_t address;
 
     if (offset + size > MSM5XXX_POC_LCD_SIZE) {
         return;
+    }
+    address = msm5xxx_poc_lcd_bases[port->index] + offset;
+    if (s->ready_poll_lcd_enabled && size == 2 &&
+        address == s->ready_control_address &&
+        value == s->ready_control_value &&
+        s->ready_poll_status != MSM5XXX_POC_READY_REJECTED) {
+        CPUClass *cc = CPU_GET_CLASS(s->cpu);
+
+        if (cc->get_pc(CPU(s->cpu)) ==
+            s->ready_poll_entry + s->ready_control_pc_offset) {
+            s->ready_poll_phase = 1;
+        }
     }
     s->lcd_writes[port->index]++;
     msm5xxx_poc_lcd_trace_write(
@@ -1867,6 +3215,28 @@ static uint64_t msm5xxx_poc_read(void *opaque, hwaddr offset, unsigned size)
         return s->ma2_audio_timer_rejected;
     case 0x9c:
         return s->ma2_audio.fm_state_unhandled;
+    case 0xa0:
+        return s->dmd_5500_starts;
+    case 0xa4:
+        return s->dmd_5500_responses;
+    case 0xa8:
+        return s->dmd_5500_rejections;
+    case 0xac:
+        return s->raw_nand_reads;
+    case 0xb0:
+        return s->raw_nand_writes;
+    case 0xb4:
+        return s->raw_nand_rejections;
+    case 0xb8:
+        return (uint32_t)s->raw_nand_mode |
+               (uint32_t)s->raw_nand_status << 8 |
+               (uint32_t)s->raw_nand_address_count << 16 |
+               (uint32_t)s->raw_nand_cursor_valid << 24 |
+               (uint32_t)s->raw_nand_spare_selected << 25;
+    case 0xbc:
+        return s->reset_callbacks;
+    case 0xc0:
+        return s->last_reset_callback_pc;
     default:
         return 0;
     }
@@ -1904,24 +3274,59 @@ static const MemoryRegionOps msm5xxx_poc_ops = {
 static void msm5xxx_poc_audio_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
-    bool was_started = s->audio_stream_started;
+    bool warm_reset = s->audio_reset_initialized;
+    bool core_locked = s->audio_core_lock_initialized;
 
+    s->audio_reset_initialized = true;
+
+    if (core_locked) {
+        qemu_mutex_lock(&s->audio_core_lock);
+    }
     if (s->ma2_audio_timer) {
         timer_del(s->ma2_audio_timer);
+    }
+    if (s->audio_voice) {
+        AUD_set_active_out(s->audio_voice, false);
+    }
+    s->audio_pcm_length = 0u;
+    s->audio_pcm_offset = 0u;
+    s->audio_pcm_failed = false;
+    s->audio_backend_pcm_length = 0u;
+    s->audio_backend_pcm_offset = 0u;
+    if (s->audio_synth_lock_initialized) {
+        qemu_mutex_lock(&s->audio_synth_lock);
+        msm5xxx_audio_synth_reset(&s->audio_synth);
+        s->audio_output_started = false;
+        s->audio_stream_reset_epoch = s->audio_synth.epoch;
+        qemu_mutex_unlock(&s->audio_synth_lock);
+    } else {
+        s->audio_output_started = false;
     }
     s->audio_index = 0;
     memset(s->audio_backing, 0, sizeof(s->audio_backing));
     s->audio_stream_order = 0;
     s->audio_stream_dropped = 0;
+    s->audio_stream_reject_code = 0;
     s->audio_stream_started = false;
-    s->audio_stream_rejected = was_started;
-    s->audio_stream_status_pending = was_started ?
-        MSM5XXX_POC_AUDIO_STATUS_RESET : 0;
+    s->audio_stream_rejected = false;
+    s->audio_stream_status_pending = warm_reset ?
+        MSM5XXX_POC_AUDIO_STATUS_RESET :
+        (s->audio_voice || s->audio_stream_chardev ?
+         MSM5XXX_POC_AUDIO_STATUS_NATIVE : 0);
     s->ma2_audio_events = 0;
     s->ma2_audio_gate_offs = 0;
     s->ma2_audio_ends = 0;
     s->ma2_audio_timer_rejected = false;
-    msm5xxx_ma2_reset(&s->ma2_audio);
+    if (core_locked) {
+        msm5xxx_poc_ma2_pending_clear(s);
+        msm5xxx_ma2_reset(&s->ma2_audio);
+    } else {
+        msm5xxx_poc_ma2_pending_clear(s);
+    }
+    if (core_locked) {
+        qemu_mutex_unlock(&s->audio_core_lock);
+    }
+    msm5xxx_poc_audio_stream_status(s);
 }
 
 static void msm5xxx_poc_reset(void *opaque)
@@ -1929,7 +3334,10 @@ static void msm5xxx_poc_reset(void *opaque)
     MSM5xxxPOCMachineState *s = opaque;
     CPUARMState *env = &s->cpu->env;
     uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    CPUClass *cc = CPU_GET_CLASS(s->cpu);
 
+    s->reset_callbacks++;
+    s->last_reset_callback_pc = cc->get_pc(CPU(s->cpu));
     if (s->rex_irq_timer) {
         timer_del(s->rex_irq_timer);
     }
@@ -1950,6 +3358,7 @@ static void msm5xxx_poc_reset(void *opaque)
     s->sbi_read_pending = false;
     s->sbi_read_full = false;
     s->sbi_board_adc_phase = 0;
+    s->sbi_board_adc_selector = 0;
     s->sbi_board_adc_responses = 0;
     s->sbi_reads = 0;
     s->sbi_writes = 0;
@@ -1960,6 +3369,12 @@ static void msm5xxx_poc_reset(void *opaque)
            sizeof(s->lcd_aperture_backing));
     s->lcd_aperture_reads = 0;
     s->lcd_aperture_writes = 0;
+    if (s->raw_nand_main_enabled) {
+        msm5xxx_poc_raw_nand_controller_reset(s);
+        s->raw_nand_reads = 0;
+        s->raw_nand_writes = 0;
+        s->raw_nand_rejections = 0;
+    }
     memset(s->lcd_backing, 0, sizeof(s->lcd_backing));
     memset(s->lcd_reads, 0, sizeof(s->lcd_reads));
     memset(s->lcd_writes, 0, sizeof(s->lcd_writes));
@@ -1973,13 +3388,19 @@ static void msm5xxx_poc_reset(void *opaque)
     }
     s->ready_status_backing = 0;
     s->ready_pulse_backing = 0;
+    s->ready_control_backing = 0;
     s->ready_poll_status = s->ready_poll_enabled ?
         MSM5XXX_POC_READY_OBSERVING : MSM5XXX_POC_READY_DISABLED;
+    s->ready_poll_active_entry = s->ready_poll_entry;
     s->ready_poll_phase = 0;
     s->ready_poll_first_icount = 0;
     s->ready_poll_reads = 0;
     s->ready_poll_cycles = 0;
     s->ready_poll_responses = 0;
+    s->dmd_5500_pending = false;
+    s->dmd_5500_starts = 0;
+    s->dmd_5500_responses = 0;
+    s->dmd_5500_rejections = 0;
     s->pause_timer_rejected = false;
     s->pause_timer_writes = 0;
     s->pause_timer_fallbacks = 0;
@@ -2055,6 +3476,10 @@ static void msm5xxx_poc_init(MachineState *machine)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(machine);
     DriveInfo *dinfo;
+    bool upper_nor_enabled = s->upper_x8_nor_enabled ||
+                             s->upper_x16_nor_enabled;
+    bool direct_x16_nor_enabled = s->intel_x16_nor_enabled ||
+                                  s->amd_x16_nor_enabled;
     unsigned i;
 
     s->cpu = ARM_CPU(cpu_create(machine->cpu_type));
@@ -2067,6 +3492,14 @@ static void msm5xxx_poc_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
 
+    if (s->upper_x8_nor_enabled && s->upper_x16_nor_enabled) {
+        error_report("upper-x8-nor conflicts with upper-x16-nor");
+        exit(EXIT_FAILURE);
+    }
+    if (s->intel_x16_nor_enabled && s->amd_x16_nor_enabled) {
+        error_report("intel-x16-nor conflicts with amd-x16-nor");
+        exit(EXIT_FAILURE);
+    }
     if (s->memory_profile_enabled &&
             (machine->ram_size > 0x02000000 - s->ram_base ||
              s->initial_sp < s->ram_base ||
@@ -2074,19 +3507,74 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("memory-profile RAM range does not contain INITIAL_SP");
         exit(EXIT_FAILURE);
     }
+    if (s->mapped_primary_x16_nor_enabled) {
+        uint64_t base = s->mapped_primary_x16_nor_base;
+        uint64_t end = base + s->mapped_primary_x16_nor_size;
+        uint64_t upper_end = end + s->mapped_primary_x16_nor_size;
 
+        if (base < s->primary_nor_size || end != s->ram_base ||
+                upper_end > s->ram_base + machine->ram_size ||
+                (s->fujitsu_x16_nor_enabled &&
+                 base < (uint64_t)s->secondary_nor_base +
+                        s->secondary_nor_size &&
+                 end > s->secondary_nor_base)) {
+            error_report(
+                "mapped-primary-x16-nor conflicts with the final memory map"
+            );
+            exit(EXIT_FAILURE);
+        }
+    }
+    if (s->intel_x16_nor_enabled) {
+        uint64_t base = s->intel_x16_nor_base;
+        uint64_t windows = s->mapped_primary_x16_nor_enabled ? 2 : 1;
+        uint64_t end = base + windows * s->intel_x16_nor_size;
+        uint64_t ram_end = s->ram_base + machine->ram_size;
+        uint64_t audio_end = s->audio_base + s->audio_data_offset + 1;
+
+        if (base != ram_end || base < MSM5XXX_POC_LCD_APERTURE_BASE ||
+                end > MSM5XXX_POC_LCD_APERTURE_BASE +
+                      MSM5XXX_POC_LCD_APERTURE_SIZE ||
+                upper_nor_enabled ||
+                (s->audio_enabled && s->audio_base < end &&
+                 audio_end > base)) {
+            error_report("intel-x16-nor conflicts with the final memory map");
+            exit(EXIT_FAILURE);
+        }
+    }
+    if (s->amd_x16_nor_enabled) {
+        uint64_t base = s->intel_x16_nor_base;
+        uint64_t end = base + s->intel_x16_nor_size;
+        uint64_t ram_end = s->ram_base + machine->ram_size;
+
+        if (base < s->ram_base || end > ram_end) {
+            error_report("amd-x16-nor must overlap the detected RAM aperture");
+            exit(EXIT_FAILURE);
+        }
+    }
+    if (s->raw_nand_main_enabled &&
+        (upper_nor_enabled || s->eeprom_gpio_enabled)) {
+        error_report("raw-nand-main conflicts with upper NOR or EEPROM MTD");
+        exit(EXIT_FAILURE);
+    }
     if (s->rex_irq_c80) {
         uint64_t ram_end = s->ram_base + machine->ram_size;
-        bool vector_invalid = s->rex_irq_read_consume ?
-            s->rex_irq_vector_target < s->ram_base ||
-            s->rex_irq_vector_target > ram_end - 4 :
-            s->rex_irq_vector_target != s->ram_base;
+        bool handler_in_nor =
+            s->rex_irq_handler_address < s->primary_nor_size &&
+            s->rex_irq_handler_size <=
+                s->primary_nor_size - s->rex_irq_handler_address;
+        bool handler_in_iram =
+            s->rex_irq_handler_address >= MSM5XXX_POC_IRAM_BASE &&
+            s->rex_irq_handler_address <
+                MSM5XXX_POC_IRAM_BASE + MSM5XXX_POC_IRAM_SIZE &&
+            s->rex_irq_handler_size <=
+                MSM5XXX_POC_IRAM_BASE + MSM5XXX_POC_IRAM_SIZE -
+                s->rex_irq_handler_address;
+        bool vector_invalid = s->rex_irq_vector_target < s->ram_base ||
+            s->rex_irq_vector_target > ram_end - 4;
 
         if (vector_invalid ||
                 s->rex_irq_wrapper_address >= s->primary_nor_size ||
-                s->rex_irq_handler_address >= s->primary_nor_size ||
-                s->rex_irq_handler_size >
-                    s->primary_nor_size - s->rex_irq_handler_address ||
+                (!handler_in_nor && !handler_in_iram) ||
                 s->rex_irq_callback_address >= s->primary_nor_size ||
                 s->rex_irq_handler_slot < s->ram_base ||
                 s->rex_irq_handler_slot > ram_end - 4 ||
@@ -2152,12 +3640,138 @@ static void msm5xxx_poc_init(MachineState *machine)
         sysbus_mmio_map_overlap(SYS_BUS_DEVICE(dev), 0,
                                 s->primary_x16_nor_base, 1);
     }
+    if (s->mapped_primary_x16_nor_enabled) {
+        DeviceState *dev = qdev_new(TYPE_PFLASH_CFI01);
+        DeviceState *upper;
+        unsigned unit = s->primary_x16_nor_enabled;
+
+        dinfo = drive_get(IF_PFLASH, 0, unit);
+        if (!dinfo) {
+            error_report("mapped-primary-x16-nor requires two pflash drives");
+            exit(EXIT_FAILURE);
+        }
+        qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(dinfo));
+        qdev_prop_set_uint32(
+            dev, "num-blocks",
+            s->mapped_primary_x16_nor_size /
+            s->mapped_primary_x16_nor_sector_size
+        );
+        qdev_prop_set_uint64(dev, "sector-length",
+                             s->mapped_primary_x16_nor_sector_size);
+        qdev_prop_set_uint8(dev, "width", 2);
+        qdev_prop_set_uint8(dev, "device-width", 2);
+        qdev_prop_set_uint8(dev, "max-device-width", 2);
+        qdev_prop_set_bit(dev, "big-endian", false);
+        qdev_prop_set_uint16(dev, "id0", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id1", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id2", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id3", UINT16_MAX);
+        qdev_prop_set_string(dev, "name",
+                             "msm5xxx-poc.mapped-primary-x16-nor");
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(dev), 0,
+                                s->mapped_primary_x16_nor_base, 1);
+
+        upper = qdev_new(TYPE_PFLASH_CFI01);
+        dinfo = drive_get(IF_PFLASH, 0, unit + 1);
+        if (!dinfo) {
+            error_report("mapped-primary-x16-nor requires two pflash drives");
+            exit(EXIT_FAILURE);
+        }
+        qdev_prop_set_drive(upper, "drive", blk_by_legacy_dinfo(dinfo));
+        qdev_prop_set_uint32(
+            upper, "num-blocks",
+            s->mapped_primary_x16_nor_size /
+            s->mapped_primary_x16_nor_sector_size
+        );
+        qdev_prop_set_uint64(upper, "sector-length",
+                             s->mapped_primary_x16_nor_sector_size);
+        qdev_prop_set_uint8(upper, "width", 2);
+        qdev_prop_set_uint8(upper, "device-width", 2);
+        qdev_prop_set_uint8(upper, "max-device-width", 2);
+        qdev_prop_set_bit(upper, "big-endian", false);
+        qdev_prop_set_uint16(upper, "id0", UINT16_MAX);
+        qdev_prop_set_uint16(upper, "id1", UINT16_MAX);
+        qdev_prop_set_uint16(upper, "id2", UINT16_MAX);
+        qdev_prop_set_uint16(upper, "id3", UINT16_MAX);
+        qdev_prop_set_string(
+            upper, "name", "msm5xxx-poc.mapped-primary-x16-nor-upper"
+        );
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(upper), &error_fatal);
+        sysbus_mmio_map_overlap(
+            SYS_BUS_DEVICE(upper), 0,
+            s->mapped_primary_x16_nor_base + s->mapped_primary_x16_nor_size,
+            1
+        );
+    }
+    if (direct_x16_nor_enabled) {
+        DeviceState *dev = qdev_new(
+            s->amd_x16_nor_enabled ? TYPE_PFLASH_CFI02 : TYPE_PFLASH_CFI01
+        );
+        unsigned unit = s->primary_x16_nor_enabled +
+                        2 * s->mapped_primary_x16_nor_enabled;
+
+        dinfo = drive_get(IF_PFLASH, 0, unit);
+        if (!dinfo) {
+            error_report("direct x16 NOR requires one pflash drive");
+            exit(EXIT_FAILURE);
+        }
+        qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(dinfo));
+        qdev_prop_set_uint32(
+            dev, "num-blocks",
+            s->intel_x16_nor_size / s->intel_x16_nor_sector_size
+        );
+        qdev_prop_set_uint64(dev, "sector-length",
+                             s->intel_x16_nor_sector_size);
+        if (s->amd_x16_nor_enabled) {
+            qdev_prop_set_uint8(dev, "width", 2);
+            qdev_prop_set_uint8(dev, "mappings", 1);
+            qdev_prop_set_uint8(dev, "big-endian", 0);
+            qdev_prop_set_uint16(dev, "unlock-addr0", 0x555);
+            qdev_prop_set_uint16(dev, "unlock-addr1", 0x2aa);
+            qdev_prop_set_bit(dev, "write-while-suspended",
+                              s->amd_x16_nor_options & 1);
+        } else {
+            qdev_prop_set_uint8(dev, "width", 2);
+            qdev_prop_set_uint8(dev, "device-width", 2);
+            qdev_prop_set_uint8(dev, "max-device-width", 2);
+            qdev_prop_set_bit(dev, "big-endian", false);
+        }
+        qdev_prop_set_uint16(dev, "id0", s->intel_x16_nor_id0);
+        qdev_prop_set_uint16(dev, "id1", s->intel_x16_nor_id1);
+        qdev_prop_set_uint16(dev, "id2", 0);
+        qdev_prop_set_uint16(dev, "id3", 0);
+        qdev_prop_set_string(
+            dev, "name",
+            s->amd_x16_nor_enabled ? "msm5xxx-poc.amd-x16-nor" :
+                                     "msm5xxx-poc.intel-x16-nor"
+        );
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(dev), 0,
+                                s->intel_x16_nor_base, 1);
+        if (s->intel_x16_nor_enabled &&
+                s->mapped_primary_x16_nor_enabled) {
+            memory_region_init_alias(
+                &s->intel_x16_nor_data_alias, OBJECT(machine),
+                "msm5xxx-poc.intel-x16-nor-data-alias",
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), 0,
+                s->intel_x16_nor_size
+            );
+            memory_region_add_subregion_overlap(
+                get_system_memory(),
+                s->intel_x16_nor_base + s->intel_x16_nor_size,
+                &s->intel_x16_nor_data_alias, 1
+            );
+        }
+    }
     if (s->fujitsu_x16_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
         uint32_t remaining;
 
         dinfo = drive_get(IF_PFLASH, 0,
-                          s->primary_x16_nor_enabled ? 1 : 0);
+                          s->primary_x16_nor_enabled +
+                          2 * s->mapped_primary_x16_nor_enabled +
+                          direct_x16_nor_enabled);
         if (!dinfo) {
             error_report("fujitsu-x16-nor requires one pflash drive");
             exit(EXIT_FAILURE);
@@ -2193,14 +3807,16 @@ static void msm5xxx_poc_init(MachineState *machine)
             sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, s->secondary_nor_base);
         }
     }
-    if (s->upper_x8_nor_enabled) {
+    if (upper_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
         unsigned unit = s->primary_x16_nor_enabled +
+                        2 * s->mapped_primary_x16_nor_enabled +
+                        direct_x16_nor_enabled +
                         s->fujitsu_x16_nor_enabled;
 
         dinfo = drive_get(IF_PFLASH, 0, unit);
         if (!dinfo) {
-            error_report("upper-x8-nor requires one pflash drive");
+            error_report("upper NOR requires one pflash drive");
             exit(EXIT_FAILURE);
         }
         qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(dinfo));
@@ -2211,15 +3827,18 @@ static void msm5xxx_poc_init(MachineState *machine)
         );
         qdev_prop_set_uint32(dev, "sector-length",
                              MSM5XXX_POC_UPPER_NOR_SECTOR_SIZE);
-        qdev_prop_set_uint8(dev, "width", 1);
+        qdev_prop_set_uint8(dev, "width",
+                           s->upper_x16_nor_enabled ? 2 : 1);
         qdev_prop_set_uint8(dev, "mappings", 1);
         qdev_prop_set_uint8(dev, "big-endian", 0);
         qdev_prop_set_uint16(dev, "id0", UINT16_MAX);
         qdev_prop_set_uint16(dev, "id1", UINT16_MAX);
         qdev_prop_set_uint16(dev, "id2", UINT16_MAX);
         qdev_prop_set_uint16(dev, "id3", UINT16_MAX);
-        qdev_prop_set_uint16(dev, "unlock-addr0", 0xaaa);
-        qdev_prop_set_uint16(dev, "unlock-addr1", 0x554);
+        qdev_prop_set_uint16(dev, "unlock-addr0",
+                            s->upper_x16_nor_enabled ? 0x555 : 0xaaa);
+        qdev_prop_set_uint16(dev, "unlock-addr1",
+                            s->upper_x16_nor_enabled ? 0x2aa : 0x554);
         qdev_prop_set_string(dev, "name", "msm5xxx-poc.upper-nor");
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0,
@@ -2245,6 +3864,71 @@ static void msm5xxx_poc_init(MachineState *machine)
                            MSM5XXX_POC_MSM_SIZE, &error_fatal);
     memory_region_add_subregion(get_system_memory(), MSM5XXX_POC_MSM_BASE,
                                 &s->msm);
+    if (s->board_revision_enabled) {
+        memory_region_init_io(&s->board_revision, OBJECT(machine),
+                              &msm5xxx_poc_board_revision_ops, s,
+                              "msm5xxx-poc.board-revision", 4);
+        memory_region_add_subregion_overlap(
+            get_system_memory(), s->board_revision_address,
+            &s->board_revision, 1
+        );
+    }
+    if (s->dmd_5500_enabled) {
+        memory_region_init_io(&s->dmd_5500_start, OBJECT(machine),
+                              &msm5xxx_poc_dmd_5500_start_ops, s,
+                              "msm5xxx-poc.dmd-5500-start",
+                              MSM5XXX_POC_DMD5500_SIZE);
+        memory_region_add_subregion_overlap(
+            get_system_memory(), MSM5XXX_POC_DMD5500_START,
+            &s->dmd_5500_start, 1
+        );
+        memory_region_init_io(&s->dmd_5500_completion, OBJECT(machine),
+                              &msm5xxx_poc_dmd_5500_completion_ops, s,
+                              "msm5xxx-poc.dmd-5500-completion",
+                              MSM5XXX_POC_DMD5500_SIZE);
+        memory_region_add_subregion_overlap(
+            get_system_memory(), MSM5XXX_POC_DMD5500_COMPLETION,
+            &s->dmd_5500_completion, 1
+        );
+    }
+    if (s->raw_nand_main_enabled) {
+        int64_t length;
+        int ret;
+
+        s->raw_nand_blk = blk_by_name(MSM5XXX_POC_RAW_NAND_DRIVE);
+        if (!s->raw_nand_blk) {
+            error_report("raw-nand-main requires drive "
+                         MSM5XXX_POC_RAW_NAND_DRIVE);
+            exit(EXIT_FAILURE);
+        }
+        ret = blk_set_perm(s->raw_nand_blk,
+                           BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                           BLK_PERM_ALL, &error_fatal);
+        if (ret < 0) {
+            exit(EXIT_FAILURE);
+        }
+        length = blk_getlength(s->raw_nand_blk);
+        if (length < 0) {
+            error_report("raw NAND state length failed: %s",
+                         strerror(-length));
+            exit(EXIT_FAILURE);
+        }
+        if (length != s->raw_nand_data_size) {
+            error_report("raw NAND state is 0x%" PRIx64
+                         " bytes, expected 0x%x", length,
+                         s->raw_nand_data_size);
+            exit(EXIT_FAILURE);
+        }
+        s->raw_nand_backing = g_malloc(s->raw_nand_data_size);
+        s->raw_nand_program = g_malloc(s->raw_nand_page_size);
+        ret = blk_pread(s->raw_nand_blk, 0, s->raw_nand_data_size,
+                        s->raw_nand_backing, 0);
+        if (ret < 0) {
+            error_report("raw NAND state read failed: %s", strerror(-ret));
+            exit(EXIT_FAILURE);
+        }
+        msm5xxx_poc_raw_nand_controller_reset(s);
+    }
     if (s->eeprom_gpio_enabled) {
         DeviceState *dev = qdev_new(TYPE_MSM5XXX_24LCXX);
         MSM5xxx24LCxxState *eeprom = MSM5XXX_24LCXX(dev);
@@ -2312,6 +3996,26 @@ static void msm5xxx_poc_init(MachineState *machine)
                                             MSM5XXX_POC_DC0_BASE,
                                             &s->dc0, 1);
     }
+    if (s->raw_nand_main_enabled) {
+        memory_region_init_io(&s->raw_nand_data, OBJECT(machine),
+                              &msm5xxx_poc_raw_nand_data_ops, s,
+                              "msm5xxx-poc.raw-nand-data", 2);
+        memory_region_add_subregion(get_system_memory(),
+                                    s->raw_nand_data_address,
+                                    &s->raw_nand_data);
+        memory_region_init_io(&s->raw_nand_address, OBJECT(machine),
+                              &msm5xxx_poc_raw_nand_address_ops, s,
+                              "msm5xxx-poc.raw-nand-address", 1);
+        memory_region_add_subregion(get_system_memory(),
+                                    s->raw_nand_address_address,
+                                    &s->raw_nand_address);
+        memory_region_init_io(&s->raw_nand_command, OBJECT(machine),
+                              &msm5xxx_poc_raw_nand_command_ops, s,
+                              "msm5xxx-poc.raw-nand-command", 1);
+        memory_region_add_subregion(get_system_memory(),
+                                    s->raw_nand_command_address,
+                                    &s->raw_nand_command);
+    }
     memory_region_init_io(&s->lcd_aperture, OBJECT(machine),
                           &msm5xxx_poc_lcd_aperture_ops, s,
                           "msm5xxx-poc.lcd-aperture",
@@ -2321,8 +4025,14 @@ static void msm5xxx_poc_init(MachineState *machine)
         &s->lcd_aperture, -1
     );
     for (i = 0; i < MSM5XXX_POC_LCD_PORTS; i++) {
-        if (s->upper_x8_nor_enabled &&
-            msm5xxx_poc_lcd_bases[i] >= MSM5XXX_POC_UPPER_NOR_BASE) {
+        if ((upper_nor_enabled &&
+             msm5xxx_poc_lcd_bases[i] >= MSM5XXX_POC_UPPER_NOR_BASE) ||
+            (direct_x16_nor_enabled &&
+             msm5xxx_poc_lcd_bases[i] >= s->intel_x16_nor_base &&
+             msm5xxx_poc_lcd_bases[i] <
+                 s->intel_x16_nor_base + s->intel_x16_nor_size) ||
+            (s->raw_nand_main_enabled &&
+             msm5xxx_poc_lcd_bases[i] == s->raw_nand_data_address)) {
             continue;
         }
         s->lcd_port[i].machine = s;
@@ -2374,9 +4084,19 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("matrix-input requires input-chardev");
         exit(EXIT_FAILURE);
     }
+    if (s->audio_stream_chardev) {
+        Chardev *chr = qemu_chr_find(s->audio_stream_chardev);
+
+        if (!chr) {
+            error_report("audio-stream-chardev '%s' not found",
+                         s->audio_stream_chardev);
+            exit(EXIT_FAILURE);
+        }
+        qemu_chr_fe_init(&s->audio_stream_chr, chr, &error_fatal);
+    }
     s->ready_poll_status = s->ready_poll_enabled ?
         MSM5XXX_POC_READY_OBSERVING : MSM5XXX_POC_READY_DISABLED;
-    if (s->ready_poll_enabled) {
+    if (s->ready_poll_enabled && !s->ready_poll_lcd_enabled) {
         memory_region_init_io(&s->ready_status, OBJECT(machine),
                               &msm5xxx_poc_ready_status_ops, s,
                               "msm5xxx-poc.ready-status", 1);
@@ -2389,6 +4109,14 @@ static void msm5xxx_poc_init(MachineState *machine)
         memory_region_add_subregion_overlap(get_system_memory(),
                                             s->ready_pulse_address,
                                             &s->ready_pulse, 1);
+        if (s->ready_poll_control_enabled) {
+            memory_region_init_io(&s->ready_control, OBJECT(machine),
+                                  &msm5xxx_poc_ready_control_ops, s,
+                                  "msm5xxx-poc.ready-control", 1);
+            memory_region_add_subregion_overlap(get_system_memory(),
+                                                s->ready_control_address,
+                                                &s->ready_control, 1);
+        }
     }
     if (s->board_status_input_enabled) {
         s->board_status_input_backing =
@@ -2432,10 +4160,55 @@ static void msm5xxx_poc_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
     }
+    if (s->audio_enabled && !s->audio_ma2 && !s->audio_sites_enabled) {
+        error_report("opaque audio-aperture requires audio-sites");
+        exit(EXIT_FAILURE);
+    }
     if (s->audio_enabled) {
         if (s->audio_ma2 && s->audio_sites_enabled) {
+            struct audsettings settings = {
+                MSM5XXX_AUDIO_SAMPLE_RATE, 2, AUDIO_FORMAT_S16, 0
+            };
+
+            qemu_mutex_init(&s->audio_synth_lock);
+            qemu_mutex_init(&s->audio_core_lock);
+            s->audio_synth_lock_initialized = true;
+            s->audio_core_lock_initialized = true;
+            if (s->audio_pcm_enabled && !s->audio_stream_chardev) {
+                Error *audio_error = NULL;
+
+                s->audio_backend = machine->audiodev ?
+                    audio_be_by_name(machine->audiodev, &audio_error) :
+                    audio_get_default_audio_be(&audio_error);
+                if (s->audio_backend) {
+                    s->audio_voice = AUD_open_out(
+                        s->audio_backend, NULL, "msm5xxx-audio", s,
+                        msm5xxx_poc_audio_backend_callback, &settings);
+                }
+                if (!s->audio_voice) {
+                    if (audio_error) {
+                        error_report_err(audio_error);
+                    } else {
+                        warn_report("MSM5xxx audio backend unavailable");
+                    }
+                } else {
+                    AUD_set_active_out(s->audio_voice, false);
+                }
+            }
             s->ma2_audio_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                               msm5xxx_poc_ma2_audio_tick, s);
+        } else if (!s->audio_ma2) {
+            if (upper_nor_enabled) {
+                error_report("opaque audio-aperture overlaps upper NOR");
+                exit(EXIT_FAILURE);
+            }
+            memory_region_init_io(
+                &s->audio_opaque, OBJECT(machine),
+                &msm5xxx_poc_audio_opaque_ops, s,
+                "msm5xxx-poc.audio-opaque", s->audio_data_offset + 1
+            );
+            memory_region_add_subregion(get_system_memory(), s->audio_base,
+                                        &s->audio_opaque);
         }
     }
     memory_region_init_io(&s->mmio, OBJECT(machine), &msm5xxx_poc_ops, s,
@@ -2456,9 +4229,30 @@ static bool msm5xxx_poc_get_sbi(Object *obj, Error **errp)
     return MSM5XXX_POC_MACHINE(obj)->sbi_enabled;
 }
 
+static bool msm5xxx_poc_get_audio_pcm(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->audio_pcm_enabled;
+}
+
+static void msm5xxx_poc_set_audio_pcm(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->audio_pcm_enabled = value;
+}
+
 static void msm5xxx_poc_set_sbi(Object *obj, bool value, Error **errp)
 {
     MSM5XXX_POC_MACHINE(obj)->sbi_enabled = value;
+}
+
+static bool msm5xxx_poc_get_sbi_bootstrap_only(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->sbi_bootstrap_only;
+}
+
+static void msm5xxx_poc_set_sbi_bootstrap_only(Object *obj, bool value,
+                                                Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->sbi_bootstrap_only = value;
 }
 
 static bool msm5xxx_poc_get_upper_x8_nor(Object *obj, Error **errp)
@@ -2470,6 +4264,17 @@ static void msm5xxx_poc_set_upper_x8_nor(Object *obj, bool value,
                                          Error **errp)
 {
     MSM5XXX_POC_MACHINE(obj)->upper_x8_nor_enabled = value;
+}
+
+static bool msm5xxx_poc_get_upper_x16_nor(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->upper_x16_nor_enabled;
+}
+
+static void msm5xxx_poc_set_upper_x16_nor(Object *obj, bool value,
+                                          Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->upper_x16_nor_enabled = value;
 }
 
 static bool msm5xxx_poc_get_lcd_trace(Object *obj, Error **errp)
@@ -2510,12 +4315,64 @@ static void msm5xxx_poc_set_input_chardev(Object *obj, const char *value,
     s->input_chardev = g_strdup(value);
 }
 
+static char *msm5xxx_poc_get_audio_stream_chardev(Object *obj, Error **errp)
+{
+    return g_strdup(MSM5XXX_POC_MACHINE(obj)->audio_stream_chardev);
+}
+
+static void msm5xxx_poc_set_audio_stream_chardev(Object *obj,
+                                                  const char *value,
+                                                  Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    g_free(s->audio_stream_chardev);
+    s->audio_stream_chardev = g_strdup(value);
+}
+
 static char *msm5xxx_poc_get_ready_poll(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
-    if (!s->ready_poll_enabled) {
+    if (!s->ready_poll_enabled || s->ready_poll_control_enabled ||
+        s->ready_poll_lcd_enabled || s->ready_poll_site_count) {
         return g_strdup("");
+    }
+    if (s->ready_uart_rx_empty_enabled &&
+        s->ready_uart_rx_empty_frame_read_pc_offset) {
+        return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x",
+                               s->ready_status_address,
+                               s->ready_status_mask,
+                               s->ready_pulse_address,
+                               s->ready_poll_entry,
+                               s->ready_status_pc_offset,
+                               s->ready_pulse_set_pc_offset,
+                               s->ready_pulse_clear_pc_offset,
+                               s->ready_uart_rx_empty_read_pc_offset,
+                               s->ready_uart_rx_empty_frame_read_pc_offset);
+    }
+    if (s->ready_uart_rx_empty_enabled) {
+        return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x",
+                               s->ready_status_address,
+                               s->ready_status_mask,
+                               s->ready_pulse_address,
+                               s->ready_poll_entry,
+                               s->ready_status_pc_offset,
+                               s->ready_pulse_set_pc_offset,
+                               s->ready_pulse_clear_pc_offset,
+                               s->ready_uart_rx_empty_read_pc_offset);
+    }
+    if (s->ready_status_pc_offset != 2 ||
+        s->ready_pulse_set_pc_offset != 12 ||
+        s->ready_pulse_clear_pc_offset != 16) {
+        return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x",
+                               s->ready_status_address,
+                               s->ready_status_mask,
+                               s->ready_pulse_address,
+                               s->ready_poll_entry,
+                               s->ready_status_pc_offset,
+                               s->ready_pulse_set_pc_offset,
+                               s->ready_pulse_clear_pc_offset);
     }
     return g_strdup_printf("%x:%x:%x:%x", s->ready_status_address,
                            s->ready_status_mask, s->ready_pulse_address,
@@ -2527,25 +4384,332 @@ static void msm5xxx_poc_set_ready_poll(Object *obj, const char *value,
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
     unsigned status, mask, pulse, entry;
+    unsigned read_offset, set_offset, clear_offset, rx_empty_offset;
+    unsigned rx_empty_frame_offset;
+    unsigned max_offset;
+    int fields;
     char trailing;
 
-    if (sscanf(value, "%x:%x:%x:%x%c", &status, &mask, &pulse, &entry,
-               &trailing) != 4
+    rx_empty_offset = 0;
+    rx_empty_frame_offset = 0;
+    fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x%c",
+                    &status, &mask, &pulse, &entry, &read_offset,
+                    &set_offset, &clear_offset, &rx_empty_offset,
+                    &rx_empty_frame_offset, &trailing);
+    if (fields != 9) {
+        fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x%c",
+                    &status, &mask, &pulse, &entry, &read_offset,
+                    &set_offset, &clear_offset, &rx_empty_offset,
+                    &trailing);
+    }
+    if (fields != 8) {
+        fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x%c",
+                        &status, &mask, &pulse, &entry, &read_offset,
+                        &set_offset, &clear_offset, &trailing);
+    }
+    if (fields != 7 && fields != 8) {
+        fields = sscanf(value, "%x:%x:%x:%x%c", &status, &mask, &pulse,
+                        &entry, &trailing);
+        read_offset = 2;
+        set_offset = 12;
+        clear_offset = 16;
+    }
+    max_offset = MAX(read_offset, MAX(set_offset, clear_offset));
+    if (fields == 8 || fields == 9) {
+        max_offset = MAX(max_offset, rx_empty_offset);
+    }
+    if (fields == 9) {
+        max_offset = MAX(max_offset, rx_empty_frame_offset);
+    }
+    if (s->ready_poll_enabled ||
+            (fields != 4 && fields != 7 && fields != 8 && fields != 9)
             || status < MSM5XXX_POC_MSM_BASE
             || status >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE
             || pulse < MSM5XXX_POC_MSM_BASE
             || pulse >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE
             || status == pulse || !mask || mask > UINT8_MAX
             || (mask & (mask - 1)) || (entry & 1)
-            || entry > s->primary_nor_size - 22) {
+            || (read_offset & 1) || (set_offset & 1) || (clear_offset & 1)
+            || set_offset >= clear_offset || read_offset == set_offset
+            || read_offset == clear_offset || max_offset > 0x1000
+            || ((fields == 8 || fields == 9) && ((rx_empty_offset & 1)
+                                || rx_empty_offset <= clear_offset))
+            || (fields == 9 && ((rx_empty_frame_offset & 1)
+                                || rx_empty_frame_offset <= rx_empty_offset))
+            || s->primary_nor_size < 22
+            || entry > s->primary_nor_size - 22
+            || max_offset + 2 > s->primary_nor_size
+            || entry > s->primary_nor_size - max_offset - 2) {
         error_setg(errp,
-                   "ready-poll must be STATUS:ONE_BIT_MASK:PULSE:ENTRY");
+                   "ready-poll must be STATUS:ONE_BIT_MASK:PULSE:ENTRY"
+                   "[:READ_OFF:SET_OFF:CLEAR_OFF[:RX_EMPTY_READ_OFF"
+                   "[:RX_EMPTY_FRAME_READ_OFF]]]");
         return;
     }
     s->ready_status_address = status;
     s->ready_status_mask = mask;
     s->ready_pulse_address = pulse;
     s->ready_poll_entry = entry;
+    s->ready_status_pc_offset = read_offset;
+    s->ready_pulse_set_pc_offset = set_offset;
+    s->ready_pulse_clear_pc_offset = clear_offset;
+    s->ready_uart_rx_empty_read_pc_offset = rx_empty_offset;
+    s->ready_uart_rx_empty_frame_read_pc_offset = rx_empty_frame_offset;
+    s->ready_uart_rx_empty_enabled = fields == 8 || fields == 9;
+    s->ready_poll_enabled = true;
+}
+
+static char *msm5xxx_poc_get_ready_poll_sites(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *value;
+    unsigned index;
+
+    if (!s->ready_poll_site_count) {
+        return g_strdup("");
+    }
+    value = g_string_new(NULL);
+    g_string_printf(value, "%x:%x:%x:", s->ready_status_address,
+                    s->ready_status_mask, s->ready_pulse_address);
+    for (index = 0; index < s->ready_poll_site_count; index++) {
+        g_string_append_printf(value, "%s%x", index ? ";" : "",
+                               s->ready_poll_sites[index]);
+    }
+    return g_string_free(value, false);
+}
+
+static void msm5xxx_poc_set_ready_poll_sites(Object *obj, const char *value,
+                                              Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) fields = NULL;
+    g_auto(GStrv) entries = NULL;
+    uint32_t parsed[3];
+    uint32_t sites[MSM5XXX_POC_READY_POLL_MAX_SITES];
+    size_t count;
+    size_t index;
+
+    if (!value || !*value || s->ready_poll_enabled) {
+        goto invalid;
+    }
+    fields = g_strsplit(value, ":", -1);
+    if (g_strv_length(fields) != 4) {
+        goto invalid;
+    }
+    for (index = 0; index < 3; index++) {
+        const char *end;
+        unsigned long number;
+
+        if (!*fields[index] ||
+            qemu_strtoul(fields[index], &end, 16, &number) < 0 || *end ||
+            number > UINT32_MAX) {
+            goto invalid;
+        }
+        parsed[index] = (uint32_t)number;
+    }
+    entries = g_strsplit(fields[3], ";", -1);
+    count = g_strv_length(entries);
+    if (count < 2 || count > MSM5XXX_POC_READY_POLL_MAX_SITES ||
+        parsed[0] < MSM5XXX_POC_MSM_BASE ||
+        parsed[0] >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+        parsed[2] < MSM5XXX_POC_MSM_BASE ||
+        parsed[2] >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+        parsed[0] == parsed[2] || !parsed[1] || parsed[1] > UINT8_MAX ||
+        (parsed[1] & (parsed[1] - 1)) || s->primary_nor_size < 22) {
+        goto invalid;
+    }
+    for (index = 0; index < count; index++) {
+        const char *end;
+        unsigned long number;
+        size_t prior;
+
+        if (!*entries[index] ||
+            qemu_strtoul(entries[index], &end, 16, &number) < 0 || *end ||
+            number > UINT32_MAX || (number & 1) ||
+            number > s->primary_nor_size - 22) {
+            goto invalid;
+        }
+        sites[index] = (uint32_t)number;
+        for (prior = 0; prior < index; prior++) {
+            if (sites[prior] == sites[index]) {
+                goto invalid;
+            }
+        }
+    }
+    s->ready_status_address = parsed[0];
+    s->ready_status_mask = parsed[1];
+    s->ready_pulse_address = parsed[2];
+    memcpy(s->ready_poll_sites, sites, count * sizeof(sites[0]));
+    s->ready_poll_site_count = (unsigned)count;
+    s->ready_poll_entry = sites[0];
+    s->ready_poll_active_entry = sites[0];
+    s->ready_status_pc_offset = 2;
+    s->ready_pulse_set_pc_offset = 12;
+    s->ready_pulse_clear_pc_offset = 16;
+    s->ready_poll_enabled = true;
+    return;
+
+invalid:
+    error_setg(errp,
+               "ready-poll-sites must be STATUS:ONE_BIT_MASK:PULSE:"
+               "ENTRY;ENTRY[;ENTRY...] for 2..%u unique even sites",
+               MSM5XXX_POC_READY_POLL_MAX_SITES);
+}
+
+static char *msm5xxx_poc_get_ready_poll_control(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->ready_poll_control_enabled) {
+        return g_strdup("");
+    }
+    if (s->ready_uart_rx_empty_enabled) {
+        return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x",
+                               s->ready_status_address, s->ready_status_mask,
+                               s->ready_pulse_address, s->ready_control_address,
+                               s->ready_control_value, s->ready_poll_entry,
+                               s->ready_status_pc_offset,
+                               s->ready_pulse_set_pc_offset,
+                               s->ready_pulse_clear_pc_offset,
+                               s->ready_control_pc_offset,
+                               s->ready_uart_rx_empty_read_pc_offset);
+    }
+    return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x:%x",
+                           s->ready_status_address, s->ready_status_mask,
+                           s->ready_pulse_address, s->ready_control_address,
+                           s->ready_control_value, s->ready_poll_entry,
+                           s->ready_status_pc_offset,
+                           s->ready_pulse_set_pc_offset,
+                           s->ready_pulse_clear_pc_offset,
+                           s->ready_control_pc_offset);
+}
+
+static void msm5xxx_poc_set_ready_poll_control(Object *obj, const char *value,
+                                               Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned status, mask, pulse, control, control_value, entry;
+    unsigned read_offset, set_offset, clear_offset, control_offset;
+    unsigned rx_empty_offset = 0;
+    int fields;
+    char trailing;
+
+    fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%c",
+                    &status, &mask, &pulse, &control, &control_value, &entry,
+                    &read_offset, &set_offset, &clear_offset, &control_offset,
+                    &rx_empty_offset, &trailing);
+    if (fields != 11) {
+        fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%c",
+                        &status, &mask, &pulse, &control, &control_value,
+                        &entry, &read_offset, &set_offset, &clear_offset,
+                        &control_offset, &trailing);
+    }
+    if (s->ready_poll_enabled || (fields != 10 && fields != 11) ||
+            status < MSM5XXX_POC_MSM_BASE ||
+            status >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+            pulse < MSM5XXX_POC_MSM_BASE ||
+            pulse >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+            control < MSM5XXX_POC_MSM_BASE ||
+            control >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+            status == pulse || status == control || pulse == control ||
+            !mask || mask > UINT8_MAX || mask & (mask - 1) ||
+            control_value > UINT8_MAX || entry & 1 ||
+            read_offset & 1 || set_offset & 1 || clear_offset & 1 ||
+            control_offset & 1 || read_offset >= set_offset ||
+            set_offset >= clear_offset || clear_offset >= control_offset ||
+            control_offset > 0x1000 ||
+            (fields == 11 && ((rx_empty_offset & 1) ||
+                              rx_empty_offset <= control_offset ||
+                              rx_empty_offset > 0x1000 ||
+                              rx_empty_offset + 2 > s->primary_nor_size ||
+                              entry > s->primary_nor_size -
+                                      rx_empty_offset - 2)) ||
+            control_offset + 2 > s->primary_nor_size ||
+            entry > s->primary_nor_size - control_offset - 2) {
+        error_setg(
+            errp,
+            "ready-poll-control must be STATUS:ONE_BIT_MASK:PULSE:CONTROL:"
+            "CONTROL_VALUE:ENTRY:READ_OFF:SET_OFF:CLEAR_OFF:CONTROL_OFF"
+            "[:RX_EMPTY_READ_OFF]"
+        );
+        return;
+    }
+    s->ready_status_address = status;
+    s->ready_status_mask = mask;
+    s->ready_pulse_address = pulse;
+    s->ready_control_address = control;
+    s->ready_control_value = control_value;
+    s->ready_poll_entry = entry;
+    s->ready_status_pc_offset = read_offset;
+    s->ready_pulse_set_pc_offset = set_offset;
+    s->ready_pulse_clear_pc_offset = clear_offset;
+    s->ready_control_pc_offset = control_offset;
+    s->ready_uart_rx_empty_read_pc_offset = rx_empty_offset;
+    s->ready_uart_rx_empty_enabled = fields == 11;
+    s->ready_poll_control_enabled = true;
+    s->ready_poll_enabled = true;
+}
+
+static char *msm5xxx_poc_get_lcd_status_poll(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->ready_poll_lcd_enabled) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x",
+                           s->ready_status_address, s->ready_status_mask,
+                           s->ready_control_address, s->ready_control_value,
+                           s->ready_poll_entry, s->ready_status_pc_offset,
+                           s->ready_control_pc_offset);
+}
+
+static void msm5xxx_poc_set_lcd_status_poll(Object *obj, const char *value,
+                                            Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned status, mask, command, command_value, entry;
+    unsigned read_offset, write_offset, i;
+    char trailing;
+
+    if (s->ready_poll_enabled ||
+        sscanf(value, "%x:%x:%x:%x:%x:%x:%x%c", &status, &mask,
+               &command, &command_value, &entry, &read_offset,
+               &write_offset, &trailing) != 7 ||
+        (status & 1) || (command & 1) || status != command + 4 ||
+        !mask || mask > UINT8_MAX || (mask & (mask - 1)) ||
+        command_value > UINT16_MAX || (entry & 1) ||
+        (read_offset & 1) || (write_offset & 1) ||
+        write_offset >= read_offset || read_offset > 0x1000 ||
+        read_offset + 2 > s->primary_nor_size ||
+        entry > s->primary_nor_size - read_offset - 2) {
+        error_setg(
+            errp,
+            "lcd-status-poll must be STATUS:ONE_BIT_MASK:COMMAND:"
+            "COMMAND_VALUE:ENTRY:READ_OFF:WRITE_OFF"
+        );
+        return;
+    }
+    for (i = 0; i < MSM5XXX_POC_LCD_PORTS; i++) {
+        hwaddr base = msm5xxx_poc_lcd_bases[i];
+
+        if (command >= base && command <= base + MSM5XXX_POC_LCD_SIZE - 2 &&
+            status >= base && status <= base + MSM5XXX_POC_LCD_SIZE - 2) {
+            break;
+        }
+    }
+    if (i == MSM5XXX_POC_LCD_PORTS) {
+        error_setg(errp, "lcd-status-poll addresses must share one LCD port");
+        return;
+    }
+    s->ready_status_address = status;
+    s->ready_status_mask = mask;
+    s->ready_control_address = command;
+    s->ready_control_value = command_value;
+    s->ready_poll_entry = entry;
+    s->ready_status_pc_offset = read_offset;
+    s->ready_control_pc_offset = write_offset;
+    s->ready_poll_lcd_enabled = true;
     s->ready_poll_enabled = true;
 }
 
@@ -2627,6 +4791,46 @@ static char *msm5xxx_poc_get_primary_x16_nor(Object *obj, Error **errp)
     return g_string_free(value, false);
 }
 
+static char *msm5xxx_poc_get_intel_x16_nor(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->intel_x16_nor_enabled) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x:%x:%x", s->intel_x16_nor_base,
+                           s->intel_x16_nor_size,
+                           s->intel_x16_nor_sector_size,
+                           s->intel_x16_nor_id0, s->intel_x16_nor_id1);
+}
+
+static char *msm5xxx_poc_get_amd_x16_nor(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->amd_x16_nor_enabled) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x:%x:%x:%x", s->intel_x16_nor_base,
+                           s->intel_x16_nor_size,
+                           s->intel_x16_nor_sector_size,
+                           s->intel_x16_nor_id0, s->intel_x16_nor_id1,
+                           s->amd_x16_nor_options);
+}
+
+static char *msm5xxx_poc_get_mapped_primary_x16_nor(Object *obj,
+                                                     Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->mapped_primary_x16_nor_enabled) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x", s->mapped_primary_x16_nor_base,
+                           s->mapped_primary_x16_nor_size,
+                           s->mapped_primary_x16_nor_sector_size);
+}
+
 static char *msm5xxx_poc_get_matrix_input(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -2661,6 +4865,67 @@ static char *msm5xxx_poc_get_board_status_input(Object *obj, Error **errp)
                            s->board_status_input_default);
 }
 
+static char *msm5xxx_poc_get_board_revision(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->board_revision_enabled ?
+        g_strdup_printf("%x:%x", s->board_revision_address,
+                        s->board_revision_value) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_board_revision(Object *obj, const char *value,
+                                            Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned address, revision;
+    char trailing;
+
+    if (s->board_revision_enabled ||
+            sscanf(value, "%x:%x%c", &address, &revision, &trailing) != 2 ||
+            address & 3 || address < MSM5XXX_POC_MSM_BASE ||
+            address > MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE - 4) {
+        error_setg(errp, "board-revision must be aligned ADDRESS:VALUE");
+        return;
+    }
+    s->board_revision_address = address;
+    s->board_revision_value = revision;
+    s->board_revision_enabled = true;
+}
+
+static char *msm5xxx_poc_get_dmd_5500(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->dmd_5500_enabled ?
+        g_strdup_printf("%x:%x", s->dmd_5500_entry,
+                        s->dmd_5500_expected_first) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_dmd_5500(Object *obj, const char *value,
+                                     Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    const char *separator = value ? strchr(value, ':') : NULL;
+    const char *end;
+    uint64_t entry;
+    uint64_t expected_first;
+
+    if (s->dmd_5500_enabled || !separator || separator == value ||
+        !separator[1] || strchr(separator + 1, ':') ||
+        qemu_strtou64(value, &end, 16, &entry) < 0 || end != separator ||
+        qemu_strtou64(separator + 1, &end, 16, &expected_first) < 0 || *end ||
+        entry > UINT32_MAX || expected_first > UINT16_MAX || (entry & 1) ||
+        s->primary_nor_size < MSM5XXX_POC_DMD5500_ROUTINE_SIZE ||
+        entry > s->primary_nor_size - MSM5XXX_POC_DMD5500_ROUTINE_SIZE) {
+        error_setg(errp, "dmd-5500 must be even ENTRY:EXPECTED_FIRST");
+        return;
+    }
+    s->dmd_5500_entry = entry;
+    s->dmd_5500_expected_first = expected_first;
+    s->dmd_5500_enabled = true;
+}
+
 static void msm5xxx_poc_set_board_status_input(Object *obj, const char *value,
                                                 Error **errp)
 {
@@ -2688,7 +4953,9 @@ static char *msm5xxx_poc_get_audio_aperture(Object *obj, Error **errp)
 
     return s->audio_enabled ?
         g_strdup_printf("%x:%x:%s", s->audio_base, s->audio_data_offset,
-                        s->audio_ma2 ? "ma2" : "ma5") : g_strdup("");
+                        s->audio_ma2 ? "ma2" :
+                        s->audio_base == 0x02840000 ? "ma5" : "opaque") :
+        g_strdup("");
 }
 
 static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
@@ -2696,26 +4963,35 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
     unsigned base, data_offset;
-    char family[4];
+    char family[7];
     char trailing;
-    bool legacy, tagged, ma2;
+    bool legacy, tagged, ma2, ma5, opaque;
+    bool ma2_valid, ma5_valid, opaque_valid;
 
     legacy = sscanf(value, "%x:%x%c", &base, &data_offset, &trailing) == 2;
-    tagged = sscanf(value, "%x:%x:%3[a-z0-9]%c", &base, &data_offset,
+    tagged = sscanf(value, "%x:%x:%6[a-z0-9]%c", &base, &data_offset,
                     family, &trailing) == 3;
     ma2 = legacy || (tagged && !strcmp(family, "ma2"));
-    if (!ma2 || base < 0x02001000 ||
-            base > MSM5XXX_POC_LCD_APERTURE_BASE +
-                   MSM5XXX_POC_LCD_APERTURE_SIZE - 3 ||
-            data_offset != 2 ||
-            !(base + data_offset < msm5xxx_poc_lcd_bases[3] ||
-              base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE)) {
-        error_setg(errp, "audio-aperture must be LCD-BASE:2[:ma2]");
+    ma5 = tagged && !strcmp(family, "ma5");
+    opaque = tagged && !strcmp(family, "opaque");
+    ma2_valid = ma2 && base >= 0x02001000 &&
+                base <= MSM5XXX_POC_LCD_APERTURE_BASE +
+                        MSM5XXX_POC_LCD_APERTURE_SIZE - 3 &&
+                data_offset == 2 &&
+                (base + data_offset < msm5xxx_poc_lcd_bases[3] ||
+                 base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE);
+    /* One static call-shape profile; other MA5 apertures stay native. */
+    ma5_valid = ma5 && base == 0x02840000 && data_offset == 2;
+    opaque_valid = opaque && base == 0x02880000 && data_offset == 2;
+    if (!ma2_valid && !ma5_valid && !opaque_valid) {
+        error_setg(errp,
+                   "audio-aperture must be LCD-BASE:2[:ma2] or "
+                   "02840000:2:ma5 or 02880000:2:opaque");
         return;
     }
     s->audio_base = base;
     s->audio_data_offset = data_offset;
-    s->audio_ma2 = true;
+    s->audio_ma2 = ma2;
     s->audio_enabled = true;
 }
 
@@ -2954,6 +5230,83 @@ static void msm5xxx_poc_set_primary_x16_nor(Object *obj, const char *value,
     s->primary_x16_nor_enabled = true;
 }
 
+static void msm5xxx_poc_set_intel_x16_nor(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned base, size, sector_size, id0, id1;
+    char trailing;
+
+    if (sscanf(value, "%x:%x:%x:%x:%x%c", &base, &size, &sector_size,
+               &id0, &id1, &trailing) != 5 ||
+            base < MSM5XXX_POC_LCD_APERTURE_BASE ||
+            base >= MSM5XXX_POC_LCD_APERTURE_BASE +
+                    MSM5XXX_POC_LCD_APERTURE_SIZE ||
+            !size || size > MSM5XXX_POC_LCD_APERTURE_BASE +
+                          MSM5XXX_POC_LCD_APERTURE_SIZE - base ||
+            sector_size < 0x1000 || sector_size & (sector_size - 1) ||
+            base % sector_size || size % sector_size ||
+            id0 > UINT16_MAX || id1 > UINT16_MAX) {
+        error_setg(errp,
+                   "intel-x16-nor must be BASE:SIZE:SECTOR:ID0:ID1");
+        return;
+    }
+    s->intel_x16_nor_base = base;
+    s->intel_x16_nor_size = size;
+    s->intel_x16_nor_sector_size = sector_size;
+    s->intel_x16_nor_id0 = id0;
+    s->intel_x16_nor_id1 = id1;
+    s->intel_x16_nor_enabled = true;
+}
+
+static void msm5xxx_poc_set_amd_x16_nor(Object *obj, const char *value,
+                                         Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned base, size, sector_size, id0, id1, options;
+    char trailing;
+
+    if (sscanf(value, "%x:%x:%x:%x:%x:%x%c", &base, &size, &sector_size,
+               &id0, &id1, &options, &trailing) != 6 || !base || !size ||
+            size > UINT32_MAX - base || sector_size < 0x1000 ||
+            sector_size & (sector_size - 1) || base % sector_size ||
+            size % sector_size || id0 > UINT16_MAX || id1 > UINT16_MAX ||
+            options > 1) {
+        error_setg(errp,
+                   "amd-x16-nor must be BASE:SIZE:SECTOR:ID0:ID1:OPTIONS");
+        return;
+    }
+    s->intel_x16_nor_base = base;
+    s->intel_x16_nor_size = size;
+    s->intel_x16_nor_sector_size = sector_size;
+    s->intel_x16_nor_id0 = id0;
+    s->intel_x16_nor_id1 = id1;
+    s->amd_x16_nor_options = options;
+    s->amd_x16_nor_enabled = true;
+}
+
+static void msm5xxx_poc_set_mapped_primary_x16_nor(Object *obj,
+                                                    const char *value,
+                                                    Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned base, size, sector_size;
+    char trailing;
+
+    if (sscanf(value, "%x:%x:%x%c", &base, &size, &sector_size,
+               &trailing) != 3 || !base || !size || size > UINT32_MAX - base ||
+            sector_size < 0x1000 || sector_size & (sector_size - 1) ||
+            base % sector_size || size % sector_size) {
+        error_setg(errp,
+                   "mapped-primary-x16-nor must be BASE:SIZE:SECTOR");
+        return;
+    }
+    s->mapped_primary_x16_nor_base = base;
+    s->mapped_primary_x16_nor_size = size;
+    s->mapped_primary_x16_nor_sector_size = sector_size;
+    s->mapped_primary_x16_nor_enabled = true;
+}
+
 static char *msm5xxx_poc_get_rex_irq(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -3009,6 +5362,7 @@ static void msm5xxx_poc_set_rex_irq(Object *obj, const char *value,
     s->rex_irq_interval = interval;
     s->rex_idle_address = idle;
     s->rex_irq_controller_size = MSM5XXX_POC_REX_CONTROLLER_SIZE;
+    s->rex_irq_bank_count = 2;
     s->rex_irq_enabled = true;
 }
 
@@ -3018,6 +5372,16 @@ static char *msm5xxx_poc_get_rex_static_c80(Object *obj, Error **errp)
 
     if (!s->rex_irq_c80) {
         return g_strdup("");
+    }
+    if (s->rex_irq_bank_count == 3) {
+        return g_strdup_printf(
+            "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:3",
+            s->rex_irq_status_address, s->rex_irq_enable_address,
+            s->rex_irq_mask, s->rex_irq_interval, s->rex_irq_vector_target,
+            s->rex_irq_wrapper_address, s->rex_irq_handler_slot,
+            s->rex_irq_handler_address, s->rex_irq_handler_size,
+            s->rex_irq_callback_slot, s->rex_irq_callback_address
+        );
     }
     return g_strdup_printf(
         "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x",
@@ -3035,14 +5399,32 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
     unsigned status, enable, mask, interval, vector_target, wrapper;
     unsigned handler_slot, handler, handler_size, callback_slot, callback;
-    char trailing;
+    unsigned bank_count = 2;
+    bool parsed = false;
+    int fields;
+    int consumed = -1;
 
-    if (sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%c",
-               &status, &enable, &mask, &interval, &vector_target, &wrapper,
-               &handler_slot, &handler, &handler_size, &callback_slot,
-               &callback, &trailing) != 11 || s->rex_irq_enabled ||
+    fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%n",
+                    &status, &enable, &mask, &interval, &vector_target,
+                    &wrapper, &handler_slot, &handler, &handler_size,
+                    &callback_slot, &callback, &bank_count, &consumed);
+    if (fields == 12 && consumed >= 0 && !value[consumed]) {
+        parsed = true;
+    } else {
+        bank_count = 2;
+        consumed = -1;
+        fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%n",
+                        &status, &enable, &mask, &interval, &vector_target,
+                        &wrapper, &handler_slot, &handler, &handler_size,
+                        &callback_slot, &callback, &consumed);
+        parsed = fields == 11 && consumed >= 0 && !value[consumed];
+    }
+    if (!parsed || s->rex_irq_enabled ||
             status != 0x03000c80 || enable != status + 0x14 ||
-            status + MSM5XXX_POC_REX_C80_CONTROLLER_SIZE >
+            (bank_count != 2 && bank_count != 3) ||
+            status + (bank_count == 3 ?
+                      MSM5XXX_POC_REX_C80_THREE_BANK_SIZE :
+                      MSM5XXX_POC_REX_C80_CONTROLLER_SIZE) >
                 MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
             mask != 0x0200 || !interval ||
             vector_target & 3 || wrapper & 3 || handler & 1 ||
@@ -3053,6 +5435,7 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
             "rex-static-c80 must be "
             "STATUS:ENABLE:MASK:INTERVAL:VECTOR_TARGET:WRAPPER:"
             "HANDLER_SLOT:HANDLER:HANDLER_SIZE:CALLBACK_SLOT:CALLBACK"
+            "[:BANK_COUNT]"
         );
         return;
     }
@@ -3067,7 +5450,10 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
     s->rex_irq_handler_size = handler_size;
     s->rex_irq_callback_slot = callback_slot;
     s->rex_irq_callback_address = callback;
-    s->rex_irq_controller_size = MSM5XXX_POC_REX_C80_CONTROLLER_SIZE;
+    s->rex_irq_controller_size = bank_count == 3 ?
+        MSM5XXX_POC_REX_C80_THREE_BANK_SIZE :
+        MSM5XXX_POC_REX_C80_CONTROLLER_SIZE;
+    s->rex_irq_bank_count = bank_count;
     s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
     s->rex_irq_c80 = true;
     s->rex_irq_enabled = true;
@@ -3132,10 +5518,67 @@ static void msm5xxx_poc_set_rex_static_read_consume(
     s->rex_irq_callback_slot = callback_slot;
     s->rex_irq_callback_address = callback;
     s->rex_irq_controller_size = MSM5XXX_POC_REX_CONTROLLER_SIZE;
+    s->rex_irq_bank_count = 2;
     s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
     s->rex_irq_read_consume = true;
     s->rex_irq_c80 = true;
     s->rex_irq_enabled = true;
+}
+
+static char *msm5xxx_poc_get_raw_nand_main(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->raw_nand_main_enabled) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x",
+                           s->raw_nand_data_address,
+                           s->raw_nand_address_address,
+                           s->raw_nand_command_address,
+                           s->raw_nand_data_size,
+                           s->raw_nand_page_size,
+                           s->raw_nand_pages_per_block,
+                           s->raw_nand_bus_width);
+}
+
+static void msm5xxx_poc_set_raw_nand_main(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned data, address, command, data_size, page_size, pages_per_block;
+    unsigned bus_width;
+    char trailing;
+
+    if (sscanf(value, "%x:%x:%x:%x:%x:%x:%x%c",
+               &data, &address, &command, &data_size, &page_size,
+        &pages_per_block, &bus_width, &trailing) != 7 ||
+        s->raw_nand_main_enabled ||
+        ((data != MSM5XXX_POC_RAW_NAND_DATA_BASE ||
+          address != MSM5XXX_POC_RAW_NAND_ADDRESS_BASE ||
+          command != MSM5XXX_POC_RAW_NAND_COMMAND_BASE) &&
+         (data != MSM5XXX_POC_RAW_NAND_LOW_PORT_DATA_BASE ||
+          address != MSM5XXX_POC_RAW_NAND_LOW_PORT_ADDRESS_BASE ||
+          command != MSM5XXX_POC_RAW_NAND_LOW_PORT_COMMAND_BASE)) ||
+        data_size != MSM5XXX_POC_RAW_NAND_DATA_SIZE ||
+        page_size != MSM5XXX_POC_RAW_NAND_PAGE_SIZE ||
+        pages_per_block != MSM5XXX_POC_RAW_NAND_PAGES_PER_BLOCK ||
+        bus_width != MSM5XXX_POC_RAW_NAND_BUS_WIDTH) {
+        error_setg(
+            errp,
+            "raw-nand-main must be DATA:ADDRESS:COMMAND:DATA_SIZE:"
+            "PAGE_SIZE:PAGES_PER_BLOCK:BUS_WIDTH for the closed x16 class"
+        );
+        return;
+    }
+    s->raw_nand_data_address = data;
+    s->raw_nand_address_address = address;
+    s->raw_nand_command_address = command;
+    s->raw_nand_data_size = data_size;
+    s->raw_nand_page_size = page_size;
+    s->raw_nand_pages_per_block = pages_per_block;
+    s->raw_nand_bus_width = bus_width;
+    s->raw_nand_main_enabled = true;
 }
 
 static char *msm5xxx_poc_get_eeprom_gpio(Object *obj, Error **errp)
@@ -3281,18 +5724,22 @@ static void msm5xxx_poc_instance_init(Object *obj)
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
     s->sbi_enabled = false;
+    s->sbi_bootstrap_only = false;
     s->lcd_trace_enabled = false;
+    s->audio_pcm_enabled = true;
     s->ram_base = MSM5XXX_POC_RAM_BASE;
     s->board_adc_value = UINT8_MAX + 1;
     s->dc0_board_adc_value = UINT8_MAX + 1;
     s->primary_nor_size = MSM5XXX_POC_NOR_SIZE;
     s->rex_irq_controller_size = MSM5XXX_POC_REX_CONTROLLER_SIZE;
+    s->rex_irq_bank_count = 2;
 }
 
 static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
+    machine_add_audiodev_property(mc);
     mc->desc = "MSM5xxx ARMv4T CPU/MMIO boundary probe";
     mc->init = msm5xxx_poc_init;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("ti925t");
@@ -3304,6 +5751,14 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                    msm5xxx_poc_set_sbi);
     object_class_property_set_description(
         oc, "sbi", "Enable detector-approved runtime-admitted SBI registers");
+    object_class_property_add_bool(
+        oc, "sbi-bootstrap-only", msm5xxx_poc_get_sbi_bootstrap_only,
+        msm5xxx_poc_set_sbi_bootstrap_only
+    );
+    object_class_property_set_description(
+        oc, "sbi-bootstrap-only",
+        "Reject post-bootstrap SBI semantics after exact validation"
+    );
     object_class_property_add_bool(oc, "lcd-trace", msm5xxx_poc_get_lcd_trace,
                                    msm5xxx_poc_set_lcd_trace);
     object_class_property_set_description(
@@ -3318,6 +5773,16 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_input_chardev);
     object_class_property_set_description(
         oc, "input-chardev", "Exchange host input and acknowledgements");
+    object_class_property_add_str(oc, "audio-stream-chardev",
+                                  msm5xxx_poc_get_audio_stream_chardev,
+                                  msm5xxx_poc_set_audio_stream_chardev);
+    object_class_property_set_description(
+        oc, "audio-stream-chardev", "Stream native M5P2 PCM chunks");
+    object_class_property_add_bool(oc, "audio-pcm",
+                                   msm5xxx_poc_get_audio_pcm,
+                                   msm5xxx_poc_set_audio_pcm);
+    object_class_property_set_description(
+        oc, "audio-pcm", "Enable host PCM synthesis and output");
     object_class_property_add_str(oc, "memory-profile",
                                   msm5xxx_poc_get_memory_profile,
                                   msm5xxx_poc_set_memory_profile);
@@ -3329,12 +5794,40 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_ready_poll);
     object_class_property_set_description(
         oc, "ready-poll", "Detector-provided byte-ready/pulse protocol");
+    object_class_property_add_str(oc, "ready-poll-sites",
+                                  msm5xxx_poc_get_ready_poll_sites,
+                                  msm5xxx_poc_set_ready_poll_sites);
+    object_class_property_set_description(
+        oc, "ready-poll-sites",
+        "Detector-provided shared byte-ready/pulse protocol sites");
+    object_class_property_add_str(oc, "ready-poll-control",
+                                  msm5xxx_poc_get_ready_poll_control,
+                                  msm5xxx_poc_set_ready_poll_control);
+    object_class_property_set_description(
+        oc, "ready-poll-control",
+        "Detector-provided byte-ready/pulse/control protocol");
+    object_class_property_add_str(oc, "lcd-status-poll",
+                                  msm5xxx_poc_get_lcd_status_poll,
+                                  msm5xxx_poc_set_lcd_status_poll);
+    object_class_property_set_description(
+        oc, "lcd-status-poll",
+        "Detector-provided LCD halfword busy-status protocol");
     object_class_property_add_str(oc, "pause-timer",
                                   msm5xxx_poc_get_pause_timer,
                                   msm5xxx_poc_set_pause_timer);
     object_class_property_set_description(
         oc, "pause-timer",
         "Detector-scoped noninterruptible pause-timer writes");
+    object_class_property_add_str(oc, "board-revision",
+                                  msm5xxx_poc_get_board_revision,
+                                  msm5xxx_poc_set_board_revision);
+    object_class_property_set_description(
+        oc, "board-revision", "Detector-provided fixed revision readback");
+    object_class_property_add_str(oc, "dmd-5500",
+                                  msm5xxx_poc_get_dmd_5500,
+                                  msm5xxx_poc_set_dmd_5500);
+    object_class_property_set_description(
+        oc, "dmd-5500", "Detector-provided exact DMD completion protocol");
     object_class_property_add_str(oc, "board-status-input",
                                   msm5xxx_poc_get_board_status_input,
                                   msm5xxx_poc_set_board_status_input);
@@ -3362,6 +5855,24 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "primary-x16-nor",
         "Detector-provided writable primary x16 NOR tail");
+    object_class_property_add_str(oc, "intel-x16-nor",
+                                  msm5xxx_poc_get_intel_x16_nor,
+                                  msm5xxx_poc_set_intel_x16_nor);
+    object_class_property_set_description(
+        oc, "intel-x16-nor",
+        "Detector-provided external direct-command Intel x16 NOR");
+    object_class_property_add_str(oc, "amd-x16-nor",
+                                  msm5xxx_poc_get_amd_x16_nor,
+                                  msm5xxx_poc_set_amd_x16_nor);
+    object_class_property_set_description(
+        oc, "amd-x16-nor",
+        "Detector-provided RAM-overlap direct-command AMD x16 NOR");
+    object_class_property_add_str(oc, "mapped-primary-x16-nor",
+                                  msm5xxx_poc_get_mapped_primary_x16_nor,
+                                  msm5xxx_poc_set_mapped_primary_x16_nor);
+    object_class_property_set_description(
+        oc, "mapped-primary-x16-nor",
+        "Detector-provided mapped primary Intel x16 NOR aperture");
     object_class_property_add_str(oc, "fujitsu-x16-nor",
                                   msm5xxx_poc_get_fujitsu_x16_nor,
                                   msm5xxx_poc_set_fujitsu_x16_nor);
@@ -3374,6 +5885,12 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "upper-x8-nor",
         "Enable the detector-admitted fixed upper x8 AMD NOR class");
+    object_class_property_add_bool(oc, "upper-x16-nor",
+                                   msm5xxx_poc_get_upper_x16_nor,
+                                   msm5xxx_poc_set_upper_x16_nor);
+    object_class_property_set_description(
+        oc, "upper-x16-nor",
+        "Enable the detector-admitted fixed upper x16 AMD NOR class");
     object_class_property_add_str(oc, "rex-irq", msm5xxx_poc_get_rex_irq,
                                   msm5xxx_poc_set_rex_irq);
     object_class_property_set_description(
@@ -3391,6 +5908,12 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "rex-static-read-consume",
         "Explicit detector-, arm-, and runtime-gated read-consume IRQ route");
+    object_class_property_add_str(oc, "raw-nand-main",
+                                  msm5xxx_poc_get_raw_nand_main,
+                                  msm5xxx_poc_set_raw_nand_main);
+    object_class_property_set_description(
+        oc, "raw-nand-main",
+        "Detector-provided main-area-only small-page x16 NAND route");
     object_class_property_add_str(oc, "eeprom-24lcxx-gpio",
                                   msm5xxx_poc_get_eeprom_gpio,
                                   msm5xxx_poc_set_eeprom_gpio);

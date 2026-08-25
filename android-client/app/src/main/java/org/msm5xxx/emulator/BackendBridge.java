@@ -19,6 +19,7 @@ final class BackendBridge {
     private static final String QEMU_VERSION = "QEMU emulator version 10.2.1";
     private static final String MACHINE = "msm5xxx-poc";
     private static final int OUTPUT_LIMIT = 64 * 1024;
+    private static PythonSession activeSession;
 
     private BackendBridge() {}
 
@@ -176,17 +177,25 @@ final class BackendBridge {
         }
     }
 
-    static Session open(Context context, File firmware, String profileJson,
-                        boolean persistentState, boolean experimentalRex)
+    static synchronized Session open(Context context, File firmware,
+                        String profileJson, boolean persistentState,
+                        boolean experimentalRex)
             throws IOException {
         File qemu = resolveQemu(context);
         File state = persistentState
                 ? new File(context.getNoBackupFilesDir(), "qemu-state")
                 .getCanonicalFile() : null;
+        final String identity;
         try {
-            JSONObject profile = new JSONObject(profileJson);
-            String identity = profile.getJSONObject("firmware")
+            identity = new JSONObject(profileJson).getJSONObject("firmware")
                     .getString("sha256");
+        } catch (JSONException error) {
+            throw new IOException("Backend session request is invalid.", error);
+        }
+        if (activeSession != null) {
+            activeSession.close();
+        }
+        try {
             JSONObject result = new JSONObject(PythonRuntime.start(
                     context, firmware, qemu, state, profileJson,
                     experimentalRex));
@@ -201,7 +210,9 @@ final class BackendBridge {
                     || height < 1 || height > 2048) {
                 throw new IOException("Backend session validation failed.");
             }
-            return new PythonSession(identity, inputBits);
+            PythonSession opened = new PythonSession(identity, inputBits);
+            activeSession = opened;
+            return opened;
         } catch (JSONException | RuntimeException | LinkageError error) {
             stopAfterFailedOpen();
             throw new IOException("Backend session launch failed.", error);
@@ -291,7 +302,12 @@ final class BackendBridge {
                         result.getLong("lcd_writes"),
                         result.getLong("frame_sequence"),
                         result.getLong("input_host_events"),
-                        result.getLong("input_rejections"));
+                        result.getLong("input_rejections"),
+                        result.getLong("audio_epoch"),
+                        result.getLong("audio_underflow_frames"),
+                        result.getLong("audio_overflow_frames"),
+                        result.getString("audio_status"),
+                        result.getString("audio_reject_reason"));
             } catch (JSONException | RuntimeException | LinkageError error) {
                 throw new IOException("Backend status read failed.", error);
             }
@@ -346,15 +362,21 @@ final class BackendBridge {
         }
 
         @Override
-        public synchronized void close() throws IOException {
-            if (closed) {
-                return;
-            }
-            closed = true;
-            try {
-                PythonRuntime.stop();
-            } catch (RuntimeException | LinkageError error) {
-                throw new IOException("Backend stop failed.", error);
+        public void close() throws IOException {
+            synchronized (BackendBridge.class) {
+                if (closed) {
+                    return;
+                }
+                closed = true;
+                if (activeSession != this) {
+                    return;
+                }
+                activeSession = null;
+                try {
+                    PythonRuntime.stop();
+                } catch (RuntimeException | LinkageError error) {
+                    throw new IOException("Backend stop failed.", error);
+                }
             }
         }
     }
@@ -402,10 +424,17 @@ final class BackendBridge {
         final long frameSequence;
         final long inputHostEvents;
         final long inputRejections;
+        final long audioEpoch;
+        final long audioUnderflowFrames;
+        final long audioOverflowFrames;
+        final String audioStatus;
+        final String audioRejectReason;
 
         private Status(boolean processRunning, long instructions, long pc,
                        long lcdWrites, long frameSequence, long inputHostEvents,
-                       long inputRejections) {
+                       long inputRejections, long audioEpoch,
+                       long audioUnderflowFrames, long audioOverflowFrames,
+                       String audioStatus, String audioRejectReason) {
             this.processRunning = processRunning;
             this.instructions = instructions;
             this.pc = pc;
@@ -413,6 +442,11 @@ final class BackendBridge {
             this.frameSequence = frameSequence;
             this.inputHostEvents = inputHostEvents;
             this.inputRejections = inputRejections;
+            this.audioEpoch = audioEpoch;
+            this.audioUnderflowFrames = audioUnderflowFrames;
+            this.audioOverflowFrames = audioOverflowFrames;
+            this.audioStatus = audioStatus;
+            this.audioRejectReason = audioRejectReason;
         }
     }
 

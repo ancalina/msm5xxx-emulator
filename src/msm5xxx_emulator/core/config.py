@@ -129,6 +129,9 @@ class FirmwareConfig:
     eeprom_static_capacity: int | None = None
     ready_poll: dict[str, object] | None = None
     dc0_board_adc_profile: dict[str, object] | None = None
+    sbi_bootstrap_profile: dict[str, object] | None = None
+    uis_idle_entry_address: int | None = None
+    uis_idle_body_address: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)

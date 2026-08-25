@@ -73,6 +73,8 @@ jobs:
           "$source/configure" \
             --target-list=arm-softmmu \
             --without-default-features \
+            --enable-dsound \
+            --audio-drv-list=dsound \
             --enable-fdt=internal \
             --disable-download \
             --disable-docs \
@@ -189,6 +191,7 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements.txt
           $env:PYTHONPATH = "src;."
+          python -m unittest discover -s tests -p "test_audio_synth_c.py" -v
           python -m unittest discover -s tests -p "test_ma2_c_audio_core.py" -v
           python -m unittest discover -s tests -p "test_ma5_c_audio_core.py" -v
           python -m unittest discover -s tests -p "test_qemu_input_transport.py" -v

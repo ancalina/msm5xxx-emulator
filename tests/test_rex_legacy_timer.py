@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from msm5xxx_emulator.detection.rex import (
+    _relocated_thumb_file_target,
     _legacy_software_timer_target,
     _legacy_timer_registration_at,
     find_rex_legacy_5ms_irq_route,
@@ -23,6 +24,23 @@ def _bl(source: int, target: int) -> bytes:
 
 
 class LegacyTimerRegistrationTests(unittest.TestCase):
+    def test_relocated_thumb_target_round_trips_both_copies(self) -> None:
+        image = bytearray(0x200)
+        image[0x40:0x44] = _bl(0x00100040, 0x00200080)
+
+        def file_to_runtime(position: int) -> int | None:
+            return {0x40: 0x00100040, 0x180: 0x00200080}.get(position)
+
+        def runtime_to_file(address: int) -> int | None:
+            return {0x00100040: 0x40, 0x00200080: 0x180}.get(address)
+
+        self.assertEqual(_relocated_thumb_file_target(
+            image, 0x40, file_to_runtime, runtime_to_file
+        ), 0x180)
+        self.assertIsNone(_relocated_thumb_file_target(
+            image, 0x40, file_to_runtime, lambda _address: None
+        ))
+
     def test_legacy_software_timer_accepts_exact_arm_veneer(self) -> None:
         image = bytearray(0x100)
         veneer, walker = 0x20, 0x60

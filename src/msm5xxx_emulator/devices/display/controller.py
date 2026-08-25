@@ -98,19 +98,23 @@ class DisplayControllerMixin:
         if size != 2:
             order.clear()
             return
-        register, argument = value >> 8 & 0xFF, value & 0xFF
-        if register == 2:
-            order[:] = [argument]
-        elif order and len(order) < 4 and register == 2 + len(order):
-            order.append(argument)
+        register = value >> 8 & 0xFF
+        if register in (2, 8):
+            order[:] = [value & 0xFFFF]
+        elif (order and len(order) < 4
+              and register == (order[0] >> 8) + len(order)):
+            order.append(value & 0xFFFF)
         else:
             order.clear()
             return
         if len(order) != 4:
             return
-        self._lcd_lgfa_window = self._lcd_full_window_geometry(
-            [order[0], order[2]], [order[1], order[3]]
-        )
+        base = order[0] >> 8
+        arguments = [word & 0xFF for word in order]
+        axes = (([arguments[0], arguments[2]], [arguments[1], arguments[3]])
+                if base == 2 else
+                ([arguments[0], arguments[1]], [arguments[2], arguments[3]]))
+        self._lcd_lgfa_window = self._lcd_full_window_geometry(*axes)
         self._lg_pixels.clear()
         order.clear()
 
@@ -213,6 +217,8 @@ class DisplayControllerMixin:
                 stream.clear()
                 self._lcd_raw_counts[port] = 0
         self._lcd_command = value & 0xFFFF
+        if self._lcd_command != 0x45:
+            self._lcd_020_compact_44 = None
         if self._lcd_command not in (0x20, 0x21, 0x22):
             self._lcd_packed_21_state = 0
         self._lcd_recent_commands.append(self._lcd_command & 0xFF)
@@ -247,6 +253,24 @@ class DisplayControllerMixin:
         if self._lcd_command in LCD_MEMORY_WRITE_COMMANDS:
             self._lcd_direct_data(value)
             return
+        # Temporary evidence-gated class: exact ordered compact window writes
+        # on the observed +2 halfword transport.  Near misses stay raw.
+        compact_port = (self._lcd_protocol == "parallel-2"
+                        and address == 0x02000002 and size == 2)
+        if self._lcd_command == 0x44:
+            self._lcd_020_compact_44 = (
+                value if compact_port and value == 0x7F00 else None
+            )
+            if self._lcd_020_compact_44 is not None:
+                return
+        elif self._lcd_command == 0x45:
+            x_value = self._lcd_020_compact_44
+            self._lcd_020_compact_44 = None
+            if compact_port and x_value == 0x7F00 and value == 0x9F00:
+                self._lcd_x[:] = [0, 0x7F]
+                self._lcd_y[:] = [0, 0x9F]
+                self._lcd_window_axis_mask = 0xF
+                return
         if self._lcd_set_axis(self._lcd_command, value):
             return
         if self._lcd_command in (0x15, 0x75, 0x2A, 0x2B):
@@ -298,6 +322,10 @@ class DisplayControllerMixin:
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
         if self._lcd_split_port_write(address, size, value):
+            return
+        if self._lcd_window_raw8_separate_write(address, size, value):
+            return
+        if self._lcd_window_raw8_write(address, size, value):
             return
         if self._lcd_byte_raster_write(address, size, value):
             return
@@ -378,6 +406,9 @@ class DisplayControllerMixin:
                     self._lcd_selector_reacquire_replay(protocol, words)
                 else:
                     self._lcd_selector_reacquire_finish(replay=True)
+        if (not getattr(self, "_lcd_028_split16_replaying", False)
+                and self._lcd_028_split16_write(address, size, value)):
+            return
         if (not getattr(self, "_lcd_028_be_word_replaying", False)
                 and self._lcd_028_be_word_write(address, size, value)):
             return
@@ -398,8 +429,8 @@ class DisplayControllerMixin:
             if len(self._lg_pixels) >= count:
                 for index in range(0, count, 2):
                     first, second = self._lg_pixels[index:index + 2]
-                    pixel = (((first & 3) << 14) | ((second >> 2) & 0x3800)
-                             | ((second >> 1) & 0x07FF))
+                    pixel = ((first & 0xF800) | ((first & 0x03F0) << 1)
+                             | ((first & 0x000F) << 1) | (second >> 1 & 1))
                     self._pixel(index // 2, pixel)
                 del self._lg_pixels[:count]
                 self._lcd_protocol = "lg-paired-rgb565"
