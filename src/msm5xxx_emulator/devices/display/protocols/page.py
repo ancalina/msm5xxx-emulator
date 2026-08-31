@@ -8,9 +8,29 @@ _WINDOW_RAW8_SEPARATE_COMMAND_PORT = 0x02000000
 _WINDOW_RAW8_SEPARATE_DATA_PORT = 0x02200002
 _WINDOW_RAW8_SEPARATE_WIDTH = 64
 _WINDOW_RAW8_SEPARATE_HEIGHT = 96
+_RAW_LCD_STREAM_PORT_LIMIT = 32
 
 
 class PageProtocolMixin:
+    @staticmethod
+    def _lcd_decode_shifted_pair_rgb565(
+            values: tuple[int, ...], *, allow_blank: bool = False,
+    ) -> list[int] | None:
+        """Decode a full stream only when every shifted pair is exact."""
+        if len(values) & 1 or (not allow_blank and not any(values)):
+            return None
+        pixels = []
+        for first, second in zip(values[::2], values[1::2]):
+            pixel = (second >> 1) | ((first & 0x100) << 7)
+            expected_first = (
+                ((pixel >> 8) & 0x7) | ((pixel >> 7) & 0x1F0)
+            )
+            if (first != expected_first
+                    or second != (pixel << 1) & 0xFFFF):
+                return None
+            pixels.append(pixel)
+        return pixels
+
     def _lcd_page_set_geometry(self) -> None:
         """Adopt a geometry proved by a byte-wide page-controller scan."""
         if (not self._lcd_page_qualified or not self._lcd_page_width
@@ -248,7 +268,8 @@ class PageProtocolMixin:
                 or address != self._lcd_page_port + 4
                 or size not in (1, 2)
                 or (size == 2 and value > 0xFF)
-                or (self._lcd_page_port == 0x02000000 and size != 1)
+                or (self._lcd_page_port == 0x02000000 and size != 1
+                    and not self._lcd_page_qualified)
                 or self._lcd_page_current < 0
                 or not self._lcd_page_column_ready):
             return False
@@ -344,9 +365,32 @@ class PageProtocolMixin:
         if pixels <= 0:
             return
         port = (address, size)
+        source = getattr(
+            self.config, "display_geometry_source", "external-config"
+        )
+        shifted_pair_qualified = (
+            source == "runtime:shifted-pair-fifo-rgb565"
+            and (self.config.width, self.config.height) == (176, 220)
+            and self._lcd_raw_port == port
+        )
+        shifted_pair_candidate = (
+            0x02000000 <= address < 0x02001000
+            and (self.config.width, self.config.height) == (176, 220)
+            and (source == "auto-default" or shifted_pair_qualified)
+        )
         stream = self._lcd_raw_streams.get(port)
         if stream is None:
-            stream = deque(maxlen=pixels)
+            if len(self._lcd_raw_streams) >= _RAW_LCD_STREAM_PORT_LIMIT:
+                victim = next((candidate for candidate in self._lcd_raw_streams
+                               if candidate != self._lcd_raw_port), None)
+                if victim is None:
+                    return
+                self._lcd_raw_streams.pop(victim, None)
+                self._lcd_raw_counts.pop(victim, None)
+                self._lcd_raw_frames.pop(victim, None)
+                self._lcd_raw_segment_streams.pop(victim, None)
+                self._lcd_raw_segment_counts.pop(victim, None)
+            stream = deque(maxlen=2 * pixels if shifted_pair_candidate else pixels)
             self._lcd_raw_streams[port] = stream
         stream.append(value & 0xFFFF)
         self._lcd_raw_counts[port] += 1
@@ -356,7 +400,7 @@ class PageProtocolMixin:
         if port == (0x02000002, 2):
             segment = self._lcd_raw_segment_streams.get(port)
             if segment is None:
-                segment = deque(maxlen=128 * 160)
+                segment = deque(maxlen=2 * 176 * 220)
                 self._lcd_raw_segment_streams[port] = segment
             segment.append(value & 0xFFFF)
             self._lcd_raw_segment_counts[port] += 1
@@ -412,9 +456,43 @@ class PageProtocolMixin:
         # that full raster before the generic 176x220 threshold, it is stronger
         # evidence than the filename fallback.  Known model geometry is left
         # untouched, as a 128x160 transfer can also be a rectangle update.
-        source = getattr(
-            self.config, "display_geometry_source", "external-config"
-        )
+        if shifted_pair_candidate:
+            words = 2 * pixels
+            if shifted_pair_qualified and count < words:
+                return
+            if count in (pixels, words):
+                values = tuple(stream)
+                decoded = self._lcd_decode_shifted_pair_rgb565(
+                    values, allow_blank=shifted_pair_qualified
+                ) if len(values) == count else None
+                if decoded is not None and count == pixels:
+                    return
+                if decoded is not None:
+                    self._set_display_geometry(
+                        176, 220, source="runtime:shifted-pair-fifo-rgb565"
+                    )
+                    for index, pixel in enumerate(decoded):
+                        self._pixel(index, pixel)
+                    self._lcd_raw_frames[port] += 1
+                    self._lcd_raw_port = port
+                    self._lcd_protocol = "shifted-pair-fifo-rgb565"
+                    self._lcd_expected = 0
+                    self._lcd_streamed = 0
+                    self._publish_frame()
+                    segment = self._lcd_raw_segment_streams.get(port)
+                    if segment is not None:
+                        segment.clear()
+                    self._lcd_raw_segment_counts[port] = 0
+                    stream.clear()
+                    self._lcd_raw_counts[port] = 0
+                    return
+                if shifted_pair_qualified:
+                    stream.clear()
+                    self._lcd_raw_counts[port] = 0
+                    return
+                # Preserve the generic RGB565 path after a near miss.
+                stream = deque(values[-pixels:], maxlen=pixels)
+                self._lcd_raw_streams[port] = stream
         paired_qualified = (
             source == "runtime:paired-fifo-rgb565"
             and (self.config.width, self.config.height) == (120, 160)
@@ -568,7 +646,35 @@ class PageProtocolMixin:
         port = (0x02000002, 2)
         count = self._lcd_raw_segment_counts[port]
         stream = self._lcd_raw_segment_streams.get(port)
-        if (stream is not None and count == 128 * 160
+        source = getattr(
+            self.config, "display_geometry_source", "external-config"
+        )
+        shifted_pair_qualified = (
+            source == "runtime:shifted-pair-fifo-rgb565"
+            and (self.config.width, self.config.height) == (176, 220)
+            and self._lcd_raw_port == port
+        )
+        if (stream is not None and count == 2 * 176 * 220
+                and (source == "auto-default" or shifted_pair_qualified)):
+            values = tuple(stream)
+            decoded = self._lcd_decode_shifted_pair_rgb565(
+                values, allow_blank=shifted_pair_qualified
+            )
+            if decoded is not None:
+                self._set_display_geometry(
+                    176, 220, source="runtime:shifted-pair-fifo-rgb565"
+                )
+                for index, pixel in enumerate(decoded):
+                    self._pixel(index, pixel)
+                self._lcd_raw_frames[port] += 1
+                self._lcd_raw_port = port
+                self._lcd_protocol = "shifted-pair-fifo-rgb565"
+                self._lcd_expected = 0
+                self._lcd_streamed = 0
+                self._publish_frame()
+                self._lcd_raw_streams[port] = deque(maxlen=2 * 176 * 220)
+                self._lcd_raw_counts[port] = 0
+        elif (stream is not None and count == 128 * 160
                 and getattr(self.config, "display_geometry_source",
                             "external-config") == "auto-default"
                 and self.frame_sequence == 0

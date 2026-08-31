@@ -36,6 +36,7 @@ from msm5xxx_emulator.detection.storage import (
     EEPROM_24LCXX_X270_WRITE_PREFIX,
     EEPROM_24LCXX_X430_READ_PREFIX,
     EEPROM_24LCXX_X430_WRITE_PREFIX,
+    EEPROM_24LCXX_X7700_READ_PREFIX,
     EEPROM_24LCXX_X7700_WRITE_PREFIX,
     direct_amd_x16_nor_profile,
     direct_intel_x16_nor_profile,
@@ -45,10 +46,13 @@ from msm5xxx_emulator.detection.storage import (
     find_24lcxx_f6f7_driver,
     find_24lcxx_f7f6_driver,
     find_24lcxx_x270_driver,
+    find_24lcxx_x7700_driver,
     find_adjacent_amd_x16_nor,
     find_adjacent_fujitsu_x16_nor,
+    find_catalog_amd_x16_nor,
     find_embedded_fujitsu_x16_nor,
     find_primary_fsd_amd_x16_nor,
+    find_record_amd_x16_nor,
     mapped_primary_intel_x16_nor_profile,
     primary_probe_x16_nor_profile,
 )
@@ -90,6 +94,8 @@ PAUSE_TIMER_ADDRESS = 0x04800020
 PERSISTENT_STATE_FILES = (
     "primary-writable.raw", "secondary.raw", "upper.raw", "upper-x16.raw",
     "eeprom.raw", "nand-main.raw", "intel-x16.raw", "amd-x16.raw",
+    "record-x16.raw", "catalog-x16.raw", "mapped-primary-x16.raw",
+    "mapped-primary-x16-upper.raw",
 )
 LEGACY_STATE_OWNER = ".firmware-sha256"
 PAUSE_TIMER_LDR_OFFSETS = (0x26, 0x4E, 0x78, 0xA4)
@@ -669,8 +675,8 @@ def load_legacy_raw_state(seed: bytes, path: Path) -> tuple[bytes, bool]:
 
 
 def migrate_erased_raw_state(path: Path, old_size: int,
-                             new_size: int) -> bool:
-    """Atomically preserve one old raw extent and append erased bytes."""
+                             new_size: int, *, prepend: bool = False) -> bool:
+    """Atomically preserve one old raw extent and add erased bytes."""
     if not 0 < old_size < new_size:
         raise ValueError("invalid persistent state extent migration")
     backup = path.with_name(f"{path.name}.pre-{old_size:08x}")
@@ -685,7 +691,8 @@ def migrate_erased_raw_state(path: Path, old_size: int,
                 raise ValueError(f"persistent state backup mismatch: {backup}")
         else:
             atomic_write_bytes(backup, data)
-        atomic_write_bytes(path, data + b"\xff" * (new_size - old_size))
+        erased = b"\xff" * (new_size - old_size)
+        atomic_write_bytes(path, erased + data if prepend else data + erased)
     return True
 
 
@@ -904,7 +911,7 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
         signature == "static-c80-controller-callback-v1"
         and candidate.get("promotion") == "temporary-evidence-gated"
         and candidate.get("status_bank_count") == 2
-        and candidate.get("group_row_size") == 10
+        and candidate.get("group_row_size") in (10, 12)
         and candidate.get("pending_read_semantics") == "latched-read"
         and candidate.get("pending_ack_semantics") == "write-one-to-clear"
         and candidate.get("time_tick_status_bank") == 0x03000C80
@@ -1213,6 +1220,58 @@ def eeprom_gpio_profile(
     )
     if find_24lcxx_f6f7_driver(image) == (read, write, geometry):
         return (0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None
+    x7700 = (
+        image[read:read + len(EEPROM_24LCXX_X7700_READ_PREFIX)]
+        == EEPROM_24LCXX_X7700_READ_PREFIX
+        and image[write:write + len(EEPROM_24LCXX_X7700_WRITE_PREFIX)]
+        == EEPROM_24LCXX_X7700_WRITE_PREFIX
+        and find_24lcxx_x7700_driver(image) == (read, write, geometry)
+    )
+    if x7700:
+        writer = write - 0x160
+        reader = read - 0x728
+        shapes = (
+            (writer, bytes.fromhex("f0b5071c80260724")),
+            (writer + 0x18, bytes.fromhex("324a202391891943918191891268")),
+            (writer + 0x3A, bytes.fromhex("2a4a402391891943918191891268")),
+            (writer + 0x5A, bytes.fromhex("224a402391899943918191891268")),
+            (writer + 0x74, bytes.fromhex("1b4a202391899943918191891268")),
+            (writer + 0x96, bytes.fromhex("134a402391891943918191891268")),
+            (writer + 0xB6, bytes.fromhex("0b4a402391899943918191891268")),
+            (reader, bytes.fromhex("f0b500271a4e0024")),
+            (reader + 0x12, bytes.fromhex("184a402391891943918191891268")),
+            (reader + 0x32, bytes.fromhex("30783f0e800901d301200743")),
+            (reader + 0x42, bytes.fromhex("0c4a402391899943918191891268")),
+        )
+        descriptor = thumb_literal_value(image, writer + 0x18, 2)
+        linker = getattr(config, "linker", None)
+        if (min(writer, reader) < 0
+                or any(image[position:position + len(expected)] != expected
+                       for position, expected in shapes)
+                or not isinstance(descriptor, int)
+                or any(thumb_literal_value(image, position, register)
+                       != expected
+                       for position, register, expected in (
+                           (writer + 0x3A, 2, descriptor),
+                           (writer + 0x5A, 2, descriptor),
+                           (writer + 0x74, 2, descriptor),
+                           (writer + 0x96, 2, descriptor),
+                           (writer + 0xB6, 2, descriptor),
+                           (reader + 0x04, 6, 0x03000720),
+                           (reader + 0x12, 2, descriptor),
+                           (reader + 0x42, 2, descriptor),
+                       ))):
+            return None, "gpio-line-shape-mismatch"
+        if (linker is None
+                or not linker.data_target <= descriptor
+                <= linker.data_target + linker.data_size - 12):
+            return None, "gpio-descriptor-linkage-mismatch"
+        source = linker.data_source + descriptor - linker.data_target
+        if (source < 0 or source + 12 > len(image)
+                or struct.unpack_from("<III", image, source)
+                != (0x03000720, 0x03000720, 0x0300072C)):
+            return None, "gpio-descriptor-linkage-mismatch"
+        return (0x03000720, 0, 0x20, 0, 0x40, 0xC, 0x8000), None
     split_bank = (
         image[read:read + len(EEPROM_24LCXX_X430_READ_PREFIX)]
         == EEPROM_24LCXX_X430_READ_PREFIX
@@ -1805,6 +1864,27 @@ class Transport:
         primary_profile, primary_regions, profile_reject = (
             select_primary_x16_nor_profile(primary_profile, probe_profile)
         )
+        record_profile = find_record_amd_x16_nor(
+            detector_image[:self.config.flash_size], self.config.flash_size,
+        )
+        if record_profile is not None:
+            record_base, record_size, _ = record_profile
+            if (primary_profile is None
+                    or record_base + record_size != primary_profile[0]
+                    or primary_profile[0] + primary_profile[1]
+                       != self.config.flash_size):
+                record_profile = None
+                self.config.detection_notes.append(
+                    "Record x16 NOR detector rejected: primary-tail-"
+                    "adjacency-mismatch; native fallback retained"
+                )
+        catalog_profile = (
+            find_catalog_amd_x16_nor(
+                detector_image[:self.config.flash_size],
+                self.config.flash_size, self.config.ram_base,
+            )
+            if record_profile is not None else None
+        )
         if profile_reject is not None:
             self.config.detection_notes.append(
                 "primary x16 detectors conflict; native NOR fallback retained"
@@ -1909,6 +1989,7 @@ class Transport:
                     f":{count:x}:{length:x}"
                     for count, length in primary_regions
                 )
+                machine += ",primary-x16-write-while-suspended=on"
             storage_args.extend((
                 "-drive",
                 f"file={primary_state},if=pflash,format=raw,unit=0",
@@ -1928,6 +2009,51 @@ class Transport:
                     "primary x16 NOR selected from unique "
                     "probe/table/descriptor/geometry linkage"
                 )
+        if record_profile is not None:
+            base, size, sector_size = record_profile
+            device_size = 1 << (size - 1).bit_length()
+            record_state = ((state_dir / "record-x16.raw")
+                            if state_dir is not None else
+                            (temporary / "record-x16.raw"))
+            record_seed = (primary_seed[base:base + size]
+                           + b"\xff" * (device_size - size))
+            if len(record_seed) != device_size:
+                raise ValueError("Record x16 NOR seed size mismatch")
+            if record_state.exists():
+                if record_state.stat().st_size != device_size:
+                    if (record_state.stat().st_size == size
+                            and migrate_erased_raw_state(
+                                record_state, size, device_size
+                            )):
+                        self.state_imports.append(
+                            "record-nor-erased-tail-extension"
+                        )
+                    elif (record_profile == (0xA80000, 0x380000, 0x10000)
+                            and record_state.stat().st_size == 0x200000
+                            and migrate_erased_raw_state(
+                                record_state, 0x200000, device_size,
+                                prepend=True
+                            )):
+                        self.state_imports.append(
+                            "record-nor-erased-base-extension"
+                        )
+                    else:
+                        raise ValueError(
+                            "persistent Record x16 NOR size mismatch"
+                        )
+            else:
+                record_state.write_bytes(record_seed)
+            machine += f",record-x16-nor={base:x}:{size:x}:{sector_size:x}"
+            storage_args.extend((
+                "-drive",
+                f"file={record_state},if=pflash,format=raw,unit={pflash_unit}",
+            ))
+            pflash_unit += 1
+            loader_size = base
+            self.config.detection_notes.append(
+                "temporary Record x16 NOR selected from exact "
+                "descriptor/map/read-write linkage"
+            )
         if mapped_primary_profile is not None:
             logical_base, base, size, sector_size = mapped_primary_profile
             mapped_state = ((state_dir / "mapped-primary-x16.raw")
@@ -2021,13 +2147,17 @@ class Transport:
         secondary = self.decoder.secondary_flash
         secondary_base = self.config.secondary_flash_address
         secondary_size = self.config.secondary_flash_size
+        catalog_secondary = False
+        if secondary_base is None and catalog_profile is not None:
+            secondary_base, secondary_size, _ = catalog_profile
+            catalog_secondary = True
         adjacent_amd = find_adjacent_amd_x16_nor(
             detector_image[:self.config.flash_size], self.config.flash_size,
         )
         embedded_secondary = None
         if secondary_base is None and primary_profile is None:
             embedded_secondary = find_embedded_fujitsu_x16_nor(
-                detector_image, self.config.flash_size,
+                bytes(self.decoder.flash.data), self.config.flash_size,
             )
             if embedded_secondary is not None:
                 secondary_base, secondary_size, id0, id1 = embedded_secondary
@@ -2047,6 +2177,7 @@ class Transport:
                     <= self.config.ram_base):
                 secondary_base = candidate
         secondary_ids = (
+            (0xFFFF, 0xFFFF) if catalog_secondary else
             (id0, id1) if embedded_secondary is not None else
             fujitsu_x16_flash_ids(
                 detector_image, self.config.secondary_flash_write_address,
@@ -2058,10 +2189,18 @@ class Transport:
                 self.config, detector_image,
             )
         if secondary_base is not None and secondary_ids:
-            secondary_state = ((state_dir / "secondary.raw")
+            secondary_device_size = (
+                1 << (secondary_size - 1).bit_length()
+                if catalog_secondary else secondary_size
+            )
+            secondary_name = (
+                "catalog-x16.raw" if catalog_secondary else "secondary.raw"
+            )
+            secondary_state = ((state_dir / secondary_name)
                                if state_dir is not None else
-                               (temporary / "secondary.raw"))
+                               (temporary / secondary_name))
             secondary_seed = (
+                b"\xff" * secondary_device_size if catalog_secondary else
                 bytes(secondary.data) if secondary is not None else
                 primary_seed[secondary_base:secondary_base + secondary_size]
                 if embedded_secondary is not None else
@@ -2072,7 +2211,16 @@ class Transport:
                     adjacent = find_adjacent_fujitsu_x16_nor(
                         detector_image, self.config.flash_size,
                     )
-                    if (secondary_state.stat().st_size == 0x200000
+                    if (catalog_secondary
+                            and secondary_state.stat().st_size == secondary_size
+                            and migrate_erased_raw_state(
+                                secondary_state, secondary_size,
+                                secondary_device_size
+                            )):
+                        self.state_imports.append(
+                            "catalog-nor-erased-tail-extension"
+                        )
+                    elif (secondary_state.stat().st_size == 0x200000
                             and len(secondary_seed) == 0x400000
                             and embedded_secondary is None
                             and adjacent == (
@@ -2089,22 +2237,23 @@ class Transport:
                             "persistent secondary NOR size mismatch"
                         )
             else:
-                candidates = [legacy_secondary_state]
-                if self.config.secondary_flash_address is None:
-                    candidates.insert(0, legacy_primary_state.with_name(
-                        legacy_primary_state.stem +
-                        f".lazy-secondary-{secondary_base:08x}-"
-                        f"{len(secondary_seed):x}.json"
-                    ))
-                secondary_seed, imported = load_legacy_nor_state(
-                    secondary_seed, tuple(candidates)
-                )
-                if imported:
-                    self.state_imports.append("secondary-nor-json")
+                if not catalog_secondary:
+                    candidates = [legacy_secondary_state]
+                    if self.config.secondary_flash_address is None:
+                        candidates.insert(0, legacy_primary_state.with_name(
+                            legacy_primary_state.stem +
+                            f".lazy-secondary-{secondary_base:08x}-"
+                            f"{len(secondary_seed):x}.json"
+                        ))
+                    secondary_seed, imported = load_legacy_nor_state(
+                        secondary_seed, tuple(candidates)
+                    )
+                    if imported:
+                        self.state_imports.append("secondary-nor-json")
                 secondary_state.write_bytes(secondary_seed)
             machine += (
                 f",fujitsu-x16-nor={self.config.flash_size:x}:"
-                f"{secondary_base:x}:{len(secondary_seed):x}:"
+                f"{secondary_base:x}:{secondary_size:x}:"
                 f"{secondary_ids[0]:x}:{secondary_ids[1]:x}"
             )
             storage_args.extend((
@@ -2116,6 +2265,11 @@ class Transport:
                 self.config.detection_notes.append(
                     "embedded x16 NOR selected from unique "
                     "descriptor/writer/geometry linkage"
+                )
+            elif catalog_secondary:
+                self.config.detection_notes.append(
+                    "temporary descriptor-mapped catalog x16 NOR selected "
+                    "from exact mapper/enumerator/read-write linkage"
                 )
         if upper_nor_enabled:
             upper = self.decoder.upper_flash
@@ -2587,28 +2741,37 @@ class Transport:
             self.input_socket.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-        if self.audio_socket is not None:
-            try:
-                self.audio_socket.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+        self._close_audio_channel()
         self._terminate_process()
 
+    def _close_audio_channel(self) -> None:
+        audio_socket = getattr(self, "audio_socket", None)
+        if audio_socket is None:
+            return
+        try:
+            audio_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            audio_socket.close()
+        except OSError:
+            pass
+
     def _reject_audio_stream(self, reason: str, dropped: int = 0) -> None:
+        callback_reason = None
         with self._audio_lock:
             first_rejection = self.audio_stream_status != "rejected"
             if first_rejection:
                 self.audio_stream_status = "rejected"
                 self.audio_stream_reject_reason = reason
+                callback_reason = reason
                 self.audio_native = False
                 self.native_audio_packets.clear()
                 self._audio_ready.notify_all()
             self.audio_stream_dropped = max(self.audio_stream_dropped, dropped)
         transport = getattr(self.decoder, "audio_transport", None)
         if transport is not None and first_rejection:
-            transport.renderer_submission(
-                False, self.audio_stream_reject_reason
-            )
+            transport.renderer_submission(False, callback_reason)
 
     def _replay_audio_write(self, record: bytes | bytearray) -> None:
         if self.audio_stream_status == "rejected":
@@ -2821,8 +2984,7 @@ class Transport:
                 raise
             if not chunk:
                 if not stop.is_set() and self.process.poll() is None:
-                    self.decoder.input_error = "QEMU audio channel closed"
-                    self._terminate_process()
+                    self._reject_audio_stream("qemu-audio-channel-closed")
                 return
             pending.extend(chunk)
 
@@ -2830,15 +2992,17 @@ class Transport:
         input_pending = bytearray()
         lcd_pending = bytearray()
         audio_socket = getattr(self, "audio_socket", None)
-        audio_errors: list[Exception] = []
         audio_worker = None
         if audio_socket is not None:
             def replay_audio() -> None:
                 try:
                     self._replay_native_audio(stop)
-                except Exception as error:
-                    audio_errors.append(error)
-                    stop.set()
+                except Exception:
+                    if not stop.is_set() and self.process.poll() is None:
+                        self._reject_audio_stream("qemu-audio-channel-error")
+                finally:
+                    if not stop.is_set() and self.process.poll() is None:
+                        self._close_audio_channel()
 
             audio_worker = threading.Thread(
                 target=replay_audio,
@@ -2894,11 +3058,10 @@ class Transport:
             if audio_worker is not None:
                 with self._audio_ready:
                     self._audio_ready.notify_all()
+                self._close_audio_channel()
                 audio_worker.join(1)
         if audio_worker is not None and audio_worker.is_alive():
-            raise RuntimeError("QEMU audio replay worker did not stop")
-        if audio_errors:
-            raise audio_errors[0]
+            self._reject_audio_stream("qemu-audio-worker-stuck")
 
     def _queue_native_audio(self, record: bytes) -> None:
         with self._audio_lock:
@@ -3022,8 +3185,7 @@ class Transport:
         self._stop_rex_idle_candidate_observer()
         self.lcd_socket.close()
         self.input_socket.close()
-        if self.audio_socket is not None:
-            self.audio_socket.close()
+        self._close_audio_channel()
         self._terminate_process()
         self.stderr.close()
         self.decoder.close()

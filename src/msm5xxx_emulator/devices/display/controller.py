@@ -246,6 +246,18 @@ class DisplayControllerMixin:
     def _lcd_feed_data(self, address: int, size: int, value: int) -> None:
         """Consume one controller data word shared by the parallel transports."""
         value &= 0xFFFF
+        source = getattr(
+            self.config, "display_geometry_source", "external-config"
+        )
+        # A relation-qualified full raster owns its data aperture.  A smaller
+        # direct window on another aperture may be a second panel; it cannot
+        # replace the main scanout without its own full-screen transfer.
+        if (source == "runtime:shifted-pair-fifo-rgb565"
+                and self._lcd_raw_port != (address, size)
+                and self._lcd_command in LCD_MEMORY_WRITE_COMMANDS
+                and 0 < self._lcd_expected
+                < self.config.width * self.config.height):
+            return
         if (self._lcd_protocol == "parallel-2" and self._lcd_command == 0x22
                 and self._lcd_gram_addressed):
             self._lcd_write_gram_pixel(value)
@@ -441,9 +453,12 @@ class DisplayControllerMixin:
         # selector and +4 as its payload port.  Keep that transport distinct
         # until a non-selector base value proves an address-line controller.
         if address in (0x02000000, 0x02C00000):
-            if (address == 0x02000000 and size == 1
+            if (address == 0x02000000
+                    and (size == 1 or (size == 2
+                                       and self._lcd_page_qualified
+                                       and self._lcd_page_port == address))
                     and self._lcd_page_begin_command(
-                        address, size, value, byte_wide=True
+                        address, size, value, byte_wide=size == 1
                     )
                     and self._lcd_page_qualified):
                 return
@@ -469,7 +484,10 @@ class DisplayControllerMixin:
             self._lcd_feed_parallel_data(address, size, value)
             return
         if address in (0x02000004, 0x02C00004):
-            if (address == 0x02000004 and size == 1
+            if (address == 0x02000004
+                    and (size == 1 or (size == 2
+                                       and self._lcd_page_qualified
+                                       and self._lcd_page_port == 0x02000000))
                     and self._lcd_page_feed_data(address, size, value)):
                 return
             if self._lcd_protocol == "selector-4":

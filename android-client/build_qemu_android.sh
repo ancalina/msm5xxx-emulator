@@ -55,10 +55,10 @@ fi
 
 check_sha256 "$MSM5XXX_ANDROID_PATCH_SHA256" "$ANDROID_PATCH"
 check_sha256 \
-    bc18b52adc6af313516477bc989f56ed1f22d38128c66089c6977581d676f841 \
+    bf5bf27ec9048f915f7b166eaada1f75ba0eb87e3dc9aef4fc292d5ced183ee3 \
     "$GLIB/lib/libglib-2.0.so"
 check_sha256 \
-    8c80da00133cf5974cd46f1f678cab1cfe20cce261a2db0253ba8def48a0900f \
+    fe085703f11516d537bae8393260abf6aa3c23459880911d5d8b3e4aa6ab41d2 \
     "$GLIB/lib/libintl.so"
 if [ "$(git -C "$DTC_SOURCE" rev-parse HEAD)" != "$QEMU_DTC_REVISION" ]; then
     echo "unexpected DTC source revision" >&2

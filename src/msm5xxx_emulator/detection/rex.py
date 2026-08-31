@@ -257,6 +257,18 @@ def _controller_registrar_at(
     if position < 0 or position + 0x44 > len(image):
         return None
     words = struct.unpack_from("<34H", image, position)
+    direct_error = (
+        words[14] & 0xF800 == 0xF000
+        and words[15] & 0xF800 == 0xF800
+    )
+    shifted_error = (
+        words[13] == 0xDB04
+        and words[14:16] == (0x2045, 0x00C0)
+        and words[16] & 0xF800 == 0x4800
+        and words[16] >> 8 & 7 == 1
+        and words[17] & 0xF800 == 0xF000
+        and words[18] & 0xF800 == 0xF800
+    )
     if not (
         words[0] & 0xFFF0 == 0xB5F0
         and words[1:3] == (0x1C04, 0x1C0F)
@@ -267,8 +279,7 @@ def _controller_registrar_at(
         and words[7] >> 8 & 7 == 6
         and words[8:13] == (0xD100, 0x1C37, 0x2C00, 0xDB01, 0x2C1F)
         and words[13] & 0xFF00 == 0xDB00
-        and words[14] & 0xF800 == 0xF000
-        and words[15] & 0xF800 == 0xF800
+        and (direct_error or shifted_error)
         and thumb_literal_value(image, position + 14, 6) == default
     ):
         return None
@@ -660,6 +671,13 @@ def find_rex_static_controller_callback_candidate(
         0x150 if struct.unpack_from("<H", image, handler + 2)[0] == 0xB087
         else 0x100
     )
+    group_row_size = (
+        10 if handler_validation_size == 0x150 else
+        12 if _normalized_thumb_sha256(image, handler, 0x100) == (
+            "e2d286a40ba316e36638235247203ba5ab1800c3f1b50149a9a36be770d40f17",
+            (0x04, 0x34, 0x94, 0xBA, 0xF6),
+        ) else None
+    )
 
     registrations: list[tuple[int, int, int, int]] = []
     registration_positions: list[int] = []
@@ -763,9 +781,10 @@ def find_rex_static_controller_callback_candidate(
         "accepted": True,
         "active": False,
         "semantic_limit": (
-            "exact group-10 two-bank W1C route with a 5-unit service "
-            "callback; physical clock fidelity remains approximated"
-            if handler_validation_size == 0x150 else semantic_limit
+            f"exact group-{group_row_size} two-bank W1C route with a "
+            "5-unit service callback; physical clock fidelity remains "
+            "approximated"
+            if group_row_size is not None else semantic_limit
         ),
         "controller_class": (
             "legacy-c80-index1e-delta5-controller-candidate-v1"
@@ -804,13 +823,13 @@ def find_rex_static_controller_callback_candidate(
         **({
             "promotion": "temporary-evidence-gated",
             "status_bank_count": 2,
-            "group_row_size": 10,
+            "group_row_size": group_row_size,
             "pending_read_semantics": "latched-read",
             "pending_ack_semantics": "write-one-to-clear",
             "time_tick_status_bank": status,
             "time_tick_clear_bank": status,
             "time_tick_mask": mask,
-        } if handler_validation_size == 0x150 else {}),
+        } if group_row_size is not None else {}),
     }
 
 

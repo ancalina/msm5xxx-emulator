@@ -40,6 +40,58 @@ ADJACENT_AMD_X16_WRITER_HASH = (
 ADJACENT_AMD_X16_RECORD_PREFIX = bytes.fromhex("b8b50420")
 ADJACENT_AMD_X16_RECORD_MARKER = bytes.fromhex("5555")
 ADJACENT_AMD_X16_RECORD_LOG = b"Record_Init() - "
+RECORD_AMD_X16_WRITER_PREFIX = bytes.fromhex("feb5071c0c1c151c")
+RECORD_AMD_X16_WRITER_SIZE = 0x1C0
+RECORD_AMD_X16_WRITER_CALLS = (0x08, 0x2A, 0x106, 0x13C, 0x15E, 0x192, 0x1B4)
+RECORD_AMD_X16_WRITER_HASH = (
+    "179547732b28103d941c2a0ca6117aa0190f7905050162fe6e6746175e990783"
+)
+RECORD_AMD_X16_ERASER_PREFIX = bytes.fromhex("f3b582b0051c2f1c")
+RECORD_AMD_X16_ERASER_SIZE = 0x106
+RECORD_AMD_X16_ERASER_CALLS = (0x10, 0x32, 0x36, 0x56, 0xA6, 0xD8, 0xF8)
+RECORD_AMD_X16_ERASER_HASH = (
+    "4bc322f2695f824d36548a8567b75a991eca6c00810c5d2415145f8d884265fe"
+)
+RECORD_AMD_X16_MAPPER_PREFIX = bytes.fromhex("90b592b0")
+RECORD_AMD_X16_MAPPER_SIZE = 0x98
+RECORD_AMD_X16_MAPPER_CALLS = (0x04, 0x0C, 0x18, 0x24, 0x30, 0x34, 0x3C, 0x52, 0x8A)
+RECORD_AMD_X16_MAPPER_HASH = (
+    "0b00ab9c38059abc1e721e98192bc820f945b25fddaa3392050061dedc48b3ea"
+)
+RECORD_AMD_X16_ERASE_WRAPPER_PREFIX = bytes.fromhex(
+    "fcb5071c0d1c002f03d10020fcbc08bc1847"
+)
+RECORD_AMD_X16_ERASE_WRAPPER_SIZE = 0x44
+RECORD_AMD_X16_ERASE_WRAPPER_CALLS = (0x3C,)
+RECORD_AMD_X16_ERASE_WRAPPER_HASH = (
+    "4295cb416ea17b8330c5ca8de211d835dce95eecb1a2c515b55d51c1b1738715"
+)
+RECORD_AMD_X16_COPY_WRAPPER_PREFIX = bytes.fromhex(
+    "f7b5ffb0ffb086b0041c002c06d100207fb07fb009b0f0bc"
+)
+RECORD_AMD_X16_COPY_WRAPPER_SIZE = 0xC4
+RECORD_AMD_X16_COPY_WRAPPER_CALLS = (0x68, 0x84, 0x92, 0x9A, 0xA2)
+RECORD_AMD_X16_COPY_WRAPPER_HASH = (
+    "b6483682852e22edfe219788780247fb4d0487fd563aa945c52127697393ff01"
+)
+RECORD_AMD_X16_INIT_PREFIX = bytes.fromhex("b8b50320")
+RECORD_AMD_X16_INIT_SIZE = 0x130
+RECORD_AMD_X16_INIT_CALLS = (
+    0x04, 0x4E, 0x5E, 0x7A, 0x96, 0xA2, 0xAA, 0xB6,
+    0xCC, 0xD4, 0xDC, 0xE4, 0xE8, 0xF8,
+)
+RECORD_AMD_X16_INIT_HASH = (
+    "76ea7e08a5b33ab74faa8195f8df3daaa68a8603b09599de881dcc5f5a668677"
+)
+RECORD_AMD_X16_ENUMERATOR_PREFIX = bytes.fromhex(
+    "b0b4532401256d05ef0a6a09052800d363e0"
+)
+RECORD_AMD_X16_ENUMERATOR_SIZE = 0xDA
+RECORD_AMD_X16_ENUMERATOR_HASH = (
+    "36aef1142efc77fcc9cce15a0cf35aa3d2504c57a4bbaa50c7f466ad319bd756"
+)
+RECORD_AMD_X16_PROFILE = (0xA80000, 0x380000, 0x10000)
+CATALOG_AMD_X16_PROFILE = (0x1200000, 0x600000, 0x10000)
 PRIMARY_FSD_AMD_X16_ID_ROUTINE = bytes.fromhex(
     "30b50e4b011ccc18084d094b258023800b4bca18074b1380074b238008884b88"
     "00041b04000c184325800be0f0000000aa0000005500000090000000aa0a0000"
@@ -77,6 +129,14 @@ FUJITSU_X16_BULK_WRITE_HASHED_SHAPES = (
         0xF8, 0x100, (0xAAA0, 0x5540),
         (0x48, 0x62, 0x6A, 0xA0, 0xBC, 0xC4, 0xD2, 0xE6, 0xF0),
         "6074b6f9c6cf75cbc978cca8a482709c82482234a73b0a70bcb28da747926579",
+    ),
+    (
+        bytes.fromhex(
+            "f8b5041c8818171c3b4a1268ff32c13293695b00984205d8"
+        ),
+        0xF8, 0x100, (0xAAA0, 0x5540),
+        (0x4A, 0x64, 0x6C, 0xA2, 0xBE, 0xC6, 0xD4, 0xE8, 0xF0),
+        "365e0cc0de8399c3ce08d94ebecb1ebf3dfc45c98a9ca13951c801af15917f7c",
     ),
 )
 FUJITSU_X16_BULK_WRITE_LEGACY_PREFIX = bytes.fromhex(
@@ -391,7 +451,7 @@ def find_primary_fsd_amd_x16_nor(
         descriptor = reference - 0x1C
         if descriptor < 0 or descriptor + 0x34 > flash_size:
             continue
-        device_id, reserved, banks, base_words, usable_words = (
+        device_id, reserved, device_control_options, base_words, usable_words = (
             struct.unpack_from("<5I", image, descriptor)
         )
         functions = struct.unpack_from("<7I", image, descriptor + 0x14)
@@ -399,7 +459,8 @@ def find_primary_fsd_amd_x16_nor(
         name_end = image.find(b"\0", name_address, name_address + 32)
         manufacturer, device = device_id & 0xFFFF, device_id >> 16
         base, size = base_words * 2, usable_words * 2
-        if (reserved != 0 or banks != 1 or functions[2] != writer | 1
+        if (reserved != 0 or device_control_options != 1
+                or functions[2] != writer | 1
                 or any(not pointer & 1 or pointer & ~1 >= flash_size
                        for pointer in functions)
                 or name_end < name_address + 4
@@ -485,6 +546,90 @@ def find_adjacent_amd_x16_nor(
     if len(writers) != 1 or len(records) != 1 or identity is None:
         return None
     return flash_size, flash_size, identity & 0xFFFF, identity >> 16
+
+
+def _record_amd_x16_shape_at(
+        image: bytes, position: int, prefix: bytes, size: int,
+        expected_calls: tuple[int, ...], expected_hash: str,
+) -> bool:
+    if (position < 0 or position + size > len(image)
+            or image[position:position + len(prefix)] != prefix):
+        return False
+    body = bytearray(image[position:position + size])
+    calls: list[int] = []
+    for offset in range(0, len(body) - 3, 2):
+        if thumb_bl_target(image, position + offset) is None:
+            continue
+        calls.append(offset)
+        body[offset:offset + 4] = b"\0" * 4
+    return (tuple(calls) == expected_calls
+            and hashlib.sha256(body).hexdigest() == expected_hash)
+
+
+def find_record_amd_x16_nor(
+        image: bytes, flash_size: int,
+) -> tuple[int, int, int] | None:
+    """Return one temporary exact descriptor-mapped Record NOR profile."""
+    if flash_size != 0x1200000:
+        return None
+    primary = image[:flash_size]
+    shapes = (
+        (RECORD_AMD_X16_WRITER_PREFIX, RECORD_AMD_X16_WRITER_SIZE,
+         RECORD_AMD_X16_WRITER_CALLS, RECORD_AMD_X16_WRITER_HASH),
+        (RECORD_AMD_X16_ERASER_PREFIX, RECORD_AMD_X16_ERASER_SIZE,
+         RECORD_AMD_X16_ERASER_CALLS, RECORD_AMD_X16_ERASER_HASH),
+        (RECORD_AMD_X16_MAPPER_PREFIX, RECORD_AMD_X16_MAPPER_SIZE,
+         RECORD_AMD_X16_MAPPER_CALLS, RECORD_AMD_X16_MAPPER_HASH),
+        (RECORD_AMD_X16_ERASE_WRAPPER_PREFIX,
+         RECORD_AMD_X16_ERASE_WRAPPER_SIZE,
+         RECORD_AMD_X16_ERASE_WRAPPER_CALLS,
+         RECORD_AMD_X16_ERASE_WRAPPER_HASH),
+        (RECORD_AMD_X16_COPY_WRAPPER_PREFIX,
+         RECORD_AMD_X16_COPY_WRAPPER_SIZE,
+         RECORD_AMD_X16_COPY_WRAPPER_CALLS,
+         RECORD_AMD_X16_COPY_WRAPPER_HASH),
+        (RECORD_AMD_X16_INIT_PREFIX, RECORD_AMD_X16_INIT_SIZE,
+         RECORD_AMD_X16_INIT_CALLS, RECORD_AMD_X16_INIT_HASH),
+        (RECORD_AMD_X16_ENUMERATOR_PREFIX, RECORD_AMD_X16_ENUMERATOR_SIZE,
+         (), RECORD_AMD_X16_ENUMERATOR_HASH),
+    )
+    positions: list[int] = []
+    for prefix, size, calls, body_hash in shapes:
+        matches = [
+            position for position in find_all(primary, prefix)
+            if _record_amd_x16_shape_at(
+                primary, position, prefix, size, calls, body_hash
+            )
+        ]
+        if len(matches) != 1:
+            return None
+        positions.append(matches[0])
+    writer, eraser, mapper, erase_wrapper, copy_wrapper, record_init, enum = (
+        positions
+    )
+    if (thumb_bl_target(primary, mapper + 0x52) != enum
+            or thumb_bl_target(primary, erase_wrapper + 0x3C) != eraser
+            or thumb_bl_target(primary, copy_wrapper + 0x92) != writer
+            or thumb_bl_target(primary, record_init + 0xCC) != writer
+            or primary[record_init + 0x10C:record_init + 0x10E]
+               != ADJACENT_AMD_X16_RECORD_MARKER
+            or primary[record_init + 0x110:record_init + 0x120]
+               != ADJACENT_AMD_X16_RECORD_LOG
+            or primary[enum + 0xF8:enum + 0xFF] != b"RECORD\0"):
+        return None
+    base, size, sector_size = RECORD_AMD_X16_PROFILE
+    return ((base, size, sector_size)
+            if base + size <= flash_size else None)
+
+
+def find_catalog_amd_x16_nor(
+        image: bytes, flash_size: int, ram_base: int,
+) -> tuple[int, int, int] | None:
+    """Return one temporary exact descriptor-mapped catalog NOR profile."""
+    base, size, sector_size = CATALOG_AMD_X16_PROFILE
+    return ((base, size, sector_size)
+            if find_record_amd_x16_nor(image, flash_size) is not None
+            and base == flash_size and base + size == ram_base else None)
 
 
 def direct_amd_x16_nor_profile(
@@ -1028,7 +1173,7 @@ def primary_probe_x16_nor_profile(
     sectors = struct.unpack_from(
         f"<{sector_count}I", image, sectors_offset
     )
-    (device_id, reserved, banks, base_words, usable_words,
+    (device_id, reserved, device_control_options, base_words, usable_words,
      *functions) = struct.unpack_from("<14I", image, descriptor_offset)
     manufacturer, device = device_id & 0xFFFF, device_id >> 16
     base_address = flash_base + base_words * 2
@@ -1056,7 +1201,7 @@ def primary_probe_x16_nor_profile(
     )
     range_valid = (external_range if external_static_descriptor
                    else contained_range or linked_tail_range)
-    if (reserved != 0 or banks != 1 or len(functions) != 9
+    if (reserved != 0 or device_control_options != 1 or len(functions) != 9
             or any(not (pointer & 1)
                    or not load_address <= (pointer & ~1) < flash_end
                    for pointer in functions)
@@ -1668,6 +1813,59 @@ def find_embedded_fujitsu_x16_nor(
             continue
         profiles.append((command_base, device_size,
                          *FUJITSU_MB84VD2219X_IDS))
+
+    # Later inline layout places 112 sector entries before seven callbacks.
+    name_positions = find_all(image, b"Fujitsu MB84VD2219X\0")
+    if len(name_positions) == 1:
+        for descriptor in find_all(
+                image, struct.pack("<I", name_positions[0])):
+            if descriptor & 3 or descriptor + 8 > flash_size:
+                continue
+            sector_count = struct.unpack_from("<I", image, descriptor + 4)[0]
+            info_end = descriptor + 8 + sector_count * 4
+            if (sector_count != 112 or info_end + 0x30 > flash_size
+                    or struct.unpack_from("<4H", image, info_end)
+                       != (0x98, 0x9C, 0, 0)
+                    or struct.unpack_from("<H", image, info_end + 8)[0] != 1):
+                continue
+            sectors = struct.unpack_from(
+                f"<{sector_count}I", image, descriptor + 8
+            )
+            usable_base, usable_size = struct.unpack_from(
+                "<2I", image, info_end + 0xC
+            )
+            functions = struct.unpack_from("<7I", image, info_end + 0x14)
+            command_base = usable_base - 0x10000
+            physical_size = flash_size - command_base
+            if (command_base <= 0
+                    or physical_size != 0x800000
+                    or command_base % physical_size):
+                continue
+            writer = find_fujitsu_x16_bulk_write(image, command_base)
+            boundaries = (
+                list(range(command_base, command_base + 0x10000, 0x2000))
+                + list(range(command_base + 0x10000,
+                             command_base + physical_size - 0x10000,
+                             0x10000))
+                + list(range(command_base + physical_size - 0x10000,
+                             command_base + physical_size, 0x2000))
+                + [command_base + physical_size]
+            )
+            boundary_table = struct.pack(
+                f"<{len(boundaries)}I", *boundaries
+            )
+            if (usable_base != command_base + 0x10000
+                    or usable_size != sum(sectors)
+                    or any(size != 0x10000 for size in sectors)
+                    or usable_base + usable_size > flash_size
+                    or writer is None
+                    or (functions[2] & ~1) != writer
+                    or len(find_all(image, boundary_table)) != 1
+                    or any(not pointer & 1 or pointer & ~1 >= flash_size
+                           for pointer in functions)):
+                continue
+            profiles.append((command_base, physical_size,
+                             *FUJITSU_MB84VD2219X_IDS))
     return profiles[0] if len(profiles) == 1 else None
 
 

@@ -40,8 +40,10 @@ from msm5xxx_emulator.detection.storage import (
     find_24lc64_class_b_driver,
     find_adjacent_amd_x16_nor,
     find_adjacent_fujitsu_x16_nor,
+    find_catalog_amd_x16_nor,
     find_embedded_fujitsu_x16_nor,
     find_primary_fsd_amd_x16_nor,
+    find_record_amd_x16_nor,
     mapped_primary_intel_x16_nor_profile,
     primary_probe_x16_nor_profile,
 )
@@ -1133,6 +1135,17 @@ class DetectionTests(unittest.TestCase):
                 "d0d80120c005f7f76bfe08490848ba3919f029f8002095e7541918011ce91f01"
                 "a0aa400040554000"
             ), 0x400000, 0x300),
+            (bytes.fromhex(
+                "f8b5041c8818171c3b4a1268ff32c13293695b00984205d8384b1879002805d0"
+                "022803d00120f8bc08bc184750691a6880184518600800d352e0480800d34fe0"
+                "780800d34ce01be02688b7f155fe2c4aaa2151812b4b55219982a02151812e80"
+                "002801d1b7f154fe0221281cfff7ecfc002802d0244925482ce002340235023f"
+                "012fe1d82ee06e087600217830886a0802d2ff22120201e00902ff2211430140"
+                "0091b7f129fe164aaa215181154b55219982a021518100993180002801d1b7f1"
+                "27fe0221301cfff7bffc002805d00f480d493130f4f700fda4e701340135013f"
+                "002fd0d801208005f4f76cfe0849094817f099ff002096e714200001c87c0c01"
+                "a0aa800040558000"
+            ), 0x800000, 0x5000),
         )
         for body, secondary_base, padding in variants:
             image = b"\xff" * padding + body + b"fs_fujitsu.c\0"
@@ -1172,6 +1185,57 @@ class DetectionTests(unittest.TestCase):
             (secondary_base, 0x200000, 0x0004, 0x005F),
         )
         struct.pack_into("<I", image, descriptor + 0x20, functions[3] + 2)
+        self.assertIsNone(
+            find_embedded_fujitsu_x16_nor(bytes(image), len(image))
+        )
+
+        body, secondary_base, _ = variants[-1]
+        image = bytearray(b"\xff" * 0x1000000)
+        writer = 0x1000
+        image[writer:writer + len(body)] = body
+        image[0x2000:0x200D] = b"fs_fujitsu.c\0"
+        name = 0x3000
+        device_name = b"Fujitsu MB84VD2219X\0"
+        image[name:name + len(device_name)] = device_name
+        descriptor = 0x4000
+        sectors = 112
+        struct.pack_into("<2I", image, descriptor, name, sectors)
+        struct.pack_into(f"<{sectors}I", image, descriptor + 8,
+                         *(0x10000,) * sectors)
+        info_end = descriptor + 8 + sectors * 4
+        struct.pack_into("<6H", image, info_end, 0x98, 0x9C, 0, 0, 1, 0)
+        struct.pack_into("<2I", image, info_end + 0xC,
+                         secondary_base + 0x10000, sectors * 0x10000)
+        functions = (0x2001, 0x2101, writer | 1, 0x2201,
+                     0x2301, 0x2401, 0x2501)
+        struct.pack_into("<7I", image, info_end + 0x14, *functions)
+        boundaries = (
+            list(range(secondary_base, secondary_base + 0x10000, 0x2000))
+            + list(range(secondary_base + 0x10000,
+                         secondary_base + 0x7F0000, 0x10000))
+            + list(range(secondary_base + 0x7F0000,
+                         secondary_base + 0x800000, 0x2000))
+            + [secondary_base + 0x800000]
+        )
+        boundary_offset = 0x6000
+        struct.pack_into(f"<{len(boundaries)}I", image, boundary_offset,
+                         *boundaries)
+        self.assertEqual(
+            find_embedded_fujitsu_x16_nor(bytes(image), len(image)),
+            (secondary_base, 0x800000, 0x0004, 0x005F),
+        )
+        struct.pack_into("<I", image, boundary_offset, secondary_base + 1)
+        self.assertIsNone(
+            find_embedded_fujitsu_x16_nor(bytes(image), len(image))
+        )
+        struct.pack_into("<I", image, boundary_offset, secondary_base)
+        struct.pack_into("<I", image, info_end + 0xC, 0)
+        self.assertIsNone(
+            find_embedded_fujitsu_x16_nor(bytes(image), len(image))
+        )
+        struct.pack_into("<I", image, info_end + 0xC,
+                         secondary_base + 0x10000)
+        struct.pack_into("<I", image, descriptor + 8, 0x20000)
         self.assertIsNone(
             find_embedded_fujitsu_x16_nor(bytes(image), len(image))
         )
@@ -1456,6 +1520,15 @@ class DetectionTests(unittest.TestCase):
               ((32, 0x2000), (8, 0x1000), (31, 0x2000)),
               0x98, 0x84), None),
         )
+        struct.pack_into("<I", image, image_offset + descriptor + 8, 0)
+        self.assertEqual(
+            primary_probe_x16_nor_profile(
+                bytes(image), probe, 0, flash_size, image_offset, ram_base,
+                ram_image_offset, ram_image_size,
+            ),
+            (None, "descriptor-content-mismatch"),
+        )
+        struct.pack_into("<I", image, image_offset + descriptor + 8, 1)
         struct.pack_into("<I", image, ram + 0x10, 0x10001)
         self.assertEqual(
             primary_probe_x16_nor_profile(
@@ -1950,6 +2023,105 @@ class DetectionTests(unittest.TestCase):
             image[writer + 0x40] ^= 1
             self.assertIsNone(
                 find_adjacent_amd_x16_nor(bytes(image), primary_size)
+            )
+
+    def test_record_amd_nor_requires_exact_linked_shapes(self) -> None:
+        flash_size = 0x1200000
+        writer, eraser, mapper = 0x1000, 0x3000, 0x5000
+        erase_wrapper, copy_wrapper = 0x7000, 0x8000
+        record_init, enumerator, stub = 0x9000, 0xB000, 0xD000
+        image = bytearray(b"\xff" * 0x10000)
+        specs = (
+            (writer, storage_detection.RECORD_AMD_X16_WRITER_PREFIX,
+             storage_detection.RECORD_AMD_X16_WRITER_SIZE,
+             storage_detection.RECORD_AMD_X16_WRITER_CALLS, {}),
+            (eraser, storage_detection.RECORD_AMD_X16_ERASER_PREFIX,
+             storage_detection.RECORD_AMD_X16_ERASER_SIZE,
+             storage_detection.RECORD_AMD_X16_ERASER_CALLS, {}),
+            (mapper, storage_detection.RECORD_AMD_X16_MAPPER_PREFIX,
+             storage_detection.RECORD_AMD_X16_MAPPER_SIZE,
+             storage_detection.RECORD_AMD_X16_MAPPER_CALLS,
+             {0x52: enumerator}),
+            (erase_wrapper,
+             storage_detection.RECORD_AMD_X16_ERASE_WRAPPER_PREFIX,
+             storage_detection.RECORD_AMD_X16_ERASE_WRAPPER_SIZE,
+             storage_detection.RECORD_AMD_X16_ERASE_WRAPPER_CALLS,
+             {0x3C: eraser}),
+            (copy_wrapper,
+             storage_detection.RECORD_AMD_X16_COPY_WRAPPER_PREFIX,
+             storage_detection.RECORD_AMD_X16_COPY_WRAPPER_SIZE,
+             storage_detection.RECORD_AMD_X16_COPY_WRAPPER_CALLS,
+             {0x92: writer}),
+            (record_init, storage_detection.RECORD_AMD_X16_INIT_PREFIX,
+             storage_detection.RECORD_AMD_X16_INIT_SIZE,
+             storage_detection.RECORD_AMD_X16_INIT_CALLS,
+             {0xCC: writer}),
+            (enumerator,
+             storage_detection.RECORD_AMD_X16_ENUMERATOR_PREFIX,
+             storage_detection.RECORD_AMD_X16_ENUMERATOR_SIZE, (), {}),
+        )
+
+        def encode_bl(source: int, target: int) -> None:
+            displacement = target - source - 4
+            encoded = displacement & ((1 << 23) - 1)
+            struct.pack_into(
+                "<2H", image, source,
+                0xF000 | (encoded >> 12),
+                0xF800 | (encoded >> 1 & 0x7FF),
+            )
+
+        for position, prefix, size, calls, targets in specs:
+            image[position:position + size] = b"\0" * size
+            image[position:position + len(prefix)] = prefix
+            for offset in calls:
+                encode_bl(position + offset, targets.get(offset, stub))
+        image[record_init + 0x10C:record_init + 0x10E] = (
+            storage_detection.ADJACENT_AMD_X16_RECORD_MARKER
+        )
+        image[record_init + 0x110:record_init + 0x120] = (
+            storage_detection.ADJACENT_AMD_X16_RECORD_LOG
+        )
+        image[enumerator + 0xF8:enumerator + 0xFF] = b"RECORD\0"
+
+        hashes = []
+        for position, _, size, calls, _ in specs:
+            body = bytearray(image[position:position + size])
+            for offset in calls:
+                body[offset:offset + 4] = b"\0" * 4
+            hashes.append(hashlib.sha256(body).hexdigest())
+        with patch.multiple(
+            storage_detection,
+            RECORD_AMD_X16_WRITER_HASH=hashes[0],
+            RECORD_AMD_X16_ERASER_HASH=hashes[1],
+            RECORD_AMD_X16_MAPPER_HASH=hashes[2],
+            RECORD_AMD_X16_ERASE_WRAPPER_HASH=hashes[3],
+            RECORD_AMD_X16_COPY_WRAPPER_HASH=hashes[4],
+            RECORD_AMD_X16_INIT_HASH=hashes[5],
+            RECORD_AMD_X16_ENUMERATOR_HASH=hashes[6],
+        ):
+            self.assertEqual(
+                find_record_amd_x16_nor(bytes(image), flash_size),
+                (0xA80000, 0x380000, 0x10000),
+            )
+            self.assertEqual(
+                find_catalog_amd_x16_nor(
+                    bytes(image), flash_size, 0x1800000
+                ),
+                storage_detection.CATALOG_AMD_X16_PROFILE,
+            )
+            self.assertIsNone(
+                find_catalog_amd_x16_nor(
+                    bytes(image), flash_size, 0x2000000
+                )
+            )
+            encode_bl(copy_wrapper + 0x92, stub)
+            self.assertIsNone(
+                find_record_amd_x16_nor(bytes(image), flash_size)
+            )
+            self.assertIsNone(
+                find_catalog_amd_x16_nor(
+                    bytes(image), flash_size, 0x1800000
+                )
             )
 
     def test_adjacent_fujitsu_nor_accepts_linked_reserved_boot_geometry(self) -> None:

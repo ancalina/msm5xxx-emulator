@@ -192,6 +192,7 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_streamed = 0
         emulator._lcd_data_byte_latch = {}
         emulator._lcd_028_direct_probe = []
+        emulator._lcd_028_rgb444_qualified = False
         emulator._lcd_028_be_word_events = []
         emulator._lcd_028_be_word_qualified = False
         emulator._lcd_028_be_word_replaying = False
@@ -932,6 +933,63 @@ class LCDGeometryTests(unittest.TestCase):
             bytes((255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255)),
         )
 
+    def test_028_full_raster_promotes_left_aligned_rgb444(self) -> None:
+        emulator = self._routing_emulator(width=120, height=160)
+        emulator.config.display_geometry_source = "auto-default"
+        emulator._lcd_protocol = "parallel-2"
+        for address, value in (
+            (0x02800000, 0x75), (0x02800004, 0),
+            (0x02800004, 159), (0x02800000, 0x15),
+            (0x02800004, 0), (0x02800004, 119),
+            (0x02800000, 0x5C),
+        ):
+            emulator._lcd_write(None, 0, address, 2, value, None)
+        payload = [0xF000, 0x0F00, 0x00F0, 0x25F0]
+        payload += [(value << 12) | (value << 8) | (value << 4)
+                    for value in range(16)]
+        payload += [0xFFF0] * (120 * 160 - len(payload))
+        for value in payload:
+            emulator._lcd_write(None, 0, 0x02800004, 2, value, None)
+
+        self.assertTrue(emulator._lcd_028_rgb444_qualified)
+        self.assertEqual(emulator._lcd_frame_protocol, "direct-rgb444")
+        self.assertEqual(emulator.config.display_geometry_source,
+                         "runtime:direct-rgb444")
+        self.assertEqual(emulator.display_frame[:12], bytes((
+            255, 0, 0, 0, 255, 0, 0, 0, 255, 33, 85, 255,
+        )))
+
+    def test_028_rgb444_qualification_follows_low_information_frame(self) -> None:
+        emulator = self._routing_emulator(width=120, height=160)
+        emulator.config.display_geometry_source = "auto-default"
+        emulator._lcd_protocol = "parallel-2"
+
+        def frame(payload: list[int]) -> None:
+            for address, value in (
+                (0x02800000, 0x75), (0x02800004, 0),
+                (0x02800004, 159), (0x02800000, 0x15),
+                (0x02800004, 0), (0x02800004, 119),
+                (0x02800000, 0x5C),
+            ):
+                emulator._lcd_write(None, 0, address, 2, value, None)
+            for value in payload:
+                emulator._lcd_write(None, 0, 0x02800004, 2, value, None)
+
+        frame([0xFFF0] * (120 * 160))
+        self.assertEqual(emulator.frame_sequence, 8)
+        self.assertEqual(emulator._lcd_frame_protocol, "direct")
+        self.assertFalse(emulator._lcd_028_rgb444_qualified)
+        self.assertEqual(emulator._lcd_028_direct_probe, [])
+
+        varied = [0xF000, 0x0F00, 0x00F0, 0x25F0]
+        varied += [(value << 12) | (value << 8) | (value << 4)
+                   for value in range(16)]
+        frame(varied + [0xFFF0] * (120 * 160 - len(varied)))
+        self.assertEqual(emulator.frame_sequence, 9)
+        self.assertEqual(emulator._lcd_frame_protocol, "direct-rgb444")
+        self.assertTrue(emulator._lcd_028_rgb444_qualified)
+        self.assertEqual(emulator._lcd_028_direct_probe, [])
+
     def test_028_be_word_packets_require_initializer_and_stream_22(self) -> None:
         def packet(target: GenericMSMEmulator, command: int, data: int) -> None:
             for address, value in (
@@ -1225,6 +1283,28 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertFalse(wide._lcd_page_qualified)
         self.assertEqual((wide.config.width, wide.config.height), (176, 220))
 
+    def test_qualified_byte_020_page_scan_accepts_halfword_continuation(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        emulator._lcd_page_width_hint = None
+
+        for size, first in ((1, 1), (2, 2)):
+            for page in range(16):
+                for command in (0xB0 + page, 0x10, 0x00):
+                    emulator._lcd_write(
+                        None, 0, 0x02000000, size, command, None
+                    )
+                values = bytes((first,)) + bytes(255) if page == 0 else bytes(256)
+                for value in values:
+                    emulator._lcd_write(
+                        None, 0, 0x02000004, size, value, None
+                    )
+            emulator._lcd_write(None, 0, 0x02000000, size, 0xB0, None)
+
+        self.assertEqual(emulator._lcd_frame_protocol, "page-1bpp")
+        self.assertEqual(emulator._lcd_raw_counts[(0x02000004, 2)], 0)
+        self.assertEqual(emulator.display_frame[:3], b"\0\0\0")
+        self.assertEqual(emulator.display_frame[256 * 3:256 * 3 + 3], b"\xff" * 3)
+
     def test_unqualified_all_low_byte_raw_raster_still_publishes(self) -> None:
         emulator = self._blank_emulator(visible=False, width=128, height=128)
         port = (0x02000004, 2)
@@ -1270,6 +1350,150 @@ class LCDGeometryTests(unittest.TestCase):
 
         self.assertEqual((near_miss.config.width, near_miss.config.height), (160, 240))
         self.assertEqual(near_miss._lcd_frame_protocol, "raw-fifo@0x02000080")
+
+    def test_shifted_pair_fifo_rgb565_requires_full_relation(self) -> None:
+        pixels = 176 * 220
+
+        def write_pair(target: GenericMSMEmulator, address: int,
+                       pixel: int) -> None:
+            target._capture_raw_lcd_stream(
+                address, 2,
+                ((pixel >> 8) & 0x7) | ((pixel >> 7) & 0x1F0),
+            )
+            target._capture_raw_lcd_stream(
+                address, 2, pixel << 1 & 0xFFFF
+            )
+
+        for address in (0x02000002, 0x0200007A):
+            with self.subTest(address=address):
+                emulator = self._routing_emulator(width=176, height=220)
+                first_sequence = emulator.frame_sequence
+                for index in range(pixels):
+                    write_pair(emulator, address, (0xF81F, 0x07E0)[index & 1])
+                    if index + 1 == pixels // 2:
+                        self.assertEqual(emulator.frame_sequence, first_sequence)
+
+                self.assertEqual(emulator.frame_sequence, first_sequence + 1)
+                self.assertEqual(
+                    emulator.config.display_geometry_source,
+                    "runtime:shifted-pair-fifo-rgb565",
+                )
+                self.assertEqual(
+                    emulator._lcd_frame_protocol,
+                    "shifted-pair-fifo-rgb565",
+                )
+                self.assertEqual(
+                    emulator.display_frame[:6], b"\xff\0\xff\0\xff\0"
+                )
+
+                for _ in range(pixels):
+                    write_pair(emulator, address, 0x001F)
+                self.assertEqual(emulator.frame_sequence, first_sequence + 2)
+                self.assertEqual(emulator.display_frame[:3], b"\0\0\xff")
+
+        near_miss = self._routing_emulator(width=176, height=220)
+        first_sequence = near_miss.frame_sequence
+        for index in range(pixels // 2):
+            pixel = 0xF81F
+            near_miss._capture_raw_lcd_stream(
+                0x0200007A, 2,
+                ((pixel >> 8) & 0x7) | ((pixel >> 7) & 0x1F0),
+            )
+            near_miss._capture_raw_lcd_stream(
+                0x0200007A, 2,
+                (pixel << 1 & 0xFFFF) ^ (1 if index + 1 == pixels // 2 else 0),
+            )
+        self.assertEqual(near_miss.frame_sequence, first_sequence + 1)
+        self.assertEqual(
+            near_miss.config.display_geometry_source, "auto-default"
+        )
+        self.assertEqual(
+            near_miss._lcd_frame_protocol, "raw-fifo@0x0200007A"
+        )
+
+    def test_shifted_pair_segment_ignores_rolling_prefix(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x0E, None)
+        emulator._lcd_write(None, 0, 0x02000002, 2, 0x1234, None)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x44, None)
+        for index in range(176 * 220):
+            pixel = (0xF81F, 0x07E0)[index & 1]
+            for value in (
+                    ((pixel >> 8) & 0x7) | ((pixel >> 7) & 0x1F0),
+                    pixel << 1 & 0xFFFF):
+                emulator._lcd_write(
+                    None, 0, 0x02000002, 2, value, None
+                )
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0, None)
+
+        self.assertEqual(
+            emulator.config.display_geometry_source,
+            "runtime:shifted-pair-fifo-rgb565",
+        )
+        self.assertEqual(
+            emulator._lcd_frame_protocol, "shifted-pair-fifo-rgb565"
+        )
+        self.assertEqual(emulator.display_frame[:6], b"\xff\0\xff\0\xff\0")
+        self.assertEqual(emulator._lcd_raw_counts[(0x02000002, 2)], 0)
+
+    def test_shifted_pair_rolling_publish_is_not_repeated_at_segment_end(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        sequence = emulator.frame_sequence
+        pixel = 0x001F
+        pair = (
+            ((pixel >> 8) & 0x7) | ((pixel >> 7) & 0x1F0),
+            pixel << 1 & 0xFFFF,
+        )
+        for _ in range(176 * 220):
+            for value in pair:
+                emulator._capture_raw_lcd_stream(0x02000002, 2, value)
+
+        self.assertEqual(emulator.frame_sequence, sequence + 1)
+        emulator._finish_020_raw_segment(0)
+        self.assertEqual(emulator.frame_sequence, sequence + 1)
+
+    def test_raw_lcd_capture_has_a_global_port_bound(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        owner = (0x02000000, 2)
+        emulator._lcd_raw_port = owner
+        for offset in range(0, 0x1000, 2):
+            emulator._capture_raw_lcd_stream(0x02000000 + offset, 2, offset)
+
+        self.assertLessEqual(len(emulator._lcd_raw_streams), 32)
+        self.assertIn(owner, emulator._lcd_raw_streams)
+
+    def test_shifted_pair_owner_rejects_foreign_direct_subwindow(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+        emulator._lcd_protocol = "parallel-2"
+        emulator._lcd_x[:] = [0, 1]
+        emulator._lcd_y[:] = [0, 0]
+        emulator._lcd_begin_command(0x22)
+        emulator._lcd_feed_parallel_data(0x02800002, 2, 0x001F)
+        self.assertEqual((emulator._lcd_expected, emulator._lcd_streamed), (2, 1))
+
+        for _ in range(176 * 220):
+            emulator._capture_raw_lcd_stream(0x02000002, 2, 0x01F0)
+            emulator._capture_raw_lcd_stream(0x02000002, 2, 0xF03E)
+        sequence = emulator.frame_sequence
+        frame = emulator.display_frame
+        self.assertEqual((emulator._lcd_expected, emulator._lcd_streamed), (0, 0))
+        emulator._lcd_begin_command(0)
+        self.assertEqual(emulator.frame_sequence, sequence)
+
+        emulator._lcd_protocol = "parallel-2"
+        emulator._lcd_x[:] = [0, 0]
+        emulator._lcd_y[:] = [0, 0]
+        emulator._lcd_begin_command(0x22)
+        emulator._lcd_feed_parallel_data(0x02800002, 2, 0x001F)
+
+        self.assertEqual(emulator.frame_sequence, sequence)
+        self.assertEqual(emulator.display_frame, frame)
+        self.assertEqual(emulator._lcd_streamed, 0)
+
+        emulator._lcd_begin_command(0x22)
+        emulator._lcd_feed_parallel_data(0x02000002, 2, 0x001F)
+        self.assertEqual(emulator.frame_sequence, sequence + 1)
+        self.assertEqual(emulator.display_frame[:3], b"\0\0\xff")
 
     def test_020_raw_120x160_requires_full_word_terminator(self) -> None:
         def write_frame(target: GenericMSMEmulator, pixel: int) -> None:

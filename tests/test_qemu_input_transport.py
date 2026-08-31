@@ -403,6 +403,20 @@ class QEMUInputTransportTests(unittest.TestCase):
                     firmware_sha256="../shared"
                 ))
 
+    def test_qemu_state_directory_recovers_flat_mapped_primary_state(self) -> None:
+        first = SimpleNamespace(firmware_sha256="a" * 64)
+        second = SimpleNamespace(firmware_sha256="b" * 64)
+        for name in (
+                "mapped-primary-x16.raw",
+                "mapped-primary-x16-upper.raw"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / name).write_bytes(b"legacy")
+
+                self.assertEqual(MODULE.qemu_state_directory(root, first), root)
+                self.assertEqual(MODULE.qemu_state_directory(root, second),
+                                 root / ("b" * 64))
+
     def test_primary_x16_detectors_must_agree(self) -> None:
         legacy = (0x10000, 0x40000, 0x10000, 0x98, 0x84)
         uniform = (0x10000, 0x40000, ((4, 0x10000),), 0x98, 0x84)
@@ -815,6 +829,21 @@ class QEMUInputTransportTests(unittest.TestCase):
                 f"MSM5XXX_POC_RAW_NAND_LOW_PORT_{name}_BASE", setter,
             )
 
+    def test_eeprom_gpio_reset_preserves_shared_msm_backing(self) -> None:
+        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        reset = machine[machine.index("static void msm5xxx_poc_reset"):
+                        machine.index("static void msm5xxx_poc_init")]
+
+        seed = reset.index("msm[0x72c] = 0x14;")
+        copy = reset.index("memcpy(s->eeprom_gpio_backing,", seed)
+        self.assertIn(
+            "msm + s->eeprom_gpio_base - MSM5XXX_POC_MSM_BASE",
+            reset[copy:copy + 240],
+        )
+        self.assertGreater(
+            reset.index("msm5xxx_poc_eeprom_gpio_update(s);", copy), copy,
+        )
+
     def test_mapped_primary_nor_persists_upper_bank_and_aliases_intel(self) -> None:
         machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
         transport = (EXPERIMENT / "qemu_transport.py").read_text()
@@ -823,6 +852,126 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertIn("intel_x16_nor_data_alias", machine)
         self.assertIn("mapped-primary-x16-upper.raw", transport)
         self.assertIn("pflash_unit += 2", transport)
+
+    def test_primary_nor_honors_suspend_write_descriptor_option(self) -> None:
+        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        start = machine.index("    if (s->primary_x16_nor_enabled) {")
+        end = machine.index("    if (s->record_x16_nor_enabled) {", start)
+        primary_init = machine[start:end]
+        transport_start = transport.index("        if primary_profile is not None:")
+        transport_end = transport.index(
+            "        if record_profile is not None:", transport_start
+        )
+
+        self.assertIn(
+            'qdev_prop_set_bit(dev, "write-while-suspended", true);',
+            primary_init,
+        )
+        self.assertIn(
+            "if (s->primary_x16_write_while_suspended) {", primary_init,
+        )
+        self.assertIn(
+            'object_class_property_add_bool(\n'
+            '        oc, "primary-x16-write-while-suspended",',
+            machine,
+        )
+        primary_transport = transport[transport_start:transport_end]
+        regions_start = primary_transport.index(
+            "            if primary_regions is not None:"
+        )
+        regions_end = primary_transport.index(
+            "            storage_args.extend", regions_start
+        )
+        self.assertIn(
+            'machine += ",primary-x16-write-while-suspended=on"',
+            primary_transport[regions_start:regions_end],
+        )
+        self.assertEqual(
+            transport.count("primary-x16-write-while-suspended=on"), 1,
+        )
+
+    def test_record_nor_is_descriptor_gated_and_identity_fail_closed(self) -> None:
+        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        start = machine.index("    if (s->record_x16_nor_enabled) {")
+        start = machine.index("    if (s->record_x16_nor_enabled) {", start + 1)
+        end = machine.index(
+            "    if (s->mapped_primary_x16_nor_enabled) {", start
+        )
+        record_init = machine[start:end]
+
+        self.assertIn('"record-x16-nor"', machine)
+        self.assertIn("TYPE_PFLASH_CFI02", record_init)
+        self.assertEqual(record_init.count("UINT16_MAX"), 4)
+        self.assertIn('"unlock-addr0", 0x555', record_init)
+        self.assertIn('"unlock-addr1", 0x2aa', record_init)
+        self.assertIn("pow2ceil(s->record_x16_nor_size)", record_init)
+        self.assertIn("record_x16_nor_alias", record_init)
+        self.assertNotIn("sysbus_mmio_map_overlap", record_init)
+        self.assertIn("find_record_amd_x16_nor", transport)
+        self.assertIn("record-x16.raw", transport)
+        self.assertIn("1 << (size - 1).bit_length()", transport)
+        self.assertIn(
+            "migrate_erased_raw_state(\n"
+            "                                record_state, size, device_size",
+            transport,
+        )
+        self.assertIn(
+            "record_state, 0x200000, device_size,\n"
+            "                                prepend=True",
+            transport,
+        )
+        self.assertIn("record_base + record_size != primary_profile[0]",
+                      transport)
+
+    def test_secondary_nor_hides_power_of_two_backing_tail(self) -> None:
+        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        start = machine.index("    if (s->fujitsu_x16_nor_enabled) {")
+        end = machine.index("    if (upper_nor_enabled) {", start)
+        secondary_init = machine[start:end]
+
+        self.assertIn("pow2ceil(s->secondary_nor_size)", secondary_init)
+        self.assertIn("secondary_nor_alias", secondary_init)
+        self.assertIn("device_size / 0x10000", secondary_init)
+        self.assertIn("device_size != s->secondary_nor_size", secondary_init)
+        self.assertIn(
+            "s->secondary_nor_size == 0x800000 &&\n"
+            "                s->secondary_nor_base < s->secondary_primary_size",
+            secondary_init,
+        )
+        self.assertIn('"num-blocks2", 8', secondary_init)
+        self.assertIn('"sector-length2", 0x2000', secondary_init)
+        setter_start = machine.index(
+            "static void msm5xxx_poc_set_fujitsu_x16_nor"
+        )
+        setter_end = machine.index(
+            "static void msm5xxx_poc_set_primary_x16_nor", setter_start
+        )
+        setter = machine[setter_start:setter_end]
+        self.assertNotIn("s->ram_base", setter)
+        self.assertIn("s->secondary_primary_size = primary", setter)
+        self.assertIn("if (!s->memory_profile_enabled)", setter)
+        self.assertIn("size == 0x200000", setter)
+        self.assertIn("size == 0x800000", setter)
+        self.assertIn("(uint64_t)base + size == primary", setter)
+        self.assertIn(
+            "s->secondary_primary_size != s->primary_nor_size", machine
+        )
+        self.assertIn(
+            "s->secondary_nor_base >= s->ram_base || end > s->ram_base",
+            machine,
+        )
+        self.assertIn("find_catalog_amd_x16_nor", transport)
+        self.assertIn('"catalog-x16.raw"', transport)
+        self.assertIn("f\"{secondary_base:x}:{secondary_size:x}:\"", transport)
+        self.assertIn(
+            "find_embedded_fujitsu_x16_nor(\n"
+            "                bytes(self.decoder.flash.data), "
+            "self.config.flash_size",
+            transport,
+        )
 
     def test_raw_nand_state_is_observable_without_ready_synthesis(self) -> None:
         machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
@@ -1010,6 +1159,64 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertEqual(
             MODULE.eeprom_gpio_profile(bytes(image), config),
             (None, "transport-entry-signature-mismatch"),
+        )
+
+    def test_eeprom_gpio_profile_accepts_x7700_protocol_class(self) -> None:
+        image = bytearray(b"\xff" * 0x5000)
+        write, read, initializer = 0x1000, 0x16B0, 0x3000
+        writer, reader = write - 0x160, read - 0x728
+        geometry, descriptor = 0x01002000, 0x01000100
+        image[write:write + len(MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX
+        )
+        image[read:read + len(MODULE.EEPROM_24LCXX_X7700_READ_PREFIX)] = (
+            MODULE.EEPROM_24LCXX_X7700_READ_PREFIX
+        )
+        image[initializer:initializer + 18] = bytes.fromhex(
+            "01200449c0030880012088700020c8707047"
+        )
+        for position in (write + 0x3EC, read + 0x3E8,
+                         initializer + 0x14):
+            MODULE.struct.pack_into("<I", image, position, geometry)
+        image[0x3F00:0x3F0B] = b"nv24lcxx.c\0"
+        shapes = (
+            (writer, "f0b5071c80260724"),
+            (writer + 0x18, "324a202391891943918191891268"),
+            (writer + 0x3A, "2a4a402391891943918191891268"),
+            (writer + 0x5A, "224a402391899943918191891268"),
+            (writer + 0x74, "1b4a202391899943918191891268"),
+            (writer + 0x96, "134a402391891943918191891268"),
+            (writer + 0xB6, "0b4a402391899943918191891268"),
+            (reader, "f0b500271a4e0024"),
+            (reader + 0x12, "184a402391891943918191891268"),
+            (reader + 0x32, "30783f0e800901d301200743"),
+            (reader + 0x42, "0c4a402391899943918191891268"),
+        )
+        for position, value in shapes:
+            raw = bytes.fromhex(value)
+            image[position:position + len(raw)] = raw
+        MODULE.struct.pack_into("<I", image, writer + 0xE4, descriptor)
+        MODULE.struct.pack_into("<II", image, reader + 0x70,
+                                0x03000720, descriptor)
+        MODULE.struct.pack_into("<III", image, 0x3900,
+                                0x03000720, 0x03000720, 0x0300072C)
+        config = SimpleNamespace(
+            eeprom_read_address=read, eeprom_write_address=write,
+            eeprom_geometry_address=geometry, load_address=0,
+            linker=SimpleNamespace(
+                data_source=0x3800, data_target=0x01000000,
+                data_size=0x1000,
+            ),
+        )
+
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            ((0x03000720, 0, 0x20, 0, 0x40, 0xC, 0x8000), None),
+        )
+        image[reader + 0x34] ^= 1
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            (None, "gpio-line-shape-mismatch"),
         )
 
     def test_eeprom_gpio_profile_accepts_f7f6_protocol_class(self) -> None:
@@ -1325,6 +1532,13 @@ class QEMUInputTransportTests(unittest.TestCase):
                 MODULE.migrate_erased_raw_state(raw, 8, 16)
             self.assertEqual(backup.read_bytes(), b"\x55" * 8)
 
+            prefixed = root / "legacy-prefix.bin"
+            prefixed.write_bytes(b"\x66" * 8)
+            self.assertTrue(MODULE.migrate_erased_raw_state(
+                prefixed, 8, 16, prepend=True,
+            ))
+            self.assertEqual(prefixed.read_bytes(), b"\xff" * 8 + b"\x66" * 8)
+
     def test_raw_loader_splits_at_machine_ram_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1626,6 +1840,14 @@ class QEMUInputTransportTests(unittest.TestCase):
             MODULE.c80_rex_irq_profile(config, False),
             MODULE.c80_rex_irq_profile(config, True),
         )
+        candidate["group_row_size"] = 12
+        self.assertEqual(
+            MODULE.c80_rex_irq_profile(config, False),
+            MODULE.c80_rex_irq_profile(config, True),
+        )
+        candidate["group_row_size"] = 11
+        self.assertIsNone(MODULE.c80_rex_irq_profile(config, False))
+        candidate["group_row_size"] = 10
         candidate["time_tick_mask"] = 0x0100
         self.assertIsNone(MODULE.c80_rex_irq_profile(config, False))
         candidate["time_tick_mask"] = 0x0200

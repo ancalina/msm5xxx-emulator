@@ -11,6 +11,7 @@ from unittest.mock import patch
 from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.rex import (
+    _controller_registrar_at,
     _legacy_620_vector_copy,
     find_rex_static_controller_callback_candidate,
     find_rex_static_overlay_controller_callback_candidate,
@@ -153,6 +154,64 @@ def _candidate_image() -> tuple[bytearray, dict[str, int]]:
 
 
 class StaticControllerCandidateTests(unittest.TestCase):
+    def test_c80_registrar_accepts_shifted_error_prelude(self) -> None:
+        image = bytearray(0x200)
+        registrar, default, table = 0x40, 0x101, 0x01005000
+        words = [0] * 34
+        words[:14] = (
+            0xB5F0, 0x1C04, 0x1C0F, 0xF000, 0xF800, 0x1C05, 0x2F00,
+            0, 0xD100, 0x1C37, 0x2C00, 0xDB01, 0x2C1F, 0xDB04,
+        )
+        words[14:19] = (0x2045, 0x00C0, 0, 0xF000, 0xF800)
+        words[19:29] = (
+            0x201C, 0, 0x4360, 0x1840, 0x2C00,
+            0xD102, 0, 0x630F, 0xE000, 0x6147,
+        )
+        struct.pack_into("<34H", image, registrar, *words)
+        _literal(image, registrar + 14, 6, default, 0x100)
+        _literal(image, registrar + 32, 1, 0x1234, 0x104)
+        _literal(image, registrar + 40, 1, 0x01004000, 0x108)
+        _literal(image, registrar + 50, 1, table, 0x10C)
+
+        self.assertEqual(
+            _controller_registrar_at(bytes(image), registrar, default), table
+        )
+        image[registrar + 26] ^= 1
+        self.assertIsNone(
+            _controller_registrar_at(bytes(image), registrar, default)
+        )
+
+    def test_c80_group12_exact_peer_route_promotes_only_exact_handler(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares"
+        for name in ("SPH-X6000.bin", "SPH-X7700.bin",
+                     "SPH-X8500-fulldump.bin", "SPH-X8500.bin"):
+            image = (root / name).read_bytes()
+            candidate = find_rex_static_controller_callback_candidate(
+                image, **RAM_5000
+            )
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            self.assertTrue(candidate["accepted"])
+            self.assertEqual(candidate["handler_validation_size"], 0x100)
+            self.assertEqual(candidate["promotion"],
+                             "temporary-evidence-gated")
+            self.assertEqual(candidate["group_row_size"], 12)
+            self.assertEqual(candidate["pending_read_semantics"],
+                             "latched-read")
+            self.assertEqual(candidate["pending_ack_semantics"],
+                             "write-one-to-clear")
+
+        changed = bytearray(image)
+        changed[int(candidate["handler_file_offset"]) + 0x4A] ^= 1
+        fallback = find_rex_static_controller_callback_candidate(
+            bytes(changed), **RAM_5000
+        )
+        self.assertIsNotNone(fallback)
+        assert fallback is not None
+        self.assertTrue(fallback["accepted"])
+        self.assertNotIn("promotion", fallback)
+        self.assertNotIn("group_row_size", fallback)
+
     def test_overlay_b590_registrar_requires_closed_literal_relations(self) -> None:
         root = Path(__file__).resolve().parents[2] / "firmwares/incoming-20260814"
         expected = {

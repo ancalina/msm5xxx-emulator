@@ -86,7 +86,8 @@ def find_upper_nor(raw: bytes) -> tuple[bool, str]:
     if len(writers) != 1:
         return False, "amd-writer"
     materials = [at for at in _all(raw, _MATERIAL_HEAD) if _mask(raw, at, _MATERIAL_MASK)
-                 and raw[at + 208:at + 210] in (bytes.fromhex("cc65"), bytes.fromhex("e865"))
+                 and (int.from_bytes(raw[at + 208:at + 212], "little")
+                      & 0xFFFF0003) == 0x01BA0000
                  and all(_bl(raw, at + offset) is not None for offset in (70, 84, 106, 132, 302, 310, 320, 352, 370))
                  and _bl(raw, at + 84) == translator[0] and _bl(raw, at + 302) == writers[0]]
     if len(materials) != 1:

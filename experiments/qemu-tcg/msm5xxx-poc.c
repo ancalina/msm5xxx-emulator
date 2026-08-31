@@ -213,6 +213,12 @@ struct MSM5xxxPOCMachineState {
     uint32_t primary_x16_nor_region_size[MSM5XXX_POC_NOR_MAX_REGIONS];
     uint16_t primary_x16_nor_id0;
     uint16_t primary_x16_nor_id1;
+    bool primary_x16_write_while_suspended;
+    bool record_x16_nor_enabled;
+    uint32_t record_x16_nor_base;
+    uint32_t record_x16_nor_size;
+    uint32_t record_x16_nor_sector_size;
+    MemoryRegion record_x16_nor_alias;
     bool mapped_primary_x16_nor_enabled;
     uint32_t mapped_primary_x16_nor_base;
     uint32_t mapped_primary_x16_nor_size;
@@ -228,10 +234,12 @@ struct MSM5xxxPOCMachineState {
     bool amd_x16_nor_enabled;
     uint16_t amd_x16_nor_options;
     bool fujitsu_x16_nor_enabled;
+    uint32_t secondary_primary_size;
     uint32_t secondary_nor_base;
     uint32_t secondary_nor_size;
     uint16_t secondary_nor_id0;
     uint16_t secondary_nor_id1;
+    MemoryRegion secondary_nor_alias;
     bool upper_x8_nor_enabled;
     bool upper_x16_nor_enabled;
     bool raw_nand_main_enabled;
@@ -2656,10 +2664,16 @@ static void msm5xxx_poc_lcd_trace_write(MSM5xxxPOCMachineState *s,
                                         hwaddr address, uint64_t value,
                                         unsigned size)
 {
+    CPUState *cpu = current_cpu;
     uint8_t record[MSM5XXX_POC_LCD_TRACE_RECORD_SIZE] = { 0 };
+    uint32_t caller_lr = 0;
 
     if (!s->lcd_trace_enabled && !s->lcd_trace_buffer) {
         return;
+    }
+    if (qemu_in_vcpu_thread() && cpu == CPU(s->cpu) && cpu->running &&
+        cpu->neg.can_do_io) {
+        caller_lr = s->cpu->env.regs[14];
     }
     msm5xxx_poc_backing_write(record, 0, address, 4);
     msm5xxx_poc_backing_write(record, 4, value, 4);
@@ -2674,8 +2688,10 @@ static void msm5xxx_poc_lcd_trace_write(MSM5xxxPOCMachineState *s,
         }
     }
     if (s->lcd_trace_buffer) {
+        /* Observer-only caller attribution; stream consumers may ignore it. */
         msm5xxx_poc_lcd_stream_append(
-            s, MSM5XXX_POC_LCD_STREAM_WRITE, size, address, value, 0
+            s, MSM5XXX_POC_LCD_STREAM_WRITE, size, address, value,
+            caller_lr
         );
     }
     s->lcd_trace_count++;
@@ -3459,6 +3475,12 @@ static void msm5xxx_poc_reset(void *opaque)
     msm[0x72c] = 0x14;
     msm[0x7ac] = 0x57;
     msm[0xc1c] = 0xff;
+    if (s->eeprom_gpio_enabled) {
+        memcpy(s->eeprom_gpio_backing,
+               msm + s->eeprom_gpio_base - MSM5XXX_POC_MSM_BASE,
+               sizeof(s->eeprom_gpio_backing));
+        msm5xxx_poc_eeprom_gpio_update(s);
+    }
     qemu_set_irq(s->cpu_irq, 0);
     if (s->rex_irq_armed) {
         s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -3500,12 +3522,50 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("intel-x16-nor conflicts with amd-x16-nor");
         exit(EXIT_FAILURE);
     }
+    if (s->primary_x16_write_while_suspended &&
+            !s->primary_x16_nor_enabled) {
+        error_report(
+            "primary-x16-write-while-suspended requires primary-x16-nor"
+        );
+        exit(EXIT_FAILURE);
+    }
+    if (s->fujitsu_x16_nor_enabled) {
+        uint64_t end = (uint64_t)s->secondary_nor_base +
+                       s->secondary_nor_size;
+
+        if (s->secondary_primary_size != s->primary_nor_size ||
+                (s->secondary_nor_base < s->primary_nor_size ?
+                 end > s->primary_nor_size :
+                 s->secondary_nor_base >= s->ram_base || end > s->ram_base)) {
+            error_report("fujitsu-x16-nor is outside final memory profile");
+            exit(EXIT_FAILURE);
+        }
+    }
     if (s->memory_profile_enabled &&
             (machine->ram_size > 0x02000000 - s->ram_base ||
              s->initial_sp < s->ram_base ||
              s->initial_sp > s->ram_base + machine->ram_size - 4)) {
         error_report("memory-profile RAM range does not contain INITIAL_SP");
         exit(EXIT_FAILURE);
+    }
+    if (s->record_x16_nor_enabled) {
+        uint64_t base = s->record_x16_nor_base;
+        uint64_t end = base + s->record_x16_nor_size;
+
+        if (!s->primary_x16_nor_enabled ||
+                end != s->primary_x16_nor_base ||
+                (uint64_t)s->primary_x16_nor_base +
+                    s->primary_x16_nor_size != s->primary_nor_size ||
+                (s->fujitsu_x16_nor_enabled &&
+                 s->secondary_nor_base < s->primary_nor_size &&
+                 base < (uint64_t)s->secondary_nor_base +
+                        s->secondary_nor_size &&
+                 end > s->secondary_nor_base)) {
+            error_report(
+                "record-x16-nor requires a disjoint adjacent primary tail"
+            );
+            exit(EXIT_FAILURE);
+        }
     }
     if (s->mapped_primary_x16_nor_enabled) {
         uint64_t base = s->mapped_primary_x16_nor_base;
@@ -3635,15 +3695,58 @@ static void msm5xxx_poc_init(MachineState *machine)
         qdev_prop_set_uint16(dev, "id3", 0);
         qdev_prop_set_uint16(dev, "unlock-addr0", 0x555);
         qdev_prop_set_uint16(dev, "unlock-addr1", 0x2aa);
+        if (s->primary_x16_write_while_suspended) {
+            qdev_prop_set_bit(dev, "write-while-suspended", true);
+        }
         qdev_prop_set_string(dev, "name", "msm5xxx-poc.primary-nor");
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         sysbus_mmio_map_overlap(SYS_BUS_DEVICE(dev), 0,
                                 s->primary_x16_nor_base, 1);
     }
+    if (s->record_x16_nor_enabled) {
+        DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
+        unsigned unit = s->primary_x16_nor_enabled;
+        uint32_t device_size = pow2ceil(s->record_x16_nor_size);
+
+        dinfo = drive_get(IF_PFLASH, 0, unit);
+        if (!dinfo) {
+            error_report("record-x16-nor requires one pflash drive");
+            exit(EXIT_FAILURE);
+        }
+        qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(dinfo));
+        qdev_prop_set_uint32(
+            dev, "num-blocks",
+            device_size / s->record_x16_nor_sector_size
+        );
+        qdev_prop_set_uint32(dev, "sector-length",
+                             s->record_x16_nor_sector_size);
+        qdev_prop_set_uint8(dev, "width", 2);
+        qdev_prop_set_uint8(dev, "mappings", 1);
+        qdev_prop_set_uint8(dev, "big-endian", 0);
+        qdev_prop_set_uint16(dev, "id0", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id1", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id2", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "id3", UINT16_MAX);
+        qdev_prop_set_uint16(dev, "unlock-addr0", 0x555);
+        qdev_prop_set_uint16(dev, "unlock-addr1", 0x2aa);
+        qdev_prop_set_string(dev, "name", "msm5xxx-poc.record-x16-nor");
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        memory_region_init_alias(
+            &s->record_x16_nor_alias, OBJECT(machine),
+            "msm5xxx-poc.record-x16-nor-aperture",
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), 0,
+            s->record_x16_nor_size
+        );
+        memory_region_add_subregion_overlap(
+            get_system_memory(), s->record_x16_nor_base,
+            &s->record_x16_nor_alias, 1
+        );
+    }
     if (s->mapped_primary_x16_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI01);
         DeviceState *upper;
-        unsigned unit = s->primary_x16_nor_enabled;
+        unsigned unit = s->primary_x16_nor_enabled +
+                        s->record_x16_nor_enabled;
 
         dinfo = drive_get(IF_PFLASH, 0, unit);
         if (!dinfo) {
@@ -3709,6 +3812,7 @@ static void msm5xxx_poc_init(MachineState *machine)
             s->amd_x16_nor_enabled ? TYPE_PFLASH_CFI02 : TYPE_PFLASH_CFI01
         );
         unsigned unit = s->primary_x16_nor_enabled +
+                        s->record_x16_nor_enabled +
                         2 * s->mapped_primary_x16_nor_enabled;
 
         dinfo = drive_get(IF_PFLASH, 0, unit);
@@ -3766,10 +3870,12 @@ static void msm5xxx_poc_init(MachineState *machine)
     }
     if (s->fujitsu_x16_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
+        uint32_t device_size = pow2ceil(s->secondary_nor_size);
         uint32_t remaining;
 
         dinfo = drive_get(IF_PFLASH, 0,
                           s->primary_x16_nor_enabled +
+                          s->record_x16_nor_enabled +
                           2 * s->mapped_primary_x16_nor_enabled +
                           direct_x16_nor_enabled);
         if (!dinfo) {
@@ -3779,14 +3885,20 @@ static void msm5xxx_poc_init(MachineState *machine)
         qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(dinfo));
         if (s->secondary_nor_id0 == 0x0004 &&
             s->secondary_nor_id1 == 0x005f) {
-            remaining = s->secondary_nor_size - 0x10000;
             qdev_prop_set_uint32(dev, "num-blocks0", 8);
             qdev_prop_set_uint32(dev, "sector-length0", 0x2000);
+            remaining = s->secondary_nor_size - 0x10000;
+            if (s->secondary_nor_size == 0x800000 &&
+                s->secondary_nor_base < s->secondary_primary_size) {
+                remaining -= 0x10000;
+                qdev_prop_set_uint32(dev, "num-blocks2", 8);
+                qdev_prop_set_uint32(dev, "sector-length2", 0x2000);
+            }
             qdev_prop_set_uint32(dev, "num-blocks1", remaining / 0x10000);
             qdev_prop_set_uint32(dev, "sector-length1", 0x10000);
         } else {
             qdev_prop_set_uint32(dev, "num-blocks",
-                                 s->secondary_nor_size / 0x10000);
+                                 device_size / 0x10000);
             qdev_prop_set_uint32(dev, "sector-length", 0x10000);
         }
         qdev_prop_set_uint8(dev, "width", 2);
@@ -3800,7 +3912,18 @@ static void msm5xxx_poc_init(MachineState *machine)
         qdev_prop_set_uint16(dev, "unlock-addr1", 0x2aa);
         qdev_prop_set_string(dev, "name", "msm5xxx-poc.secondary-nor");
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-        if (s->secondary_nor_base < s->primary_nor_size) {
+        if (device_size != s->secondary_nor_size) {
+            memory_region_init_alias(
+                &s->secondary_nor_alias, OBJECT(machine),
+                "msm5xxx-poc.secondary-nor-aperture",
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), 0,
+                s->secondary_nor_size
+            );
+            memory_region_add_subregion(
+                get_system_memory(), s->secondary_nor_base,
+                &s->secondary_nor_alias
+            );
+        } else if (s->secondary_nor_base < s->primary_nor_size) {
             sysbus_mmio_map_overlap(SYS_BUS_DEVICE(dev), 0,
                                     s->secondary_nor_base, 1);
         } else {
@@ -3810,6 +3933,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     if (upper_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
         unsigned unit = s->primary_x16_nor_enabled +
+                        s->record_x16_nor_enabled +
                         2 * s->mapped_primary_x16_nor_enabled +
                         direct_x16_nor_enabled +
                         s->fujitsu_x16_nor_enabled;
@@ -4791,6 +4915,30 @@ static char *msm5xxx_poc_get_primary_x16_nor(Object *obj, Error **errp)
     return g_string_free(value, false);
 }
 
+static bool msm5xxx_poc_get_primary_x16_write_while_suspended(
+    Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->primary_x16_write_while_suspended;
+}
+
+static void msm5xxx_poc_set_primary_x16_write_while_suspended(
+    Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->primary_x16_write_while_suspended = value;
+}
+
+static char *msm5xxx_poc_get_record_x16_nor(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!s->record_x16_nor_enabled) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x", s->record_x16_nor_base,
+                           s->record_x16_nor_size,
+                           s->record_x16_nor_sector_size);
+}
+
 static char *msm5xxx_poc_get_intel_x16_nor(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -5137,19 +5285,25 @@ static void msm5xxx_poc_set_fujitsu_x16_nor(Object *obj, const char *value,
     char trailing;
 
     if (sscanf(value, "%x:%x:%x:%x:%x%c", &primary, &base, &size,
-               &id0, &id1, &trailing) != 5 || !primary || !size ||
-            primary > s->primary_nor_size || base >= MSM5XXX_POC_RAM_BASE ||
-            (base < primary ? size > primary - base :
-             size > MSM5XXX_POC_RAM_BASE - base) || size < 0x10000 ||
+               &id0, &id1, &trailing) != 5 || !primary ||
+            primary > MSM5XXX_POC_NOR_MAX_SIZE || !size ||
+            base >= MSM5XXX_POC_LCD_APERTURE_BASE ||
+            size > MSM5XXX_POC_LCD_APERTURE_BASE - base ||
+            size < 0x10000 ||
             size % 0x10000 || id0 > UINT16_MAX || id1 > UINT16_MAX ||
             (base < primary &&
-             (base % 0x200000 || size != 0x200000 ||
-              id0 != 0x0004 || id1 != 0x005f))) {
+             (id0 != 0x0004 || id1 != 0x005f ||
+              !((size == 0x200000 && base % 0x200000 == 0) ||
+                (size == 0x800000 && base % 0x800000 == 0 &&
+                 (uint64_t)base + size == primary))))) {
         error_setg(errp,
                    "fujitsu-x16-nor must be PRIMARY:BASE:SIZE:ID0:ID1");
         return;
     }
-    s->primary_nor_size = primary;
+    s->secondary_primary_size = primary;
+    if (!s->memory_profile_enabled) {
+        s->primary_nor_size = primary;
+    }
     s->secondary_nor_base = base;
     s->secondary_nor_size = size;
     s->secondary_nor_id0 = id0;
@@ -5228,6 +5382,28 @@ static void msm5xxx_poc_set_primary_x16_nor(Object *obj, const char *value,
     s->primary_x16_nor_id0 = parsed[3];
     s->primary_x16_nor_id1 = parsed[4];
     s->primary_x16_nor_enabled = true;
+}
+
+static void msm5xxx_poc_set_record_x16_nor(Object *obj, const char *value,
+                                            Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned base, size, sector_size;
+    char trailing;
+
+    if (sscanf(value, "%x:%x:%x%c", &base, &size, &sector_size,
+               &trailing) != 3 || !base || !size ||
+            base >= s->primary_nor_size ||
+            size > s->primary_nor_size - base ||
+            sector_size < 0x1000 || sector_size & (sector_size - 1) ||
+            base % sector_size || size % sector_size) {
+        error_setg(errp, "record-x16-nor must be BASE:SIZE:SECTOR");
+        return;
+    }
+    s->record_x16_nor_base = base;
+    s->record_x16_nor_size = size;
+    s->record_x16_nor_sector_size = sector_size;
+    s->record_x16_nor_enabled = true;
 }
 
 static void msm5xxx_poc_set_intel_x16_nor(Object *obj, const char *value,
@@ -5855,6 +6031,19 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "primary-x16-nor",
         "Detector-provided writable primary x16 NOR tail");
+    object_class_property_add_bool(
+        oc, "primary-x16-write-while-suspended",
+        msm5xxx_poc_get_primary_x16_write_while_suspended,
+        msm5xxx_poc_set_primary_x16_write_while_suspended);
+    object_class_property_set_description(
+        oc, "primary-x16-write-while-suspended",
+        "Permit primary x16 NOR programming during erase suspend");
+    object_class_property_add_str(oc, "record-x16-nor",
+                                  msm5xxx_poc_get_record_x16_nor,
+                                  msm5xxx_poc_set_record_x16_nor);
+    object_class_property_set_description(
+        oc, "record-x16-nor",
+        "Detector-provided descriptor-mapped Record x16 NOR");
     object_class_property_add_str(oc, "intel-x16-nor",
                                   msm5xxx_poc_get_intel_x16_nor,
                                   msm5xxx_poc_set_intel_x16_nor);

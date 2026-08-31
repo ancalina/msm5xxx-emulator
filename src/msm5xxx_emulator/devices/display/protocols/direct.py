@@ -441,6 +441,15 @@ class DirectProtocolMixin:
             return qualified
         return False
 
+    def _lcd_028_direct_replay(
+        self, events: tuple[tuple[int, int, int], ...], *, promote: bool = False
+    ) -> None:
+        if promote:
+            self._lcd_protocol = "direct"
+        for event in events:
+            self._lcd_byte_rgb565_interrupt(*event[:2])
+            self._lcd_write_028_legacy(*event)
+
     def _lcd_028_direct_probe_write(self, address: int, size: int,
                                     value: int) -> bool:
         """Consume only a complete old Samsung direct-window grammar."""
@@ -459,30 +468,84 @@ class DirectProtocolMixin:
         event = (address, size, value)
         probe = self._lcd_028_direct_probe
         if not probe:
-            if self._lcd_protocol == "parallel-2" and event == expected[0]:
+            if (self._lcd_protocol in ("parallel-2", "direct")
+                    and event == expected[0]):
                 probe.append(event)
                 return True
             return False
-        wanted_address, wanted_size, wanted_value = expected[len(probe)]
-        matches = (address == wanted_address and size == wanted_size
-                   and (value <= 0xFF if wanted_value is None
-                        else value == wanted_value))
-        if not matches:
+        if len(probe) < len(expected):
+            wanted_address, wanted_size, wanted_value = expected[len(probe)]
+            matches = (address == wanted_address and size == wanted_size
+                       and (value <= 0xFF if wanted_value is None
+                            else value == wanted_value))
+            if not matches:
+                held = tuple(probe)
+                probe.clear()
+                self._lcd_028_direct_replay(held)
+                return False
+            probe.append(event)
+            if len(probe) < len(expected):
+                return True
+            geometry = self._lcd_full_window_geometry(
+                [probe[4][2], probe[5][2]], [probe[1][2], probe[2][2]]
+            )
+            if geometry is not None:
+                self._lcd_028_direct_replay(tuple(probe), promote=True)
+                return True
             held = tuple(probe)
             probe.clear()
-            for held_event in held:
-                self._lcd_byte_rgb565_interrupt(*held_event[:2])
-                self._lcd_write_028_legacy(*held_event)
+            self._lcd_028_direct_replay(held, promote=True)
+            return True
+
+        geometry = self._lcd_full_window_geometry(
+            [probe[4][2], probe[5][2]], [probe[1][2], probe[2][2]]
+        )
+        assert geometry is not None
+        width, height = geometry
+        if address != data or size != 2:
+            probe.clear()
             return False
         probe.append(event)
-        if len(probe) < len(expected):
+        if len(probe) < len(expected) + width * height:
+            self._lcd_byte_rgb565_interrupt(address, size)
+            self._lcd_write_028_legacy(address, size, value)
             return True
-        held = tuple(probe)
+
+        payload = tuple(item[2] for item in probe[len(expected):])
+        # A varied 0xRGB0 raster exercises each colour nibble while its
+        # unused low nibble stays zero.  Low-information frames stay RGB565
+        # until a complete raster has qualified the wire format.
+        rgb444_signature = (not any(word & 0xF for word in payload)
+                            and (self._lcd_028_rgb444_qualified
+                                 or all(len({word >> shift & 0xF
+                                             for word in payload}) == 16
+                                        for shift in (4, 8, 12))))
+        if not rgb444_signature:
+            probe.clear()
+            self._lcd_028_rgb444_qualified = False
+            self._lcd_byte_rgb565_interrupt(address, size)
+            self._lcd_write_028_legacy(address, size, value)
+            return True
+
         probe.clear()
+        self._set_display_geometry(
+            width, height, source="runtime:direct-rgb444", force=True
+        )
+        if (self.config.width, self.config.height) != geometry:
+            self._lcd_028_rgb444_qualified = False
+            self._lcd_byte_rgb565_interrupt(address, size)
+            self._lcd_write_028_legacy(address, size, value)
+            return True
+        self._lcd_byte_rgb565_interrupt(address, size)
+        for index, word in enumerate(payload):
+            self._pixel(index, self._lcd_bgr444_rgb565(word >> 4))
+        self._lcd_direct_cursor = [0, height]
+        self._lcd_expected = 0
+        self._lcd_streamed = width * height
+        self._lcd_028_rgb444_qualified = True
+        self._lcd_protocol = "direct-rgb444"
+        self._publish_frame()
         self._lcd_protocol = "direct"
-        for held_event in held:
-            self._lcd_byte_rgb565_interrupt(*held_event[:2])
-            self._lcd_write_028_legacy(*held_event)
         return True
 
     def _lcd_write_028_legacy(self, address: int, size: int, value: int) -> None:

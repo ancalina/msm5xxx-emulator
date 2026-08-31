@@ -74,10 +74,17 @@ class UpperNorTests(unittest.TestCase):
     def test_relocatable_detector_accepts_synthetic_and_rejects_mutation(self) -> None:
         raw = self._synthetic()
         self.assertEqual(find_upper_nor(raw), (True, "accepted"))
+        material = raw.find(upper_nor._MATERIAL_HEAD)
+        relocated = bytearray(raw)
+        relocated[material + 208:material + 210] = bytes.fromhex("40d7")
+        self.assertEqual(find_upper_nor(relocated), (True, "accepted"))
+        relocated[material + 208] |= 1
+        self.assertEqual(
+            find_upper_nor(relocated), (False, "materializer-links")
+        )
         changed = bytearray(raw)
         # Post +0xF4 materializer code is an admitted required gate.
-        at = raw.find(bytes.fromhex("f8b5041c002c03d10020f8bc08bc1847"))
-        changed[at + 0xF4] ^= 1
+        changed[material + 0xF4] ^= 1
         self.assertNotEqual(find_upper_nor(changed), (True, "accepted"))
 
     def test_mapped_upper_x16_detector_requires_linked_driver_shape(self) -> None:

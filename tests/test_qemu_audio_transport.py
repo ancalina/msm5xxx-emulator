@@ -394,6 +394,93 @@ class QEMUAudioTransportTests(unittest.TestCase):
                 stream.close()
         self.assertFalse(worker.is_alive())
 
+    def test_audio_channel_close_rejects_only_audio(self) -> None:
+        transport = self.native_transport()
+        transport.input_socket, input_peer = socket.socketpair()
+        transport.lcd_socket, lcd_peer = socket.socketpair()
+        transport.audio_socket, audio_peer = socket.socketpair()
+        transport.process = SimpleNamespace(poll=lambda: None)
+        terminated = []
+        transport._terminate_process = lambda: terminated.append(True)
+        stop = threading.Event()
+        worker = threading.Thread(target=transport.replay, args=(stop,))
+        try:
+            worker.start()
+            audio_peer.close()
+            deadline = time.monotonic() + 1
+            while (transport.audio_stream_status != "rejected"
+                   and time.monotonic() < deadline):
+                time.sleep(0.01)
+            self.assertEqual(transport.audio_stream_status, "rejected")
+            self.assertEqual(
+                transport.audio_stream_reject_reason,
+                "qemu-audio-channel-closed",
+            )
+            self.assertFalse(stop.is_set())
+            self.assertTrue(worker.is_alive())
+            self.assertEqual(terminated, [])
+        finally:
+            stop.set()
+            worker.join(1)
+            for stream in (transport.input_socket, input_peer,
+                           transport.lcd_socket, lcd_peer,
+                           transport.audio_socket, audio_peer):
+                stream.close()
+        self.assertFalse(worker.is_alive())
+
+    def test_audio_worker_error_closes_only_audio_channel(self) -> None:
+        transport = self.native_transport()
+        transport.input_socket, input_peer = socket.socketpair()
+        transport.lcd_socket, lcd_peer = socket.socketpair()
+        transport.audio_socket, audio_peer = socket.socketpair()
+        transport.process = SimpleNamespace(poll=lambda: None)
+        transport._replay_native_audio = lambda _stop: (_ for _ in ()).throw(
+            OSError("injected audio read failure")
+        )
+        terminated = []
+        transport._terminate_process = lambda: terminated.append(True)
+        stop = threading.Event()
+        worker = threading.Thread(target=transport.replay, args=(stop,))
+        try:
+            worker.start()
+            deadline = time.monotonic() + 1
+            while (transport.audio_stream_status != "rejected"
+                   and time.monotonic() < deadline):
+                time.sleep(0.01)
+            self.assertEqual(
+                transport.audio_stream_reject_reason,
+                "qemu-audio-channel-error",
+            )
+            self.assertFalse(stop.is_set())
+            self.assertTrue(worker.is_alive())
+            self.assertEqual(terminated, [])
+            audio_peer.settimeout(1)
+            with self.assertRaises(OSError):
+                audio_peer.send(b"x")
+        finally:
+            stop.set()
+            worker.join(1)
+            for stream in (transport.input_socket, input_peer,
+                           transport.lcd_socket, lcd_peer,
+                           transport.audio_socket, audio_peer):
+                stream.close()
+        self.assertFalse(worker.is_alive())
+
+    def test_audio_channel_close_error_is_best_effort(self) -> None:
+        transport = self.native_transport()
+        closed = []
+
+        def fail_close() -> None:
+            closed.append(True)
+            raise OSError("injected close failure")
+
+        transport.audio_socket = SimpleNamespace(
+            shutdown=lambda _how: None,
+            close=fail_close,
+        )
+        transport._close_audio_channel()
+        self.assertEqual(closed, [True])
+
     def test_qemu_path_never_calls_python_renderer(self) -> None:
         closed = []
         decoder = SimpleNamespace(
