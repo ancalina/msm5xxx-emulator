@@ -27,9 +27,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def run(*args: str) -> bytes:
+def run(*args: str, cwd: Path | None = None) -> bytes:
     try:
-        return subprocess.run(args, check=True, capture_output=True).stdout
+        return subprocess.run(args, cwd=cwd, check=True, capture_output=True).stdout
     except FileNotFoundError as exc:
         raise RuntimeError(f"required source-archive tool missing: {args[0]}") from exc
     except subprocess.CalledProcessError as exc:
@@ -43,12 +43,12 @@ def verify_package(archive: Path, pin: dict) -> None:
     if sha256(archive) != pin["source_archive_sha256"]:
         raise RuntimeError(f"unexpected source archive SHA-256: {archive.name}")
     run("zstd", "-t", str(archive))
-    listing = run("tar", "--force-local", "--zstd", "-tf", str(archive)).decode(errors="replace").splitlines()
+    listing = run("tar", "--zstd", "-tf", archive.name, cwd=archive.parent).decode(errors="replace").splitlines()
     root = pin["source_root"]
     for name in (f"{root}/PKGBUILD", f"{root}/.SRCINFO"):
         if name not in listing:
             raise RuntimeError(f"source archive missing {name}: {archive.name}")
-    recipe = run("tar", "--force-local", "--zstd", "-xOf", str(archive), f"{root}/PKGBUILD")
+    recipe = run("tar", "--zstd", "-xOf", archive.name, f"{root}/PKGBUILD", cwd=archive.parent)
     if hashlib.sha256(recipe).hexdigest() != pin["recipe_sha256"]:
         raise RuntimeError(f"PKGBUILD SHA-256 does not match pin: {archive.name}")
 
