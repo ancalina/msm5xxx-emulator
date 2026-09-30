@@ -21,7 +21,14 @@ from ..detection.boot import DMD_DOWNLOAD_5500_SIZE
 from ..detection.boot import absent_optional_ram_probe_addresses
 from ..detection.boot import busy_delay_addresses
 from ..detection.boot import is_dmd_download_5500
-from ..detection.display import detect_lcd_width_hint
+from ..detection.display import (detect_lcd_width_hint, find_dual_page_ports, find_byte_main_page_secondary, find_mixed_primary_power_port,
+                                 find_paired_display_state_ports, find_packed_cursor_port, find_packed12_port, find_window_panel_port)
+from ..devices.display.page_panel import PagePanel
+from ..devices.display.cursor_panel import PackedCursorPanel
+from ..devices.display.packed12_panel import Packed12Panel
+from ..devices.display.window_panel import WindowPanel
+from ..devices.display.segmented_panel import SegmentedPanel
+from ..detection.segmented import detect_segmented_panel
 from ..detection.firmware import ADDRESS_SPACE
 from ..detection.firmware import MAX_FLASH_SIZE
 from ..detection.firmware_image import load_firmware_image
@@ -809,6 +816,8 @@ class LifecycleMixin:
         self._lcd_028_rgb332_probe: list[tuple[int, int, int]] = []
         self._lcd_028_rgb332_window = (0, 0, 0, 0)
         self._lcd_028_rgb332_qualified = False
+        self._lcd_028_rgb332_mode_pending = 0
+        self._lcd_028_rgb332_column_major = False
         self._lcd_028_window_fifo_qualified = False
         # Some byte-wide controllers send complete 128-pixel RGB565 rows as
         # 0/base-command/+2-high/+2-low packets.  Hold only this exact
@@ -868,6 +877,34 @@ class LifecycleMixin:
         self._lcd_page_height = 0
         self._lcd_page_bits_per_pixel = 1
         self._lcd_page_width_hint = detect_lcd_width_hint(self.image)
+        segmented_port, self._lcd_segmented_reason = detect_segmented_panel(self.image)
+        self._lcd_segmented_panel = SegmentedPanel(segmented_port) if segmented_port else None
+        window_port = find_window_panel_port(self.image)
+        self._lcd_window_panel = WindowPanel(window_port, 128, 160) if window_port else None
+        packed12_port = find_packed12_port(self.image)
+        self._lcd_packed12_panel = Packed12Panel(packed12_port) if packed12_port else None
+        cursor_port = find_packed_cursor_port(self.image)
+        self._lcd_cursor_panel = PackedCursorPanel(cursor_port) if cursor_port else None
+        ports = find_dual_page_ports(self.image)
+        secondary_port, self._lcd_secondary_reason = find_byte_main_page_secondary(self.image)
+        if ports:
+            secondary_port = ports[1]
+            self._lcd_secondary_reason = "paired-page-descriptor-awaiting-runtime"
+        self._lcd_secondary_panel = PagePanel(secondary_port) if secondary_port else None
+        self._lcd_primary_page_port = ports[0] if ports else None
+        self._lcd_mixed_primary_power_port = (
+            find_mixed_primary_power_port(self.image) if secondary_port and not ports else None)
+        self._lcd_mixed_primary_power_candidate = None
+        self._lcd_primary_power_commands = []
+        self._lcd_primary_power_argument = False
+        self._lcd_primary_enabled = None
+        self._lcd_paired_state_ports = find_paired_display_state_ports(self.image)
+        self._lcd_paired_state_candidate = None
+        self._lcd_paired_state_arguments = set()
+        self._lcd_paired_state_enabled = None
+        self._lcd_paired_state_reason = (
+            "temporary-class-awaiting-runtime" if self._lcd_paired_state_ports
+            else "paired-state-helper-not-found")
         self._lcd_page_geometry_rendered = False
         self._lcd_page_candidate_rows = 0
         self._lcd_page_last_finished = -1

@@ -249,6 +249,8 @@ final class BackendBridge {
     interface Session extends AutoCloseable {
         byte[] frame() throws IOException;
         byte[] audio() throws IOException;
+        byte[] secondaryFrame() throws IOException;
+        void setFold(boolean opened) throws IOException;
         Status status() throws IOException;
         String identity();
         boolean supportsKey(int bit);
@@ -275,6 +277,29 @@ final class BackendBridge {
                 return PythonRuntime.frame();
             } catch (RuntimeException | LinkageError error) {
                 throw new IOException("Backend frame read failed.", error);
+            }
+        }
+
+        @Override
+        public synchronized byte[] secondaryFrame() throws IOException {
+            requireOpen();
+            try {
+                return PythonRuntime.secondaryFrame();
+            } catch (RuntimeException | LinkageError error) {
+                throw new IOException("Backend secondary frame read failed.", error);
+            }
+        }
+
+        @Override
+        public synchronized void setFold(boolean opened) throws IOException {
+            requireOpen();
+            try {
+                JSONObject result = new JSONObject(PythonRuntime.fold(opened));
+                if (result.getInt("schema") != 1 || !result.getBoolean("accepted")) {
+                    throw new JSONException("fold transition rejected");
+                }
+            } catch (JSONException | RuntimeException | LinkageError error) {
+                throw new IOException("Backend fold transition failed.", error);
             }
         }
 
@@ -307,7 +332,10 @@ final class BackendBridge {
                         result.getLong("audio_underflow_frames"),
                         result.getLong("audio_overflow_frames"),
                         result.getString("audio_status"),
-                        result.getString("audio_reject_reason"));
+                        result.getString("audio_reject_reason"),
+                        result.getBoolean("secondary_available"),
+                        result.getBoolean("fold_supported"),
+                        result.getBoolean("fold_open"));
             } catch (JSONException | RuntimeException | LinkageError error) {
                 throw new IOException("Backend status read failed.", error);
             }
@@ -429,12 +457,17 @@ final class BackendBridge {
         final long audioOverflowFrames;
         final String audioStatus;
         final String audioRejectReason;
+        final boolean secondaryAvailable;
+        final boolean foldSupported;
+        final boolean foldOpen;
 
         private Status(boolean processRunning, long instructions, long pc,
                        long lcdWrites, long frameSequence, long inputHostEvents,
                        long inputRejections, long audioEpoch,
                        long audioUnderflowFrames, long audioOverflowFrames,
-                       String audioStatus, String audioRejectReason) {
+                       String audioStatus, String audioRejectReason,
+                       boolean secondaryAvailable, boolean foldSupported,
+                       boolean foldOpen) {
             this.processRunning = processRunning;
             this.instructions = instructions;
             this.pc = pc;
@@ -447,6 +480,9 @@ final class BackendBridge {
             this.audioOverflowFrames = audioOverflowFrames;
             this.audioStatus = audioStatus;
             this.audioRejectReason = audioRejectReason;
+            this.secondaryAvailable = secondaryAvailable;
+            this.foldSupported = foldSupported;
+            this.foldOpen = foldOpen;
         }
     }
 

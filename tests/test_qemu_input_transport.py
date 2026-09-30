@@ -370,6 +370,20 @@ class QEMUInputTransportTests(unittest.TestCase):
             MODULE.LiveWindow._check_for_update(object())
         thread.assert_not_called()
 
+    def test_secondary_display_refresh_follows_primary_not_metrics(self) -> None:
+        window = MODULE.LiveWindow.__new__(MODULE.LiveWindow)
+        window.emulator = object()
+        window._refresh_secondary_display = mock.Mock()
+        with mock.patch.object(MODULE.Window, '_refresh_display') as primary:
+            window._refresh_display()
+        primary.assert_called_once_with()
+        window._refresh_secondary_display.assert_called_once_with(window.emulator)
+        window.emulator = None
+        window._refresh_secondary_display.reset_mock()
+        with mock.patch.object(MODULE.Window, '_refresh_display'):
+            window._refresh_display()
+        window._refresh_secondary_display.assert_not_called()
+
     def test_transport_accept_reports_early_qemu_exit(self) -> None:
         transport = object.__new__(MODULE.Transport)
         transport.process = SimpleNamespace(poll=lambda: 2)
@@ -380,6 +394,21 @@ class QEMUInputTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bad QEMU option"):
             transport._accept_qemu(listener)
         listener.settimeout.assert_called_once_with(0.1)
+
+    def test_transport_timeout_retains_channel_and_process_diagnostics(self) -> None:
+        transport = object.__new__(MODULE.Transport)
+        transport.process = SimpleNamespace(poll=lambda: None)
+        transport.stderr = io.StringIO('waiting for device initialization')
+        listener = mock.Mock()
+        listener.accept.side_effect = MODULE.socket.timeout
+        with self.assertRaisesRegex(TimeoutError, r'\(LCD\).*still running'):
+            transport._accept_qemu(listener, 'LCD')
+        self.assertEqual(transport.stderr.tell(), 0)  # Child owns the live offset.
+        self.assertEqual(listener.accept.call_count, 50)
+        transport.process = mock.Mock()
+        transport.process.poll.side_effect = [None] * 50 + [2]
+        with self.assertRaisesRegex(RuntimeError, r'status 2.*\(LCD\)'):
+            transport._accept_qemu(listener, 'LCD')
 
     def test_qemu_state_directory_is_firmware_scoped(self) -> None:
         first = SimpleNamespace(firmware_sha256="a" * 64)
@@ -2049,6 +2078,30 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         del candidate["pending_ack_semantics"]
         self.assertIsNone(MODULE.w1c_rex_irq_profile(config))
+
+
+class FoldInputTransportTests(unittest.TestCase):
+    def test_capability_readback_and_key_independence(self) -> None:
+        transport = MODULE.Transport.__new__(MODULE.Transport)
+        transport.config = SimpleNamespace(board_status_input=SimpleNamespace(
+            address=0x03000688, mask=4, default=4))
+        transport.board_status_snapshot = None
+        transport.decoder = SimpleNamespace(input_error="")
+        transport.input_socket = mock.Mock()
+        transport.matrix_held = {1: (0, 0)}
+        self.assertFalse(transport.set_fold(False))  # Old native: no capability.
+        packet = bytes((10, 4, 4, 0)) + struct.pack("<III", 0x03000688, 0, 0)
+        transport._replay_record(packet)
+        self.assertTrue(transport.can_set_fold())
+        self.assertTrue(transport.set_fold(False))
+        transport.input_socket.sendall.assert_called_once_with(bytes((0x81, 0, 0, 0)))
+        self.assertEqual(transport.matrix_held, {1: (0, 0)})
+        self.assertEqual(transport.board_status_snapshot["level"], 4)
+        transport._replay_record(bytes((10, 0, 4, 0)) + packet[4:])
+        self.assertEqual(transport.board_status_snapshot["level"], 0)
+        transport._replay_record(bytes((10, 8, 4, 0)) + packet[4:])
+        self.assertEqual(transport.board_status_snapshot["level"], 0)
+        self.assertFalse(transport.set_fold(1))
 
 
 if __name__ == "__main__":

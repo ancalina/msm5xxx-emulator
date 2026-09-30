@@ -31,14 +31,15 @@ from .boot import (
     detect_msm5500_revision_f025,
 )
 from .chipset import chipset_confidence, detect_chipset
-from .display import detect_lcd_width_hint, find_framebuffer_layout
+from .display import detect_lcd_width_hint, find_framebuffer_layout, find_page_plane_width
 from .firmware_image import load_firmware_image
 from .input import (find_board_adc_reader, find_board_status_input,
                     find_dc0_board_adc_profile, find_sbi_bootstrap_profile)
 from .memory_layout import (
     find_arm_memory_copy_addresses, find_arm_vector_offset, find_linker_layout,
     find_missing_overlays, find_overlays, find_runtime_overlays,
-    has_dual_sdram_bootstrap, has_high_bank_reader_bootstrap, infer_ram_base,
+    has_dual_sdram_bootstrap, has_high_bank_reader_bootstrap,
+    find_high_ram_readback_tests, high_ram_bootstrap_profile, infer_ram_base,
     normalised_flash_size, plausible_ram_seed_size, referenced_flash_extent,
     restore_sparse_nor_gap,
 )
@@ -505,7 +506,15 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     ram_size = (0x00800000 if requested_ram_size is None
                 else requested_ram_size)
     if requested_ram_base is None and requested_ram_size is None:
-        if has_dual_sdram_bootstrap(primary_image, linker):
+        high_ram = (high_ram_bootstrap_profile(primary_image)
+                    if requested_load_address == 0 else None)
+        if high_ram is not None and linker is None:
+            ram_base, ram_size = high_ram
+            detection_notes.append(
+                "reset-linked high-RAM readback/extent profile detected; "
+                "peripheral protocol remains unverified"
+            )
+        elif has_dual_sdram_bootstrap(primary_image, linker):
             ram_base = 0x01000000
             ram_size = 0x01000000
             detection_notes.append(
@@ -516,6 +525,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             ram_size = 0x01000000
             detection_notes.append(
                 "closed high-bank reader bootstrap detected"
+            )
+        elif find_high_ram_readback_tests(primary_image):
+            detection_notes.append(
+                "high-RAM candidate rejected: no unique reset-linked "
+                "readback/extent proof or conflicting linker; native fallback"
             )
     ready_poll = find_ready_poll_profile(primary_image)
     if ready_poll is not None:
@@ -577,7 +591,23 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             "Thumb byte-status mask/branch/debounce shape detected board-status input"
         )
+        if board_status_input.mask == 0x04:
+            detection_notes.append(
+                "experimental offset-byte status profile: asserted default; "
+                "physical fold polarity and runtime switch response unverified"
+            )
     width, height = 176, 220
+    page_width = find_page_plane_width(primary_image)
+    if page_width is not None:
+        if detect_lcd_width_hint(primary_image) == page_width:
+            detection_notes.append(
+                f"experimental paired-page descriptor width={page_width}; "
+                "two-plane inference; physical packing and panel role unverified"
+            )
+        else:
+            detection_notes.append(
+                "paired-page descriptor width not applied: existing metadata retained"
+            )
     revision_match = re.search(rb"(?:HW|BOARD)[ _-]?REV(?:ISION)?[^\x00\r\n]{0,24}", image, re.I)
     revision = revision_match.group().decode("ascii", "replace") if revision_match else "auto/unknown"
     auto_relative: set[str] = set()

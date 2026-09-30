@@ -1,7 +1,8 @@
 # Third-party notices
 
 - Unicorn Engine (`unicorn==2.1.4`) is GPLv2. It supplies the native CPU
-  engine used by this emulator. A combined distribution must use this
+  engine used by legacy/offline analysis; current guest execution uses QEMU.
+  A combined distribution must use this
   project's GPLv2 option. Its LGPL-2.0 public API license text is also
   included with the Android package.
 - QEMU 10.2.1 is distributed under GPLv2. The Android and desktop preview

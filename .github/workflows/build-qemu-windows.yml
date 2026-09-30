@@ -2,9 +2,6 @@ name: Build QEMU for Windows
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - engine/qemu-tcg-alpha-20260809
 
 permissions:
   contents: read
@@ -120,6 +117,8 @@ jobs:
           }
           pending = [target / "qemu-system-arm.exe"]
           copied = set()
+          system_imports = set()
+          system_directory = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32"
           while pending:
               binary = pending.pop()
               output = subprocess.run(
@@ -129,7 +128,13 @@ jobs:
               for name in re.findall(r"^\s*DLL Name:\s*(\S+)", output, re.M):
                   key = name.casefold()
                   source = available.get(key)
-                  if source is None or key in copied:
+                  if source is None:
+                      if (key.startswith(("api-ms-win-", "ext-ms-win-"))
+                              or (system_directory / name).is_file()):
+                          system_imports.add(name)
+                          continue
+                      raise SystemExit(f"unresolved runtime DLL: {name} ({binary.name})")
+                  if key in copied:
                       continue
                   destination = target / source.name
                   shutil.copy2(source, destination)
@@ -137,6 +142,9 @@ jobs:
                   pending.append(destination)
           (bundle / "DLLS.txt").write_bytes(
               ("\n".join(sorted(path.name for path in target.glob("*.dll"))) + "\n").encode()
+          )
+          (bundle / "SYSTEM_DLLS.txt").write_text(
+              "\n".join(sorted(system_imports)) + "\n", encoding="utf-8"
           )
           PY
 

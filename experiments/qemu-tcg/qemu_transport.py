@@ -80,6 +80,7 @@ AUDIO_STATUS = 6
 AUDIO_PCM_TELEMETRY = 7
 AUDIO_TIMING_TELEMETRY = 8
 AUDIO_REJECT_TELEMETRY = 9
+BOARD_STATUS_TELEMETRY = 10
 AUDIO_STATUS_OVERFLOW = 1
 AUDIO_STATUS_RESET = 2
 AUDIO_STATUS_REJECTED = 3
@@ -87,6 +88,7 @@ AUDIO_STATUS_NATIVE = 4
 AUDIO_PACKET_BYTES = 1796
 AUDIO_SOCKET_SEND_BUFFER = 4096
 HOST_INPUT = 0x80
+HOST_BOARD_STATUS = 0x81
 REGISTER_NAMES = tuple(f"r{index}" for index in range(13)) + (
     "sp", "lr", "pc", "cpsr",
 )
@@ -1537,6 +1539,7 @@ class Transport:
         self.input_host_events = 0
         self.input_active_reads = 0
         self.input_rejections = 0
+        self.board_status_snapshot: dict[str, int] | None = None
         self._uis_idle_addresses = (
             qemu_uis_idle_observer_addresses(self.config)
             if observe_uis_idle else None
@@ -2454,11 +2457,11 @@ class Transport:
         try:
             try:
                 self.audio_socket = audio_host_socket
-                self.lcd_socket = self._accept_qemu(lcd_listener)
-                self.input_socket = self._accept_qemu(input_listener)
+                self.lcd_socket = self._accept_qemu(lcd_listener, 'LCD')
+                self.input_socket = self._accept_qemu(input_listener, 'input')
                 if audio_listener is not None:
-                    self.audio_socket = self._accept_qemu(audio_listener)
-                gdb_socket = self._accept_qemu(gdb_listener)
+                    self.audio_socket = self._accept_qemu(audio_listener, 'audio')
+                gdb_socket = self._accept_qemu(gdb_listener, 'GDB')
             finally:
                 lcd_listener.close()
                 input_listener.close()
@@ -2700,7 +2703,8 @@ class Transport:
         if worker is not None and worker is not threading.current_thread():
             worker.join(1)
 
-    def _accept_qemu(self, listener: socket.socket) -> socket.socket:
+    def _accept_qemu(self, listener: socket.socket,
+                     channel: str = 'transport') -> socket.socket:
         listener.settimeout(0.1)
         for _ in range(50):
             try:
@@ -2711,9 +2715,19 @@ class Transport:
                     detail = self._stderr_text()
                     raise RuntimeError(
                         f"QEMU exited with status {status} before transport"
-                        f" connection{': ' + detail if detail else ''}"
+                        f" connection ({channel}){': ' + detail if detail else ''}"
                     )
-        raise TimeoutError("timed out waiting for QEMU transport connection")
+        status = self.process.poll()
+        if status is not None:
+            detail = self._stderr_text()
+            raise RuntimeError(
+                f"QEMU exited with status {status} before transport"
+                f" connection ({channel}){': ' + detail if detail else ''}"
+            )
+        raise TimeoutError(
+            f"timed out waiting for QEMU transport connection ({channel}); "
+            "QEMU is still running"
+        )
 
     def _stderr_text(self) -> str:
         self.stderr.flush()
@@ -2808,6 +2822,11 @@ class Transport:
             return
         status = record[1]
         order, dropped, detail = struct.unpack_from("<III", record, 4)
+        if (not self.audio_stream_enabled
+                and status == AUDIO_STATUS_RESET
+                and record[2:4] == b"\0\0"
+                and order == dropped == detail == 0):
+            return
         if (not self.audio_stream_enabled or record[2:4] != b"\0\0"):
             self._reject_audio_stream("qemu-audio-status-shape")
         elif status == AUDIO_STATUS_OVERFLOW and dropped and detail == 0:
@@ -2900,6 +2919,17 @@ class Transport:
             self.input_rejections = matrix >> 16
             self.input_host_events = int.from_bytes(record[8:12], "little")
             self.input_active_reads = int.from_bytes(record[12:16], "little")
+        elif record[0] == BOARD_STATUS_TELEMETRY:
+            profile = self.config.board_status_input
+            address = int.from_bytes(record[4:8], "little")
+            if (profile is not None and address == profile.address
+                    and record[2] == profile.mask and record[3] == 0
+                    and not record[1] & ~profile.mask):
+                self.board_status_snapshot = {
+                    "level": record[1],
+                    "events": int.from_bytes(record[8:12], "little"),
+                    "rejections": int.from_bytes(record[12:16], "little"),
+                }
         elif record[0] == AUDIO_WRITE:
             self._replay_audio_write(record)
         elif record[0] == AUDIO_STATUS:
@@ -3125,6 +3155,29 @@ class Transport:
         producer = self.decoder._direct_sideband_producer(bit, event_code)
         return (producer if producer == self.matrix_input_sideband_producer
                 else None)
+
+    def can_set_fold(self) -> bool:
+        profile = self.config.board_status_input
+        return (profile is not None and profile.mask > 0
+                and profile.mask & (profile.mask - 1) == 0
+                and self.board_status_snapshot is not None)
+
+    def set_fold(self, opened: bool) -> bool:
+        """Experimental polarity: asserted detector default means open.
+
+        Capability and current state come from native readback, not a sent key.
+        """
+        if not isinstance(opened, bool) or not self.can_set_fold():
+            return False
+        profile = self.config.board_status_input
+        level = profile.default if opened else profile.default ^ profile.mask
+        try:
+            self.input_socket.sendall(bytes((HOST_BOARD_STATUS, level, 0, 0)))
+        except OSError as error:
+            self.decoder.input_error = f"QEMU fold transport failed: {error}"
+            return False
+        self.decoder.input_error = ""
+        return True
 
     def can_set_key(self, bit: int, event_code: int | None = None) -> bool:
         profile = self.matrix_input_profile

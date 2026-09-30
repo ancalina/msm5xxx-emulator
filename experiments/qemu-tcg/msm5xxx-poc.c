@@ -56,6 +56,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_UPPER_NOR_SIZE (8 * MiB)
 #define MSM5XXX_POC_UPPER_NOR_SECTOR_SIZE 0x10000
 #define MSM5XXX_POC_RAM_BASE 0x01000000
+#define MSM5XXX_POC_HIGH_RAM_BASE 0x14000000
+#define MSM5XXX_POC_HIGH_RAM_END 0x14800000
 #define MSM5XXX_POC_BOOTSTRAP_BASE 0x04800000
 #define MSM5XXX_POC_BOOTSTRAP_SIZE 0x1000
 #define MSM5XXX_POC_MSM_BASE 0x03000000
@@ -93,6 +95,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_AUDIO_PCM_TELEMETRY 7
 #define MSM5XXX_POC_AUDIO_TIMING_TELEMETRY 8
 #define MSM5XXX_POC_AUDIO_REJECT_TELEMETRY 9
+#define MSM5XXX_POC_BOARD_STATUS_TELEMETRY 10
+#define MSM5XXX_POC_HOST_BOARD_STATUS 0x81
 #define MSM5XXX_POC_AUDIO_STATUS_OVERFLOW 1
 #define MSM5XXX_POC_AUDIO_STATUS_RESET 2
 #define MSM5XXX_POC_AUDIO_STATUS_REJECTED 3
@@ -380,6 +384,9 @@ struct MSM5xxxPOCMachineState {
     uint8_t board_status_input_mask;
     uint8_t board_status_input_default;
     uint8_t board_status_input_backing;
+    uint8_t board_status_input_level;
+    uint32_t board_status_input_events;
+    uint32_t board_status_input_rejections;
     bool matrix_input_enabled;
     uint32_t matrix_input_address;
     uint32_t matrix_input_sense_site;
@@ -745,6 +752,24 @@ static void msm5xxx_poc_input_stream_write(MSM5xxxPOCMachineState *s)
     msm5xxx_poc_input_stream_flush(NULL, G_IO_OUT, s);
 }
 
+/* Independent physical input: never occupies the held-key slot. */
+static void msm5xxx_poc_board_status_stream_write(MSM5xxxPOCMachineState *s)
+{
+    uint8_t *record = s->matrix_input_ack;
+
+    assert(!s->matrix_input_ack_length);
+    memset(record, 0, MSM5XXX_POC_LCD_STREAM_RECORD_SIZE);
+    record[0] = MSM5XXX_POC_BOARD_STATUS_TELEMETRY;
+    record[1] = s->board_status_input_level;
+    record[2] = s->board_status_input_mask;
+    msm5xxx_poc_backing_write(record, 4, s->board_status_input_address, 4);
+    msm5xxx_poc_backing_write(record, 8, s->board_status_input_events, 4);
+    msm5xxx_poc_backing_write(record, 12, s->board_status_input_rejections, 4);
+    s->matrix_input_ack_length = MSM5XXX_POC_LCD_STREAM_RECORD_SIZE;
+    s->matrix_input_ack_offset = 0;
+    msm5xxx_poc_input_stream_flush(NULL, G_IO_OUT, s);
+}
+
 static void msm5xxx_poc_audio_stream_status(MSM5xxxPOCMachineState *s)
 {
     uint8_t status = s->audio_stream_status_pending;
@@ -841,7 +866,8 @@ static int msm5xxx_poc_host_input_can_read(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
 
-    return s->matrix_input_host_enabled && !s->matrix_input_ack_length ?
+    return (s->matrix_input_host_enabled || s->board_status_input_enabled) &&
+        !s->matrix_input_ack_length ?
         MSM5XXX_POC_HOST_INPUT_SIZE - s->matrix_input_buffer_length : 0;
 }
 
@@ -865,7 +891,24 @@ static void msm5xxx_poc_host_input_read(void *opaque, const uint8_t *buf,
             continue;
         }
         record = s->matrix_input_buffer;
-        if (record[0] != MSM5XXX_POC_HOST_INPUT || record[1] > 1 ||
+        if (record[0] == MSM5XXX_POC_HOST_BOARD_STATUS &&
+            s->board_status_input_enabled) {
+            if ((record[1] & ~s->board_status_input_mask) ||
+                record[2] || record[3]) {
+                s->board_status_input_rejections++;
+            } else {
+                s->board_status_input_level = record[1];
+                s->board_status_input_backing =
+                    (s->board_status_input_backing & ~s->board_status_input_mask) |
+                    s->board_status_input_level;
+                s->board_status_input_events++;
+            }
+            s->matrix_input_buffer_length = 0;
+            msm5xxx_poc_board_status_stream_write(s);
+            continue;
+        }
+        if (!s->matrix_input_host_enabled ||
+            record[0] != MSM5XXX_POC_HOST_INPUT || record[1] > 1 ||
             (record[1] ? s->matrix_input_pressed :
                          !s->matrix_input_pressed) ||
             (!record[1] && (record[2] || record[3])) ||
@@ -3422,7 +3465,7 @@ static void msm5xxx_poc_reset(void *opaque)
     s->pause_timer_fallbacks = 0;
     s->pause_timer_added_ns = 0;
     s->board_status_input_backing =
-        s->board_status_input_default & s->board_status_input_mask;
+        s->board_status_input_level & s->board_status_input_mask;
     s->matrix_input_backing = s->matrix_input_reset;
     s->matrix_input_pressed = false;
     s->matrix_input_row = 0;
@@ -3542,7 +3585,10 @@ static void msm5xxx_poc_init(MachineState *machine)
         }
     }
     if (s->memory_profile_enabled &&
-            (machine->ram_size > 0x02000000 - s->ram_base ||
+            (machine->ram_size < 4 ||
+             machine->ram_size >
+                (s->ram_base == MSM5XXX_POC_HIGH_RAM_BASE ?
+                 MSM5XXX_POC_HIGH_RAM_END : 0x02000000) - s->ram_base ||
              s->initial_sp < s->ram_base ||
              s->initial_sp > s->ram_base + machine->ram_size - 4)) {
         error_report("memory-profile RAM range does not contain INITIAL_SP");
@@ -4204,6 +4250,10 @@ static void msm5xxx_poc_init(MachineState *machine)
             &s->input_chr, msm5xxx_poc_host_input_can_read,
             msm5xxx_poc_host_input_read, NULL, NULL, s, NULL, true
         );
+        if (s->board_status_input_enabled) {
+            /* Positive capability/readback; old transports ignore kind 10. */
+            msm5xxx_poc_board_status_stream_write(s);
+        }
     } else if (s->matrix_input_host_enabled) {
         error_report("matrix-input requires input-chardev");
         exit(EXIT_FAILURE);
@@ -4244,7 +4294,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     }
     if (s->board_status_input_enabled) {
         s->board_status_input_backing =
-            s->board_status_input_default & s->board_status_input_mask;
+            s->board_status_input_level & s->board_status_input_mask;
         memory_region_init_io(&s->board_status_input, OBJECT(machine),
                               &msm5xxx_poc_board_status_input_ops, s,
                               "msm5xxx-poc.board-status-input", 1);
@@ -5092,6 +5142,7 @@ static void msm5xxx_poc_set_board_status_input(Object *obj, const char *value,
     s->board_status_input_address = address;
     s->board_status_input_mask = mask;
     s->board_status_input_default = default_value;
+    s->board_status_input_level = default_value;
     s->board_status_input_enabled = true;
 }
 
@@ -5883,7 +5934,8 @@ static void msm5xxx_poc_set_memory_profile(Object *obj, const char *value,
     if (sscanf(value, "%x:%x:%x%c", &flash_size, &ram_base, &initial_sp,
                &trailing) != 3 || flash_size < 0x1000 ||
             flash_size > MSM5XXX_POC_NOR_MAX_SIZE || flash_size > ram_base ||
-            ram_base < MSM5XXX_POC_RAM_BASE || ram_base >= 0x02000000 ||
+            ((ram_base < MSM5XXX_POC_RAM_BASE || ram_base >= 0x02000000) &&
+             ram_base != MSM5XXX_POC_HIGH_RAM_BASE) ||
             ram_base & 0xfff || initial_sp < ram_base || initial_sp & 3) {
         error_setg(errp,
                    "memory-profile must be FLASH_SIZE:RAM_BASE:INITIAL_SP");

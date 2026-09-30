@@ -29,13 +29,91 @@ class DisplayControllerMixin:
     def display_snapshot(self) -> tuple[int, int, bytes]:
         """Return a geometry/frame triple which is safe for a GUI consumer."""
         with self._display_lock:
+            segmented = getattr(self, "_lcd_segmented_panel", None)
+            if segmented is not None:
+                candidate = segmented.scanout_snapshot()
+                if candidate is not None:
+                    return segmented.width, segmented.height, candidate
+            window = getattr(self, "_lcd_window_panel", None)
+            if window is not None and window.qualified and window.rejection is None:
+                return window.width, window.height, window.frame
+            packed12 = getattr(self, "_lcd_packed12_panel", None)
+            if packed12 is not None and packed12.qualified and packed12.rejection is None:
+                return packed12.width, packed12.height, packed12.frame
+            cursor_panel = getattr(self, "_lcd_cursor_panel", None)
+            if (cursor_panel is not None and cursor_panel.qualified
+                    and cursor_panel.rejection is None):
+                return cursor_panel.width, cursor_panel.height, cursor_panel.frame
             width, height = self.config.width, self.config.height
             frame = self.display_frame
         # The lock makes this invariant unconditional; retain the guard as a
         # useful failure boundary for future display producers.
         if len(frame) != width * height * 3:
             raise RuntimeError("inconsistent display snapshot")
+        panel = getattr(self, "_lcd_secondary_panel", None)
+        if (not getattr(self, "_lcd_paired_state_ports", None)
+                and panel is not None and panel.committed and panel.rejection is None
+                and getattr(self, "_lcd_primary_enabled", None) is False):
+            frame = bytes(len(frame))
+        if (getattr(self, "_lcd_paired_state_enabled", None) is False
+                and getattr(self, "_lcd_page_qualified", False)
+                and getattr(self, "_lcd_frame_protocol", None) == "page-2bpp"):
+            frame = bytes(len(frame))
         return width, height, frame
+
+    def packed_cursor_snapshot(self) -> dict[str, object]:
+        """Report experimental scanout admission separately from native counters."""
+        with self._display_lock:
+            panel = getattr(self, "_lcd_cursor_panel", None)
+            return {"class": "temporary-packed-cursor",
+                    "admitted": panel is not None,
+                    "qualified": bool(panel is not None and panel.qualified),
+                    "rejection": (panel.rejection if panel is not None
+                                  else "writer-signature-not-found"),
+                    "sequence": panel.sequence if panel is not None else 0,
+                    "port": panel.port if panel is not None else None}
+
+    def packed12_snapshot(self) -> dict[str, object]:
+        """Experimental observer admission and rejection, separate from native state."""
+        with self._display_lock:
+            panel = getattr(self, "_lcd_packed12_panel", None)
+            return {"class": "temporary-packed12", "admitted": panel is not None,
+                    "qualified": bool(panel and panel.qualified),
+                    "rejection": panel.rejection if panel else None,
+                    "sequence": panel.sequence if panel else 0,
+                    "trailing_bytes": panel.trailing_bytes if panel else 0}
+
+    def segmented_panel_snapshot(self) -> dict[str, object]:
+        """Report temporary segmented-row admission separately from native state."""
+        with self._display_lock:
+            panel = getattr(self, "_lcd_segmented_panel", None)
+            return {"class": "temporary-segmented-row", "admitted": panel is not None,
+                    "qualified": bool(panel and panel.qualified),
+                    "reason": panel.reason if panel else getattr(self, "_lcd_segmented_reason", "writer-signature-not-found"),
+                    "static_reason": getattr(self, "_lcd_segmented_reason", None),
+                    "enabled": panel.enabled if panel else None,
+                    "rasters": panel.raster.admissions if panel else 0,
+                    "rectangles": panel.rectangles if panel else 0}
+
+    def window_panel_snapshot(self) -> dict[str, object]:
+        """Expose temporary retained-window admission independently of native state."""
+        with self._display_lock:
+            panel = getattr(self, "_lcd_window_panel", None)
+            return {"class": "temporary-retained-window", "admitted": panel is not None,
+                    "qualified": bool(panel and panel.qualified),
+                    "rejection": panel.rejection if panel else None,
+                    "sequence": panel.sequence if panel else 0}
+
+    def secondary_display_snapshot(self) -> dict[str, object] | None:
+        panel = getattr(self, "_lcd_secondary_panel", None)
+        if panel is None:
+            return None
+        with self._display_lock:
+            return {"width": 96, "height": 64, "frame": panel.frame,
+                    "qualified": panel.committed and panel.rejection is None,
+                    "enabled": panel.enabled, "column_offset": panel.bias,
+                    "rejection": panel.rejection, "port": panel.port,
+                    "detection": getattr(self, "_lcd_secondary_reason", None)}
 
     @staticmethod
     def _lcd_full_window_geometry(x_axis: list[int],
@@ -327,12 +405,133 @@ class DisplayControllerMixin:
             x, y = 0, y + 1
         self._lcd_gram_cursor[:] = [x, y]
 
+    def _lcd_observe_paired_state(self, address: int, size: int, value: int) -> None:
+        """Temporary helper-bound display state; never consume native writes."""
+        ports = getattr(self, "_lcd_paired_state_ports", None)
+        if not ports:
+            return
+        arguments = self._lcd_paired_state_arguments
+        candidate = self._lcd_paired_state_candidate
+        self._lcd_paired_state_candidate = None
+        if address in ports and size in (1, 2) and 0 <= value <= 255:
+            if address in arguments:
+                arguments.remove(address)
+                self._lcd_paired_state_reason = "contrast-argument"
+                return
+            if value == 0x81:
+                arguments.add(address)
+                self._lcd_paired_state_reason = "contrast-argument-pending"
+                return
+        if not (getattr(self, "_lcd_page_qualified", False)
+                and getattr(self, "_lcd_frame_protocol", None) == "page-2bpp"):
+            self._lcd_paired_state_enabled = None
+            self._lcd_paired_state_reason = "page-protocol-unqualified"
+            return
+        if address not in ports or size != 2 or value not in (0xAE, 0xAF):
+            self._lcd_paired_state_reason = "intervening-command-or-data"
+            return
+        if candidate is not None and candidate == (ports[1 - ports.index(address)], value):
+            self._lcd_paired_state_enabled = value == 0xAF
+            self._lcd_paired_state_reason = "paired-command-confirmed"
+        else:
+            self._lcd_paired_state_candidate = (address, value)
+            self._lcd_paired_state_reason = "awaiting-peer-command"
+
     def _lcd_write(self, uc: Uc, access: int, address: int, size: int,
                    value: int, user_data: object) -> None:
         if self._audio_transport_owns_write(uc, address, size):
             return
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        segmented = getattr(self, "_lcd_segmented_panel", None)
+        if segmented is not None:
+            with self._display_lock:
+                segmented.write(address, size, value)
+        cursor_panel = getattr(self, "_lcd_cursor_panel", None)
+        if cursor_panel is not None:
+            with self._display_lock:
+                cursor_panel.write(address, size, value)
+        packed12 = getattr(self, "_lcd_packed12_panel", None)
+        if packed12 is not None:
+            with self._display_lock:
+                packed12.write(address, size, value)
+        window = getattr(self, "_lcd_window_panel", None)
+        if window is not None:
+            with self._display_lock:
+                window.write(address, size, value)
+        # Continue native routing even after qualification, preserving fallback.
+        self._lcd_observe_paired_state(address, size, value)
+        panel = getattr(self, "_lcd_secondary_panel", None)
+        primary_port = getattr(self, "_lcd_primary_page_port", None)
+        mixed_port = getattr(self, "_lcd_mixed_primary_power_port", None)
+        if mixed_port is not None and panel is not None and panel.committed and panel.rejection is None:
+            previous = getattr(self, "_lcd_mixed_primary_power_candidate", None)
+            if address == mixed_port and size == 2 and 0 <= value <= 255:
+                if (previous, value) == (0xAE, 0x95):
+                    self._lcd_primary_enabled = False
+                elif (previous, value) == (0x94, 0xAF):
+                    self._lcd_primary_enabled = True
+                self._lcd_mixed_primary_power_candidate = value if value in (0xAE, 0x94) else None
+            else:
+                self._lcd_mixed_primary_power_candidate = None
+        if (not getattr(self, "_lcd_paired_state_ports", None)
+                and primary_port is not None and panel is not None and panel.committed
+                and panel.rejection is None
+                and getattr(self, "_lcd_page_qualified", False)):
+            commands = self._lcd_primary_power_commands
+            if address == primary_port and size in (1, 2) and 0 <= value <= 255:
+                if self._lcd_primary_power_argument:
+                    self._lcd_primary_power_argument = False
+                    commands.clear()
+                elif value == 0x81:
+                    self._lcd_primary_power_argument = True
+                    commands.clear()
+                else:
+                    commands.append(value)
+                del commands[:-4]
+                # Experimental paired-page class: require the complete power
+                # transaction, not an isolated opcode or host fold state.
+                if commands == [0xAE, 0x2D, 0x2C, 0x28]:
+                    self._lcd_primary_enabled = False
+                elif commands == [0x2C, 0x2E, 0x2F, 0xAF]:
+                    self._lcd_primary_enabled = True
+            elif address in (primary_port, primary_port + 4):
+                commands.clear()
+        pending = []
+        if panel is not None:
+            with self._display_lock:
+                if panel.committed and address in (panel.port, panel.port + 4):
+                    # Rejected committed traffic still belongs to this panel.
+                    if panel.rejection is None:
+                        panel.write(address, size, value)
+                    return
+                if (panel.rejection is None
+                        and (panel.pending or address in (panel.port, panel.port + 4))):
+                    secondary = address in (panel.port, panel.port + 4)
+                    panel.pending.append((address, size, value))
+                    accepted = secondary and panel.write(address, size, value)
+                    if not secondary:
+                        panel.rejection = "interleaved ports before page qualification"
+                    if len(panel.pending) > 1024:
+                        panel.rejection = "page qualification budget exceeded"
+                        accepted = False
+                    if accepted:
+                        if panel.bias is not None:
+                            panel.committed = True
+                            panel.pending.clear()
+                        return
+                    pending = panel.pending
+                    panel.pending = []
+        # Native fallback may publish a frame and acquire the same lock.
+        if pending:
+            for old_address, old_size, old_value in pending:
+                self._lcd_write_fallback(uc, access, old_address, old_size,
+                                         old_value, user_data)
+            return
+        self._lcd_write_fallback(uc, access, address, size, value, user_data)
+
+    def _lcd_write_fallback(self, uc: Uc, access: int, address: int, size: int,
+                            value: int, user_data: object) -> None:
         if self._lcd_split_port_write(address, size, value):
             return
         if self._lcd_window_raw8_separate_write(address, size, value):

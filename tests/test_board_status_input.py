@@ -57,6 +57,17 @@ class BoardStatusInputTests(unittest.TestCase):
             compare_delay=5, mask_register=1, result=1, source=0)),
                          BoardStatusInput(0x03000670, 0x08, 0x08))
 
+    def test_offset_byte_status_requires_matching_mask_and_events(self) -> None:
+        image = self._delayed_image(address=0x03000680)
+        image[0x104:0x10E] = bytes.fromhex("007a04231840042801d1")
+        self.assertEqual(find_board_status_input(image),
+                         BoardStatusInput(0x03000688, 4, 4))
+        image[0x10E] = 0x5E  # No paired 5F/60 status events.
+        self.assertIsNone(find_board_status_input(image))
+        image[0x10E] = 0x5F
+        image[0x10A] = 8  # Mask and compare must agree.
+        self.assertIsNone(find_board_status_input(image))
+
     def test_delayed_branch_x4500_style(self) -> None:
         self.assertEqual(find_board_status_input(self._delayed_image(
             branch_words=(0x4800,))),

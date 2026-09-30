@@ -22,6 +22,47 @@ ASSETS="$ROOT/build/generated/python-assets/python"
 LICENSES="$ROOT/build/generated/python-assets/licenses"
 JNI="$ROOT/build/generated/jniLibs/arm64-v8a"
 
+# Fast path for emulator/client Python edits; frozen dependencies stay intact.
+if [ "${1:-}" = "--source-only" ] && [ "$#" -eq 1 ]; then
+    python3 "$ROOT/runtime_cache.py" verify
+    python3 - "$ROOT" "$REPO" <<'PY_SYNC'
+import hashlib
+from pathlib import Path
+import shutil
+import sys
+root, repo = map(Path, sys.argv[1:])
+assets = root / "build/generated/python-assets/python/lib/python3.14"
+site = assets / "site-packages"
+jni = root / "build/generated/jniLibs/arm64-v8a"
+required = [assets / "os.py", site / "numpy/__init__.py",
+            site / "unicorn/__init__.py", jni / "libqemu-system-arm.so",
+            jni / "libpython3.14.so"]
+if not all(path.is_file() for path in required):
+    raise SystemExit("prepared runtime missing; run full prepare_runtime.sh first")
+if hashlib.sha256((jni / "libpython3.14.so").read_bytes()).hexdigest() != \
+        "9b8c1ce18cf7553d67f274893fbfc718edc1ed256305bd8cff5ce3b3d4854b64":
+    raise SystemExit("unexpected cached CPython runtime")
+source = repo / "src/msm5xxx_emulator"
+target = site / source.name
+if target.is_symlink():
+    raise SystemExit("unsafe generated package target")
+# Only replace the generated project package, removing stale/deleted modules.
+if target.exists():
+    shutil.rmtree(target)
+shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+for source in (root / "app/src/main/python/msm5xxx_android_runtime.py",
+               repo / "experiments/qemu-tcg/qemu_transport.py",
+               repo / "experiments/qemu-tcg/gdb_remote.py"):
+    shutil.copy2(source, site / source.name)
+print("Project Python synchronized; native runtime and dependency assets reused.")
+PY_SYNC
+    exit 0
+fi
+if [ "$#" -ne 0 ]; then
+    echo "usage: $0 [--source-only]" >&2
+    exit 2
+fi
+
 check_sha256() {
     expected=$1
     file=$2
@@ -175,4 +216,5 @@ mkdir -p "$LICENSES/NumPy"
 cp -a "$ASSETS/lib/python3.14/site-packages/"numpy-2.5.1.dist-info/licenses/. \
     "$LICENSES/NumPy/"
 
+python3 "$ROOT/runtime_cache.py" dependencies
 echo "Prepared pinned Python detector and audio runtime."

@@ -317,6 +317,21 @@ class DirectProtocolMixin:
                                value: int) -> bool:
         """Promote only complete low-byte 0x028 RGB332 window transfers."""
         base, data = 0x02800000, 0x02800004
+        # BC's first argument selects traversal only within the proven byte
+        # window class. Exact 2A/2E modes are evidenced; other values retain
+        # the established row-major fallback, not a global register bit rule.
+        pending = self._lcd_028_rgb332_mode_pending
+        if address == base:
+            self._lcd_028_rgb332_mode_pending = (
+                size if value == 0xBC and size in (1, 2) else 0
+            )
+            if value == 0xBC:
+                self._lcd_028_rgb332_column_major = False
+        elif pending:
+            self._lcd_028_rgb332_column_major = (
+                address == data and size == pending and value == 0x2E
+            )
+            self._lcd_028_rgb332_mode_pending = 0
         probe = self._lcd_028_rgb332_probe
         event = (address, size, value)
         if not probe:
@@ -376,7 +391,10 @@ class DirectProtocolMixin:
             )
         if x0 + width <= self.config.width and y0 + height <= self.config.height:
             for index, (_address, _size, packed) in enumerate(probe[len(setup) + 1:]):
-                x, y = x0 + index % width, y0 + index // width
+                if self._lcd_028_rgb332_column_major:
+                    x, y = x0 + index // height, y0 + index % height
+                else:
+                    x, y = x0 + index % width, y0 + index // width
                 self._lcd_028_rgb332_pixel(y * self.config.width + x, packed)
             self._lcd_028_rgb332_qualified = True
             self._lcd_protocol = "direct-rgb332"
@@ -552,6 +570,8 @@ class DirectProtocolMixin:
         """Handle one 0x028 command/data write outside the direct probe."""
         offset = address - 0x02800000
         if offset == 0:
+            commands = getattr(self, "_lcd_028_legacy_commands", ())
+            self._lcd_028_legacy_commands = (*commands[-5:], value) if size == 2 else ()
             self._lcd_byte_rgb565_begin_command(size, value)
             self._lcd_page_begin_command(address, size, value)
             if self._lcd_protocol in ("direct", "parallel-2") or value not in (0, 1):
@@ -562,6 +582,17 @@ class DirectProtocolMixin:
             self._lcd_mode = value & 1
             return
         if offset != 4:
+            return
+        commands = getattr(self, "_lcd_028_legacy_commands", ())
+        if (size == 2 and self._lcd_028_window_fifo_qualified
+                and len(commands) == 6 and commands[0] == 0x43
+                and commands[3] == 0x42
+                and 0 <= commands[1] <= commands[2] < self.config.width
+                and 0 <= commands[4] <= commands[5] < self.config.height
+                and tuple(self._lcd_recent_commands)[-6:] == commands):
+            # A proven window owns this data port, even after another port
+            # changes the shared parallel command/data mode.
+            self._capture_raw_lcd_stream(address, size, value)
             return
         if self._lcd_page_feed_data(address, size, value):
             return

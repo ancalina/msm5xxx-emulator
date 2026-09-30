@@ -194,3 +194,6 @@ done
 rmdir "$JNI_STAGE"
 trap - 0 HUP INT TERM
 sha256sum "$JNI/libqemu-system-arm.so" "$JNI/libglib-2.0.so" "$JNI/libintl.so"
+
+# Record only after the fresh native build and ELF/closure gates succeed.
+python3 "$ROOT/runtime_cache.py" native

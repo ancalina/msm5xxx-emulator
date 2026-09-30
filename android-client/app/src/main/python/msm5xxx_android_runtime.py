@@ -12,7 +12,7 @@ _session = None
 _session_stop = None
 _session_thread = None
 _session_error = None
-_frame_sequence_sent = None
+_scanout_sent = {}
 _PCM_PACKET = struct.Struct("<4sIQQQ")
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -71,12 +71,12 @@ def _replay(transport, stop):
     try:
         transport.replay(stop)
     except Exception as error:
-        _session_error = type(error).__name__
+        _session_error = type(error).__name__ + ": " + str(error)
 
 
 def start_session(request_json):
     global _session, _session_stop, _session_thread, _session_error
-    global _frame_sequence_sent
+    global _scanout_sent
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
     from msm5xxx_emulator.detection.firmware import detect
     from qemu_transport import Transport
@@ -105,7 +105,6 @@ def start_session(request_json):
     transport = Transport(
         qemu, firmware, state, experimental_rex, config=config,
         audio_stream=True,
-        icount_shift=10,
     )
     input_bits = [
         bit for bit in range(HANDSET_KEY_COUNT)
@@ -120,7 +119,7 @@ def start_session(request_json):
     _session_stop = stop
     _session_thread = thread
     _session_error = None
-    _frame_sequence_sent = None
+    _scanout_sent.clear()
     thread.start()
     return _json({
         "height": int(config.height),
@@ -134,27 +133,55 @@ def start_session(request_json):
     })
 
 
-def session_frame():
-    global _frame_sequence_sent
+def _require_session():
     if _session is None:
         raise RuntimeError("session is not running")
     if _session_error is not None:
-        raise RuntimeError("session replay failed")
+        raise RuntimeError("session replay failed: " + _session_error)
     if _session.process.poll() is not None:
         raise RuntimeError("QEMU session exited")
-    decoder = _session.decoder
-    with decoder._display_lock:
-        width = int(decoder.config.width)
-        height = int(decoder.config.height)
-        sequence = int(decoder.frame_sequence) & 0xFFFFFFFF
-        frame = decoder.display_frame
-    header = struct.pack("<4I", 1, width, height, sequence)
-    if sequence == _frame_sequence_sent:
-        return header
-    if len(frame) != width * height * 3:
+    return _session
+
+
+def _scanout_packet(panel, width, height, frame):
+    if not (1 <= width <= 2048 and 1 <= height <= 2048
+            and len(frame) == width * height * 3):
         raise RuntimeError("inconsistent display snapshot")
-    _frame_sequence_sent = sequence
-    return header + frame
+    snapshot = (width, height, frame)
+    previous = _scanout_sent.get(panel)
+    if previous is not None and snapshot == previous[0]:
+        return struct.pack("<4I", 1, width, height, previous[1])
+    # Client scanout sequence; firmware progress remains in session_status.
+    sequence = ((previous[1] if previous else 0) + 1) & 0xFFFFFFFF
+    _scanout_sent[panel] = (snapshot, sequence)
+    return struct.pack("<4I", 1, width, height, sequence) + frame
+
+
+def session_frame():
+    return _scanout_packet("primary", *_require_session().decoder.display_snapshot())
+
+
+def session_secondary_frame():
+    snapshot = _require_session().decoder.secondary_display_snapshot()
+    if snapshot is None or not snapshot["qualified"]:
+        _scanout_sent.pop("secondary", None)
+        return b""
+    width, height = snapshot["width"], snapshot["height"]
+    frame = (bytes(width * height * 3) if snapshot["enabled"] is False
+             else snapshot["frame"])
+    return _scanout_packet("secondary", width, height, frame)
+
+
+def session_fold(request_json):
+    transport = _require_session()
+    request = json.loads(request_json)
+    if set(request) != {"open"} or type(request["open"]) is not bool:
+        raise ValueError("invalid fold request")
+    if not transport.can_set_fold():
+        raise ValueError("fold input is not detector-admitted")
+    if not transport.set_fold(request["open"]):
+        raise RuntimeError("fold input transport rejected transition")
+    return _json({"schema": 1, "accepted": True})
 
 
 def session_status():
@@ -162,8 +189,14 @@ def session_status():
         raise RuntimeError("session is not running")
     audio_underflow, audio_overflow, audio_epoch = \
         _session.audio_pcm_snapshot()
+    secondary = _session.decoder.secondary_display_snapshot()
+    fold_supported = _session.can_set_fold()
     return _json({
         "frame_sequence": int(_session.decoder.frame_sequence),
+        "secondary_available": bool(secondary and secondary["qualified"]),
+        "fold_supported": bool(fold_supported),
+        "fold_open": bool(fold_supported and _session.board_status_snapshot["level"]
+                          == _session.config.board_status_input.default),
         "audio_epoch": int(audio_epoch),
         "audio_overflow_frames": int(audio_overflow),
         "audio_reject_reason": _session.audio_stream_reject_reason or "",
@@ -243,7 +276,7 @@ def set_session_key(request_json):
 
 def stop_session():
     global _session, _session_stop, _session_thread, _session_error
-    global _frame_sequence_sent, _session_socket
+    global _scanout_sent, _session_socket
     transport = _session
     stop = _session_stop
     thread = _session_thread
@@ -261,6 +294,6 @@ def stop_session():
         _session_stop = None
         _session_thread = None
         _session_error = None
-        _frame_sequence_sent = None
+        _scanout_sent.clear()
         _session_socket = None
     return _json({"schema": 1, "stopped": True})

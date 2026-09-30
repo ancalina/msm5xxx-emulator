@@ -433,14 +433,22 @@ def find_board_status_input(image: bytes) -> BoardStatusInput | None:
     offset = 0
     while (offset := image.find(b"\xf0\xb5", offset)) >= 0:
         address = thumb_literal_value(image, offset + 2, 0)
-        candidate = (BoardStatusInput(address, 0x08, 0x08)
+        # Offset-byte variant shares the debounced 5F/60 status events.
+        # Asserted default is experimental; physical fold polarity is unverified.
+        offset_byte = image[offset + 4:offset + 14] == bytes.fromhex(
+            "007a04231840042801d1")
+        mask = 0x04 if offset_byte else 0x08
+        if offset_byte and address is not None:
+            address += 8
+        candidate = (BoardStatusInput(address, mask, mask)
                      if address is not None
                      and 0x03000000 <= address < 0x03800000 else None)
         if (image[offset + 4:offset + 4 + len(BOARD_STATUS_INPUT_BODY)]
                 == BOARD_STATUS_INPUT_BODY):
             if candidate is not None:
                 found.add(candidate)
-        elif candidate is not None and image[offset + 4:offset + 6] == b"\x00\x78":
+        elif candidate is not None and (offset_byte or
+                image[offset + 4:offset + 6] == b"\x00\x78"):
             body_end = min(offset + 0x400, len(image) - 1)
             pop = next((position for position in range(offset + 6, body_end, 2)
                         if struct.unpack_from("<H", image, position)[0] == 0xBDF0),
@@ -451,7 +459,7 @@ def find_board_status_input(image: bytes) -> BoardStatusInput | None:
                          and b"\x60\x27" in image[offset + 6:pop])
             for movs in range(offset + 6, early_end, 2):
                 move = struct.unpack_from("<H", image, movs)[0]
-                if move & 0xF8FF != 0x2008:
+                if move & 0xF8FF != 0x2000 | mask:
                     continue
                 mask_register = (move >> 8) & 7
                 if mask_register == 0:
@@ -464,7 +472,7 @@ def find_board_status_input(image: bytes) -> BoardStatusInput | None:
                     source = (word >> 3) & 7
                     if {result, source} != {0, mask_register}:
                         continue
-                    compare = 0x2808 | (result << 8)
+                    compare = 0x2800 | mask | (result << 8)
                     for position in range(ands + 2, min(ands + 16, early_end), 2):
                         if struct.unpack_from("<H", image, position)[0] != compare:
                             continue

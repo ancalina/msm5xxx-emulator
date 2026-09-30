@@ -8,7 +8,8 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
+from PIL import Image, ImageTk
 
 
 ROOT = Path(__file__).parents[2]
@@ -38,6 +39,106 @@ class LiveWindow(Window):
         )
         self.root.after(100, self._refresh_qemu_metrics)
         self.root.after(5, self._forward_qemu_keys)
+
+    def _build(self) -> None:
+        super()._build()
+        self.fold_button = ttk.Button(
+            self.settings_button.master, text="Fold: unavailable",
+            command=self._toggle_fold, state="disabled",
+        )
+        self.fold_button.grid(row=1, column=0, pady=2)
+        self.reboot_button = ttk.Button(
+            self.settings_button.master, text="ROM 재부팅", command=self._restart,
+        )
+        self.reboot_button.grid(row=1, column=1, pady=2)
+        self.secondary_window = tk.Toplevel(self.root)
+        self.secondary_window.withdraw()
+        self.secondary_window.title("Additional display (experimental)")
+        self.secondary_window.resizable(True, True)
+        self.secondary_window.minsize(112, 104)
+        self.secondary_window.protocol("WM_DELETE_WINDOW", self.secondary_window.withdraw)
+        self.secondary_view = ttk.Frame(self.secondary_window, padding=8)
+        self.secondary_view.pack(fill="both", expand=True)
+        self.secondary_image = tk.Canvas(
+            self.secondary_view, width=192, height=128,
+            background="black", highlightthickness=0,
+        )
+        self.secondary_image.pack(fill="both", expand=True)
+        self.secondary_status = ttk.Label(self.secondary_view)
+        self.secondary_status.pack()
+        self._secondary_cache = None
+        self._secondary_size = None
+        self._secondary_owner = None
+        self._secondary_auto_open = True
+        self.display_menu = tk.Menu(self.root, tearoff=False)
+        self.display_menu.add_command(label="Additional display",
+                                      command=self._show_secondary_display,
+                                      state="disabled")
+        self.screen.bind("<Button-3>", self._display_popup)
+
+    def _display_popup(self, event) -> None:
+        try:
+            self.display_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.display_menu.grab_release()
+
+    def _show_secondary_display(self) -> None:
+        if self._secondary_cache is not None:
+            self.secondary_window.deiconify()
+            self.secondary_window.lift()
+
+    def _refresh_secondary_display(self, emulator) -> None:
+        if emulator is not self._secondary_owner:
+            self._secondary_owner = emulator
+            self._secondary_cache = None
+            self._secondary_auto_open = True
+            self.secondary_window.withdraw()
+        snapshot = emulator.secondary_display_snapshot()
+        if snapshot is None or not snapshot["qualified"]:
+            self.secondary_window.withdraw()
+            self.display_menu.entryconfigure(0, state="disabled")
+            self._secondary_cache = None
+            return
+        available = (max(1, self.secondary_image.winfo_width()),
+                     max(1, self.secondary_image.winfo_height()))
+        if snapshot == self._secondary_cache and available == self._secondary_size:
+            return
+        width, height = snapshot["width"], snapshot["height"]
+        frame = (bytes(width * height * 3) if snapshot["enabled"] is False
+                 else snapshot["frame"])
+        image = Image.frombytes("RGB", (width, height), frame)
+        scale = min(available[0] / width, available[1] / height)
+        size = (max(1, round(width * scale)), max(1, round(height * scale)))
+        self.secondary_photo = ImageTk.PhotoImage(
+            image.resize(size, Image.Resampling.NEAREST))
+        self.secondary_image.delete("all")
+        self.secondary_image.create_image(
+            available[0] // 2, available[1] // 2, image=self.secondary_photo,
+        )
+        power = {True: "On", False: "Off", None: "Power unknown"}[snapshot["enabled"]]
+        self.secondary_status.configure(
+            text=f"{power} · {width}×{height} · panel role unverified")
+        self._secondary_cache = snapshot
+        self._secondary_size = available
+        self.display_menu.entryconfigure(0, state="normal")
+        if self._secondary_auto_open:
+            self._secondary_auto_open = False
+            self.secondary_window.update_idletasks()
+            x = min(self.root.winfo_x() + self.root.winfo_width() + 12,
+                    self.root.winfo_screenwidth() - self.secondary_window.winfo_reqwidth())
+            y = min(self.root.winfo_y(), self.root.winfo_screenheight()
+                    - self.secondary_window.winfo_reqheight())
+            self.secondary_window.geometry(f"+{max(0, x)}+{max(0, y)}")
+            self._show_secondary_display()
+
+    def _toggle_fold(self) -> None:
+        transport = self.transport
+        if transport is None or not transport.can_set_fold():
+            return
+        profile = transport.config.board_status_input
+        opened = transport.board_status_snapshot["level"] == profile.default
+        if not transport.set_fold(not opened):
+            self.status.set(transport.decoder.input_error)
 
     def _check_for_update(self) -> None:
         # QEMU binaries and their Python transport must update as one bundle.
@@ -151,6 +252,11 @@ class LiveWindow(Window):
         self.worker.start()
 
     def _stop_transport(self) -> None:
+        if hasattr(self, "secondary_window"):
+            self.secondary_window.withdraw()
+            self._secondary_cache = None
+            self._secondary_owner = None
+            self.display_menu.entryconfigure(0, state="disabled")
         transport = self.transport
         worker = self.worker
         self.transport = None
@@ -203,6 +309,15 @@ class LiveWindow(Window):
             self.root.after(100, self._refresh_qemu_metrics)
             return
         emulator = transport.decoder
+        supported = transport.can_set_fold()
+        self.fold_button.configure(state="normal" if supported else "disabled")
+        if supported:
+            opened = (transport.board_status_snapshot["level"]
+                      == transport.config.board_status_input.default)
+            state = "Open" if opened else "Closed"
+            self.fold_button.configure(text=f"Fold: {state} (experimental)")
+        else:
+            self.fold_button.configure(text="Fold: unavailable")
         width, height, _frame = emulator.display_snapshot()
         self.device_details.set(
             f"QEMU TCG · {emulator.config.chipset} · {width}×{height}"
@@ -212,6 +327,11 @@ class LiveWindow(Window):
         self.metric_values["lcd"].set(f"{emulator.lcd_writes:,}")
         self.metric_values["frame"].set(str(emulator.frame_sequence))
         self.root.after(100, self._refresh_qemu_metrics)
+
+    def _refresh_display(self) -> None:
+        super()._refresh_display()
+        if self.emulator is not None:
+            self._refresh_secondary_display(self.emulator)
 
     def _close(self) -> None:
         if not self.closing:

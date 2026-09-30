@@ -7,10 +7,97 @@ import threading
 import unittest
 
 from msm5xxx import GenericMSMEmulator, detect_lcd_width_hint
+from msm5xxx_emulator.detection.display import (find_dual_page_ports,
+                                              find_paired_display_state_ports,
+                                              find_packed_cursor_port)
 from msm5xxx_emulator.devices.display.protocols.direct import _028_SPLIT16_PREFIX
 
 
 class LCDGeometryTests(unittest.TestCase):
+    def test_proven_window_rejects_other_port_unframed_scanout(self):
+        emulator = self._routing_emulator()
+        for value in (0x43, 0, 127, 0x42, 0, 127):
+            emulator._lcd_write(None, 0, 0x02800000, 2, value, None)
+        for _ in range(128 * 128):
+            emulator._lcd_write(None, 0, 0x02800004, 2, 0xF800, None)
+        before = emulator.display_snapshot()
+        sequence = emulator.frame_sequence
+        # An unrelated FIFO length is not evidence of the same framebuffer.
+        for _ in range(128 * 128):
+            emulator._capture_raw_lcd_stream(0x02000004, 2, 0x001F)
+        self.assertEqual(emulator.display_snapshot(), before)
+        self.assertEqual(emulator.frame_sequence, sequence)
+        self.assertEqual(emulator._lcd_raw_counts[(0x02000004, 2)], 128 * 128)
+        fallback = self._routing_emulator()
+        for _ in range(128 * 128):
+            fallback._capture_raw_lcd_stream(0x02000004, 2, 0x001F)
+        self.assertGreater(fallback.frame_sequence, 0)
+
+    def test_028_window_survives_other_port_protocol_change(self):
+        emulator = self._routing_emulator()
+        def window(x0, x1, y0, y1):
+            for value in (0x43, x0, x1, 0x42, y0, y1):
+                emulator._lcd_write(None, 0, 0x02800000, 2, value, None)
+        window(0, 127, 0, 127)
+        for _ in range(128 * 128):
+            emulator._lcd_write(None, 0, 0x02800004, 2, 0, None)
+        self.assertTrue(emulator._lcd_028_window_fifo_qualified)
+        before = emulator.frame_sequence
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x2C, None)
+        window(1, 1, 1, 1)
+        emulator._lcd_write(None, 0, 0x02800004, 2, 0xF800, None)
+        self.assertEqual(emulator.frame_sequence, before + 1)
+        self.assertEqual(emulator.display_snapshot()[2][387:390], b'\xff\x00\x00')
+
+    def test_packed_cursor_requires_linked_writer_and_mode(self):
+        import struct
+        image = bytearray(768)
+        start, helper = 64, 32
+        image[helper:helper + 4] = bytes.fromhex("01807047")
+        for offset, fragment in {0: "f7b501240521cd05281c", 14: "2f1d381c4349",
+                                 24: "1621281c", 32: "3f214902281d", 42: "1721281c",
+                                 0x70: "152a23db062ce8db102ff2db2121281c",
+                                 0xB8: "2221", 0x140: "034904480839"}.items():
+            fragment = bytes.fromhex(fragment)
+            image[start + offset:start + offset + len(fragment)] = fragment
+        for offset in (10, 20, 28, 38, 46, 0xBC, 0x146):
+            at = start + offset
+            delta = helper - at - 4
+            struct.pack_into('<HH', image, at, 0xF000 | ((delta >> 12) & 0x7FF),
+                             0xF800 | ((delta >> 1) & 0x7FF))
+        literal = ((start + 22) & ~3) + 0x43 * 4
+        struct.pack_into('<I', image, literal, 0x1038)
+        self.assertEqual(find_packed_cursor_port(bytes(image)), 0x02800000)
+        self.assertEqual(find_packed_cursor_port(bytes(1024) + image), 0x02800000)
+        for offset in (helper, literal, start + 0xB8, start + 0xBC):
+            mutated = image.copy()
+            mutated[offset] ^= 1
+            self.assertIsNone(find_packed_cursor_port(bytes(mutated)))
+        self.assertIsNone(find_packed_cursor_port(bytes(image[:start + 30])))
+
+    def test_paired_state_requires_command_helper_and_shared_state_caller(self):
+        import struct
+        image = bytearray(256)
+        helper = bytes.fromhex(
+            "031caf20ae22002b04d10523db05002906d003e001235b06002901d0"
+            "1880f7461a80f746")
+        image[128:128 + len(helper)] = helper
+        def call(at, target):
+            delta = target - at - 4
+            return struct.pack('<HH', 0xF000 | ((delta >> 12) & 0x7FF),
+                               0xF800 | ((delta >> 1) & 0x7FF))
+        image[32:48] = (bytes.fromhex('397d0020') + call(36, 128)
+                        + bytes.fromhex('397d0120') + call(44, 128))
+        self.assertEqual(find_paired_display_state_ports(bytes(image)),
+                         (0x02800000, 0x02000000))
+        for offset, value in ((40, 0x31), (42, 0), (45, 0),
+                              (128 + 28, 0x98)):
+            rejected = image.copy()
+            rejected[offset] = value
+            self.assertIsNone(find_paired_display_state_ports(bytes(rejected)))
+        image[32:48] = bytes(16)
+        self.assertIsNone(find_paired_display_state_ports(bytes(image)))
+
     def test_byte_raster_requires_all_160_rows_and_completion(self) -> None:
         emulator = self._blank_emulator(False)
         emulator._lcd_byte_raster_stage = ""
@@ -210,6 +297,8 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_028_rgb332_probe = []
         emulator._lcd_028_rgb332_window = (0, 0, 0, 0)
         emulator._lcd_028_rgb332_qualified = False
+        emulator._lcd_028_rgb332_mode_pending = 0
+        emulator._lcd_028_rgb332_column_major = False
         emulator._lcd_028_window_fifo_qualified = False
         emulator._lg_pixels = []
         emulator._lcd_lgfa_window_order = []
@@ -839,6 +928,59 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(GenericMSMEmulator._lcd_page_layout(128, 128), (128, 1))
         self.assertEqual(GenericMSMEmulator._lcd_page_layout(256, None), (256, 1))
 
+    def test_page_descriptor_width_requires_consistent_plane_extent(self) -> None:
+        image = bytearray(bytes.fromhex(
+            "90b51c1c00281c4f0bd180203882702078820e203883c301c8183862"
+            "f96114c790bd6020b8824020f8820820b884b9620020f862ba60fc60"
+        ))
+        image.extend(bytes(0x7C - len(image)))
+        image[0x78:0x7C] = (0x01180000).to_bytes(4, "little")
+        self.assertEqual(detect_lcd_width_hint(image), 128)
+        self.assertEqual(detect_lcd_width_hint(
+            image + b"m.LCD_PIXEL\0" b"176220\0"), 176)
+        image[18] = 13  # Plane extent no longer agrees with viewport height.
+        self.assertIsNone(detect_lcd_width_hint(image))
+        image[18] = 14
+        image[0x78:0x7C] = (0x03000000).to_bytes(4, "little")
+        self.assertIsNone(detect_lcd_width_hint(image))
+        image[0x78:0x7C] = (0x02000000 - 0x2C).to_bytes(4, "little")
+        self.assertIsNone(detect_lcd_width_hint(image))
+
+    def test_dual_page_ports_require_shared_initializer_and_buffer_extent(self) -> None:
+        image = bytearray(0x200)
+        image[:54] = bytes.fromhex(
+            "90b51c1c00281c4f0bd180203882702078820e203883c301c8183862"
+            "f96114c790bd6020b8824020f8820820b884b9620020f862ba60fc60")
+        image[0x78:0x7C] = (0x01180000).to_bytes(4, "little")
+        start = 0x100
+        image[start:start + 34] = bytes.fromhex(
+            "004f0021381c00000000004b391c00201a1f00000000"
+            "004b01201a1f004900000000")
+        for offset, literal, value in (
+                (0, 0x180, 0x011A0000), (10, 0x184, 0x02800004),
+                (22, 0x188, 0x02000004), (28, 0x18C, 0x011A0E00)):
+            position = start + offset
+            image[position] = (literal - ((position + 4) & ~3)) // 4
+            image[literal:literal + 4] = value.to_bytes(4, "little")
+        for offset in (18, 30):
+            position = start + offset
+            delta = -(position + 4) & 0x7FFFFF
+            image[position:position + 4] = (
+                (0xF000 | (delta >> 12)).to_bytes(2, "little")
+                + (0xF800 | ((delta >> 1) & 0x7FF)).to_bytes(2, "little"))
+        self.assertEqual(find_dual_page_ports(image), (0x02800000, 0x02000000))
+        for position, replacement in (
+                (start + 30, b"\0\0\0\0"),  # No shared initializer.
+                (0x18C, (0x011A0D00).to_bytes(4, "little")),
+                (0x188, (0x02800004).to_bytes(4, "little")),
+                (0x188, (0x02200004).to_bytes(4, "little")),
+                (0x188, (0x02C00004).to_bytes(4, "little")),
+                (0x188, (0x03000004).to_bytes(4, "little"))):
+            with self.subTest(position=position, replacement=replacement):
+                changed = image.copy()
+                changed[position:position + 4] = replacement
+                self.assertIsNone(find_dual_page_ports(changed))
+
     def test_page_lcd_two_planes_render_msb_then_lsb_as_four_grays(self) -> None:
         emulator = self._blank_emulator(visible=False, width=128, height=128)
         emulator._lcd_page_width = 128
@@ -1067,6 +1209,43 @@ class LCDGeometryTests(unittest.TestCase):
         frame(near_miss, 62, bytes((0xFF,)) * (63 * 160))
         self.assertEqual((near_miss.config.width, near_miss.config.height), (176, 220))
         self.assertFalse(near_miss._lcd_028_rgb332_qualified)
+
+    def test_rgb332_bc_traversal_preserves_asymmetric_window(self) -> None:
+        emulator = self._routing_emulator(width=120, height=160)
+        emulator._lcd_028_rgb332_qualified = True
+
+        def write(address: int, value: int, size: int = 1) -> None:
+            emulator._lcd_write(None, 0, address, size, value, None)
+
+        colors = (0xE0, 0x1C, 0x03, 0xFF, 0x00, 0xFC)
+        rgb = [bytes(((v >> 5) * 255 // 7,
+                     (v >> 2 & 7) * 255 // 7, (v & 3) * 255 // 3))
+               for v in colors]
+        for mode, order in ((0x2E, (0, 3, 1, 4, 2, 5)),
+                            (0x2A, (0, 1, 2, 3, 4, 5)),
+                            (0x6E, (0, 1, 2, 3, 4, 5))):
+            write(0x02800000, 0xBC)
+            write(0x02800004, mode)
+            # Further BC parameters must not overwrite its first argument.
+            write(0x02800004, 1)
+            for address, value in ((0x02800000, 0x75), (0x02800004, 4),
+                                   (0x02800004, 6), (0x02800000, 0x15),
+                                   (0x02800004, 2), (0x02800004, 3),
+                                   (0x02800000, 0x5C)):
+                write(address, value)
+            for value in colors:
+                write(0x02800004, value)
+            actual = b"".join(emulator.display_frame[(y * 120 + x) * 3:
+                                                   (y * 120 + x) * 3 + 3]
+                              for y in range(4, 7) for x in range(2, 4))
+            self.assertEqual(actual, b"".join(rgb[i] for i in order))
+        write(0x02800000, 0xBC)
+        write(0x02800004, 0x2E, size=2)
+        self.assertFalse(emulator._lcd_028_rgb332_column_major)
+        write(0x02800000, 0xBC)
+        write(0x02800000, 0x75)
+        write(0x02800004, 0x2E)
+        self.assertFalse(emulator._lcd_028_rgb332_column_major)
 
     def test_qualified_packed_21_cursor_keeps_xy(self) -> None:
         def write(emulator: GenericMSMEmulator, command: int, value: int) -> None:

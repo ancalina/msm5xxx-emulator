@@ -21,15 +21,20 @@ static void throw_python_error(JNIEnv *env, const char *stage) {
     PyObject *value = NULL;
     PyObject *traceback = NULL;
     const char *name = "PythonError";
-    char message[160];
+    char message[384];
     PyErr_Fetch(&type, &value, &traceback);
     if (type != NULL && PyType_Check(type)) {
         name = ((PyTypeObject *)type)->tp_name;
     }
-    snprintf(message, sizeof(message), "%s failed (%s)", stage, name);
+    PyObject *description = value == NULL ? NULL : PyObject_Str(value);
+    const char *detail = description == NULL ? NULL : PyUnicode_AsUTF8(description);
+    snprintf(message, sizeof(message), "%s failed (%s): %.240s", stage, name,
+             detail == NULL ? "" : detail);
+    Py_XDECREF(description);
     Py_XDECREF(type);
     Py_XDECREF(value);
     Py_XDECREF(traceback);
+    PyErr_Clear();
     throw_runtime(env, message);
 }
 
@@ -209,6 +214,26 @@ Java_org_msm5xxx_emulator_PythonRuntime_nativeFrame(
         JNIEnv *env, jclass type) {
     (void)type;
     return call_python_bytes(env, "session_frame");
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_org_msm5xxx_emulator_PythonRuntime_nativeSecondaryFrame(
+        JNIEnv *env, jclass type) {
+    (void)type;
+    return call_python_bytes(env, "session_secondary_frame");
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_msm5xxx_emulator_PythonRuntime_nativeFold(
+        JNIEnv *env, jclass type, jstring request_value) {
+    (void)type;
+    const char *request = (*env)->GetStringUTFChars(env, request_value, NULL);
+    if (request == NULL) {
+        return NULL;
+    }
+    jstring result = call_python(env, "session_fold", request);
+    (*env)->ReleaseStringUTFChars(env, request_value, request);
+    return result;
 }
 
 JNIEXPORT jbyteArray JNICALL

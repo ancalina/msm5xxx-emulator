@@ -1,6 +1,7 @@
 """Firmware memory-layout detection."""
 from __future__ import annotations
 
+import hashlib
 import struct
 
 from ..core.config import CopyLayout, LinkerLayout
@@ -10,6 +11,125 @@ from .signatures import find_all
 
 
 PAGE = 0x1000
+
+# Closed ARM walking-bit/address/byte readback test, shared by independent
+# reset images. Descriptor pointers are outside this instruction signature.
+_HIGH_RAM_TEST_PREFIX = bytes.fromhex("54019fe5000090e50110a0e30020a0e3")
+_HIGH_RAM_TEST_SHA256 = (
+    "6b3b59b43cc612c0e58a369709895a11607f138d5229d75121df6852ae4c89e8"
+)
+
+
+def find_high_ram_readback_tests(image: bytes) -> list[int]:
+    """Find the complete readback shape with its adjacent high-RAM base."""
+    return [position for position in find_all(image[:0x10000], _HIGH_RAM_TEST_PREFIX)
+            if position >= 28
+            and struct.unpack_from("<I", image, position - 28)[0] == 0x14000000
+            and hashlib.sha256(image[position:position + 0x150]).hexdigest()
+            == _HIGH_RAM_TEST_SHA256]
+
+
+def _reset_copy_covers_upper_half(image: bytes, called: set[int],
+                                  base: int, size: int) -> bool:
+    """Match a closed literal-descriptor copy, including its loop operands."""
+    shapes = (
+        (0x4800, 0x6804, 0x4800, 0x6800, 0x1826, 0x4800,
+         0x6805, 0xE001, 0xCD01, 0xC401, 0x42B4, 0xD3FB),
+        (0x4A00, 0x6814, 0x4A00, 0x6812, 0x18A6, 0x4A00,
+         0x6815, 0xE001, 0xCD04, 0xC404, 0x42B4, 0xD3FB),
+    )
+    for target in called:
+        if not target & 1:
+            continue
+        start = target & ~1
+        for pc in range(start, min(start + 0x400, len(image) - 23), 2):
+            words = struct.unpack_from('<12H', image, pc)
+            normalized = tuple(word & 0xFF00 if i in (0, 2, 5) else word
+                               for i, word in enumerate(words))
+            if normalized not in shapes:
+                continue
+            register = (words[0] >> 8) & 7
+            pointers = [thumb_literal_value(image, pc + offset, register)
+                        for offset in (0, 4, 10)]
+            if any(p is None or p & 3 or p > len(image) - 4 for p in pointers):
+                continue
+            destination_ptr, length_ptr, source_ptr = pointers
+            if (length_ptr != destination_ptr + 4
+                    or source_ptr != destination_ptr - 4):
+                continue
+            destination, length, source = (
+                struct.unpack_from('<I', image, p)[0] for p in pointers)
+            if (not (destination | length | source) & 3 and length > 0
+                    and source + length <= len(image)
+                    and base + size // 2 <= destination
+                    < destination + length <= base + size):
+                return True
+    return False
+
+
+def high_ram_bootstrap_profile(image: bytes) -> tuple[int, int] | None:
+    """Require a closed extent table and a reset-linked RAM consumer."""
+    if len(image) < 4:
+        return None
+    vector = struct.unpack_from("<I", image)[0]
+    if vector & 0xFF000000 != 0xEA000000:
+        return None
+    displacement = (vector & 0xFFFFFF) << 2
+    if displacement & 0x02000000:
+        displacement -= 0x04000000
+    reset = 8 + displacement
+    if not 0 <= reset < min(len(image) - 24, 0x10000):
+        return None
+    called: set[int] = set()
+    for pc in range(reset, min(reset + 0x400, len(image) - 24), 4):
+        words = struct.unpack_from("<5I", image, pc)
+        if (words[0] & 0xFFFFF000 == 0xE59F4000
+                and words[1] == 0xE3140001
+                and words[2] & 0xFFFFF000 == 0x159FE000
+                and words[3] & 0xFFFFF000 == 0x059FE000
+                and words[4] == 0xE12FFF14):
+            literal = pc + 8 + (words[0] & 0xFFF)
+            return_literal = pc + 20 + (words[3] & 0xFFF)
+            if (literal <= len(image) - 4 and return_literal <= len(image) - 4
+                    and struct.unpack_from("<I", image, return_literal)[0]
+                    == pc + 24):
+                target = struct.unpack_from("<I", image, literal)[0]
+                if target & 1:
+                    thumb_return = pc + 16 + (words[2] & 0xFFF)
+                    if (thumb_return > len(image) - 4
+                            or struct.unpack_from('<I', image, thumb_return)[0]
+                            != (pc + 20) | 1
+                            or struct.unpack_from('<H', image, pc + 20)[0]
+                            != 0x4778):  # Thumb BX PC returns to aligned ARM.
+                        continue
+                called.add(target)
+    found: set[tuple[int, int]] = set()
+    for position in find_high_ram_readback_tests(image):
+        if position < 28 or position + 0x178 > len(image):
+            continue
+        table = position - 28
+        base, extent, stride, word, half, byte, watchdog = struct.unpack_from(
+            "<7I", image, table
+        )
+        if (base != 0x14000000 or extent not in
+                (0x3FFDFF, 0x3FFFFF, 0x7FFDFF, 0x7FFFFF)
+                or (stride, word, half, byte, watchdog) !=
+                (0x10, 0x55AA0F, 0xAA0F, 0x55, 0x030006D0)):
+            continue
+        valid = True
+        for offset, field in ((0, 0), (0x10, 8), (0x40, 24), (0x6C, 4),
+                              (0x80, 4), (0xF4, 12), (0x108, 16), (0x11C, 20)):
+            instruction = struct.unpack_from("<I", image, position + offset)[0]
+            literal = position + offset + 8 + (instruction & 0xFFF)
+            if (literal > len(image) - 4 or
+                    struct.unpack_from("<I", image, literal)[0] != table + field):
+                valid = False
+                break
+        size = (extent + PAGE) & ~(PAGE - 1)
+        if valid and (position in called or
+                      _reset_copy_covers_upper_half(image, called, base, size)):
+            found.add((base, size))
+    return next(iter(found)) if len(found) == 1 else None
 
 _BOOT_REGISTER_TABLE_LOOP = bytes.fromhex(
     "c100004a5158002900d0c10089188988c200004b9a581180"

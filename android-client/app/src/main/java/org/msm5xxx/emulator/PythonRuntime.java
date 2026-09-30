@@ -78,6 +78,18 @@ final class PythonRuntime {
         return nativeFrame();
     }
 
+    static synchronized byte[] secondaryFrame() {
+        return nativeSecondaryFrame();
+    }
+
+    static synchronized String fold(boolean opened) throws IOException {
+        try {
+            return nativeFold(new JSONObject().put("open", opened).toString());
+        } catch (JSONException error) {
+            throw new IOException("fold request is invalid", error);
+        }
+    }
+
     static byte[] audio() {
         AUDIO_GATE.lock();
         try {
@@ -192,6 +204,8 @@ final class PythonRuntime {
     private static native String nativeStart(String request);
     private static native byte[] nativeFrame();
     private static native byte[] nativeAudio();
+    private static native byte[] nativeSecondaryFrame();
+    private static native String nativeFold(String request);
     private static native String nativeStatus();
     private static native String nativeCanKey(String request);
     private static native String nativeKey(String request);

@@ -152,6 +152,11 @@ class PageProtocolMixin:
 
     def _lcd_page_flush_current(self) -> None:
         """Publish a validated partial page without treating a chunk as a row end."""
+        panel = getattr(self, "_lcd_secondary_panel", None)
+        if panel is not None:
+            with self._display_lock:
+                if panel.rejection is None:
+                    panel.flush()
         if not self._lcd_page_dirty:
             return
         changed = self._lcd_page_render_current()
@@ -630,6 +635,11 @@ class PageProtocolMixin:
         # A partial transfer is often a command table or a rectangle update;
         # require a complete scanout before treating it as a framebuffer.
         if count < pixels or count % pixels:
+            return
+        if (getattr(self, "_lcd_028_window_fifo_qualified", False)
+                and port != (0x02800004, 2)):
+            # A controller-bounded window outranks another port's unframed
+            # length heuristic. Keep its raw capture, not a shared scanout.
             return
         values = tuple(stream)
         if len(values) != pixels or not any(values):

@@ -97,4 +97,14 @@
     <string name="key_mapping_description">%1$s, 탭하여 입력 매핑</string>
 
     <string name="unnamed_firmware">이름 없는 펌웨어</string>
+    <string name="additional_display">보조 화면</string>
+    <string name="move_display">화면 이동</string>
+    <string name="resize_display">화면 크기 조절</string>
+    <string name="reboot">ROM 재부팅</string>
+    <string name="fold_open">폴더 열기</string>
+    <string name="fold_close">폴더 닫기</string>
+    <string name="display_destination">보조 화면 표시 위치</string>
+    <string name="display_in_app">앱 내부</string>
+    <string name="display_automatic">자동</string>
+    <string name="display_external">%1$s (디스플레이 %2$d)</string>
 </resources>

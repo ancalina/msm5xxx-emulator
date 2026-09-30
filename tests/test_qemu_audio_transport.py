@@ -297,7 +297,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertIn('name="msm5xxx-qemu-audio-replay"', replay)
         android_runtime = ANDROID_RUNTIME.read_text(encoding="utf-8")
         self.assertNotIn('qemu_prefix=("/system/bin/nice"', android_runtime)
-        self.assertIn("icount_shift=10", android_runtime)
+        self.assertNotIn("icount_shift=", android_runtime)
         self.assertIn('f"shift={icount_shift},align=on,sleep=on"', source)
         machine = (EXPERIMENT / "msm5xxx-poc.c").read_text(encoding="utf-8")
         synth_header = (EXPERIMENT / "msm5xxx-audio-synth.h").read_text(
@@ -601,6 +601,41 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertEqual(recovered.audio_stream_status, "native")
         self.assertIsNone(recovered.audio_stream_reject_reason)
 
+    def test_disabled_audio_ignores_only_canonical_reset_status(self) -> None:
+        reset = bytearray(16)
+        reset[0:2] = bytes((AUDIO_STATUS, AUDIO_STATUS_RESET))
+
+        disabled = self.native_transport()
+        disabled.audio_stream_enabled = False
+        disabled.audio_stream_status = "disabled"
+        disabled._replay_record(reset)
+        self.assertEqual(disabled.audio_stream_status, "disabled")
+        self.assertIsNone(disabled.audio_stream_reject_reason)
+        self.assertEqual(disabled.audio_stream_dropped, 0)
+        self.assertEqual(list(disabled.native_audio_packets), [])
+
+        malformed = []
+        reserved = bytearray(reset)
+        reserved[2] = 1
+        malformed.append(reserved)
+        for offset in (4, 8, 12):
+            nonzero = bytearray(reset)
+            struct.pack_into("<I", nonzero, offset, 1)
+            malformed.append(nonzero)
+        active_zero_epoch = self.native_transport()
+        active_zero_epoch._replay_record(reset)
+        self.assertEqual(active_zero_epoch.audio_stream_status, "rejected")
+        for record in malformed:
+            transport = self.native_transport()
+            transport.audio_stream_enabled = False
+            transport.audio_stream_status = "disabled"
+            transport._replay_record(record)
+            self.assertEqual(transport.audio_stream_status, "rejected")
+            self.assertEqual(
+                transport.audio_stream_reject_reason,
+                "qemu-audio-status-shape",
+            )
+
     def test_android_audio_only_exposes_accepted_ma2_pcm(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "msm5xxx_android_audio_test", ANDROID_RUNTIME
@@ -629,7 +664,9 @@ class QEMUAudioTransportTests(unittest.TestCase):
                 audio_transport=transport,
                 frame_sequence=7,
                 lcd_writes=9,
+                secondary_display_snapshot=lambda: None,
             ),
+            can_set_fold=lambda: False,
             take_native_audio=take_native_audio,
             audio_pcm_snapshot=lambda: (441, 882, 3),
             audio_stream_reject_reason=None,

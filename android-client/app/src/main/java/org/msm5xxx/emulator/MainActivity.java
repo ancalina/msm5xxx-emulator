@@ -2,6 +2,7 @@ package org.msm5xxx.emulator;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Presentation;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
@@ -29,6 +30,8 @@ import android.provider.OpenableColumns;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.Display;
+import android.hardware.display.DisplayManager;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -54,6 +57,7 @@ import java.nio.ByteOrder;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -68,6 +72,10 @@ public final class MainActivity extends Activity {
     private static final int MORE_SETTINGS = 2;
     private static final int MORE_RUN_STOP = 3;
     private static final int MORE_EDIT_MAPPING = 4;
+    private static final int MORE_REBOOT = 5;
+    private static final int MORE_SECONDARY = 6;
+    private static final int MORE_FOLD = 7;
+    private static final int MORE_SECONDARY_DESTINATION = 8;
     private static final String PREFS = "launcher";
     private static final String KEY_URI = "uri";
     private static final String KEY_NAME = "name";
@@ -82,6 +90,10 @@ public final class MainActivity extends Activity {
     private static final String KEY_REJECT = "reject";
     private static final String KEY_PERSISTENT_STATE = "persistent_state";
     private static final String KEY_EXPERIMENTAL_REX = "experimental_rex";
+    private static final String KEY_SECONDARY_DESTINATION = "secondary_destination";
+    private static final String SECONDARY_INTERNAL = "internal";
+    private static final String SECONDARY_AUTO = "auto";
+    private static final String SECONDARY_DISPLAY_PREFIX = "display:";
     private static final String KEYMAP_PREFS = "manual-keymaps";
     private static final String STATE_NONE = "none";
     private static final String STATE_COPYING = "copying";
@@ -92,7 +104,8 @@ public final class MainActivity extends Activity {
     private static final String DETECTION_ACCEPTED = "accepted";
     private static final String DETECTION_REJECTED = "rejected";
     private static final String DETECTION_ERROR = "error";
-    private static final long FRAME_UPDATE_INTERVAL_NS = 100_000_000L;
+    // Bounded 30 Hz sampling; guest execution and audio cadence are independent.
+    private static final long FRAME_UPDATE_INTERVAL_NS = 33_333_333L;
     private static final long METRIC_UPDATE_INTERVAL_NS = 1_000_000_000L;
     private static final KeySpec[] KEY_LAYOUT = {
             new KeySpec(R.string.key_menu, 0, 0, 0),
@@ -140,13 +153,40 @@ public final class MainActivity extends Activity {
     private TextView jniView;
     private TextView ackView;
     private FrameView frameView;
+    private FrameView secondaryFrameView;
+    private FrameLayout displayHost;
+    private FrameLayout secondaryPanel;
+    private boolean secondaryHidden;
+    private DisplayManager displayManager;
+    private Presentation secondaryPresentation;
+    private FrameView presentationFrameView;
+    private String presentationDisplayId;
+    private boolean presentationListenerRegistered;
+    private final DisplayManager.DisplayListener presentationDisplayListener =
+            new DisplayManager.DisplayListener() {
+                @Override
+                public void onDisplayAdded(int displayId) {
+                    updateSecondaryPresentation();
+                }
+
+                @Override
+                public void onDisplayRemoved(int displayId) {
+                    updateSecondaryPresentation();
+                }
+
+                @Override
+                public void onDisplayChanged(int displayId) {
+                    updateSecondaryPresentation();
+                }
+            };
+    private BackendBridge.Status latestStatus;
     private Button moreButton;
     private final Button[] keyButtons = new Button[23];
     private final View[] keyTargets = new View[23];
     private boolean backendProbeStarted;
     private boolean qemuReady;
     private boolean detectorRuntimeReady;
-    private boolean activityResumed;
+    private volatile boolean activityResumed;
     private boolean sessionStarting;
     private boolean canStartSession;
     private boolean editingInputMapping;
@@ -174,6 +214,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        displayManager = getSystemService(DisplayManager.class);
         setContentView(buildContent());
         refreshSelection();
         probeBackend();
@@ -186,21 +227,40 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         activityResumed = true;
+        if (!presentationListenerRegistered && displayManager != null) {
+            displayManager.registerDisplayListener(
+                    presentationDisplayListener, handler);
+            presentationListenerRegistered = true;
+        }
+        updateSecondaryPresentation();
         handler.removeCallbacks(refreshWhileCopying);
         refreshWhileCopying.run();
+        updateSessionKeepScreenOn(session != null, sessionGeneration);
     }
 
     @Override
     protected void onPause() {
         activityResumed = false;
+        if (presentationListenerRegistered && displayManager != null) {
+            displayManager.unregisterDisplayListener(presentationDisplayListener);
+            presentationListenerRegistered = false;
+        }
+        dismissSecondaryPresentation();
+        updateSecondaryPresentation();
         handler.removeCallbacks(refreshWhileCopying);
         releaseHeldKey(false);
-        stopSession(false);
+        updateSessionKeepScreenOn(false, sessionGeneration);
+        // Focus loss must not destroy guest RAM/state. Explicit stop/destroy owns it.
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        if (presentationListenerRegistered && displayManager != null) {
+            displayManager.unregisterDisplayListener(presentationDisplayListener);
+            presentationListenerRegistered = false;
+        }
+        dismissSecondaryPresentation();
         stopSession(false);
         inputExecutor.shutdown();
         super.onDestroy();
@@ -215,9 +275,11 @@ public final class MainActivity extends Activity {
 
         frameView = new FrameView(this);
         frameView.setBackgroundColor(Color.BLACK);
-        content.addView(frameView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        frameView.setMinimumHeight(dp(120));
+        displayHost = new FrameLayout(this);
+        displayHost.addView(frameView, new FrameLayout.LayoutParams(-1, -1));
+        content.addView(displayHost, new LinearLayout.LayoutParams(-1, 0, 1));
+        displayHost.setMinimumHeight(dp(120));
+        buildSecondaryPanel();
 
         GridLayout keypad = new GridLayout(this);
         keypad.setColumnCount(3);
@@ -305,6 +367,219 @@ public final class MainActivity extends Activity {
             return insets;
         });
         return content;
+    }
+
+    private void buildSecondaryPanel() {
+        secondaryPanel = new FrameLayout(this);
+        secondaryPanel.setBackgroundColor(Color.rgb(40, 40, 40));
+        secondaryPanel.setVisibility(View.GONE);
+        FrameLayout.LayoutParams bounds = new FrameLayout.LayoutParams(dp(160), dp(128));
+        bounds.gravity = Gravity.TOP | Gravity.LEFT;
+        displayHost.addView(secondaryPanel, bounds);
+        TextView title = statusLine(getString(R.string.additional_display));
+        title.setTextSize(11);
+        title.setContentDescription(getString(R.string.move_display));
+        title.setClickable(true);
+        secondaryPanel.addView(title, new FrameLayout.LayoutParams(-1, dp(24)));
+        title.setOnTouchListener((view, event) -> moveSecondary(view, event, false));
+        secondaryFrameView = new FrameView(this);
+        secondaryFrameView.setBackgroundColor(Color.BLACK);
+        FrameLayout.LayoutParams image = new FrameLayout.LayoutParams(-1, -1);
+        image.topMargin = dp(24);
+        secondaryPanel.addView(secondaryFrameView, image);
+        Button resize = compactButton(R.string.resize_display, view -> {
+            FrameLayout.LayoutParams size = (FrameLayout.LayoutParams) secondaryPanel.getLayoutParams();
+            size.width = Math.min(displayHost.getWidth(), size.width + dp(24));
+            size.height = Math.min(displayHost.getHeight(), size.height + dp(16));
+            clampSecondary(size);
+        });
+        resize.setText("↘");
+        resize.setContentDescription(getString(R.string.resize_display));
+        FrameLayout.LayoutParams handle = new FrameLayout.LayoutParams(dp(32), dp(32));
+        handle.gravity = Gravity.BOTTOM | Gravity.RIGHT;
+        secondaryPanel.addView(resize, handle);
+        resize.setOnTouchListener((view, event) -> moveSecondary(view, event, true));
+        displayHost.addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> {
+            if (r > l && b > t && (r - l != or - ol || b - t != ob - ot)) {
+                clampSecondary((FrameLayout.LayoutParams) secondaryPanel.getLayoutParams());
+            }
+        });
+    }
+
+    private boolean moveSecondary(View handle, MotionEvent event, boolean resize) {
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            FrameLayout.LayoutParams bounds = (FrameLayout.LayoutParams) secondaryPanel.getLayoutParams();
+            handle.setTag(new float[]{event.getRawX(), event.getRawY(),
+                    resize ? bounds.width : bounds.leftMargin,
+                    resize ? bounds.height : bounds.topMargin, 0});
+            return true;
+        }
+        if (event.getActionMasked() == MotionEvent.ACTION_MOVE && handle.getTag() instanceof float[]) {
+            float[] start = (float[]) handle.getTag();
+            float dx = event.getRawX() - start[0];
+            float dy = event.getRawY() - start[1];
+            int touchSlop = android.view.ViewConfiguration.get(this)
+                    .getScaledTouchSlop();
+            if (start[4] == 0 && Math.abs(dx) < touchSlop
+                    && Math.abs(dy) < touchSlop) {
+                return true;
+            }
+            start[4] = 1;
+            FrameLayout.LayoutParams bounds = (FrameLayout.LayoutParams) secondaryPanel.getLayoutParams();
+            int x = Math.round(start[2] + dx);
+            int y = Math.round(start[3] + dy);
+            if (resize) {
+                bounds.width = Math.max(dp(96), x);
+                bounds.height = Math.max(dp(72), y);
+            } else {
+                bounds.leftMargin = x;
+                bounds.topMargin = y;
+            }
+            clampSecondary(bounds);
+            return true;
+        }
+        if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+            float[] start = handle.getTag() instanceof float[]
+                    ? (float[]) handle.getTag() : null;
+            handle.setTag(null);
+            if (start != null && start[4] == 0) {
+                handle.performClick();
+            }
+            return true;
+        }
+        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            handle.setTag(null);
+        }
+        return true;
+    }
+
+    private void clampSecondary(FrameLayout.LayoutParams bounds) {
+        int width = displayHost.getWidth(), height = displayHost.getHeight();
+        if (width < 1 || height < 1) {
+            return;
+        }
+        int clampedWidth = Math.min(width, Math.max(dp(96), bounds.width));
+        int clampedHeight = Math.min(height, Math.max(dp(72), bounds.height));
+        int clampedLeft = Math.max(0,
+                Math.min(width - clampedWidth, bounds.leftMargin));
+        int clampedTop = Math.max(0,
+                Math.min(height - clampedHeight, bounds.topMargin));
+        bounds.width = clampedWidth;
+        bounds.height = clampedHeight;
+        bounds.leftMargin = clampedLeft;
+        bounds.topMargin = clampedTop;
+        secondaryPanel.setLayoutParams(bounds);
+    }
+
+    private void chooseSecondaryDestination() {
+        ArrayList<String> destinations = new ArrayList<>();
+        ArrayList<String> labels = new ArrayList<>();
+        destinations.add(SECONDARY_INTERNAL);
+        labels.add(getString(R.string.display_in_app));
+        destinations.add(SECONDARY_AUTO);
+        labels.add(getString(R.string.display_automatic));
+        Display[] displays = displayManager == null ? new Display[0]
+                : displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
+        for (Display display : displays) {
+            destinations.add(SECONDARY_DISPLAY_PREFIX + presentationKey(display));
+            labels.add(getString(R.string.display_external,
+                    display.getName(), display.getDisplayId()));
+        }
+        String selected = preferences().getString(
+                KEY_SECONDARY_DESTINATION, SECONDARY_INTERNAL);
+        int checked = destinations.indexOf(selected);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.display_destination)
+                .setSingleChoiceItems(labels.toArray(new String[0]), checked,
+                        (dialog, which) -> {
+                            preferences().edit().putString(
+                                    KEY_SECONDARY_DESTINATION,
+                                    destinations.get(which)).apply();
+                            dialog.dismiss();
+                            updateSecondaryPresentation();
+                        })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private static String presentationKey(Display display) {
+        // Public API has no persistent display ID; reconnect may require reselection.
+        return display.getDisplayId() + ":" + display.getName();
+    }
+
+    private Display selectedPresentationDisplay() {
+        if (!activityResumed || secondaryHidden || displayManager == null
+                || latestStatus == null || !latestStatus.secondaryAvailable) {
+            return null;
+        }
+        String destination = preferences().getString(
+                KEY_SECONDARY_DESTINATION, SECONDARY_INTERNAL);
+        if (SECONDARY_INTERNAL.equals(destination)) {
+            return null;
+        }
+        String selectedId = destination.startsWith(SECONDARY_DISPLAY_PREFIX)
+                ? destination.substring(SECONDARY_DISPLAY_PREFIX.length()) : null;
+        for (Display display : displayManager.getDisplays(
+                DisplayManager.DISPLAY_CATEGORY_PRESENTATION)) {
+            if (selectedId == null || selectedId.equals(presentationKey(display))) {
+                return display;
+            }
+        }
+        return null;
+    }
+
+    private void updateSecondaryPresentation() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(this::updateSecondaryPresentation);
+            return;
+        }
+        Display display = selectedPresentationDisplay();
+        if (display == null) {
+            dismissSecondaryPresentation();
+            secondaryPanel.setVisibility(latestStatus != null
+                    && latestStatus.secondaryAvailable && !secondaryHidden
+                    ? View.VISIBLE : View.GONE);
+            return;
+        }
+        String uniqueId = presentationKey(display);
+        if (secondaryPresentation != null && secondaryPresentation.isShowing()
+                && uniqueId.equals(presentationDisplayId)) {
+            secondaryPanel.setVisibility(View.GONE);
+            return;
+        }
+        dismissSecondaryPresentation();
+        try {
+            Presentation presentation = new Presentation(this, display);
+            FrameView output = new FrameView(presentation.getContext());
+            output.setBackgroundColor(Color.BLACK);
+            presentation.setContentView(output,
+                    new FrameLayout.LayoutParams(-1, -1));
+            secondaryPresentation = presentation;
+            presentationFrameView = output;
+            presentationDisplayId = uniqueId;
+            presentation.show();
+            secondaryFrameView.moveFrameTo(output);
+            secondaryPanel.setVisibility(View.GONE);
+        } catch (RuntimeException error) {
+            android.util.Log.w("MSM5xxxDisplay",
+                    "Presentation display unavailable", error);
+            dismissSecondaryPresentation();
+            secondaryPanel.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void dismissSecondaryPresentation() {
+        Presentation oldPresentation = secondaryPresentation;
+        FrameView oldView = presentationFrameView;
+        secondaryPresentation = null;
+        presentationFrameView = null;
+        presentationDisplayId = null;
+        if (oldView != null) {
+            oldView.moveFrameTo(secondaryFrameView);
+        }
+        if (oldPresentation != null) {
+            oldPresentation.dismiss();
+        }
     }
 
     private void probeBackend() {
@@ -621,7 +896,7 @@ public final class MainActivity extends Activity {
     }
 
     private void startSession() {
-        if (session != null) {
+        if (session != null || sessionStarting) {
             return;
         }
         SharedPreferences preferences = preferences();
@@ -644,6 +919,12 @@ public final class MainActivity extends Activity {
                 KEY_EXPERIMENTAL_REX, false);
         int generation = ++sessionGeneration;
         sessionStarting = true;
+        latestStatus = null;
+        secondaryHidden = false;
+        dismissSecondaryPresentation();
+        secondaryPanel.setVisibility(View.GONE);
+        secondaryFrameView.clear();
+        frameView.clear();
         inputTiming.reset();
         clearError();
         updateSessionControls(false);
@@ -661,6 +942,7 @@ public final class MainActivity extends Activity {
                             int generation) {
         BackendBridge.Session opened = null;
         FramePacket latestFrame = null;
+        FramePacket latestSecondary = null;
         PcmAudioSink audioSink = new PcmAudioSink();
         boolean audioStarted = false;
         boolean audioRejected = false;
@@ -690,7 +972,7 @@ public final class MainActivity extends Activity {
             while (generation == sessionGeneration) {
                 long now = SystemClock.elapsedRealtimeNanos();
                 if (now < nextBackendUpdate) {
-                    Thread.sleep(20);
+                    TimeUnit.NANOSECONDS.sleep(nextBackendUpdate - now);
                     continue;
                 }
                 FramePacket frame = FrameView.decodePacket(opened.frame());
@@ -699,6 +981,13 @@ public final class MainActivity extends Activity {
                         latestFrame.recycle();
                     }
                     latestFrame = frame;
+                }
+                FramePacket secondary = FrameView.decodePacket(opened.secondaryFrame());
+                if (secondary != null) {
+                    if (latestSecondary != null) {
+                        latestSecondary.recycle();
+                    }
+                    latestSecondary = secondary;
                 }
                 BackendBridge.Status status = opened.status();
                 if (!audioRejected && !audioStarted
@@ -717,13 +1006,14 @@ public final class MainActivity extends Activity {
                 boolean inputChanged = status.inputHostEvents
                         != publishedInputEvents
                         || status.inputRejections != publishedRejections;
-                boolean frameDue = latestFrame != null
+                boolean frameDue = (latestFrame != null || latestSecondary != null)
                         && now >= nextFrameUpdate;
                 boolean metricDue = now >= nextMetricUpdate;
                 if (frameDue || inputChanged || metricDue) {
-                    enqueueFrame(new FrameUpdate(generation, latestFrame,
+                    enqueueFrame(new FrameUpdate(generation, latestFrame, latestSecondary,
                             status, timing, audioSink.failureCount()));
                     latestFrame = null;
+                    latestSecondary = null;
                     publishedInputEvents = status.inputHostEvents;
                     publishedRejections = status.inputRejections;
                     nextFrameUpdate = now + FRAME_UPDATE_INTERVAL_NS;
@@ -733,9 +1023,9 @@ public final class MainActivity extends Activity {
                     throw new IOException("QEMU process exited");
                 }
                 nextBackendUpdate = now + FRAME_UPDATE_INTERVAL_NS;
-                Thread.sleep(20);
             }
         } catch (IOException | RuntimeException | LinkageError error) {
+            android.util.Log.e("MSM5xxxSession", "Session failed", error);
             failed = true;
             if (generation == sessionGeneration) {
                 session = null;
@@ -759,6 +1049,9 @@ public final class MainActivity extends Activity {
             if (latestFrame != null) {
                 latestFrame.recycle();
             }
+            if (latestSecondary != null) {
+                latestSecondary.recycle();
+            }
             if (opened != null && (failed || generation != sessionGeneration)) {
                 closeQuietly(opened);
             }
@@ -766,9 +1059,27 @@ public final class MainActivity extends Activity {
     }
 
     private void enqueueFrame(FrameUpdate update) {
-        FrameUpdate replaced = pendingFrame.getAndSet(update);
-        if (replaced != null) {
-            replaced.recycle();
+        while (true) {
+            FrameUpdate previous = pendingFrame.get();
+            FramePacket frame = previous != null
+                    && previous.generation == update.generation
+                    && update.frame == null ? previous.frame : update.frame;
+            FramePacket secondary = previous != null
+                    && previous.generation == update.generation
+                    && update.secondary == null ? previous.secondary : update.secondary;
+            FrameUpdate merged = previous == null
+                    || previous.generation != update.generation ? update
+                    : new FrameUpdate(update.generation, frame, secondary,
+                            update.status, update.timing, update.localAudioFailures);
+            if (pendingFrame.compareAndSet(previous, merged)) {
+                if (previous != null && previous != merged) {
+                    previous.recycleExcept(frame, secondary);
+                }
+                if (update != merged) {
+                    update.recycleExcept(frame, secondary);
+                }
+                break;
+            }
         }
         if (framePosted.compareAndSet(false, true)) {
             handler.post(this::drainFrame);
@@ -778,7 +1089,7 @@ public final class MainActivity extends Activity {
     private void drainFrame() {
         FrameUpdate update = pendingFrame.getAndSet(null);
         if (update != null) {
-            showSessionFrame(update.generation, update.frame, update.status,
+            showSessionFrame(update.generation, update.frame, update.secondary, update.status,
                     update.timing, update.localAudioFailures);
         }
         framePosted.set(false);
@@ -789,16 +1100,49 @@ public final class MainActivity extends Activity {
     }
 
     private void showSessionFrame(int generation, FramePacket frame,
-                                  BackendBridge.Status status,
+                                  FramePacket secondary, BackendBridge.Status status,
                                   InputTimingSnapshot timing,
                                   long localAudioFailures) {
         if (generation != sessionGeneration || session == null) {
             if (frame != null) {
                 frame.recycle();
             }
+            if (secondary != null) {
+                secondary.recycle();
+            }
             return;
         }
+        boolean secondaryAvailabilityChanged = latestStatus == null
+                || latestStatus.secondaryAvailable != status.secondaryAvailable;
+        latestStatus = status;
+        if (secondaryAvailabilityChanged) {
+            updateSecondaryPresentation();
+        }
         frameView.setFrame(frame, generation);
+        if (status.secondaryAvailable) {
+            if (secondaryHidden) {
+                secondaryFrameView.setFrame(secondary, generation);
+                secondaryPanel.setVisibility(View.GONE);
+            } else {
+                if (secondaryPresentation != null
+                        && !secondaryPresentation.isShowing()) {
+                    dismissSecondaryPresentation();
+                    secondaryPanel.setVisibility(View.VISIBLE);
+                }
+                FrameView destination = secondaryPresentation != null
+                        ? presentationFrameView : secondaryFrameView;
+                destination.setFrame(secondary, generation);
+                secondaryPanel.setVisibility(secondaryPresentation != null
+                        ? View.GONE : View.VISIBLE);
+            }
+        } else {
+            if (secondary != null) {
+                secondary.recycle();
+            }
+            dismissSecondaryPresentation();
+            secondaryFrameView.clear();
+            secondaryPanel.setVisibility(View.GONE);
+        }
         setTextIfChanged(pcView, getString(R.string.metric_pc, status.pc));
         setTextIfChanged(runView, getString(
                 R.string.metric_run, status.instructions));
@@ -1065,6 +1409,10 @@ public final class MainActivity extends Activity {
         BackendBridge.Session current = session;
         session = null;
         sessionStarting = false;
+        latestStatus = null;
+        dismissSecondaryPresentation();
+        secondaryPanel.setVisibility(View.GONE);
+        secondaryFrameView.clear();
         updateKeypad(null);
         updateSessionControls(false);
         if (visible) {
@@ -1106,7 +1454,7 @@ public final class MainActivity extends Activity {
                     || (enabled && session == null)) {
                 return;
             }
-            if (enabled) {
+            if (enabled && activityResumed) {
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             } else {
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -1166,7 +1514,51 @@ public final class MainActivity extends Activity {
         popup.getMenu().add(0, MORE_RUN_STOP, 3,
                 busy ? R.string.stop : R.string.start)
                 .setEnabled(busy || canStartSession);
+        popup.getMenu().add(0, MORE_REBOOT, 4, R.string.reboot)
+                .setEnabled(session != null && !sessionStarting);
+        popup.getMenu().add(0, MORE_SECONDARY, 5, R.string.additional_display)
+                .setEnabled(latestStatus != null && latestStatus.secondaryAvailable)
+                .setCheckable(true).setChecked(!secondaryHidden);
+        popup.getMenu().add(0, MORE_FOLD, 6,
+                latestStatus != null && latestStatus.foldOpen
+                ? R.string.fold_close : R.string.fold_open)
+                .setEnabled(latestStatus != null && latestStatus.foldSupported);
+        popup.getMenu().add(0, MORE_SECONDARY_DESTINATION, 7,
+                R.string.display_destination);
         popup.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == MORE_REBOOT) {
+                stopSession(false);
+                startSession();
+                return true;
+            }
+            if (item.getItemId() == MORE_SECONDARY) {
+                secondaryHidden = !secondaryHidden;
+                updateSecondaryPresentation();
+                return true;
+            }
+            if (item.getItemId() == MORE_SECONDARY_DESTINATION) {
+                chooseSecondaryDestination();
+                return true;
+            }
+            if (item.getItemId() == MORE_FOLD) {
+                BackendBridge.Session target = session;
+                boolean opened = latestStatus != null && !latestStatus.foldOpen;
+                inputExecutor.execute(() -> {
+                    try {
+                        if (target != null) {
+                            target.setFold(opened);
+                        }
+                    } catch (IOException error) {
+                        android.util.Log.e("MSM5xxxSession", "Fold failed", error);
+                        handler.post(() -> {
+                            if (session == target) {
+                                showError(getString(R.string.error_input_failed));
+                            }
+                        });
+                    }
+                });
+                return true;
+            }
             if (item.getItemId() == MORE_CHOOSE) {
                 chooseFirmware();
                 return true;
@@ -1507,6 +1899,27 @@ public final class MainActivity extends Activity {
                 result[index * 2 + 1] = HEX[octet & 0x0f];
             }
             return new String(result);
+        }
+
+        // Transfer ownership on output changes, even if firmware pixels are static.
+        void moveFrameTo(FrameView target) {
+            if (bitmap == null) {
+                return;
+            }
+            target.clear();
+            target.bitmap = bitmap;
+            bitmap = null;
+            target.setContentDescription(getContentDescription());
+            target.invalidate();
+            invalidate();
+        }
+
+        void clear() {
+            if (bitmap != null) {
+                bitmap.recycle();
+                bitmap = null;
+            }
+            invalidate();
         }
 
         void setFrame(FramePacket frame, int generation) {
@@ -1940,15 +2353,17 @@ public final class MainActivity extends Activity {
     private static final class FrameUpdate {
         final int generation;
         final FramePacket frame;
+        final FramePacket secondary;
         final BackendBridge.Status status;
         final InputTimingSnapshot timing;
         final long localAudioFailures;
 
-        FrameUpdate(int generation, FramePacket frame,
+        FrameUpdate(int generation, FramePacket frame, FramePacket secondary,
                     BackendBridge.Status status,
                     InputTimingSnapshot timing, long localAudioFailures) {
             this.generation = generation;
             this.frame = frame;
+            this.secondary = secondary;
             this.status = status;
             this.timing = timing;
             this.localAudioFailures = localAudioFailures;
@@ -1957,6 +2372,18 @@ public final class MainActivity extends Activity {
         void recycle() {
             if (frame != null) {
                 frame.recycle();
+            }
+            if (secondary != null) {
+                secondary.recycle();
+            }
+        }
+
+        void recycleExcept(FramePacket keepFrame, FramePacket keepSecondary) {
+            if (frame != null && frame != keepFrame) {
+                frame.recycle();
+            }
+            if (secondary != null && secondary != keepSecondary) {
+                secondary.recycle();
             }
         }
     }
