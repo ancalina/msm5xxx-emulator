@@ -1,7 +1,12 @@
 diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
 --- a/hw/block/pflash_cfi02.c
 +++ b/hw/block/pflash_cfi02.c
-@@ -78,6 +78,7 @@ struct PFlashCFI02 {
+@@ -1,3 +1,4 @@
++/* Modified by MSM5xxx emulator contributors, 2026-09-30: optional write-while-suspended device behavior. */
+ /*
+  *  CFI parallel flash with AMD command set emulation
+  *
+@@ -78,6 +79,7 @@
      uint8_t mappings;
      uint8_t width;
      uint8_t be;
@@ -9,14 +14,17 @@ diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
      int wcycle; /* if 0, the flash is read normally */
      int bypass;
      int ro;
-@@ -540,4 +541,5 @@ static void pflash_write(PFlashCFI02 *pfl, hwaddr offset,
+@@ -538,7 +540,8 @@
+             /* We need another unlock sequence */
+             goto check_unlock0;
          case 0xA0: /* Program */
 -            if (pflash_erase_suspend_mode(pfl) &&
 +            if (!pfl->write_while_suspended &&
 +                pflash_erase_suspend_mode(pfl) &&
                  pflash_sector_is_erasing(pfl, offset)) {
                  /* Ignore writes to erasing sectors. */
-@@ -952,6 +954,8 @@ static const Property pflash_cfi02_properties[] = {
+                 if (pfl->bypass) {
+@@ -952,6 +955,8 @@
      DEFINE_PROP_UINT8("width", PFlashCFI02, width, 0),
      DEFINE_PROP_UINT8("mappings", PFlashCFI02, mappings, 0),
      DEFINE_PROP_UINT8("big-endian", PFlashCFI02, be, 0),

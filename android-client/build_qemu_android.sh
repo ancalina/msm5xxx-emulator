@@ -23,7 +23,7 @@ NDK_VERSION=28.2.13676358
 NDK="$SDK/ndk/$NDK_VERSION"
 TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 ARCHIVE="$ROOT/build/vendor-downloads/qemu-$QEMU_VERSION.tar.xz"
-GLIB="$ROOT/build/vendor-install/glib-sanitized2/usr/local"
+GLIB=${MSM5XXX_GLIB_PREFIX:-"$ROOT/build/vendor-install/glib-source-r13/usr/local"}
 DTC_SOURCE=${MSM5XXX_DTC_SOURCE:-}
 ANDROID_PATCH="$REPO/experiments/qemu-tcg/qemu-10.2.1-android-host.patch"
 
@@ -55,10 +55,10 @@ fi
 
 check_sha256 "$MSM5XXX_ANDROID_PATCH_SHA256" "$ANDROID_PATCH"
 check_sha256 \
-    bf5bf27ec9048f915f7b166eaada1f75ba0eb87e3dc9aef4fc292d5ced183ee3 \
+    6f6a6025770a573d0ba58e47b7673b447dbdfc1a8f29622e069ea9f22d6b7084 \
     "$GLIB/lib/libglib-2.0.so"
 check_sha256 \
-    fe085703f11516d537bae8393260abf6aa3c23459880911d5d8b3e4aa6ab41d2 \
+    a7fd5b15ed8b4e493acf56db28f823af3a184142fc00b4110f3a61e309ed40ec \
     "$GLIB/lib/libintl.so"
 if [ "$(git -C "$DTC_SOURCE" rev-parse HEAD)" != "$QEMU_DTC_REVISION" ]; then
     echo "unexpected DTC source revision" >&2

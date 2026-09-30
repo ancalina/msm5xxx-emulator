@@ -85,6 +85,11 @@ cp "$AUDIO_SYNTH_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-synth.c"
 cp "$AUDIO_SYNTH_HEADER" "$OUTPUT/hw/arm/msm5xxx-audio-synth.h"
 cp "$MA5_CORE" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.c"
 cp "$MA5_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.h"
+{
+    printf '%s\n' '# Modified by MSM5xxx emulator contributors, 2026-09-30: register the MSM5xxx machine and audio sources.'
+    cat "$OUTPUT/hw/arm/meson.build"
+} > "$OUTPUT/hw/arm/meson.build.msm5xxx"
+mv "$OUTPUT/hw/arm/meson.build.msm5xxx" "$OUTPUT/hw/arm/meson.build"
 printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
 
 test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1

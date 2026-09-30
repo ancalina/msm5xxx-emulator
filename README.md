@@ -86,3 +86,6 @@ Build details and backend boundaries are in
 
 The project is `GPL-2.0-or-later`. QEMU and bundled-library source archives and
 notices accompany binary releases. Do not redistribute manufacturer firmware.
+The preview uses the project's GPLv2 option; dependency licenses remain intact.
+See [binary/source correspondence](docs/SOURCE_DISTRIBUTION.md) for source
+companions, compilation recipes and redistribution details.

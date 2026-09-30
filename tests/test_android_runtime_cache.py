@@ -22,7 +22,8 @@ class AndroidRuntimeCacheTests(unittest.TestCase):
             jni = cache.GENERATED / 'jniLibs/arm64-v8a'
             assets = cache.GENERATED / 'python-assets/python/lib/python3.14'
             tools = repo / 'sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin'
-            files = [cache.ROOT / 'build_qemu_android.sh', tree / 'stage_qemu_source.sh',
+            files = [cache.ROOT / 'build_qemu_android.sh', cache.ROOT / 'build_glib_android.sh',
+                     tree / 'stage_qemu_source.sh',
                      tree / 'qemu-10.2.1-icount-advance.patch',
                      tree / 'qemu-10.2.1-cfi02-write-while-suspended.patch',
                      tree / 'qemu-10.2.1-android-host.patch', tree / 'msm5xxx-poc.c',
@@ -43,7 +44,8 @@ class AndroidRuntimeCacheTests(unittest.TestCase):
                 # Common Python edits must not force a native rebuild.
                 settings.write_text('QEMU_VERSION=test\nMSM5XXX_TRANSPORT_SHA256=new\n')
                 cache.main('verify')
-                for p in (tree / 'msm5xxx-poc.c', jni / 'libqemu-system-arm.so',
+                for p in (cache.ROOT / 'build_glib_android.sh', tree / 'msm5xxx-poc.c',
+                          jni / 'libqemu-system-arm.so',
                           assets / 'os.py'):
                     p.write_bytes(b'mutated')
                     with self.assertRaisesRegex(RuntimeError, 'runtime cache mismatch'):

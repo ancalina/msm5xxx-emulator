@@ -9,6 +9,12 @@ With the pinned runtime artifacts present under the ignored `build/` directory,
 build and install the arm64-v8a app with Android SDK 35 and Gradle 9.4:
 
 ```sh
+./build_glib_android.sh /new/glib-build-work
+cp -a /new/glib-build-work/prefix build/vendor-install/glib-source-r13
+install -m 0755 /new/glib-build-work/runtime/libglib-2.0.so \
+  build/vendor-install/glib-source-r13/usr/local/lib/libglib-2.0.so
+install -m 0755 /new/glib-build-work/runtime/libintl.so \
+  build/vendor-install/glib-source-r13/usr/local/lib/libintl.so
 MSM5XXX_DTC_SOURCE=/path/to/pinned/dtc \
   ./build_qemu_android.sh /new/qemu-build-work
 ./build_unicorn_android.sh
@@ -51,3 +57,14 @@ It must be signed with an approved release key before installation or publicatio
 No signing credentials are stored in this project. Keep the matching project and
 dependency source companions and SHA-256 manifest with the candidate. Debug APKs
 remain test builds and must not be described as signed production releases.
+
+For the developer prerelease, the existing Gradle debug certificate can sign
+the Release build with APK v2/v3 signatures using the checked-in build init:
+
+```sh
+gradle --offline --max-workers=1 -I preview-signing.init.gradle :app:assembleRelease
+```
+
+This is a developer preview certificate, not a production signing identity.
+The source distribution includes this configuration, but never a private key.
+See [source distribution](../docs/SOURCE_DISTRIBUTION.md) for companion archives.

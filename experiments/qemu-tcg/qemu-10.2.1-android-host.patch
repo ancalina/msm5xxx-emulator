@@ -1,7 +1,12 @@
 diff --git a/meson.build b/meson.build
 --- a/meson.build
 +++ b/meson.build
-@@ -1364,7 +1364,13 @@ spice = dependency('spice-server', version: '>=0.12.5',
+@@ -1,3 +1,4 @@
++# Modified by MSM5xxx emulator contributors, 2026-09-30: Android host feature detection.
+ project('qemu', ['c'], meson_version: '>=1.5.0',
+         default_options: ['warning_level=1', 'c_std=gnu11', 'cpp_std=gnu++11', 'b_colorout=auto',
+                           'b_staticpic=false', 'stdsplit=false', 'optimization=2', 'b_pie=true'],
+@@ -1364,7 +1365,13 @@
  spice_headers = spice.partial_dependency(compile_args: true, includes: true)
  
  rt = not_found
@@ -19,7 +24,12 @@ diff --git a/meson.build b/meson.build
 diff --git a/util/oslib-posix.c b/util/oslib-posix.c
 --- a/util/oslib-posix.c
 +++ b/util/oslib-posix.c
-@@ -984,6 +984,11 @@ static int qemu_shm_open(const char *shm_name, int flags, mode_t mode)
+@@ -1,3 +1,4 @@
++/* Modified by MSM5xxx emulator contributors, 2026-09-30: Android shared-memory availability handling. */
+ /*
+  * os-posix-lib.c
+  *
+@@ -984,6 +985,11 @@
  
  int qemu_shm_alloc(size_t size, Error **errp)
  {
@@ -31,9 +41,10 @@ diff --git a/util/oslib-posix.c b/util/oslib-posix.c
      g_autoptr(GString) shm_name = g_string_new(NULL);
      int fd, oflag, cur_sequence;
      static int sequence;
-@@ -1032,4 +1037,5 @@ int qemu_shm_alloc(size_t size, Error **errp)
+@@ -1032,4 +1038,5 @@
      }
  
      return fd;
+-}
 +#endif
- }
++}

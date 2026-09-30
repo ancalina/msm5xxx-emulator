@@ -23,7 +23,7 @@ def native():
              'qemu-10.2.1-android-host.patch']
     paths = [tree / name for name in names]
     paths += sorted(tree.glob('msm5xxx-*.c')) + sorted(tree.glob('msm5xxx-*.h'))
-    paths += [ROOT / 'build_qemu_android.sh']
+    paths += [ROOT / 'build_qemu_android.sh', ROOT / 'build_glib_android.sh']
     inputs = {str(p.relative_to(REPO)): digest(p) for p in paths}
     # Python transport edits do not change native machine code.
     settings = '\n'.join(line for line in (tree / 'qemu_build_inputs.env').read_text().splitlines()

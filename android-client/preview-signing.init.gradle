@@ -1,0 +1,11 @@
+// Developer preview signing; Gradle supplies the local debug key.
+// No private signing material is part of the source distribution.
+gradle.beforeProject { project ->
+    project.afterEvaluate {
+        if (project.plugins.hasPlugin("com.android.application")) {
+            project.android.signingConfigs.getByName("debug").enableV3Signing = true
+            project.android.buildTypes.getByName("release").signingConfig =
+                    project.android.signingConfigs.getByName("debug")
+        }
+    }
+}

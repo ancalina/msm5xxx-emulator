@@ -98,7 +98,7 @@ jobs:
             experiments/qemu-tcg/qemu_transport.py \
             experiments/qemu-tcg/gdb_remote.py \
             experiments/qemu-tcg/README.md "$bundle/experiments/qemu-tcg/"
-          cp docs/QEMU_TCG_BACKEND.md "$bundle/docs/"
+          cp docs/QEMU_TCG_BACKEND.md docs/SOURCE_DISTRIBUTION.md "$bundle/docs/"
           cp "$source/COPYING" "$bundle/QEMU_COPYING"
 
           python - <<'PY'
