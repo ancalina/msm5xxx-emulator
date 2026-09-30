@@ -21,6 +21,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -260,8 +262,20 @@ jobs:
             -o dist/msm5xxx-project-source.tar.gz "$GITHUB_SHA"
           python experiments/qemu-tcg/package_windows_sources.py \
             "dist/$BUNDLE_NAME" dist/windows-runtime-sources
+          python - <<'PY'
+          import json, pathlib, subprocess
+          root = pathlib.Path('dist/previous-project-sources')
+          root.mkdir()
+          pins = json.loads(pathlib.Path('experiments/qemu-tcg/windows_dependency_sources.json').read_text())
+          for item in pins['previous_windows_builds']:
+              subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=msm5xxx-r13/',
+                              '-o', str(pathlib.Path('dist') / item['project_archive']), item['project_commit']], check=True)
+          (root / 'BUILD-SOURCE-MAP.json').write_text(json.dumps(pins['previous_windows_builds'], indent=2) + '\n')
+          (root / 'README.md').write_text('Each exact project archive pairs with the QEMU source artifact in its original Actions run, identified in BUILD-SOURCE-MAP.json. The sibling Windows runtime source companion supplies the same six pinned DLL versions and recipes for these builds. Sources are provided with the same access as runtime artifacts.\n')
+          PY
           (cd dist && sha256sum msm5xxx-project-source.tar.gz \
-            MSM5xxx-QEMU-windows-runtime-sources.tar.xz > extra-source.sha256)
+            MSM5xxx-QEMU-windows-runtime-sources.tar.xz \
+            previous-project-sources/* > extra-source.sha256)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -272,6 +286,7 @@ jobs:
             dist/msm5xxx-project-source.tar.gz
             dist/MSM5xxx-QEMU-windows-runtime-sources.tar.xz
             dist/extra-source.sha256
+            dist/previous-project-sources/
           if-no-files-found: error
           retention-days: 30
 

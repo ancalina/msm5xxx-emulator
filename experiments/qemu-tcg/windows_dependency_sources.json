@@ -129,5 +129,28 @@
         "licenses/msys2/zlib/LICENSE"
       ]
     }
+  ],
+  "previous_windows_builds": [
+    {
+      "project_commit": "d38cf6705b907ec20dfb3e95bd86973cfd10bccd",
+      "actions_run_url": "https://github.com/ancalina/msm5xxx-emulator/actions/runs/36678264332",
+      "project_archive": "previous-project-sources/msm5xxx-d38cf6705b907ec20dfb3e95bd86973cfd10bccd-source.tar.gz",
+      "qemu_binary_sha256": "0c78dec3d3cf265806ecf418ee020c14b28654825fcc492faf97930037f3ce69",
+      "qemu_source_artifact": "msm5xxx-qemu-10.2.1-corresponding-source"
+    },
+    {
+      "project_commit": "2fbc02c6abc075f17c6872bf2cfe209ec7a3768b",
+      "actions_run_url": "https://github.com/ancalina/msm5xxx-emulator/actions/runs/36687491356",
+      "project_archive": "previous-project-sources/msm5xxx-2fbc02c6abc075f17c6872bf2cfe209ec7a3768b-source.tar.gz",
+      "qemu_binary_sha256": "8654d63f1b8a72b70abff9b0326ed1ddcfab614222f317dfb228c1e4940c83f2",
+      "qemu_source_artifact": "msm5xxx-qemu-10.2.1-corresponding-source"
+    },
+    {
+      "project_commit": "cd6fde2dc71bf1a52610e10f50517e1f13e9e0d6",
+      "actions_run_url": "https://github.com/ancalina/msm5xxx-emulator/actions/runs/36692823933",
+      "project_archive": "previous-project-sources/msm5xxx-cd6fde2dc71bf1a52610e10f50517e1f13e9e0d6-source.tar.gz",
+      "qemu_binary_sha256": "244fa77b29b8851221f8a2c3eaff65bd88709fb946cdc39aad52c846f4524aba",
+      "qemu_source_artifact": "msm5xxx-qemu-10.2.1-corresponding-source"
+    }
   ]
 }

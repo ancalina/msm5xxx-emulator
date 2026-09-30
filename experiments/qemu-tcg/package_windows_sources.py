@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -27,9 +28,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def run(*args: str, cwd: Path | None = None) -> bytes:
+def run(*args: str) -> bytes:
     try:
-        return subprocess.run(args, cwd=cwd, check=True, capture_output=True).stdout
+        return subprocess.run(args, check=True, capture_output=True).stdout
     except FileNotFoundError as exc:
         raise RuntimeError(f"required source-archive tool missing: {args[0]}") from exc
     except subprocess.CalledProcessError as exc:
@@ -42,13 +43,14 @@ def verify_package(archive: Path, pin: dict) -> None:
         raise RuntimeError(f"unexpected source archive size: {archive.name}")
     if sha256(archive) != pin["source_archive_sha256"]:
         raise RuntimeError(f"unexpected source archive SHA-256: {archive.name}")
-    run("zstd", "-t", str(archive))
-    listing = run("tar", "--zstd", "-tf", archive.name, cwd=archive.parent).decode(errors="replace").splitlines()
     root = pin["source_root"]
-    for name in (f"{root}/PKGBUILD", f"{root}/.SRCINFO"):
-        if name not in listing:
-            raise RuntimeError(f"source archive missing {name}: {archive.name}")
-    recipe = run("tar", "--zstd", "-xOf", archive.name, f"{root}/PKGBUILD", cwd=archive.parent)
+    # Decode explicitly; Windows tar variants cannot reliably invoke zstd.
+    with tarfile.open(fileobj=io.BytesIO(run("zstd", "-dc", str(archive))), mode="r:") as source:
+        members = {member.name: member for member in source.getmembers()}
+        for name in (f"{root}/PKGBUILD", f"{root}/.SRCINFO"):
+            if name not in members or not members[name].isfile():
+                raise RuntimeError(f"source archive missing regular {name}: {archive.name}")
+        recipe = source.extractfile(f"{root}/PKGBUILD").read()
     if hashlib.sha256(recipe).hexdigest() != pin["recipe_sha256"]:
         raise RuntimeError(f"PKGBUILD SHA-256 does not match pin: {archive.name}")
 
@@ -175,6 +177,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, RuntimeError, json.JSONDecodeError) as exc:
+    except (OSError, RuntimeError, tarfile.TarError, json.JSONDecodeError) as exc:
         print(f"package_windows_sources: {exc}", file=sys.stderr)
         raise SystemExit(1)
