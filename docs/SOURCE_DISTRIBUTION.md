@@ -15,6 +15,11 @@ equivalent download access and no additional restrictions on recipients:
 | Intel macOS | Common QEMU/project source above; `MSM5xxx-QEMU-macos-LGPL-sources.tar.xz` |
 | Android arm64 APK | Common QEMU/project source above; `MSM5xxx-QEMU-android-runtime-sources.tar.xz` |
 
+Windows Actions provides the staged QEMU source, exact project source archive
+and complete DLL source companion in its `corresponding-source` artifact.
+That source artifact uploads successfully before the runtime artifact is
+offered, with the same access and retention period.
+
 Source companions include the preferred editable source, interfaces, patches,
 compilation/installation recipes and retained copyright/license texts. The
 common source companion includes the exact project source archive and staged

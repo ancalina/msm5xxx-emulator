@@ -35,6 +35,7 @@ jobs:
             make
             patch
             tar
+            zstd
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-glib2
             mingw-w64-x86_64-ninja
@@ -255,13 +256,12 @@ jobs:
             --owner=0 --group=0 --numeric-owner \
             -cJf "dist/$name.tar.xz" -C "$work" "$name"
           (cd dist && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BUNDLE_NAME }}
-          path: dist/${{ env.BUNDLE_NAME }}
-          if-no-files-found: error
-          retention-days: 30
+          git archive --format=tar.gz --prefix=msm5xxx-r13/ \
+            -o dist/msm5xxx-project-source.tar.gz "$GITHUB_SHA"
+          python experiments/qemu-tcg/package_windows_sources.py \
+            "dist/$BUNDLE_NAME" dist/windows-runtime-sources
+          (cd dist && sha256sum msm5xxx-project-source.tar.gz \
+            MSM5xxx-QEMU-windows-runtime-sources.tar.xz > extra-source.sha256)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -269,5 +269,15 @@ jobs:
           path: |
             dist/qemu-${{ env.QEMU_VERSION }}-msm5xxx.tar.xz
             dist/qemu-${{ env.QEMU_VERSION }}-msm5xxx.tar.xz.sha256
+            dist/msm5xxx-project-source.tar.gz
+            dist/MSM5xxx-QEMU-windows-runtime-sources.tar.xz
+            dist/extra-source.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUNDLE_NAME }}
+          path: dist/${{ env.BUNDLE_NAME }}
           if-no-files-found: error
           retention-days: 30

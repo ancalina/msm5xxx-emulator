@@ -10,7 +10,9 @@
   LGPL-2.1 include their license text.
 - QEMU's bundled DTC/libfdt revision is dual-licensed under GPLv2 or the
   2-clause BSD license. Its license notice and BSD text are included.
-- GLib 2.88.1 is LGPL-2.1-or-later. Its Android build includes PCRE2 10.46
+- GLib is LGPL-2.1-or-later. Android and macOS bundles use version 2.88.1;
+  the Windows bundle records its MSYS2 version in `MSYS2_PACKAGES.txt`.
+  The Android build includes PCRE2 10.46
   under its BSD-style license and proxy-libintl 0.5 under
   LGPL-2.0-or-later.
 - CPython 3.14.4 is distributed under the Python Software Foundation License.

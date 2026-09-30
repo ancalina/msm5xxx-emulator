@@ -1,0 +1,133 @@
+{
+  "format": "MSM5xxx Windows runtime dependency source pins v1",
+  "bundle_filename": "MSM5xxx-QEMU-windows-x86_64.zip",
+  "packages": [
+    {
+      "package": "mingw-w64-x86_64-gettext-runtime",
+      "version": "1.0-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-gettext-1.0-1.src.tar.zst",
+      "source_archive_sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+      "source_archive_bytes": 10267655,
+      "source_root": "mingw-w64-gettext",
+      "recipe_sha256": "853ef80a50588f29355722a4513f24cf1a5f8de06e0b5ee326580464db539741",
+      "pkgbuild_license": "('spdx:GPL-3.0-or-later AND LGPL-2.1-or-later')",
+      "bundled_dlls": [
+        {
+          "file": "bin/libintl-8.dll",
+          "sha256": "0537c3dd2378218508ebe3cc416d72a99ee2d24ae1c5525e23458f32544ef861"
+        }
+      ],
+      "runtime_license_files": [
+        "licenses/msys2/gettext-runtime/COPYING",
+        "licenses/msys2/gettext-runtime/intl/COPYING.LIB",
+        "licenses/msys2/gettext-runtime/libasprintf/COPYING",
+        "licenses/msys2/gettext-runtime/libasprintf/COPYING.LIB"
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-glib2",
+      "version": "2.90.0-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-glib2-2.90.0-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-glib2-2.90.0-1.src.tar.zst",
+      "source_archive_sha256": "580246fb9db6083e0191ac7fd0e44af71df6ec0dc52cfd384b5ae07f8665cc9e",
+      "source_archive_bytes": 5835342,
+      "source_root": "mingw-w64-glib2",
+      "recipe_sha256": "0ad17a7ab5835acc95990c1eba2d85f351a8df0604e528f23b4212402380430b",
+      "pkgbuild_license": "('spdx:LGPL-2.1-or-later')",
+      "bundled_dlls": [
+        {
+          "file": "bin/libglib-2.0-0.dll",
+          "sha256": "9778ba7e7a3a3e92e7c1802a45cd9350a905ff3fbff193566630b6c47a3e7b9c"
+        }
+      ],
+      "runtime_license_files": [
+        "licenses/msys2/glib2/COPYING"
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-libiconv",
+      "version": "1.19-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "source_archive_sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+      "source_archive_bytes": 5131029,
+      "source_root": "mingw-w64-libiconv",
+      "recipe_sha256": "9b3212d06910560fb59e017e0b73a29d392a5082d3a47a613e61509bd7dcd475",
+      "pkgbuild_license": "('spdx:GPL-3.0-or-later')",
+      "bundled_dlls": [
+        {
+          "file": "bin/libiconv-2.dll",
+          "sha256": "7a282a854e01be726c6cccfe46f548c716aa45b3014818468253aaa4efbcd067"
+        }
+      ],
+      "runtime_license_files": [
+        "licenses/msys2/libiconv/COPYING",
+        "licenses/msys2/libiconv/COPYING.LIB",
+        "licenses/msys2/libiconv/README",
+        "licenses/msys2/libiconv/libcharset/COPYING.LIB"
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-libwinpthread",
+      "version": "14.0.0.r426.g4564ee4b5-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-1.src.tar.zst",
+      "source_archive_sha256": "5493832de1b7e24f09edb556ed409091b0844f9677212c4865618d6f93c508be",
+      "source_archive_bytes": 54807189,
+      "source_root": "mingw-w64-winpthreads",
+      "recipe_sha256": "5d86650fa3fb5ab39e96000f1bd37b5e1ed0136eced1b8fb1cae6af40d83cba8",
+      "pkgbuild_license": "('spdx:MIT AND BSD-3-Clause-Clear')",
+      "bundled_dlls": [
+        {
+          "file": "bin/libwinpthread-1.dll",
+          "sha256": "72bf8802de3a99d28f0bc2db9a11f281a9f9f3fa83dab2bc67e69fac3bd3d9c0"
+        }
+      ],
+      "runtime_license_files": [
+        "licenses/msys2/libwinpthread/COPYING"
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-pcre2",
+      "version": "10.49-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-pcre2-10.49-1.src.tar.zst",
+      "source_archive_sha256": "b02f0d5070b7d7f6db5c8ba9b009f28c1a07b9b52aaf7964dc0c8b098e4088d1",
+      "source_archive_bytes": 2183818,
+      "source_root": "mingw-w64-pcre2",
+      "recipe_sha256": "19e2827b5ffd57b7981ec9678258107e5737f520229d36b4d15d71c24267eb19",
+      "pkgbuild_license": "(\"spdx:BSD-3-Clause\")",
+      "bundled_dlls": [
+        {
+          "file": "bin/libpcre2-8-0.dll",
+          "sha256": "68a7cee2acc36d6a61d73f78825d17dfd32f8580f4bb1bc399134719518213d5"
+        }
+      ],
+      "runtime_license_files": [
+        "licenses/msys2/pcre2/COPYING",
+        "licenses/msys2/pcre2/LICENCE.md"
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-zlib",
+      "version": "1.3.2-2",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-2.src.tar.zst",
+      "source_archive": "sources/mingw-w64-zlib-1.3.2-2.src.tar.zst",
+      "source_archive_sha256": "eef69dea52357e01b272d6fd6dc4d7c0773f71260cb7bcde6047c8c383518db3",
+      "source_archive_bytes": 1326375,
+      "source_root": "mingw-w64-zlib",
+      "recipe_sha256": "8a4a54a964eab7efa313e2faa8267052bc237ef61f8adf82a55cc93f4028db8a",
+      "pkgbuild_license": "('spdx:Zlib')",
+      "bundled_dlls": [
+        {
+          "file": "bin/zlib1.dll",
+          "sha256": "93e9243a44c29200eeacaf9658efe2558581770e4b11ca4b500e18e424a6e3b5"
+        }
+      ],
+      "runtime_license_files": [
+        "licenses/msys2/zlib/LICENSE"
+      ]
+    }
+  ]
+}
