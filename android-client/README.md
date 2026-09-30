@@ -59,7 +59,7 @@ dependency source companions and SHA-256 manifest with the candidate. Debug APKs
 remain test builds and must not be described as signed production releases.
 
 For the developer prerelease, the existing Gradle debug certificate can sign
-the Release build with APK v2/v3 signatures using the checked-in build init:
+the Release build with APK v3 signatures using the checked-in build init:
 
 ```sh
 gradle --offline --max-workers=1 -I preview-signing.init.gradle :app:assembleRelease

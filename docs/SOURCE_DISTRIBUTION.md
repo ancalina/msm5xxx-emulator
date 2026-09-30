@@ -37,7 +37,7 @@ From the extracted project's `android-client/` directory:
 gradle --offline --max-workers=1 -I preview-signing.init.gradle :app:assembleRelease
 ```
 
-This selects the local Gradle debug certificate, with v2/v3 APK signatures;
+This selects the local Gradle debug certificate, with v3 APK signatures;
 it is a developer preview, not a production signing-key distribution. The
 private key is excluded. Building or installing a modified GPLv2 preview
 does not require access to the distributor's private signing key.
