@@ -194,6 +194,8 @@ def session_status():
     return _json({
         "frame_sequence": int(_session.decoder.frame_sequence),
         "secondary_available": bool(secondary and secondary["qualified"]),
+        "secondary_preview": bool(secondary and secondary["qualified"]
+                                  and secondary.get("encoding") == "unverified-byte-preview"),
         "fold_supported": bool(fold_supported),
         "fold_open": bool(fold_supported and _session.board_status_snapshot["level"]
                           == _session.config.board_status_input.default),

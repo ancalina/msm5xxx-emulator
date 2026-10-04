@@ -122,6 +122,21 @@ audio_timbre_advance_envelope(MSM5xxxAudioVoice *voice, size_t index,
     if (frames == 0u || *state == 3u) {
         return;
     }
+    if (*state == 4u && voice->timbre_decay_threshold_valid) {
+        while (frames != 0u && *state == 4u) {
+            *envelope = (uint32_t)((uint64_t)*envelope *
+                voice->timbre_decay_factor[index] >> 30u);
+            frames--;
+            if (*envelope == 0u) {
+                *state = 0u;
+            } else if (*envelope <= voice->timbre_decay_threshold[index]) {
+                *state = 5u;
+            }
+        }
+        if (frames == 0u || *state == 0u) {
+            return;
+        }
+    }
     if (*state == 4u) {
         *envelope = (uint32_t)((uint64_t)*envelope *
             voice->timbre_decay_factor[index] >> 30u);
@@ -143,7 +158,7 @@ audio_timbre_advance_envelope(MSM5xxxAudioVoice *voice, size_t index,
 
 static int32_t
 audio_timbre_operator(MSM5xxxAudioVoice *voice, size_t index,
-                       int32_t modulation)
+                       int64_t modulation)
 {
     uint32_t amplitude;
     uint32_t phase = voice->timbre_phase[index] +
@@ -169,10 +184,27 @@ audio_timbre_operator(MSM5xxxAudioVoice *voice, size_t index,
 static int32_t
 audio_timbre_sample(MSM5xxxAudioVoice *voice)
 {
-    int32_t first = audio_timbre_operator(voice, 0u, 0);
-    int32_t second = audio_timbre_operator(voice, 2u, 0);
+    int32_t first;
+    int32_t second;
     size_t index;
 
+    if (voice->timbre_algorithm == 0u) {
+        int64_t feedback = voice->timbre_feedback == 6u ?
+            (int64_t)voice->timbre_feedback_history[0] +
+            voice->timbre_feedback_history[1] : 0;
+
+        /* Provisional normal-mode sine series with normalized feedback. */
+        first = audio_timbre_operator(voice, 0u, feedback);
+        voice->timbre_feedback_history[1] =
+            voice->timbre_feedback_history[0];
+        voice->timbre_feedback_history[0] = first;
+        second = audio_timbre_operator(voice, 1u, first);
+        voice->active = voice->timbre_envelope_state[0] != 0u ||
+                        voice->timbre_envelope_state[1] != 0u;
+        return second;
+    }
+    first = audio_timbre_operator(voice, 0u, 0);
+    second = audio_timbre_operator(voice, 2u, 0);
     first = audio_timbre_operator(voice, 1u, first);
     second = audio_timbre_operator(voice, 3u, second);
     for (index = 0u; index < MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT; index++) {
@@ -189,15 +221,30 @@ audio_timbre_valid(const MSM5xxxAudioEvent *event)
 {
     size_t index;
 
+    if (event->timbre_decay_threshold_valid &&
+        (!event->timbre_valid || event->timbre_algorithm != 0u ||
+         event->timbre_operator_count != 2u)) {
+        return false;
+    }
     if (!event->timbre_valid) {
         return true;
     }
-    if (event->timbre_algorithm != 5u ||
-        event->timbre_operator_count !=
-            MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT) {
+    if (event->timbre_algorithm == 0u) {
+        if (event->timbre_operator_count != 2u ||
+            (event->timbre_feedback != 0u && event->timbre_feedback != 6u)) {
+            return false;
+        }
+    } else if (event->timbre_algorithm != 5u ||
+               event->timbre_operator_count !=
+                   MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT ||
+               event->timbre_feedback != 0u) {
         return false;
     }
-    for (index = 0u; index < MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT; index++) {
+    for (index = 0u; index < event->timbre_operator_count; index++) {
+        if (event->timbre_decay_threshold_valid &&
+            event->timbre_decay_threshold[index] > UINT32_C(0x80000000)) {
+            return false;
+        }
         if (event->timbre_multiplier[index] == 0u ||
             event->timbre_level[index] > 63u ||
             event->timbre_attack_step[index] > UINT32_C(0x80000000) ||
@@ -327,6 +374,12 @@ audio_skip_voice(MSM5xxxAudioVoice *voice, uint64_t frames)
         return;
     }
     if (voice->timbre_valid) {
+        if (voice->timbre_algorithm == 0u) {
+            for (frame = 0u; frame < frames && voice->active; frame++) {
+                (void)audio_timbre_sample(voice);
+            }
+            return;
+        }
         for (frame = 0u; frame < frames && voice->active; frame++) {
             bool active = false;
 
@@ -366,6 +419,22 @@ audio_render(MSM5xxxAudioSynth *synth, size_t frames)
     size_t frame;
 
     audio_make_room(synth, frames);
+    /* Only batch-entry silence: active voices may expire during rendering. */
+    if (!msm5xxx_audio_synth_active(synth)) {
+        size_t first = MSM5XXX_AUDIO_MAX_FRAMES - synth->ring_write;
+
+        if (first > frames) {
+            first = frames;
+        }
+        memset(&synth->ring[synth->ring_write], 0,
+               first * sizeof(synth->ring[0]));
+        memset(synth->ring, 0, (frames - first) * sizeof(synth->ring[0]));
+        synth->ring_write = (synth->ring_write + frames) %
+                            MSM5XXX_AUDIO_MAX_FRAMES;
+        synth->ring_count += frames;
+        synth->generated_frame += frames;
+        return;
+    }
     for (frame = 0u; frame < frames; frame++) {
         int64_t left = 0;
         int64_t right = 0;
@@ -581,8 +650,11 @@ msm5xxx_audio_synth_event(MSM5xxxAudioSynth *synth,
         voice->expression = event->expression;
         voice->pitch_bend = event->pitch_bend;
         voice->timbre_valid = event->timbre_valid;
+        voice->timbre_decay_threshold_valid =
+            event->timbre_decay_threshold_valid;
         voice->timbre_algorithm = event->timbre_algorithm;
         voice->timbre_operator_count = event->timbre_operator_count;
+        voice->timbre_feedback = event->timbre_feedback;
         memcpy(voice->timbre_multiplier, event->timbre_multiplier,
                sizeof(voice->timbre_multiplier));
         memcpy(voice->timbre_level, event->timbre_level,
@@ -591,6 +663,8 @@ msm5xxx_audio_synth_event(MSM5xxxAudioSynth *synth,
                sizeof(voice->timbre_attack_step));
         memcpy(voice->timbre_decay_factor, event->timbre_decay_factor,
                sizeof(voice->timbre_decay_factor));
+        memcpy(voice->timbre_decay_threshold, event->timbre_decay_threshold,
+               sizeof(voice->timbre_decay_threshold));
         memcpy(voice->timbre_sustain_factor,
                event->timbre_sustain_factor,
                sizeof(voice->timbre_sustain_factor));
@@ -599,7 +673,7 @@ msm5xxx_audio_synth_event(MSM5xxxAudioSynth *synth,
                sizeof(voice->timbre_release_factor));
         if (voice->timbre_valid) {
             memset(voice->timbre_envelope_state, 2,
-                   sizeof(voice->timbre_envelope_state));
+                   voice->timbre_operator_count);
         }
         voice->base_step = audio_note_step(event->note);
         voice->phase_step = audio_bent_step(voice->base_step,

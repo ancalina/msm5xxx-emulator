@@ -6,6 +6,12 @@ revokes visibility; native rendering must continue as fallback.
 from __future__ import annotations
 
 ROWS = tuple(range(6, 72)) + tuple(range(81, 143))
+# Complete setup observed before the same segmented row-copy protocol in two
+# independent firmware images. Partial/unknown setup must retain fallback.
+REINITIALIZE = bytes.fromhex(
+    '2c 02 01 20 05 22 11 26 0f 2e 45 00 53 00 10 12 24 00 '
+    '30 1f 32 0e 40 00 43 00 8f 42 00 7f 34 1f fa 5f 55 00 '
+    '56 00 57 8f 59 00 00 8f 00 5a 00 51')
 
 class _Raster:
     def __init__(self, port):
@@ -135,6 +141,7 @@ class SegmentedPanel:
         self.payload = []
         self.rectangles = 0
         self.reason = 'no complete raster'
+        self.reinitialize_index = 0
 
     def fail(self, reason):
         self.active = self.qualified = False
@@ -146,6 +153,22 @@ class SegmentedPanel:
         kind = 1
         if addr not in (self.port, self.port + 4):
             return
+        if addr == self.port and size == 2:
+            self.reinitialize_index = (self.reinitialize_index + 1
+                if value == REINITIALIZE[self.reinitialize_index]
+                else int(value == REINITIALIZE[0]))
+        else:
+            self.reinitialize_index = 0
+        if self.reinitialize_index == len(REINITIALIZE):
+            self.reinitialize_index = 0
+            if self.ram:  # Only previously admitted complete RAM may be retained.
+                self.active = self.qualified = self.enabled = True
+                self.state, self.axes, self.args, self.payload = 'idle', {}, [], []
+                self.raster.reset()
+                self.raster.state = 'seek'
+                self.raster.display_enabled = True
+                self.reason = 'complete paired-class reinitialization'
+                return
         before = self.raster.admissions
         self.raster.event(kind, size, addr, value)
         if self.raster.admissions > before:

@@ -196,9 +196,13 @@ MSM5500_REVISION_RAW_GETTER = bytes.fromhex("0248808b0005000d7047")
 MSM5500_REVISION_BOOT_COMPARE = bytes.fromhex("984202da")
 MSM5500_REVISION_BL = re.compile(rb".[\xf0-\xf7].[\xf8-\xff]", re.S)
 MSM5500_REVISION_LITERAL_LOAD = re.compile(rb".[\x48-\x4f]", re.S)
+MSM5500_REVISION_DIAGNOSTIC = re.compile(rb" ?unsupported msm rev ", re.I)
 
 
-def detect_msm5500_revision_f025(image: bytes) -> tuple[bool, str]:
+def detect_msm5500_revision_f025(
+        image: bytes, file_to_runtime=lambda position: position,
+        runtime_to_file=lambda address: address,
+) -> tuple[bool, str]:
     """Recognise firmware whose complete revision consumers accept real F025."""
     transformers = find_all(image, MSM5500_REVISION_TRANSFORMER)
     getters = find_all(image, MSM5500_REVISION_RAW_GETTER)
@@ -245,17 +249,72 @@ def detect_msm5500_revision_f025(image: bytes) -> tuple[bool, str]:
                 stored_fields.add(store >> 6 & 0x1F)
     if len(callers) != 2 or stored_fields != {1, 3}:
         return False, "raw revision getter is not byte-truncated at fields 1 and 3"
+    def relocated_gate(call: int, compare: int) -> bool:
+        # New diagnostic spellings require the actual copied getter call and
+        # failure-string relation, rather than marker presence alone.
+        if call & 1 or compare & 1:
+            return False
+        raw_target = thumb_bl_target(image, call)
+        caller_address = file_to_runtime(call)
+        if (not isinstance(raw_target, int) or not isinstance(caller_address, int)
+                or caller_address & 1 or not 0 <= caller_address <= 0xFFFFFFFF):
+            return False
+        target_address = caller_address + raw_target - call
+        target = runtime_to_file(target_address)
+        if (not isinstance(target, int) or target & 3
+                or not 0 <= target <= len(image) - 16
+                or file_to_runtime(target) != target_address
+                or target_address & 3
+                or image[target:target + 12]
+                != bytes.fromhex("7847c04600c09fe51cff2fe1")):
+            return False
+        pointer = struct.unpack_from("<I", image, target + 12)[0]
+        entry = transformer - 18
+        if (not pointer & 1 or entry < 0
+                or runtime_to_file(pointer & ~1) != entry
+                or file_to_runtime(entry) != pointer & ~1
+                or image[entry + 4:entry + 14]
+                != bytes.fromhex("0879002811d101200871")):
+            return False
+        diagnostic = compare + 4
+        if diagnostic + 6 > len(image):
+            return False
+        adr = struct.unpack_from("<H", image, diagnostic)[0]
+        diagnostic_address = file_to_runtime(diagnostic)
+        if (adr & 0xFF00 != 0xA000
+                or not isinstance(diagnostic_address, int)
+                or diagnostic_address & 1
+                or not 0 <= diagnostic_address <= 0xFFFFFFFB
+                or runtime_to_file(diagnostic_address) != diagnostic):
+            return False
+        string_address = ((diagnostic_address + 4) & ~3) + (adr & 0xFF) * 4
+        if not 0 <= string_address <= 0xFFFFFFFF:
+            return False
+        string = runtime_to_file(string_address)
+        if (not isinstance(string, int) or not 0 <= string < len(image)
+                or file_to_runtime(string) != string_address):
+            return False
+        marker = MSM5500_REVISION_DIAGNOSTIC.match(image, string)
+        return (marker is not None
+                and string_address + marker.end() - string <= 0x100000000
+                and all(file_to_runtime(position) == string_address + position - string
+                        and runtime_to_file(string_address + position - string) == position
+                        for position in range(string, marker.end()))
+                and thumb_bl_target(image, diagnostic + 2) is not None)
+
+    legacy_diagnostic = b" Unsupported MSM REV " in image
     boot_gate = False
     for compare in find_all(image, MSM5500_REVISION_BOOT_COMPARE):
         load, call = compare - 2, compare - 6
         if (call >= 0 and thumb_bl_target(image, call) is not None
-                and thumb_literal_value(image, load, 3) == 0xF022):
+                and thumb_literal_value(image, load, 3) == 0xF022
+                and (legacy_diagnostic or relocated_gate(call, compare))):
             boot_gate = True
             break
-    if not boot_gate or b" Unsupported MSM REV " not in image:
+    if not boot_gate:
         return False, "signed F022 boot gate/diagnostic relation absent"
     return True, (
-        "closed MSM5500 revision class detected; supplying physical F025 "
+        "closed MSM5500 revision class detected; supplying compatible F025 "
         "stepping through 16-bit 0x0300075C read"
     )
 

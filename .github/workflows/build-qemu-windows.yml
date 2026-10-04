@@ -258,7 +258,7 @@ jobs:
             --owner=0 --group=0 --numeric-owner \
             -cJf "dist/$name.tar.xz" -C "$work" "$name"
           (cd dist && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
-          git archive --format=tar.gz --prefix=msm5xxx-r13/ \
+          git archive --format=tar.gz --prefix=msm5xxx-r14/ \
             -o dist/msm5xxx-project-source.tar.gz "$GITHUB_SHA"
           python experiments/qemu-tcg/package_windows_sources.py \
             "dist/$BUNDLE_NAME" dist/windows-runtime-sources

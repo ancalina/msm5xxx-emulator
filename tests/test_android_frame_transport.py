@@ -98,6 +98,28 @@ class AndroidFrameTransportTests(unittest.TestCase):
             runtime.session_fold('{"open":true}')
         self.assertEqual(transitions, [False])
 
+    def test_secondary_preview_status_requires_qualified_unverified_encoding(self) -> None:
+        path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
+        spec = importlib.util.spec_from_file_location('android_preview_status', path)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        snapshot = dict(qualified=True, encoding='unverified-byte-preview')
+        runtime._session = SimpleNamespace(
+            decoder=SimpleNamespace(secondary_display_snapshot=lambda: snapshot,
+                                    frame_sequence=1, lcd_writes=0),
+            process=SimpleNamespace(poll=lambda: None), can_set_fold=lambda: False,
+            audio_pcm_snapshot=lambda: (0, 0, 0), audio_stream_reject_reason='',
+            audio_stream_status='disabled', input_host_events=0,
+            input_rejections=0, instructions=0, pc=0)
+        self.assertTrue(json.loads(runtime.session_status())['secondary_preview'])
+        snapshot['qualified'] = False
+        self.assertFalse(json.loads(runtime.session_status())['secondary_preview'])
+        snapshot['qualified'] = True
+        snapshot.pop('encoding')
+        self.assertFalse(json.loads(runtime.session_status())['secondary_preview'])
+        snapshot = None
+        self.assertFalse(json.loads(runtime.session_status())['secondary_preview'])
+
     def test_visible_swap_keeps_packet_sequence_hash_and_generation(self) -> None:
         source = JAVA.read_text(encoding="utf-8")
 

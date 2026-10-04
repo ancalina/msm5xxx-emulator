@@ -100,7 +100,6 @@ class TestMA2CAudioCore(unittest.TestCase):
         timbre_end = source.index("\nstatic ", timbre_start + 1)
         timbre = source[timbre_start:timbre_end]
         self.assertIn("memcmp(voice->decoded, descriptor", timbre)
-        self.assertIn("one proven descriptor", timbre)
         self.assertIn("event->timbre_algorithm = 5u;", timbre)
         self.assertIn("UINT32_C(0x0094f20a)", timbre)
         self.assertIn("UINT32_C(0x3eb1aa70)", timbre)
@@ -147,8 +146,6 @@ class TestMA2CAudioCore(unittest.TestCase):
         self.assertIn("s->audio_output_started = false;", reject)
         self.assertIn("if (s->audio_pcm_failed)", tick)
         self.assertIn("!stream_rejected", source)
-        self.assertNotIn("qemu_chr_fe_add_watch", flush)
-        self.assertNotIn("audio_pcm_watch", source)
         self.assertIn("msm5xxx_poc_audio_pcm_flush(s)", tick)
         self.assertLess(tick.index("msm5xxx_audio_synth_advance"),
                         tick.index("msm5xxx_poc_audio_pcm_flush(s)"))
@@ -170,6 +167,112 @@ class TestMA2CAudioCore(unittest.TestCase):
         self.assertIn('object_class_property_add_bool(oc, "audio-pcm"',
                       source)
         self.assertIn("s->audio_pcm_enabled = true;", source)
+
+    def test_sequence_reset_restarts_ended_streams_without_flushing_fifo(self):
+        repo = Path(__file__).resolve().parents[1]
+        code = r"""
+#include <assert.h>
+#include "msm5xxx-ma2-audio.c"
+int main(void) {
+    MSM5xxxMA2Audio a;
+    MSM5xxxMA2Output out;
+    msm5xxx_ma2_reset(&a);
+    a.fm_timebase=0x22;
+    a.control=MSM5XXX_MA2_FM_START;
+    for (unsigned pass=0;pass<2;pass++) {
+        for (unsigned i=0;i<4;i++) {
+            a.page=0; a.index=i;
+            for (unsigned j=0;j<4;j++) assert(msm5xxx_ma2_data_write(&a,0));
+        }
+        if (pass) {
+            a.sequence[0].parser.length=2;
+            a.page=1; a.index=MSM5XXX_MA2_FIFO_CONTROL;
+            assert(msm5xxx_ma2_data_write(&a,MSM5XXX_MA2_SEQUENCE_SOFT_RESET));
+            assert(msm5xxx_ma2_take_fm_stop(&a));
+            assert(a.fifo_count[0]==4 && !a.sequence[0].parser.length);
+            assert(msm5xxx_ma2_scheduler_step(&a,10,&out));
+            assert(out.kind==MSM5XXX_MA2_OUTPUT_NONE && a.fifo_count[0]==4);
+            assert(msm5xxx_ma2_data_write(&a,0));
+        }
+        unsigned ends=0;
+        do {
+            assert(msm5xxx_ma2_scheduler_step(&a,10+pass,&out));
+            ends+=out.kind==MSM5XXX_MA2_OUTPUT_END;
+        } while(out.kind!=MSM5XXX_MA2_OUTPUT_NONE);
+        assert(ends==4);
+        for(unsigned i=0;i<4;i++) assert(a.sequence[i].ended && !a.fifo_count[i]);
+    }
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)
+            (path/'check.c').write_text(code)
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',
+                            '-I',str(repo/'experiments/qemu-tcg'),
+                            str(path/'check.c'),'-o',str(path/'check')],check=True)
+            subprocess.run([str(path/'check')],check=True)
+
+    def test_stopped_completed_fifo_can_restart_without_stale_gates(self):
+        repo = Path(__file__).resolve().parents[1]
+        code = r"""
+
+#include <assert.h>
+#include "msm5xxx-ma2-audio.c"
+static void reg(MSM5xxxMA2Audio *a, unsigned index, unsigned value) {
+    a->page=1; a->index=index; assert(msm5xxx_ma2_data_write(a,value));
+}
+int main(void) {
+    MSM5xxxMA2Audio a;
+    MSM5xxxMA2Output out;
+    msm5xxx_ma2_reset(&a); a.fm_timebase=0x22;
+    for (unsigned pass=0;pass<2;pass++) {
+        reg(&a,MSM5XXX_MA2_CONTROL,0);
+        assert(msm5xxx_ma2_scheduler_step(&a,pass*100,&out));
+        reg(&a,MSM5XXX_MA2_FIFO_CONTROL,MSM5XXX_MA2_FM_FIFO_CLEAR);
+        for(unsigned i=0;i<4;i++) {
+            a.page=0; a.index=i;
+            for(unsigned j=0;j<4;j++) assert(msm5xxx_ma2_data_write(&a,0));
+        }
+        reg(&a,MSM5XXX_MA2_CONTROL,MSM5XXX_MA2_FM_START);
+        unsigned ends=0;
+        do {
+            assert(msm5xxx_ma2_scheduler_step(&a,pass*100+1,&out));
+            ends += out.kind==MSM5XXX_MA2_OUTPUT_END;
+        } while(out.kind!=MSM5XXX_MA2_OUTPUT_NONE);
+        assert(ends==4);
+    }
+    /* An unfinished sequence retains paused timing/parser on FIFO clear. */
+    a.sequence[0].ended=false; a.sequence[0].parser.length=2;
+    a.sequence[0].cursor_ns=7;
+    reg(&a,MSM5XXX_MA2_CONTROL,0);
+    reg(&a,MSM5XXX_MA2_FIFO_CONTROL,MSM5XXX_MA2_FM_FIFO_CLEAR);
+    assert(a.sequence[0].parser.length==2 && a.sequence[0].cursor_ns==7);
+    /* Clearing while START remains set does not implicitly restart. */
+    a.sequence[0].ended=true;
+    reg(&a,MSM5XXX_MA2_CONTROL,MSM5XXX_MA2_FM_START);
+    reg(&a,MSM5XXX_MA2_FIFO_CONTROL,MSM5XXX_MA2_FM_FIFO_CLEAR);
+    assert(a.sequence[0].ended);
+    /* A completed stream can still own a note whose gate outlives END. */
+    msm5xxx_ma2_reset(&a);
+    a.sequence[0].ended=true;
+    a.fm_gate[0].active=true; a.fm_gate[0].channel=0;
+    a.fm_gate[0].deadline_ns=5; a.fm_channel[0].key_on=true;
+    a.fm_gate[1].active=true; a.fm_gate[1].channel=4;
+    a.fm_channel[4].key_on=true;
+    ma2_clear_fifo(&a,MSM5XXX_MA2_FIFO_FM0);
+    assert(!a.fm_gate[0].active && !a.fm_channel[0].key_on);
+    assert(a.fm_gate[1].active && a.fm_channel[4].key_on);
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'check.c').write_text(code)
+            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            '-I', str(repo / 'experiments/qemu-tcg'),
+                            str(path / 'check.c'), '-o', str(path / 'check')], check=True)
+            subprocess.run([str(path / 'check')], check=True)
 
     def test_protocol_contract(self):
         repo = Path(__file__).resolve().parents[1]
@@ -654,9 +757,11 @@ class TestMA2CAudioCore(unittest.TestCase):
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_END);
                 assert(msm5xxx_ma2_scheduler_step(&audio, 2000000u, &output));
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_GATE_OFF);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
                 assert(output.note == 79u);
                 assert(!audio.fm_channel[0].key_on);
                 assert(audio.fm_state_unhandled == 0u);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
 
                 /* Octave shift is signed magnitude and note output clamps. */
                 msm5xxx_ma2_reset(&audio);
@@ -686,6 +791,20 @@ class TestMA2CAudioCore(unittest.TestCase):
                 assert(output.event.kind == MSM5XXX_MA2_COMPACT_SYSEX);
                 assert(audio.fm_state_unhandled == 1u);
                 assert(!audio.fm_voice[0].valid);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_SYSEX);
+
+                /* A failed gate commit must not leak lookup diagnostics. */
+                msm5xxx_ma2_reset(&audio);
+                write_stream(&audio, MSM5XXX_MA2_FM_DATA0,
+                             unresolved_fm, sizeof(unresolved_fm));
+                write_register(&audio, MSM5XXX_MA2_PAGE_REG1,
+                               MSM5XXX_MA2_CONTROL, MSM5XXX_MA2_FM_START);
+                assert(msm5xxx_ma2_scheduler_step(&audio, UINT64_MAX, &output));
+                assert(!msm5xxx_ma2_scheduler_step(&audio, UINT64_MAX, &output));
+                assert(output.kind == MSM5XXX_MA2_OUTPUT_NONE);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
+                assert(audio.fm_state_unhandled == 0u);
+                assert(!audio.fm_channel[0].key_on);
 
                 /* A later AD parse error rolls back earlier FM staging. */
                 {
@@ -727,23 +846,24 @@ class TestMA2CAudioCore(unittest.TestCase):
                                   sizeof(before_fm0)) == 0);
                     assert(memcmp(&audio.sequence[4], &before_ad,
                                   sizeof(before_ad)) == 0);
+                    assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
                     assert(audio.scheduler_now_ns == before_now);
                     assert(audio.scheduler_clock_initialized ==
                            before_clock_initialized);
                     assert(output.kind == MSM5XXX_MA2_OUTPUT_NONE);
                 }
 
-                /* Unresolved notes follow the native Nop path. */
+                /* Unassigned notes still follow the native Nop path. */
                 msm5xxx_ma2_reset(&audio);
                 write_stream(&audio, MSM5XXX_MA2_FM_DATA0,
-                             unresolved_fm, sizeof(unresolved_fm));
+                             unresolved_fm + 10u, sizeof(unresolved_fm) - 10u);
                 write_register(&audio, MSM5XXX_MA2_PAGE_REG1,
                                MSM5XXX_MA2_CONTROL, MSM5XXX_MA2_FM_START);
-                assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
                 assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
                 assert(output.event.kind == MSM5XXX_MA2_COMPACT_NOTE);
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_NONE);
                 assert(output.note == 37u);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_UNASSIGNED_NOTE);
                 assert(!audio.fm_channel[0].key_on);
                 assert(!audio.fm_gate[0].active);
                 assert(audio.fm_state_unhandled == 1u);
@@ -752,6 +872,99 @@ class TestMA2CAudioCore(unittest.TestCase):
                 assert(msm5xxx_ma2_scheduler_step(
                     &audio, 4000000u, &output));
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_NONE);
+
+                /* Assigned but absent instrument keeps approximate note/gate. */
+                msm5xxx_ma2_reset(&audio);
+                write_register(&audio, MSM5XXX_MA2_PAGE_REG1,
+                               0x18u, 0x00u);
+                write_stream(&audio, MSM5XXX_MA2_FM_DATA0,
+                             unresolved_fm, sizeof(unresolved_fm));
+                write_register(&audio, MSM5XXX_MA2_PAGE_REG1,
+                               MSM5XXX_MA2_CONTROL, MSM5XXX_MA2_FM_START);
+                assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
+                assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
+                assert(output.kind == MSM5XXX_MA2_OUTPUT_EVENT);
+                assert(output.event.kind == MSM5XXX_MA2_COMPACT_NOTE);
+                assert(output.note == 37u);
+                assert(audio.fm_channel[0].key_on);
+                assert(audio.fm_channel[0].active_voice_slot ==
+                       MSM5XXX_MA2_FM_VOICE_COUNT);
+                assert(audio.fm_state_unhandled == 1u);
+                assert(audio.fm_gate[0].active);
+                assert(audio.fm_gate[0].deadline_ns == 1000000u);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_VOICE_LOOKUP_MISS);
+                assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
+                assert(output.kind == MSM5XXX_MA2_OUTPUT_END);
+                assert(msm5xxx_ma2_scheduler_step(&audio, 1000000u, &output));
+                assert(output.kind == MSM5XXX_MA2_OUTPUT_GATE_OFF);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
+                assert(output.note == 37u);
+                assert(!audio.fm_channel[0].key_on);
+                assert(!audio.fm_gate[0].active);
+
+                /* Unique programs resolve across raw banks; duplicates fail closed. */
+                {
+                    static const uint8_t banks[] = {3u, 0u, 128u};
+                    static const uint8_t programs[] = {61u, 60u, 40u};
+                    unsigned scenario;
+                    unsigned slot;
+
+                    for (scenario = 0u; scenario < 8u; scenario++) {
+                        uint8_t stream[] = {
+                            0u, 0u, 0x31u, (uint8_t)(scenario % 2u),
+                            0u, 0u, 0x30u, programs[scenario / 2u % 3u],
+                            0u, 1u, 1u,
+                            0u, 0u, 0u, 0u,
+                        };
+                        bool miss = scenario >= 6u;
+
+                        msm5xxx_ma2_reset(&audio);
+                        for (slot = 0u; slot < 3u; slot++) {
+                            audio.fm_voice[slot].valid = true;
+                            audio.fm_voice[slot].bank = banks[slot];
+                            audio.fm_voice[slot].program = programs[slot];
+                        }
+                        /* An invalid duplicate must not make a unique program ambiguous. */
+                        audio.fm_voice[3].program = stream[7];
+                        if (scenario == 6u) {
+                            audio.fm_voice[3].valid = true;
+                            audio.fm_voice[3].bank = stream[3];
+                        } else if (scenario == 7u) {
+                            stream[7] = 99u;
+                        }
+                        write_register(&audio, MSM5XXX_MA2_PAGE_REG1,
+                                       MSM5XXX_MA2_FM_CHANNEL_ASSIGN, 0u);
+                        write_stream(&audio, MSM5XXX_MA2_FM_DATA0,
+                                     stream, sizeof(stream));
+                        write_register(&audio, MSM5XXX_MA2_PAGE_REG1,
+                                       MSM5XXX_MA2_CONTROL, MSM5XXX_MA2_FM_START);
+                        assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
+                        assert(audio.fm_channel[0].bank == stream[3]);
+                        assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
+                        assert(audio.fm_channel[0].program == stream[7]);
+                        assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
+                        assert(output.kind == MSM5XXX_MA2_OUTPUT_EVENT);
+                        assert(output.event.kind == MSM5XXX_MA2_COMPACT_NOTE);
+                        assert(audio.fm_channel[0].active_voice_slot ==
+                               (miss ? MSM5XXX_MA2_FM_VOICE_COUNT : scenario / 2u));
+                        assert(output.unhandled_reason == (miss ?
+                               MSM5XXX_MA2_UNHANDLED_VOICE_LOOKUP_MISS :
+                               MSM5XXX_MA2_UNHANDLED_NONE));
+                        assert(audio.fm_state_unhandled == (miss ? 1u : 0u));
+                        assert(audio.fm_gate[0].active);
+                        assert(audio.fm_gate[0].deadline_ns == 1000000u);
+                        assert(audio.fm_channel[0].bank == stream[3]);
+                        for (slot = 0u; slot < 3u; slot++) {
+                            assert(audio.fm_voice[slot].bank == banks[slot]);
+                        }
+                        assert(msm5xxx_ma2_scheduler_step(&audio, 0u, &output));
+                        assert(output.kind == MSM5XXX_MA2_OUTPUT_END);
+                        assert(msm5xxx_ma2_scheduler_step(&audio, 1000000u, &output));
+                        assert(output.kind == MSM5XXX_MA2_OUTPUT_GATE_OFF);
+                        assert(!audio.fm_channel[0].key_on);
+                        assert(!audio.fm_gate[0].active);
+                    }
+                }
 
                 /* AD sequence events use a six-bit wave id, not FM notes. */
                 msm5xxx_ma2_compact_parser_reset(&parser);
@@ -803,10 +1016,12 @@ class TestMA2CAudioCore(unittest.TestCase):
                 assert(output.stream == MSM5XXX_MA2_FIFO_FM0);
                 assert(msm5xxx_ma2_scheduler_step(&audio, 4000000u, &output));
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_GATE_OFF);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
                 assert(output.channel == 0u);
                 assert(output.voice_id == 2u);
                 assert(msm5xxx_ma2_scheduler_step(&audio, 6000000u, &output));
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_GATE_OFF);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
                 assert(output.channel == 0u);
                 assert(output.voice_id == 1u);
 
@@ -859,6 +1074,7 @@ class TestMA2CAudioCore(unittest.TestCase):
                 assert(msm5xxx_ma2_scheduler_step(
                     &audio, UINT64_MAX, &output));
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_GATE_OFF);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
 
                 /* AD sequence uses its own clock and wave event semantics. */
                 msm5xxx_ma2_reset(&audio);
@@ -874,6 +1090,7 @@ class TestMA2CAudioCore(unittest.TestCase):
                 assert(output.event.wave_id == 1u);
                 assert(msm5xxx_ma2_scheduler_step(&audio, 5000000u, &output));
                 assert(output.kind == MSM5XXX_MA2_OUTPUT_GATE_OFF);
+                assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
                 assert(output.stream == MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE);
                 assert(!msm5xxx_ma2_scheduler_step(&audio, 4999999u, &output));
                 assert(msm5xxx_ma2_reject_reason(&audio) ==

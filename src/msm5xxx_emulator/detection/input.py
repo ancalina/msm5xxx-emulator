@@ -427,6 +427,55 @@ def detect_input_profile(image: bytes, load_address: int = 0
     return None
 
 
+def _board_status_and_flags(image: bytes, start: int) -> bool:
+    """Recognize the inverted-state, paired-event byte-input control class."""
+    if image[start + 4:start + 10] != bytes.fromhex("007808231840"):
+        return False
+    state = thumb_literal_value(image, start + 10, 4)
+    if state is None or not 0x01000000 <= state < 0x01800000 - 9:
+        return False
+    if start + 14 > len(image):
+        return False
+    branch = struct.unpack_from("<H", image, start + 12)[0]
+    if branch & 0xFF80 != 0xD000:  # Forward BEQ consuming ANDS flags; LDR preserves them.
+        return False
+    clear = start + 16 + (branch & 0x7F) * 2
+    if (image[clear:clear + 4] != bytes.fromhex("00270120")
+            or thumb_literal_value(image, clear + 4, 1) is None
+            or image[clear + 6:clear + 10] != bytes.fromhex("20720870")
+            or image[clear - 6:clear - 2] not in
+            (bytes.fromhex("00202072"), bytes.fromhex("00212172"))
+            or image[clear - 2:clear] != bytes.fromhex("04e0")):
+        return False
+    end = image.find(bytes.fromhex("281cf0bc08bc1847"), clear + 10,
+                     min(start + 0x400, len(image)))
+    if end < 0 or (end - start) & 1:
+        return False
+    # Both counters must load/increment/truncate/store the same byte, then compare.
+    for field, threshold in ((6, 1), (7, 2)):
+        patterns = [struct.pack("<6H", 0x7820 | field << 6 | reg,
+                    0x3001 | reg << 8, 0x0600 | reg << 3 | reg,
+                    0x0E00 | reg << 3 | reg, 0x7020 | field << 6 | reg,
+                    0x2800 | reg << 8 | threshold) for reg in (0, 1)]
+        if not any(image[pos:pos + 12] in patterns
+                   for pos in range(clear + 10, end - 11, 2)):
+            return False
+    if image[end - 4:end - 2] != bytes.fromhex("6025"):
+        return False
+    jump = struct.unpack_from("<H", image, end - 2)[0]
+    if jump & 0xF800 != 0xE000:
+        return False
+    displacement = jump & 0x7FF
+    if displacement & 0x400:
+        displacement -= 0x800
+    join = end + 2 + displacement * 2
+    return (clear < join < end - 4 and image[join:join + 2] == b"\x28\x1c"
+            and (target := thumb_bl_target(image, join + 2)) is not None
+            and 0 <= target < len(image)
+            and any(image[pos:pos + 2] == b"\x5f\x25"
+                    for pos in range(clear + 10, join, 2)))
+
+
 def find_board_status_input(image: bytes) -> BoardStatusInput | None:
     """Accept one unique Thumb byte-status mask/branch/debounce control shape."""
     found: set[BoardStatusInput] = set()
@@ -447,6 +496,8 @@ def find_board_status_input(image: bytes) -> BoardStatusInput | None:
                 == BOARD_STATUS_INPUT_BODY):
             if candidate is not None:
                 found.add(candidate)
+        elif candidate is not None and _board_status_and_flags(image, offset):
+            found.add(candidate)
         elif candidate is not None and (offset_byte or
                 image[offset + 4:offset + 6] == b"\x00\x78"):
             body_end = min(offset + 0x400, len(image) - 1)

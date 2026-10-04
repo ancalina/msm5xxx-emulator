@@ -21,9 +21,10 @@ from ..detection.boot import DMD_DOWNLOAD_5500_SIZE
 from ..detection.boot import absent_optional_ram_probe_addresses
 from ..detection.boot import busy_delay_addresses
 from ..detection.boot import is_dmd_download_5500
-from ..detection.display import (detect_lcd_width_hint, find_dual_page_ports, find_byte_main_page_secondary, find_mixed_primary_power_port,
+from ..detection.display import (detect_lcd_width_hint, detect_packed_selector_port, find_dual_page_ports, find_byte_main_page_secondary, find_mixed_primary_power_port,
                                  find_paired_display_state_ports, find_packed_cursor_port, find_packed12_port, find_window_panel_port)
 from ..devices.display.page_panel import PagePanel
+from ..devices.display.indexed_byte_panel import IndexedBytePanel, find_indexed_byte_panel
 from ..devices.display.cursor_panel import PackedCursorPanel
 from ..devices.display.packed12_panel import Packed12Panel
 from ..devices.display.window_panel import WindowPanel
@@ -877,6 +878,8 @@ class LifecycleMixin:
         self._lcd_page_height = 0
         self._lcd_page_bits_per_pixel = 1
         self._lcd_page_width_hint = detect_lcd_width_hint(self.image)
+        self._lcd_selector_static_port, self._lcd_selector_static_reason = (
+            detect_packed_selector_port(self.image, config.ram_base, config.ram_size))
         segmented_port, self._lcd_segmented_reason = detect_segmented_panel(self.image)
         self._lcd_segmented_panel = SegmentedPanel(segmented_port) if segmented_port else None
         window_port = find_window_panel_port(self.image)
@@ -891,6 +894,9 @@ class LifecycleMixin:
             secondary_port = ports[1]
             self._lcd_secondary_reason = "paired-page-descriptor-awaiting-runtime"
         self._lcd_secondary_panel = PagePanel(secondary_port) if secondary_port else None
+        indexed_cursor = find_indexed_byte_panel(self.image)
+        self._lcd_indexed_byte_panel = (
+            IndexedBytePanel(indexed_cursor) if indexed_cursor is not None else None)
         self._lcd_primary_page_port = ports[0] if ports else None
         self._lcd_mixed_primary_power_port = (
             find_mixed_primary_power_port(self.image) if secondary_port and not ports else None)

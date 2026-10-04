@@ -334,6 +334,7 @@ final class BackendBridge {
                         result.getString("audio_status"),
                         result.getString("audio_reject_reason"),
                         result.getBoolean("secondary_available"),
+                        result.optBoolean("secondary_preview", false),
                         result.getBoolean("fold_supported"),
                         result.getBoolean("fold_open"));
             } catch (JSONException | RuntimeException | LinkageError error) {
@@ -458,6 +459,7 @@ final class BackendBridge {
         final String audioStatus;
         final String audioRejectReason;
         final boolean secondaryAvailable;
+        final boolean secondaryPreview;
         final boolean foldSupported;
         final boolean foldOpen;
 
@@ -466,7 +468,8 @@ final class BackendBridge {
                        long inputRejections, long audioEpoch,
                        long audioUnderflowFrames, long audioOverflowFrames,
                        String audioStatus, String audioRejectReason,
-                       boolean secondaryAvailable, boolean foldSupported,
+                       boolean secondaryAvailable, boolean secondaryPreview,
+                       boolean foldSupported,
                        boolean foldOpen) {
             this.processRunning = processRunning;
             this.instructions = instructions;
@@ -481,6 +484,7 @@ final class BackendBridge {
             this.audioStatus = audioStatus;
             this.audioRejectReason = audioRejectReason;
             this.secondaryAvailable = secondaryAvailable;
+            this.secondaryPreview = secondaryPreview;
             this.foldSupported = foldSupported;
             this.foldOpen = foldOpen;
         }

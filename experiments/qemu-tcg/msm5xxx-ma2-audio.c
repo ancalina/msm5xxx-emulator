@@ -80,6 +80,20 @@ ma2_clear_fifo(MSM5xxxMA2Audio *audio, MSM5xxxMA2Fifo fifo)
     audio->fifo_read[fifo] = 0u;
     audio->fifo_write[fifo] = 0u;
     audio->fifo_count[fifo] = 0u;
+    if (fifo < MSM5XXX_MA2_FM_FIFO_COUNT &&
+        !(audio->control & MSM5XXX_MA2_FM_START) &&
+        audio->sequence[fifo].ended) {
+        /* A stopped, completed stream starts fresh after its FIFO is cleared. */
+        memset(&audio->sequence[fifo], 0, sizeof(audio->sequence[fifo]));
+        for (size_t i = 0; i < MSM5XXX_MA2_FM_GATE_COUNT; i++) {
+            if (audio->fm_gate[i].channel / 4u == (unsigned)fifo) {
+                audio->fm_gate[i].active = false;
+            }
+        }
+        for (size_t i = (size_t)fifo * 4; i < (size_t)fifo * 4 + 4; i++) {
+            audio->fm_channel[i].key_on = false;
+        }
+    }
 }
 
 static bool
@@ -383,6 +397,13 @@ ma2_write_page1(MSM5xxxMA2Audio *audio, uint8_t index, uint8_t value)
         audio->soft_reset_mask = (uint8_t)(value & 0xe0u);
         audio->repeat_flags = (uint8_t)(value & 0x18u);
         audio->register_shadow[1][index] = value;
+        if ((value & MSM5XXX_MA2_SEQUENCE_SOFT_RESET) != 0u) {
+            /* A new sequence must not inherit END or a partially decoded event. */
+            memset(audio->sequence, 0, sizeof(audio->sequence));
+            memset(audio->fm_gate, 0, sizeof(audio->fm_gate));
+            memset(&audio->adpcm_gate, 0, sizeof(audio->adpcm_gate));
+            audio->fm_stop_pending = true;
+        }
         if ((value & MSM5XXX_MA2_WAVE_FIFO_CLEAR) != 0u) {
             ma2_clear_fifo(audio, MSM5XXX_MA2_FIFO_ADPCM_WAVE);
         }
@@ -873,7 +894,8 @@ ma2_sequence_desired(const MSM5xxxMA2Audio *audio, size_t stream)
     uint8_t bit = stream < MSM5XXX_MA2_FM_FIFO_COUNT ?
         MSM5XXX_MA2_FM_START : MSM5XXX_MA2_ADPCM_START;
 
-    return (audio->control & bit) != 0u;
+    return (audio->control & bit) != 0u &&
+           !(audio->soft_reset_mask & MSM5XXX_MA2_SEQUENCE_SOFT_RESET);
 }
 
 static bool
@@ -1267,40 +1289,50 @@ ma2_fm_note_number(const MSM5xxxMA2FMChannel *channel,
 }
 
 static bool
-ma2_find_fm_voice(const MSM5xxxMA2Audio *audio, uint8_t bank,
-                  uint8_t program, uint8_t *slot)
+ma2_find_fm_voice(const MSM5xxxMA2Audio *audio, uint8_t program,
+                  uint8_t *slot)
 {
     size_t index;
+    bool found = false;
 
+    /* Select only unambiguous programs; unknown duplicate priority falls back. */
     for (index = 0u; index < MSM5XXX_MA2_FM_VOICE_COUNT; index++) {
         const MSM5xxxMA2FMVoice *voice = &audio->fm_voice[index];
 
-        if (voice->valid && voice->bank == bank &&
-            voice->program == program) {
+        if (voice->valid && voice->program == program) {
+            if (found) {
+                return false;
+            }
             *slot = (uint8_t)index;
-            return true;
+            found = true;
         }
     }
-    return false;
+    return found;
 }
 
 static bool
 ma2_apply_fm_event(MSM5xxxMA2Audio *audio,
-                   const MSM5xxxMA2Output *output)
+                   MSM5xxxMA2Output *output)
 {
     MSM5xxxMA2FMChannel *channel = &audio->fm_channel[output->channel];
     uint8_t voice_slot;
     bool handled = true;
 
+    output->unhandled_reason = MSM5XXX_MA2_UNHANDLED_NONE;
     switch (output->event.kind) {
     case MSM5XXX_MA2_COMPACT_NOP:
         break;
     case MSM5XXX_MA2_COMPACT_NOTE:
-        if (!channel->voice_slot_valid ||
-            !ma2_find_fm_voice(audio, channel->bank, channel->program,
-                               &voice_slot)) {
+        if (!channel->voice_slot_valid) {
             handled = false;
             break;
+        }
+        if (!ma2_find_fm_voice(audio, channel->program, &voice_slot)) {
+            /* Keep note/gate timing for the generic synth fallback. The
+             * unresolved instrument must not reuse a previous exact timbre. */
+            voice_slot = MSM5XXX_MA2_FM_VOICE_COUNT;
+            output->unhandled_reason = MSM5XXX_MA2_UNHANDLED_VOICE_LOOKUP_MISS;
+            audio->fm_state_unhandled++;
         }
         channel->note_octave = output->event.octave;
         channel->note_id = output->event.note_id;
@@ -1320,6 +1352,20 @@ ma2_apply_fm_event(MSM5xxxMA2Audio *audio,
         break;
     }
     if (!handled) {
+        switch (output->event.kind) {
+        case MSM5XXX_MA2_COMPACT_NOTE:
+            output->unhandled_reason = MSM5XXX_MA2_UNHANDLED_UNASSIGNED_NOTE;
+            break;
+        case MSM5XXX_MA2_COMPACT_CONTROL:
+            output->unhandled_reason = MSM5XXX_MA2_UNHANDLED_CONTROL;
+            break;
+        case MSM5XXX_MA2_COMPACT_SYSEX:
+            output->unhandled_reason = MSM5XXX_MA2_UNHANDLED_SYSEX;
+            break;
+        default:
+            output->unhandled_reason = MSM5XXX_MA2_UNHANDLED_UNSUPPORTED_EVENT;
+            break;
+        }
         audio->fm_state_unhandled++;
     }
     return handled;
@@ -1345,6 +1391,9 @@ msm5xxx_ma2_scheduler_step(MSM5xxxMA2Audio *audio,
     bool gate_found = false;
     bool sequence_found = false;
 
+    if (output != 0) {
+        output->unhandled_reason = MSM5XXX_MA2_UNHANDLED_NONE;
+    }
     if (audio == 0 || output == 0 || audio->rejected) {
         return false;
     }

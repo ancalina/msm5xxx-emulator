@@ -30,6 +30,519 @@ SPEC.loader.exec_module(MODULE)
 
 
 class QEMUInputTransportTests(unittest.TestCase):
+    def test_gdb_remote_tcp_nodelay_preserves_stream_contract(self):
+        from gdb_remote import Remote
+
+        families = [MODULE.socket.AF_INET, MODULE.socket.AF_INET6, None]
+        if hasattr(MODULE.socket, "AF_UNIX"):
+            families.append(MODULE.socket.AF_UNIX)
+        for family in families:
+            with self.subTest(family=family):
+                sent = []
+                incoming = bytearray(b"+$00000000#80")
+                option = mock.Mock()
+                sock = SimpleNamespace(
+                    sendall=sent.append,
+                    recv=lambda size: bytes((incoming.pop(0),)),
+                )
+                if family is not None:
+                    sock.family = family
+                    sock.setsockopt = option
+                remote = Remote(sock)
+                self.assertIs(remote.sock, sock)
+                self.assertEqual(sent, [])
+                if family in (MODULE.socket.AF_INET, MODULE.socket.AF_INET6):
+                    option.assert_called_once_with(
+                        MODULE.socket.IPPROTO_TCP, MODULE.socket.TCP_NODELAY, 1
+                    )
+                else:
+                    option.assert_not_called()
+                self.assertEqual(remote.command("p0"), "00000000")
+                self.assertEqual(sent, [b"$p0#a0", b"+"])
+                self.assertEqual(incoming, b"")
+
+        failure = OSError("TCP option failed")
+        sock = SimpleNamespace(
+            family=MODULE.socket.AF_INET,
+            setsockopt=mock.Mock(side_effect=failure),
+            close=mock.Mock(),
+        )
+        with self.assertRaises(OSError) as caught:
+            Remote(sock)
+        self.assertIs(caught.exception, failure)
+        sock.close.assert_not_called()
+
+    def test_loop_status_requires_matching_temporary_class_and_preserves_explicit_level(self):
+        image = bytes(0x600)
+        matrix = dict(grammar='indirect-halfword-loop-six-row-v1',
+                      promotion='temporary-evidence-gated',
+                      descriptor=0x1000000, queue_sink='0x500')
+        candidate = dict(grammar='indirect-halfword-loop-status-events-v1',
+                         descriptor=0x1000000, queue_sink=0x500,
+                         mask=16, width=2, pointer_offset=4,
+                         promotion='temporary-evidence-gated',
+                         runtime_admitted=False, default_level=None, physical_role=None)
+        helper = MODULE.qemu_halfword_status_property
+        with mock.patch('qemu_transport.resolve_indirect_board_status',
+                        return_value=(candidate,'static-candidate',[])) as resolver:
+            for profile in (None, dict(matrix, promotion=None),
+                            dict(matrix, grammar='indirect-halfword-six-row-v1')):
+                self.assertEqual(helper(image,0,profile,None),(None,None))
+            resolver.assert_not_called()
+            self.assertEqual(helper(image,0,matrix,None),
+                ('board-status-input=3000720:10:10,board-status-descriptor=1000000',None))
+            self.assertEqual(helper(image,0,matrix,None,object()),
+                             (None,'conflicting-status-profile'))
+            for level in (0,16):
+                self.assertEqual(helper(image,0,matrix,level),
+                    (f'board-status-input=3000720:10:{level:x},board-status-descriptor=1000000',None))
+            for level in (True,False,4,-16,17,16.0,'16'):
+                self.assertEqual(helper(image,0,matrix,level),(None,'invalid-level'))
+            self.assertEqual(helper(image,0,matrix,16,object()),(None,'conflicting-status-profile'))
+            for changed in ({'grammar':'unknown'}, {'grammar':'indirect-halfword-mapped-row-v1'}):
+                self.assertEqual(helper(image,0,dict(matrix,**changed),16),
+                                 (None,'halfword-matrix-not-admitted'))
+            for changed in ({'descriptor':0x1000100},{'descriptor':True},
+                            {'descriptor':0x2000000-0x34},{'queue_sink':'0x502'},
+                            {'queue_sink':None}):
+                self.assertEqual(helper(image,0,dict(matrix,**changed),16),
+                                 (None,'matrix-status-mismatch'))
+            for changed in ({'grammar':'indirect-halfword-status-events-v1'}, {'mask':4},
+                            {'mask':True},{'width':1},{'width':True},{'pointer_offset':8},
+                            {'promotion':'accepted'},{'runtime_admitted':True},
+                            {'default_level':16},{'physical_role':'fold'}):
+                resolver.return_value=(dict(candidate,**changed),'static-candidate',[])
+                self.assertEqual(helper(image,0,matrix,16),
+                                 (None,'unsupported-loop-status-contract'))
+            resolver.return_value=(None,'ambiguous-status-helpers',[])
+            self.assertEqual(helper(image,0,matrix,16),(None,'ambiguous-status-helpers'))
+        # Proves level16 passes only constructor argument validation. No runtime starts.
+        with mock.patch('qemu_transport.detect',side_effect=RuntimeError('detect-sentinel')) as detector:
+            with self.assertRaisesRegex(RuntimeError,'detect-sentinel'):
+                MODULE.Transport(Path('unused'),Path('unused'),experimental_halfword=True,
+                                 experimental_status_level=16)
+            detector.assert_called_once()
+        for options in (dict(experimental_status_level=16),
+                        dict(experimental_halfword=True,experimental_status_level=True)):
+            with self.assertRaisesRegex(ValueError,'status level requires'):
+                MODULE.Transport(Path('unused'),Path('unused'),**options)
+
+    def test_distributed_matrix_memory_rows_and_numeric_packets(self):
+        image = bytearray(0x100)
+        struct.pack_into('<HH', image, 0x10, 0x480B, 0x7901)
+        struct.pack_into('<HH', image, 0x20, 0x4807, 0x7900)
+        struct.pack_into('<I', image, 0x40, 0x3000690)
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x800000,
+                                 board_status_input=None)
+        profile = dict(grammar='distributed-six-byte-numeric-v1', rows=6,
+                       columns=4, register_width=1, no_key=15,
+                       single_key_column_sense=[14, 13, 11, 7],
+                       register=0x3000694, presence_site=0x12, sense_site=0x22,
+                       scanner_state=0x1000100, batch_state=0x1000200,
+                       producer=dict(family='distributed-filtered-byte-ring32-v1',
+                                     slots=32, wrap_mask=31,
+                                     state=0x1000300, ring=0x1000400),
+                       gpio_ports=[dict(address=address, mask=mask, shadow=0x1000500+i)
+                                   for i, (address, mask) in enumerate(
+                                       ((0x300066c, 0x62), (0x3000668, 6), (0x3000664, 0x80)))],
+                       row_values=[[0x60,6,0x80], [0x42,6,0x80], [0x22,6,0x80],
+                                   [0x62,4,0x80], [0x62,2,0x80], [0x62,6,0]],
+                       global_values=[0,0,0],
+                       token_cells=[dict(event=event, row=i % 6, column=i // 6)
+                                    for i, event in enumerate(b'123456789*0#')])
+        helper = MODULE.qemu_distributed_matrix_property
+        self.assertEqual(helper(bytes(image), config, profile),
+                         ('matrix-gpio=3000694:12:22:300066c:62:3000668:6:3000664:80', None))
+        for changed, reason in (
+            ({'grammar': 'unknown'}, 'unsupported-distributed-contract'),
+            ({'register': 0x3000695}, 'invalid-gpio-ports'),
+            ({'gpio_ports': []}, 'invalid-gpio-ports'),
+            ({'row_values': list(reversed(profile['row_values']))}, 'invalid-gpio-row-order'),
+            ({'global_values': [1,0,0]}, 'invalid-gpio-row-order'),
+            ({'scanner_state': 0x1800000-9}, 'state-outside-ram'),
+            ({'batch_state': None}, 'state-outside-ram'),
+            ({'producer': None}, 'unclosed-ring-profile'),
+            ({'sense_site': True}, 'sense-outside-primary-nor'),
+            ({'sense_site': 0x12}, 'sense-outside-primary-nor'),
+        ):
+            self.assertEqual(helper(bytes(image), config, dict(profile, **changed)), (None, reason))
+        config.board_status_input = SimpleNamespace(address=0x3000668)
+        self.assertEqual(helper(bytes(image), config, profile), (None, 'conflicting-status-profile'))
+        config.board_status_input.address = 0x3000670
+        self.assertIsNotNone(helper(bytes(image), config, profile)[0])
+        image[0x22] ^= 1
+        self.assertEqual(helper(bytes(image), config, profile), (None, 'sense-load-shape-mismatch'))
+
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_held, transport.sideband_held = {}, set()
+        transport.decoder = SimpleNamespace(input_error='')
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        for i, bit in enumerate(range(11, 23)):
+            self.assertTrue(transport.can_set_key(bit))
+            self.assertTrue(transport.set_key(bit, True))
+            self.assertFalse(transport.set_key(11 if bit != 11 else 12, True))
+            self.assertTrue(transport.set_key(bit, False))
+            self.assertEqual(packets[-2:], [bytes((0x80, 1, i % 6, [14,13][i // 6])),
+                                           bytes((0x80, 0, 0, 0))])
+        for bit in range(11):
+            self.assertFalse(transport.can_set_key(bit))
+        profile['token_cells'].append(dict(event=0x53, row=1, column=1))
+        self.assertFalse(transport.can_set_key(5, 0x53))  # No inferred OK alias.
+        profile['token_cells'].append(dict(profile['token_cells'][0]))
+        self.assertFalse(transport.can_set_key(11))
+        with self.assertRaisesRegex(ValueError, 'distributed matrix setting'):
+            MODULE.Transport(None, None, experimental_distributed=1)
+
+    def test_low5_matrix_uses_actual_load_sites_and_scoped_packets(self):
+        image = bytearray(0x100)
+        image[0x10:0x14] = bytes.fromhex('416b0988')
+        image[0x20:0x24] = bytes.fromhex('406b0088')
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1800000, ram_size=0x800000,
+                                 board_status_input=None)
+        profile = dict(grammar='lg-descriptor-low5-6x5-raw-v1', rows=6,
+                       columns=5, sense_bits=5, no_key=31,
+                       single_key_column_sense=[30, 29, 27, 23, 15],
+                       register=0x300072c, descriptor_pointer=0x1800100,
+                       descriptor_mmio_provenance='ROM descriptor initializer',
+                       event_sink_validation='validated-raw-enqueue-callsites',
+                       timer_bridge={'scanner': 0},
+                       global_sense_sites=[0x10], row_sense_sites=[0x20])
+        helper = MODULE.qemu_low5_matrix_property
+        self.assertEqual(helper(bytes(image), config, profile),
+                         ('matrix-low5=1800100:12:22', None))
+        for changed, reason in (
+            ({'descriptor_pointer': 0x2000000}, 'descriptor-outside-ram'),
+            ({'timer_bridge': None}, 'unclosed-scanner-profile'),
+            ({'single_key_column_sense': [30, 29, 27, 23, 31]}, 'invalid-sense-table'),
+            ({'row_sense_sites': [0x20, 0x30]}, 'ambiguous-sense-roles'),
+            ({'row_sense_sites': [0x10]}, 'ambiguous-sense-roles'),
+            ({'row_sense_sites': [0x100]}, 'sense-outside-primary-nor'),
+        ):
+            self.assertEqual(helper(bytes(image), config, dict(profile, **changed)),
+                             (None, reason))
+        image[0x22] ^= 1  # Changed LDRH destination cannot use this native gate.
+        self.assertEqual(helper(bytes(image), config, profile),
+                         (None, 'sense-load-shape-mismatch'))
+        self.assertEqual(helper(bytes(image), config, self.PROFILE), (None, None))
+        config.board_status_input = object()
+        self.assertEqual(helper(bytes(image), config, profile),
+                         (None, 'conflicting-status-profile'))
+
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_input_sideband_producer = None
+        transport.matrix_held, transport.sideband_held = {}, set()
+        cells = {0: (9, 5, 3), 1: (133, 2, 0), 5: (141, 3, 4)}
+        transport.decoder = SimpleNamespace(input_error='',
+            _direct_matrix_position=lambda bit, event: cells.get(bit),
+            _direct_sideband_producer=lambda bit, event: None)
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        for bit, row, sense in ((0, 5, 23), (1, 2, 30), (5, 3, 15)):
+            self.assertTrue(transport.can_set_key(bit))
+            self.assertTrue(transport.set_key(bit, True))
+            self.assertFalse(transport.set_key(22, True))  # One held key.
+            self.assertTrue(transport.set_key(bit, False))
+            self.assertEqual(packets[-2:],
+                             [bytes((0x80, 1, row, sense)), bytes((0x80, 0, 0, 0))])
+        self.assertFalse(transport.can_set_key(22))
+        with self.assertRaises(ValueError):
+            MODULE.matrix_senses(dict(profile, grammar='direct-low-nibble-6-row-v1'))
+
+    def test_loop_matrix_property_and_numeric_packets(self):
+        image = bytearray(0x100)
+        for site in (0x12, 0x22, 0x32):
+            image[site-2:site+2] = bytes.fromhex('686b0088')
+        for off, port in ((0,0x3000720),(8,0x300072c),(0x20,0x3000728),(0x34,0x300072c)):
+            struct.pack_into('<I', image, 0x40+off, port)
+        config = SimpleNamespace(flash_size=len(image), ram_base=0x1000000,
+                                 ram_size=0x800000, board_status_input=None)
+        profile = dict(grammar='indirect-halfword-loop-six-row-v1', rows=6,
+                       columns=4, no_key=31, single_key_column_sense=[30,29,27,23],
+                       promotion='temporary-evidence-gated',
+                       descriptor=0x1000100, copied_descriptor=0x17fe000,
+                       descriptor_copy=dict(copy_loop=0x80,source=0x40,target=0x17fe000,size=0x54),
+                       contact_site=0x12,presence_site=0x22,sense_site=0x32,
+                       token_cells=[dict(event=v,row=i%6,column=i//6)
+                                    for i,v in enumerate(b'123456789*0#')])
+        helper=MODULE.qemu_halfword_matrix_property
+        self.assertEqual(helper(bytes(image),config,profile),
+                         ('matrix-halfword-loop=1000100:12:22:32',None))
+        self.assertEqual(helper(bytes(image),config,profile,enabled=False),
+                         ('matrix-halfword-loop=1000100:12:22:32',None))
+        for changed in ({'grammar':'indirect-halfword-six-row-v1'},
+                        {'grammar':'indirect-halfword-mapped-row-v1'},
+                        {'grammar':'unknown'}, {'promotion':'experimental-only'},
+                        {'promotion':None}):
+            self.assertEqual(helper(bytes(image),config,dict(profile,**changed),enabled=False),
+                             (None,'experimental-only-halfword-profile'))
+        for changed,reason in (({'rows':7},'invalid-loop-row-contract'),
+                               ({'no_key':15},'invalid-loop-row-contract'),
+                               ({'single_key_column_sense':[30,29,27,15]},'invalid-loop-row-contract'),
+                               ({'contact_site':0x22},'sense-load-shape-mismatch'),
+                               ({'contact_site':True},'sense-load-shape-mismatch'),
+                               ({'copied_descriptor':0x1800000},'unclosed-descriptor-copy'),
+                               ({'descriptor_copy':None},'unclosed-descriptor-copy')):
+            self.assertEqual(helper(bytes(image),config,dict(profile,**changed)),(None,reason))
+        image[0x32]^=1
+        self.assertEqual(helper(bytes(image),config,profile),(None,'sense-load-shape-mismatch'))
+        image[0x32]^=1;image[0x40]^=1
+        self.assertEqual(helper(bytes(image),config,profile),(None,'descriptor-port-mismatch'))
+        transport=object.__new__(MODULE.Transport)
+        transport.matrix_input_profile=profile
+        transport.matrix_held,transport.sideband_held={},set()
+        transport.decoder=SimpleNamespace(input_error='')
+        packets=[];transport.input_socket=SimpleNamespace(sendall=packets.append)
+        for i,bit in enumerate(range(11,23)):
+            self.assertTrue(transport.can_set_key(bit))
+            self.assertTrue(transport.set_key(bit,True))
+            self.assertFalse(transport.set_key(12 if bit==11 else 11,True))
+            self.assertTrue(transport.set_key(bit,False))
+            self.assertEqual(packets[-2:],[bytes((0x80,1,i%6,[30,29][i//6])),bytes((0x80,0,0,0))])
+        for bit in range(11): self.assertFalse(transport.can_set_key(bit))
+        for event in (0x51,0x53,0x54): self.assertFalse(transport.can_set_key(1,event))
+        profile['token_cells'].append(dict(profile['token_cells'][0]))
+        self.assertFalse(transport.can_set_key(11))
+        for column,sense in enumerate((30,29,27,23)):
+            self.assertEqual(MODULE.matrix_input_command(profile,(49,5,column),True),bytes((0x80,1,5,sense)))
+        with self.assertRaises(ValueError): MODULE.matrix_input_command(profile,(49,6,0),True)
+
+    def test_status_option_is_explicit_detector_gated_and_non_fold(self):
+        matrix = dict(grammar="indirect-halfword-six-row-v1",
+                      descriptor=0x1000000, queue_sink="0x500")
+        candidate = dict(descriptor=0x1000000, queue_sink=0x500)
+        helper = MODULE.qemu_halfword_status_property
+        with mock.patch('qemu_transport.resolve_indirect_board_status',
+                        return_value=(candidate, 'static-candidate', [])) as resolver:
+            self.assertEqual(helper(b'', 0, matrix, None), (None, None))
+            resolver.assert_not_called()
+            for level in (0, 4):
+                self.assertEqual(helper(b'', 0, matrix, level), (
+                    f'board-status-input=3000720:4:{level:x},board-status-descriptor=1000000', None))
+            for level in (False, True, 1, -1, 4.0, '4'):
+                self.assertEqual(helper(b'', 0, matrix, level), (None, 'invalid-level'))
+            self.assertEqual(helper(b'', 0, None, 4), (None, 'halfword-matrix-not-admitted'))
+            self.assertEqual(helper(b'', 0, matrix, 4, object()), (None, 'conflicting-status-profile'))
+            self.assertEqual(helper(b'', 0, dict(matrix, descriptor=0x1000100), 4),
+                             (None, 'matrix-status-mismatch'))
+            resolver.return_value = (None, 'ambiguous-status-helpers', [])
+            self.assertEqual(helper(b'', 0, matrix, 4), (None, 'ambiguous-status-helpers'))
+        for options in (dict(experimental_status_level=4),
+                        dict(experimental_halfword=True, experimental_status_level=True)):
+            with self.assertRaisesRegex(ValueError, 'status level requires'):
+                MODULE.Transport(Path('unused'), Path('unused'), **options)
+        # Electrical experiment does not install a config profile or expose fold UI.
+        transport = object.__new__(MODULE.Transport)
+        transport.config = SimpleNamespace(board_status_input=None)
+        transport.board_status_snapshot = None
+        self.assertFalse(transport.can_set_fold())
+
+    def test_loop_functional_confirm_requires_matching_evidence_and_unique_cell(self):
+        from copy import deepcopy
+
+        events = [0x51, 0x53, *b'123456789*0#',
+                  0x52, 0x54, 0x55, 0x56, 0x57, 0x5B, 0x61, 0x62, 0x63, 0x64]
+        profile = dict(
+            grammar='indirect-halfword-loop-six-row-v1', rows=6, columns=4, no_key=31,
+            event_codes=events, single_key_column_sense=[30, 29, 27, 23],
+            ok_mapping_status='accepted-provisional',
+            provisional_mappings={5: dict(
+                event=0x53, rule='same-image-loop-functional-confirm-v1',
+                semantic_status='temporary-evidence-gated-provisional', functional_only=True)},
+            token_cells=[dict(token=chr(v), event=v, row=events.index(v) % 6,
+                              column=events.index(v) // 6) for v in b'123456789*0#']
+                        + [dict(token='O', event=0x53, row=1, column=0)])
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_held, transport.sideband_held = {}, set()
+        transport.decoder = SimpleNamespace(input_error='')
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        for override in (None, 0x53):
+            self.assertTrue(transport.can_set_key(5, override))
+            self.assertTrue(transport.set_key(5, True, override))
+            self.assertTrue(transport.set_key(5, False))
+            self.assertEqual(packets[-2:], [bytes((0x80, 1, 1, 30)), bytes((0x80, 0, 0, 0))])
+        self.assertTrue(transport.can_set_key(5, 0x35))  # Existing manual numeric override.
+        for bit, event in ((1, 0x53), (5, 0x54), (5, 83.0), (5, '83')):
+            self.assertFalse(transport.can_set_key(bit, event))
+        variants = []
+        for field, value in (
+                ('provisional_mappings', {}), ('ok_mapping_status', 'rejected'),
+                ('grammar', 'indirect-halfword-mapped-row-v1'),
+                ('grammar', 'distributed-six-byte-numeric-v1'), ('event_codes', None)):
+            changed = deepcopy(profile); changed[field] = value; variants.append(changed)
+        for field, value in (('rule', 'unproven'), ('event', 0x54),
+                             ('semantic_status', 'unproven'), ('functional_only', False)):
+            changed = deepcopy(profile)
+            changed['provisional_mappings'][5][field] = value
+            variants.append(changed)
+        for field, value in (('token', '?'), ('row', 2), ('column', 1)):
+            changed = deepcopy(profile); changed['token_cells'][-1][field] = value
+            variants.append(changed)
+        changed = deepcopy(profile); changed['event_codes'][0] = 0x53; variants.append(changed)
+        changed = deepcopy(profile); changed['token_cells'].append(changed['token_cells'][-1].copy())
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(changed=changed):
+                transport.matrix_input_profile = changed
+                self.assertFalse(transport.can_set_key(5))
+                self.assertFalse(transport.can_set_key(5, 0x53))
+                self.assertTrue(transport.can_set_key(15))
+
+    def test_automatic_mapped_scan_gates_require_closed_copy_and_mmio_owner(self):
+        from copy import deepcopy
+        image = bytearray(0x400)
+        for site in (0x12, 0x22, 0x32):
+            image[site - 2:site + 2] = bytes.fromhex('706b0088')
+        image[0x40:0x44] = bytes.fromhex('406a0088')
+        descriptor, state = 0x1000628, 0x100221c
+        for offset, port in ((8, 0x300072c), (0x24, 0x3000728), (0x34, 0x300072c)):
+            struct.pack_into('<I', image, 0x128 + offset, port)
+        config = SimpleNamespace(flash_size=len(image), ram_base=0x1000000,
+                                 ram_size=0x800000, board_status_input=None,
+                                 ready_poll=None, load_address=0)
+        gates = dict(grammar='mapped-halfword-contact-status-gates-v1',
+                     promotion='temporary-evidence-gated', runtime_admitted=False,
+                     physical_role=None, default_level=None,
+                     descriptor=descriptor, scanner_state=state, queue_sink=0x60,
+                     contact_site=0x32, status_site=0x42,
+                     contact_mask=16, status_mask=2, contact_pointer_offset=0x34,
+                     configuration_pointer_offset=8, status_pointer_offset=0x24,
+                     contact_width=2, status_width=2, status_state_offset=8,
+                     status_set_bit_state=0, status_clear_bit_state=1,
+                     ram_spans=[[descriptor, 0x38], [state, 0x20], [0x1003000, 4]])
+        profile = dict(grammar='indirect-halfword-mapped-row-v1', rows=7,
+                       columns=4, no_key=15, single_key_column_sense=[14, 13, 11, 7],
+                       descriptor=descriptor, presence_site=0x12, sense_site=0x22,
+                       row_select_mask=0x3b03, row_select_bits=[0, 1, 8, 9, 11, 12, 13],
+                       queue_sink='0x60', scan_gates=gates,
+                       descriptor_copy=dict(descriptor_rom=0x128, descriptor_ram=descriptor,
+                                            source=0x100, target=0x1000600, size=0x100))
+        helper = MODULE.qemu_halfword_matrix_property
+        owner = (0x3000720, 0, 0x20, 0, 0x40, 0xc, 0x8000)
+        with mock.patch('qemu_transport.eeprom_gpio_profile', return_value=(owner, None)):
+            self.assertEqual(helper(bytes(image), config, profile, enabled=False),
+                             ('matrix-halfword=1000628:12:22:3b03,'
+                              'experimental-matrix-contact=32:10,'
+                              'experimental-matrix-status=42:2', None))
+            self.assertEqual(helper(bytes(image), config, profile, enabled=True),
+                             ('matrix-halfword=1000628:12:22:3b03', None))
+            for changed in ({'scan_gates': None}, {'scan_gates': {}}, {'grammar': 'unknown'}):
+                self.assertIsNone(helper(bytes(image), config, dict(profile, **changed), enabled=False)[0])
+            for changed in ({'contact_mask': True}, {'status_mask': 4},
+                            {'scanner_state': 0x1800000}, {'scanner_state': descriptor},
+                            {'status_site': 0x32}, {'queue_sink': 0x62},
+                            {'physical_role': 'assumed'}, {'runtime_admitted': True},
+                            {'ram_spans': None}, {'ram_spans': [[descriptor, 0x38]]},
+                            {'ram_spans': [[descriptor, 0x38], [state, 0x20], [True, 4]]},
+                            {'ram_spans': [[descriptor, 0x38], [state, 0x20], [0x1003000, 0]]},
+                            {'ram_spans': [[descriptor, 0x38], [state, 0x20], [state + 4, 4]]},
+                            {'ram_spans': [[descriptor, 0x38], [state, 0x20], [0x1800000, 4]]}):
+                bad = deepcopy(profile); bad['scan_gates'].update(changed)
+                with self.subTest(gate=changed):
+                    self.assertIsNone(helper(bytes(image), config, bad, enabled=False)[0])
+            for changed in ({'source': 0x104}, {'size': 0x20}, {'descriptor_ram': descriptor + 4}):
+                bad = deepcopy(profile); bad['descriptor_copy'].update(changed)
+                self.assertIsNone(helper(bytes(image), config, bad, enabled=False)[0])
+            malformed = bytearray(image); malformed[0x42] ^= 1
+            self.assertIsNone(helper(bytes(malformed), config, profile, enabled=False)[0])
+            self.assertIsNone(helper(bytes(image), SimpleNamespace(**dict(vars(config), load_address=4)), profile, enabled=False)[0])
+            bad_port = bytearray(image); struct.pack_into('<I', bad_port, 0x128 + 0x24, 0x300072c)
+            self.assertIsNone(helper(bytes(bad_port), config, profile, enabled=False)[0])
+            self.assertIsNone(helper(bytes(image), SimpleNamespace(**dict(vars(config), board_status_input=object())), profile, enabled=False)[0])
+        for bad_owner in (None, (0x300072a, 0, 0x20, 0, 0x40, 0xc, 0x8000),
+                          (0x3000720, 8, 2, 0, 0x40, 0xc, 0x8000),
+                          (0x3000720, 0, 0x10, 0, 0x40, 0xc, 0x8000)):
+            with self.subTest(owner=bad_owner), mock.patch('qemu_transport.eeprom_gpio_profile', return_value=(bad_owner, None)):
+                self.assertIsNone(helper(bytes(image), config, profile, enabled=False)[0])
+
+    def test_halfword_public_key_api_requires_unique_semantic_cell(self):
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = {
+            "grammar": "indirect-halfword-six-row-v1", "rows": 6,
+            "no_key": 15, "single_key_column_sense": [14, 13, 11, 7],
+            "token_cells": [{"token": "F", "event": 0x54, "row": 4, "column": 3}],
+        }
+        transport.matrix_held = {}
+        transport.sideband_held = set()
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        transport.decoder = SimpleNamespace(input_error="")
+        self.assertTrue(transport.can_set_key(1))
+        self.assertFalse(transport.can_set_key(2))
+        self.assertFalse(transport.can_set_key(2, 0x52))
+        self.assertTrue(transport.set_key(1, True))
+        self.assertTrue(transport.set_key(1, False))
+        self.assertEqual(packets, [bytes((0x80, 1, 4, 7)), bytes((0x80, 0, 0, 0))])
+        transport.matrix_input_profile["token_cells"].append(
+            {"token": "alias", "event": 0x54, "row": 4, "column": 3})
+        self.assertFalse(transport.can_set_key(1))
+
+    def test_mapped_halfword_property_and_numeric_keys_preserve_native_fallback(self):
+        image = bytearray(0x100)
+        image[0x10:0x14] = image[0x20:0x24] = bytes.fromhex('706b0088')
+        config = SimpleNamespace(flash_size=len(image), ram_base=0x1000000,
+                                 ram_size=0x800000)
+        profile = dict(grammar='indirect-halfword-mapped-row-v1', rows=7,
+                       columns=4, no_key=15, single_key_column_sense=[14, 13, 11, 7],
+                       descriptor=0x1000628, presence_site=0x12, sense_site=0x22,
+                       row_select_mask=0x3b03, row_select_bits=[0, 1, 8, 9, 11, 12, 13],
+                       token_cells=[dict(event=event, row=i % 7, column=i // 7)
+                                    for i, event in enumerate(b'123456789*0#')])
+        helper = MODULE.qemu_halfword_matrix_property
+        self.assertEqual(helper(bytes(image), config, profile),
+                         ('matrix-halfword=1000628:12:22:3b03', None))
+        self.assertEqual(helper(bytes(image), config, dict(profile,
+                         grammar='indirect-halfword-six-row-v1', rows=6)),
+                         ('matrix-halfword=1000628:12:22', None))
+        for changed, reason in (
+            ({'grammar': 'unknown'}, 'unsupported-halfword-grammar'),
+            ({'descriptor': 0x1800000}, 'outside-memory-map'),
+            ({'sense_site': 0x23}, 'outside-memory-map'),
+            ({'sense_site': True}, 'outside-memory-map'),
+            ({'rows': 6}, 'invalid-mapped-row-contract'),
+            ({'row_select_mask': 0x13b03}, 'invalid-mapped-row-contract'),
+            ({'row_select_mask': 0x3b02}, 'invalid-mapped-row-contract'),
+            ({'row_select_bits': [1, 0, 8, 9, 11, 12, 13]}, 'invalid-mapped-row-contract'),
+            ({'single_key_column_sense': [14, 13, 11, 15]}, 'invalid-mapped-row-contract'),
+            ({'sense_site': 0x12}, 'sense-load-shape-mismatch'),
+        ):
+            self.assertEqual(helper(bytes(image), config, dict(profile, **changed)),
+                             (None, reason))
+        image[0x22] ^= 1
+        self.assertEqual(helper(bytes(image), config, profile),
+                         (None, 'sense-load-shape-mismatch'))
+        with mock.patch('qemu_transport.resolve_indirect_board_status') as resolver:
+            self.assertEqual(MODULE.qemu_halfword_status_property(b'', 0, profile, 4),
+                             (None, 'halfword-matrix-not-admitted'))
+            resolver.assert_not_called()
+
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_held, transport.sideband_held = {}, set()
+        transport.decoder = SimpleNamespace(input_error='')
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        for i, bit in enumerate(range(11, 23)):
+            self.assertTrue(transport.can_set_key(bit))
+            self.assertTrue(transport.set_key(bit, True))
+            self.assertFalse(transport.set_key(11 if bit != 11 else 12, True))
+            self.assertTrue(transport.set_key(bit, False))
+            self.assertEqual(packets[-2:], [bytes((0x80, 1, i % 7, [14, 13][i // 7])),
+                                           bytes((0x80, 0, 0, 0))])
+        for bit in range(11):
+            self.assertFalse(transport.can_set_key(bit))
+        # Function-key event values never inherit the ring32 key labels.
+        profile['token_cells'].append(dict(event=0x54, row=6, column=3))
+        self.assertFalse(transport.can_set_key(1, 0x54))
+        profile['token_cells'].append(dict(profile['token_cells'][0]))
+        self.assertFalse(transport.can_set_key(11))
+
     PROFILE = {
         "rows": 6,
         "no_key": 0x0F,
@@ -1897,6 +2410,39 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         candidate["vector_target"] = 0x02000000
         self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
+
+        # The arm-gated FB0 variant is explicit-only, even with closed topology.
+        status = 0x03000FB0
+        candidate.update({
+            "signature": "static-fb0-controller-callback-v1",
+            "controller_class": "legacy-fb0-index1b-delta5-controller-candidate-v1",
+            "promotion": "experimental-only",
+            "vector_target": 0x01800000,
+            "status": status, "enable": status + 0x14,
+            "status_banks": (status, status + 4),
+            "clear_banks": (status, status + 4),
+            "controller_write_banks": (status + 0x14, status + 0x18),
+            "controller_aperture": (status, status + 0x1A),
+            "time_tick_status_bank": status, "time_tick_clear_bank": status,
+            "time_tick_control_address": 0x030006E0,
+            "handler_validation_size": 0x182,
+        })
+        self.assertIsNone(MODULE.c80_rex_irq_profile(config, False))
+        self.assertEqual(
+            MODULE.c80_rex_irq_profile(config, True),
+            "3000fb0:3000fc4:200:4c4b40:1800000:1000:1801000:"
+            "2000:182:1802000:3000",
+        )
+        for key, bad in (("time_tick_control_address", 0x030007A0),
+                         ("handler_validation_size", 0x100),
+                         ("status_bank_count", 3),
+                         ("pending_read_semantics", "read-consume"),
+                         ("promotion", "temporary-evidence-gated")):
+            with self.subTest(fb0_reject=key):
+                original = candidate[key]
+                candidate[key] = bad
+                self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
+                candidate[key] = original
 
     def test_c80_overlay_route_emits_runtime_addresses(self) -> None:
         status = 0x03000C80

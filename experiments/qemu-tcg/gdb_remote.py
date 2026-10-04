@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 class Remote:
     def __init__(self, sock: socket.socket) -> None:
         self.sock = sock
+        if getattr(sock, "family", None) in (socket.AF_INET, socket.AF_INET6):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     @staticmethod
     def _checksum(data: bytes) -> bytes:

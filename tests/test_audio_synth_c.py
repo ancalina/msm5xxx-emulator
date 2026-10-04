@@ -6,6 +6,90 @@ from pathlib import Path
 
 
 class TestAudioSynthC(unittest.TestCase):
+    def test_silent_batches_preserve_pcm_and_full_state(self):
+        repo = Path(__file__).resolve().parents[1]
+        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-audio-synth.c"
+        text = core.read_text()
+        # Oracle is the unchanged slow renderer; remove only the optimization.
+        begin = text.index("    /* Only batch-entry silence:")
+        end = text.index("    for (frame = 0u; frame < frames; frame++)", begin)
+        reference = (text[:begin] + text[end:]).replace(
+            "msm5xxx_audio_synth_", "reference_")
+        header = core.with_suffix(".h").read_text()
+        declarations = header[header.index("void msm5xxx_audio_synth_init"):
+                              header.rindex("#endif")].replace(
+                                  "msm5xxx_audio_synth_", "reference_")
+        harness = r"""
+#include <assert.h>
+#include <string.h>
+#include "msm5xxx-audio-synth.h"
+DECLARATIONS
+static MSM5xxxAudioSynth a, b;
+static void same(void) { assert(memcmp(&a, &b, sizeof(a)) == 0); }
+static void advance(uint64_t ns) {
+    assert(msm5xxx_audio_synth_advance(&a, ns) == reference_advance(&b, ns));
+    same();
+}
+static void read_pcm(size_t n) {
+    int16_t x[MSM5XXX_AUDIO_MAX_FRAMES][2], y[MSM5XXX_AUDIO_MAX_FRAMES][2];
+    uint64_t e, s, f, re, rs, rf;
+    assert(msm5xxx_audio_synth_read(&a, x, n, &e, &s, &f) ==
+           reference_read(&b, y, n, &re, &rs, &rf));
+    assert(e == re && s == rs && f == rf);
+    assert(memcmp(x, y, n * sizeof(x[0])) == 0); same();
+}
+int main(void) {
+    MSM5xxxAudioEvent event = { .kind = MSM5XXX_AUDIO_EVENT_NOTE_ON,
+        .note = 69, .velocity = 100, .volume = 127, .pan = 64,
+        .expression = 127, .pitch_bend = 64 };
+    uint64_t ns = 0;
+    msm5xxx_audio_synth_init(&a); reference_init(&b); same();
+    advance(0); advance(1000000000); /* Pre-stream silent skip. */
+    read_pcm(441); /* Start stream with underflow. */
+    for (unsigned i = 0; i < 80; i++) {
+        ns = 1000000000ULL + (i + 1) * 10000000ULL;
+        advance(ns); if (i % 3 == 0) read_pcm(441);
+    } /* Nonempty wrap and make-room overflow. */
+    assert(a.overflow_frames > 0);
+    advance(ns + 2000000000ULL); /* Large-advance skip and epoch. */
+    read_pcm(441);
+    msm5xxx_audio_synth_resync(&a); reference_resync(&b); same();
+    ns += 2000000000ULL;
+    advance(ns + 10000000); read_pcm(441);
+    msm5xxx_audio_synth_reset(&a); reference_reset(&b); same();
+    assert(msm5xxx_audio_synth_event(&a, 0, &event) ==
+           reference_event(&b, 0, &event)); same();
+    advance(10000000); read_pcm(441); /* Active branch unchanged. */
+    event.kind = MSM5XXX_AUDIO_EVENT_NOTE_OFF;
+    assert(msm5xxx_audio_synth_event(&a, 10000000, &event) ==
+           reference_event(&b, 10000000, &event)); same();
+    advance(40000000); /* Mid-batch deactivation remains per-frame. */
+    assert(!msm5xxx_audio_synth_active(&a)); read_pcm(441);
+    advance(50000000); read_pcm(441);
+    a.voice[31].phase = b.voice[31].phase = 1234;
+    a.ring_write = b.ring_write = MSM5XXX_AUDIO_MAX_FRAMES - 1;
+    a.ring_read = b.ring_read = a.ring_write;
+    a.ring_count = b.ring_count = 0;
+    advance(50000000); /* Zero-frame batch preserves stale cells. */
+    advance(60000000); read_pcm(441); /* Explicit two-span wrap. */
+    return 0;
+}
+""".replace("DECLARATIONS", declarations)
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            baseline = folder / "reference.c"
+            baseline.write_text('#include "msm5xxx-audio-synth.h"\n' +
+                                declarations + reference)
+            source = folder / "test.c"
+            source.write_text(harness)
+            binary = folder / "test"
+            subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                            "-Werror", "-fsanitize=undefined",
+                            "-fno-sanitize-recover=all", "-I", str(core.parent),
+                            str(source), str(core), str(baseline),
+                            "-o", str(binary)], check=True, timeout=30)
+            subprocess.run([str(binary)], check=True, timeout=10)
+
     def test_integer_synth_and_bounded_ring(self):
         repo = Path(__file__).resolve().parents[1]
         core = repo / "experiments" / "qemu-tcg" / "msm5xxx-audio-synth.c"
@@ -138,6 +222,8 @@ class TestAudioSynthC(unittest.TestCase):
                 synth.clock_initialized = true;
                 synth.voice[0].active = true;
                 synth.voice[0].timbre_valid = true;
+                synth.voice[0].timbre_algorithm = 5;
+                synth.voice[0].timbre_operator_count = 4;
                 synth.voice[0].velocity = 127;
                 synth.voice[0].volume = 127;
                 synth.voice[0].expression = 127;

@@ -106,6 +106,10 @@ def find_byte_main_page_secondary(image: bytes) -> tuple[int | None, str]:
         re.escape(bytes.fromhex("0fd17820288395206883122028844b221202081ce962ff21")) + rb".{4}" +
         re.escape(bytes.fromhex("ac60ef60b0bd6020a8834020e8830820288669632c616f61")), re.S)
     inits = list(initializer.finditer(image))
+    if not inits:
+        color_page = _find_color_page_secondary(image)
+        if color_page is not None:
+            return color_page
     if len(inits) != 1 or inits[0].start() % 2:
         return None, "mixed-descriptor-missing-or-ambiguous"
     init = inits[0].start()
@@ -178,6 +182,103 @@ def find_byte_main_page_secondary(image: bytes) -> tuple[int | None, str]:
     if len(bindings) != 1:
         return None, "mixed-caller-missing-or-ambiguous"
     return port, "temporary-mixed-descriptor-consumer-awaiting-runtime"
+
+
+def _find_color_page_secondary(image: bytes) -> tuple[int | None, str] | None:
+    """Separate temporary color-buffer/byte-page consumer contract.
+
+    The additional output remains a raw page-RAM view; these software bounds
+    do not establish physical panel dimensions or orientation.
+    """
+    byte_core = re.compile(
+        re.escape(bytes.fromhex("e8690204120c60247c4307e068682018805c"))
+        + rb".{4}" + re.escape(bytes.fromhex(
+            "01321204120c286a824201dc602af2db01373f043f0ca86a874201dc042fd0db")), re.S)
+    cores = list(byte_core.finditer(image))
+    if not cores:
+        return None
+    reject = (None, "temporary-color-page-contract-rejected")
+    if len(cores) != 1 or cores[0].start() % 2:
+        return reject
+    byte = cores[0].start() - 0x88
+    if byte < 0 or image[byte:byte + 2] != bytes.fromhex("f0b5"):
+        return reject
+    descriptor = thumb_literal_value(image, byte + 2, 4)
+    # The color pixels are inline at +0x2e; the byte-page pointer is at +4.
+    if (descriptor is None or descriptor % 4
+            or not 0x01000000 <= descriptor <= 0x02000000 - 0x2e - 120 * 144 * 2
+            or image[byte + 6:byte + 10] != bytes.fromhex("e0690028")
+            or image[byte + 0x18:byte + 0x1e] != bytes.fromhex("206a5f2806dd")
+            or image[byte + 0x28:byte + 0x2c] != bytes.fromhex("5f202062")
+            or image[byte + 0x2c:byte + 0x30] != bytes.fromhex("606a0028")
+            or image[byte + 0x40:byte + 0x46] != bytes.fromhex("a06a032806dd")
+            or image[byte + 0x50:byte + 0x54] != bytes.fromhex("0320a062")):
+        return reject
+    data = thumb_bl_target(image, byte + 0x9a)
+    command = thumb_bl_target(image, byte + 0x70)
+    if (data is None or command is None or min(data, command) < 0
+            or image[data:data + 8] != bytes.fromhex("0121490688807047")
+            or image[command:command + 8] != bytes.fromhex("0121490608807047")
+            or any(thumb_bl_target(image, byte + offset) != command
+                   for offset in (0x7a, 0x84))):
+        return reject
+    color_core = re.compile(rb".\x4c" + re.escape(bytes.fromhex("3a1ca068e1686369"))
+        + rb".{4}" + re.escape(bytes.fromhex(
+            "7820a168784340184000e11d273140180523db057821491b490009e02a1c03e0068802309e80")), re.S)
+    clamps = bytes.fromhex(
+        "a068002801da0020a060e068772801dd7720e0602069002801da0020206160698f2801dd8f206061")
+    colors = [m.start() for m in color_core.finditer(image)
+              if m.start() % 2 == 0 and m.start() >= 0xc0
+              and image[m.start() - 0xc0:m.start() - 0xc0 + len(clamps)] == clamps
+              and thumb_literal_value(image, m.start(), 4) == descriptor]
+    if len(colors) != 1:
+        return reject
+    color = colors[0]
+    window = thumb_bl_target(image, color + 10)
+    if (window is None or window < 0
+            or image[window:window + 26] != bytes.fromhex(
+                "90b443270524e405278020802180422020802280238090bc7047")):
+        return reject
+    # Setup initializes the same dirty-page object and calls this consumer.
+    setup = re.compile(rb"\x80\xb5\xae\x20.{4}\x40\x20.{4}\xa0\x20.{4}"
+        rb"\x10\x20.{4}\x00\x20.{4}\xa6\x20.{4}\xa3\x20.{4}\xc8\x20.{4}"
+        rb"\x2c\x20.{4}\x7d\x27\xff\x00\x38\x1c.{4}\x2e\x20.{4}\x38\x1c.{4}"
+        rb"\x2f\x20.{4}\x38\x1c.{4}\x24\x20.{4}\x81\x20.{4}\x23\x20.{4}"
+        rb".\x49\x03\x20\x88\x62\x00\x22\x4a\x62\x5f\x20\x08\x62\xca\x61.{4}"
+        rb"\x80\xbc\x08\xbc\x18\x47", re.S)
+    setups = [m.start() for m in setup.finditer(image) if m.start() % 2 == 0]
+    if (len(setups) != 1
+            or thumb_literal_value(image, setups[0] + 0x6c, 1) != descriptor
+            or thumb_bl_target(image, setups[0] + 0x7c) != byte
+            or any(thumb_bl_target(image, setups[0] + offset) != command
+                   for offset in (4, 10, 16, 22, 28, 34, 40, 46, 52,
+                                  68, 80, 92, 98, 104))):
+        return reject
+    bindings = []
+    caller = re.compile(rb".\x4a\x04\x20\x10\x80\x51\x60\x01\x20.{4}", re.S)
+    for match in caller.finditer(image):
+        start = match.start()
+        if (start % 2 == 0 and thumb_literal_value(image, start, 2) == descriptor
+                and thumb_bl_target(image, start + 10) == setups[0]):
+            bindings.append(start)
+    selector = re.compile(re.escape(bytes.fromhex(
+        "80b5002817d10527ff050029")) + rb".\x48\x0b\xd0\x2c\x21\x39\x80"
+        rb".{4}\x51\x20\x38\x80.\x48.{4}\x80\xbc\x08\xbc\x18\x47"
+        rb"\x50\x21\x39\x80.{4}\x2d\x20\x38\x80\xf5\xe7"
+        rb"\x00\x29\x01\xd0\xaf\x20\x00\xe0\xae\x20.{4}\xed\xe7", re.S)
+    selectors = [m.start() for m in selector.finditer(image) if m.start() % 2 == 0]
+    if (len(bindings) != 1 or len(selectors) != 1
+            or thumb_bl_target(image, selectors[0] + 0x40) != command):
+        return reject
+    paired = re.compile(rb"(?P<state>.{2})\x00\x20.{4}(?P=state)\x01\x20.{4}", re.S)
+    callers = [m.start() for m in paired.finditer(image)
+               if m.start() % 2 == 0
+               and int.from_bytes(m.group("state"), "little") & 0xf807 == 0x7801
+               and thumb_bl_target(image, m.start() + 4) == selectors[0]
+               and thumb_bl_target(image, m.start() + 12) == selectors[0]]
+    if len(callers) != 1:
+        return reject
+    return 0x02000000, "temporary-color-page-consumer-awaiting-runtime"
 
 
 def find_mixed_primary_power_port(image: bytes) -> int | None:
@@ -362,3 +463,63 @@ def find_window_panel_port(image: bytes) -> int | None:
                == bytes.fromhex(value) for off, value in fragments.items()):
             found.append(start)
     return 0x02000000 if len(found) == 1 else None
+
+
+# Temporary supplied-image class: selector halfwords and retained RGB565 windows.
+_SELECTOR_FULL = bytes.fromhex(
+    "f0b41a4800210125027843788778c478c0686d0629802e0c9219aa8003221202"
+    "9a18aa80013f3a06120eeb0bd218aa80013c2206120e05231b02d218aa801522"
+    "1202aa8007225202aa8001222a8000277b00c35aab80013705231b039f42f7db"
+    "034802700170f0bc7047")
+_SELECTOR_PARTIAL = bytes.fromhex(
+    "feb534480778457881780291c27801920379009303231b02c6682f48d91ff939"
+    "0022047b01204006002c08d002808180ea188280294a8280019a013a0be00280"
+    "8180ea1d09321206120ed2188280234a8280019a0f321206204b120e8133d218"
+    "8280152212028280072252028280012202802c1c28e0")
+_SELECTOR_TAIL = bytes.fromhex(
+    "c11b89184900715a9980013002998842f6db0b4901e0998001308028fbdb0134"
+    "01988442d3dbfebc08bc1847")
+
+
+def detect_packed_selector_port(image: bytes, ram_base: int,
+                                ram_size: int) -> tuple[int | None, str]:
+    """Admit one linked full/partial selector writer; all near misses stay raw."""
+    def pattern(body: bytes, literals: tuple[int, ...]) -> bytes:
+        return b"".join(b"." if i in literals else re.escape(bytes((v,)))
+                        for i, v in enumerate(body))
+
+    full = [m.start() for m in re.finditer(
+        pattern(_SELECTOR_FULL, (2, 0x60)), image, re.S) if m.start() % 2 == 0]
+    partial = [m.start() for m in re.finditer(
+        pattern(_SELECTOR_PARTIAL, (2, 0x1A, 0x34, 0x4E, 0x58)), image, re.S)
+        if m.start() % 2 == 0]
+    if not full or not partial:
+        return None, "writer-signature-not-found"
+    if len(full) != 1 or len(partial) != 1:
+        return None, "writer-signature-ambiguous"
+    a, b = full[0], partial[0]
+    # Match the row-copy contract, not the intervening service-call semantics.
+    # No BL encoding is normalized or accepted as a wildcard.
+    tail = image[b + 0xA8:b + 0xD4]
+    if re.fullmatch(pattern(_SELECTOR_TAIL, (0x12,)), tail, re.S) is None:
+        return None, "partial-row-loop-mismatch"
+    if not (0 <= ram_base < 2**32 and 0 < ram_size <= 2**32 - ram_base):
+        return None, "invalid-ram-range"
+    record = thumb_literal_value(image, a + 2, 0)
+    peer = thumb_literal_value(image, b + 2, 0)
+    flag = thumb_literal_value(image, b + 0x1A, 0)
+    if (record is None or peer != record or record % 4
+            or not ram_base <= record <= ram_base + ram_size - 16
+            or flag is None or not ram_base <= flag <= ram_base + ram_size - 13):
+        return None, "writer-record-literal-mismatch"
+    # Every normalized PC-relative literal remains supplied-image bounded.
+    control = thumb_literal_value(image, a + 0x60, 0)
+    x_end = thumb_literal_value(image, b + 0x34, 2)
+    peer_end = thumb_literal_value(image, b + 0x4E, 2)
+    y_base = thumb_literal_value(image, b + 0x58, 3)
+    padding = thumb_literal_value(image, b + 0xBA, 1)
+    if (control != 0x03000600 or x_end != 0x047F
+            or peer_end != x_end or y_base != x_end
+            or padding is None or not 0 <= padding <= 0xFFFF):
+        return None, "writer-control-literal-mismatch"
+    return 0x02000000, "temporary-static-writer-match"

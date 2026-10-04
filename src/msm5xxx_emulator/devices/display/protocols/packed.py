@@ -103,6 +103,9 @@ class PackedProtocolMixin:
 
     def _lcd_selector_telemetry(self) -> dict[str, object]:
         return {
+            "static_port": getattr(self, "_lcd_selector_static_port", None),
+            "static_reason": getattr(self, "_lcd_selector_static_reason",
+                                     "writer-signature-not-found"),
             "full_transfers": getattr(
                 self, "_lcd_selector_full_transfers", 0
             ),

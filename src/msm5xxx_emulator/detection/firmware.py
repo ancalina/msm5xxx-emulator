@@ -20,7 +20,8 @@ from .boot import (
     LEGACY_SECONDARY_FLASH_WRITE_SIGNATURE, MEMORY_CLEAR_128_SIGNATURE,
     MEMORY_CLEAR_LOOP_SIGNATURE, MEMORY_COPY_LOOP_SIGNATURE,
     NAND_BAD_BLOCK_SIGNATURE, NAND_READ_SIGNATURE, NAND_WRITE_SIGNATURE,
-    MSM5500_REVISION_BLOCK, MSM5500_REVISION_F025_RAW,
+    MSM5500_REVISION_BLOCK, MSM5500_REVISION_DIAGNOSTIC,
+    MSM5500_REVISION_F025_RAW,
     MSM5500_REVISION_REGISTER,
     DIRECT_INTEL_X16_PROBE_SIGNATURE,
     PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE,
@@ -560,6 +561,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                     "candidate detected; native pending cadence and idle "
                     "remain unproven"
                 )
+            elif (rex_static_controller_candidate.get("signature")
+                    == "static-fb0-controller-callback-v1"):
+                detection_notes.append(
+                    "static FB0 index-0x1B delta-5 controller candidate "
+                    "detected; explicit experimental activation required, "
+                    "physical timer cadence remains approximated"
+                )
             else:
                 detection_notes.append(
                     "static C80 index-0x1E delta-5 controller candidate "
@@ -989,11 +997,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             "raw NAND enabled from fs_ks_nand driver and physical port literals"
         )
     unresolved_msm_revision = (
-        b" Unsupported MSM REV " in primary_image
+        MSM5500_REVISION_DIAGNOSTIC.search(primary_image) is not None
         and struct.pack("<I", MSM5500_REVISION_BLOCK) in primary_image
     )
     revision_profile, revision_note = (
-        detect_msm5500_revision_f025(primary_image)
+        detect_msm5500_revision_f025(primary_image, mapped_runtime, mapped_file)
         if unresolved_msm_revision and scan_chipset == "MSM5500"
         else (False, "chipset is not MSM5500")
     )

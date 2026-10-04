@@ -4,15 +4,20 @@
  * This is an experimental QEMU machine used to measure whether TCG can
  * preserve ARMv4T privileged state while servicing detector-admitted native
  * MSM5xxx device classes. Unclassified behavior retains native backing.
+ * Modified 2026-10-01: admit the optional SBI ADC setup transaction.
+ * Modified 2026-10-02: add opt-in provisional audio request readback.
+ * Modified 2026-10-04: add opt-in bounded command-2 packet consumption.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
+#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/audio.h"
 #include "qemu/thread.h"
@@ -40,6 +45,7 @@
 
 #include "msm5xxx-ma2-audio.h"
 #include "msm5xxx-audio-synth.h"
+#include "msm5xxx-audio-request.h"
 
 #define TYPE_MSM5XXX_POC_MACHINE MACHINE_TYPE_NAME("msm5xxx-poc")
 OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxxPOCMachineState, MSM5XXX_POC_MACHINE)
@@ -197,6 +203,15 @@ typedef struct MSM5xxxPOCLCDPort {
     unsigned index;
 } MSM5xxxPOCLCDPort;
 
+typedef struct MSM5xxxPOCReadyPollSite {
+    uint32_t entry;
+    uint32_t read_offset;
+    uint32_t set_offset;
+    uint32_t clear_offset;
+    uint32_t rx_empty_offset;
+    uint32_t rx_frame_offset;
+} MSM5xxxPOCReadyPollSite;
+
 struct MSM5xxxPOCMachineState {
     MachineState parent_obj;
 
@@ -340,9 +355,12 @@ struct MSM5xxxPOCMachineState {
     uint32_t ready_control_address;
     uint16_t ready_control_value;
     uint32_t ready_poll_entry;
-    uint32_t ready_poll_sites[MSM5XXX_POC_READY_POLL_MAX_SITES];
+    MSM5xxxPOCReadyPollSite ready_poll_sites[MSM5XXX_POC_READY_POLL_MAX_SITES];
+    bool ready_poll_sites_explicit;
     unsigned ready_poll_site_count;
     uint32_t ready_poll_active_entry;
+    uint32_t ready_poll_active_set_offset;
+    uint32_t ready_poll_active_clear_offset;
     uint32_t ready_status_pc_offset;
     uint32_t ready_pulse_set_pc_offset;
     uint32_t ready_pulse_clear_pc_offset;
@@ -381,12 +399,29 @@ struct MSM5xxxPOCMachineState {
     uint64_t dmd_5500_rejections;
     bool board_status_input_enabled;
     uint32_t board_status_input_address;
+    uint32_t board_status_input_descriptor;
     uint8_t board_status_input_mask;
     uint8_t board_status_input_default;
     uint8_t board_status_input_backing;
     uint8_t board_status_input_level;
     uint32_t board_status_input_events;
     uint32_t board_status_input_rejections;
+    bool matrix_input_gpio;
+    uint32_t matrix_input_gpio_port[3];
+    uint8_t matrix_input_gpio_mask[3];
+    bool matrix_input_halfword;
+    bool matrix_input_low5;
+    bool matrix_input_loop;
+    uint32_t matrix_input_contact_site;
+    bool experimental_matrix_contact_enabled;
+    uint32_t experimental_matrix_contact_site;
+    uint8_t experimental_matrix_contact_level;
+    bool experimental_matrix_status_enabled;
+    uint32_t experimental_matrix_status_site;
+    uint8_t experimental_matrix_status_level;
+    uint16_t matrix_input_row_mask; /* Zero retains the legacy six-row class. */
+    uint32_t matrix_input_descriptor;
+    uint32_t matrix_input_presence_site;
     bool matrix_input_enabled;
     uint32_t matrix_input_address;
     uint32_t matrix_input_sense_site;
@@ -397,7 +432,7 @@ struct MSM5xxxPOCMachineState {
     uint8_t matrix_input_row_register;
     uint8_t matrix_input_rows;
     uint8_t matrix_input_sideband_mask;
-    uint16_t matrix_input_sense_bitmap;
+    uint32_t matrix_input_sense_bitmap;
     bool matrix_input_pressed;
     uint8_t matrix_input_row;
     uint8_t matrix_input_sense;
@@ -410,9 +445,25 @@ struct MSM5xxxPOCMachineState {
     uint64_t matrix_input_host_events;
     uint64_t matrix_input_active_reads;
     uint64_t matrix_input_rejections;
+    uint32_t audio_irq_route[10];
+    bool audio_irq_configured;
+    bool audio_irq_asserted;
+    uint32_t audio_irq_gate_status;
+    uint32_t audio_irq_assertions;
     bool audio_enabled;
     bool audio_ma2;
     bool audio_pcm_enabled;
+    bool experimental_audio_readback;
+    bool audio_readback_rejection_reported;
+    MSM5xxxAudioReadback audio_readback;
+    uint32_t audio_packet_begin;
+    MSM5xxxAudioPacketSink audio_packet_sink;
+    uint8_t audio_packet_index, audio_packet_control;
+    uint8_t audio_packet_mode, audio_packet_init[4][2];
+    uint8_t audio_packet_init_valid;
+    bool audio_packet_fault, audio_packet_reported, audio_packet_gate_reported;
+    bool audio_packet_fifo_empty_known;
+    unsigned audio_packet_trace_count;
     uint32_t audio_base;
     uint8_t audio_data_offset;
     uint8_t audio_index;
@@ -440,6 +491,7 @@ struct MSM5xxxPOCMachineState {
     uint8_t audio_pcm_packet[MSM5XXX_POC_AUDIO_PACKET_SIZE];
     unsigned audio_pcm_length;
     unsigned audio_pcm_offset;
+    guint audio_pcm_watch;
     bool audio_pcm_failed;
     AudioBackend *audio_backend;
     SWVoiceOut *audio_voice;
@@ -914,9 +966,10 @@ static void msm5xxx_poc_host_input_read(void *opaque, const uint8_t *buf,
             (!record[1] && (record[2] || record[3])) ||
             (record[1] &&
              (record[2] == MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW ?
-              (!s->matrix_input_sideband_mask ||
+              (!s->matrix_input_sideband_mask || s->matrix_input_low5 ||
                record[3] != s->matrix_input_sideband_mask) :
-              (record[2] >= s->matrix_input_rows || record[3] > 0x0f ||
+              (record[2] >= s->matrix_input_rows ||
+               record[3] > ((s->matrix_input_low5 || s->matrix_input_loop) ? 0x1f : 0x0f) ||
                !(s->matrix_input_sense_bitmap & (1U << record[3])))))) {
             s->matrix_input_rejections++;
         } else {
@@ -939,21 +992,28 @@ static void msm5xxx_poc_ready_reject(MSM5xxxPOCMachineState *s)
 }
 
 static bool msm5xxx_poc_ready_site_for_pc(MSM5xxxPOCMachineState *s,
-                                           uint32_t pc, uint32_t offset,
-                                           uint32_t *entry)
+                                           uint32_t pc, uint32_t *entry,
+                                           uint32_t *set_offset,
+                                           uint32_t *clear_offset)
 {
     unsigned index;
 
     if (!s->ready_poll_site_count) {
-        if (pc != s->ready_poll_entry + offset) {
+        if (pc != s->ready_poll_entry + s->ready_status_pc_offset) {
             return false;
         }
         *entry = s->ready_poll_entry;
+        *set_offset = s->ready_pulse_set_pc_offset;
+        *clear_offset = s->ready_pulse_clear_pc_offset;
         return true;
     }
     for (index = 0; index < s->ready_poll_site_count; index++) {
-        if (pc == s->ready_poll_sites[index] + offset) {
-            *entry = s->ready_poll_sites[index];
+        const MSM5xxxPOCReadyPollSite *site = &s->ready_poll_sites[index];
+
+        if (pc == site->entry + site->read_offset) {
+            *entry = site->entry;
+            *set_offset = site->set_offset;
+            *clear_offset = site->clear_offset;
             return true;
         }
     }
@@ -968,6 +1028,8 @@ static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
     uint64_t now = icount_get_raw();
     uint32_t pc;
     uint32_t entry = 0;
+    uint32_t set_offset = 0;
+    uint32_t clear_offset = 0;
     bool primary_read;
 
     if (offset || size != 1) {
@@ -975,7 +1037,7 @@ static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
     }
     pc = cc->get_pc(CPU(s->cpu));
     primary_read = msm5xxx_poc_ready_site_for_pc(
-        s, pc, s->ready_status_pc_offset, &entry
+        s, pc, &entry, &set_offset, &clear_offset
     );
     if (s->ready_poll_status == MSM5XXX_POC_READY_ACCEPTED) {
         if (s->ready_uart_rx_empty_enabled &&
@@ -1000,6 +1062,8 @@ static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
     if (s->ready_poll_status == MSM5XXX_POC_READY_OBSERVING) {
         s->ready_poll_status = MSM5XXX_POC_READY_CANDIDATE;
         s->ready_poll_active_entry = entry;
+        s->ready_poll_active_set_offset = set_offset;
+        s->ready_poll_active_clear_offset = clear_offset;
         s->ready_poll_phase = 1;
         s->ready_poll_first_icount = now;
     } else if (s->ready_poll_status == MSM5XXX_POC_READY_CANDIDATE) {
@@ -1007,6 +1071,8 @@ static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
 
         if (entry != s->ready_poll_active_entry) {
             s->ready_poll_active_entry = entry;
+            s->ready_poll_active_set_offset = set_offset;
+            s->ready_poll_active_clear_offset = clear_offset;
             s->ready_poll_phase = 1;
             s->ready_poll_first_icount = now;
             return s->ready_status_backing;
@@ -1064,14 +1130,14 @@ static void msm5xxx_poc_ready_pulse_write(void *opaque, hwaddr offset,
     }
     if (s->ready_poll_status == MSM5XXX_POC_READY_CANDIDATE) {
         if (pc == s->ready_poll_active_entry +
-                  s->ready_pulse_set_pc_offset) {
+                  s->ready_poll_active_set_offset) {
             if (value == 1) {
                 s->ready_poll_phase = 2;
             } else {
                 msm5xxx_poc_ready_reject(s);
             }
         } else if (pc == s->ready_poll_active_entry +
-                         s->ready_pulse_clear_pc_offset) {
+                         s->ready_poll_active_clear_offset) {
             if (value != 0) {
                 msm5xxx_poc_ready_reject(s);
             } else if (s->ready_poll_phase == 2) {
@@ -1388,12 +1454,550 @@ static const MemoryRegionOps msm5xxx_poc_board_status_input_ops = {
     .valid.max_access_size = 1,
 };
 
+/* Six active-low rows, four active-low sense lines. Other GPIO bits belong
+ * to the firmware. This class is explicit opt-in until detector admission. */
+static uint16_t msm5xxx_poc_halfword_sense(uint16_t backing, uint16_t output,
+                                           bool pressed, unsigned row,
+                                           unsigned sense)
+{
+    unsigned value = 0xf;
+
+    if (pressed && row < 6 &&
+        (sense == 0xe || sense == 0xd || sense == 0xb || sense == 7) &&
+        !(output & (1U << (row + 8)))) {
+        value = sense;
+    }
+    return (backing & 0xfff0) | value;
+}
+
+/* Temporary electrical approximation: opt-in active-low selector mapping.
+ * Ascending mask bits identify host rows; other GPIO bits stay firmware-owned. */
+static bool msm5xxx_poc_mapped_halfword_sense(uint16_t backing, uint16_t output,
+                                             uint16_t mask, bool presence,
+                                             bool pressed, unsigned row,
+                                             unsigned sense, uint16_t *result)
+{
+    unsigned selected = (~output) & mask;
+    unsigned bits = mask;
+    unsigned row_bit;
+
+    *result = backing;
+    if (!mask || (presence ? selected != mask :
+                  !selected || (selected & (selected - 1)))) {
+        return false;
+    }
+    for (unsigned i = 0; i < row && bits; i++) {
+        bits &= bits - 1;
+    }
+    row_bit = bits & -bits;
+    if (pressed && (!row_bit ||
+        !(sense == 0xe || sense == 0xd || sense == 0xb || sense == 7))) {
+        return false;
+    }
+    *result = (backing & 0xfff0) |
+        (pressed && (selected & row_bit) ? sense : 0xf);
+    return true;
+}
+
+/* Temporary electrical approximation: firmware-qualified low-five-bit
+ * no-key/single-key levels, not measured physical idle or clock fidelity.
+ * Selector/backing bits outside this input plane remain firmware-owned. */
+static bool msm5xxx_poc_low5_sense(uint16_t backing, uint16_t output728,
+                                    uint16_t output724, bool presence,
+                                    bool pressed, unsigned row, unsigned sense,
+                                    uint16_t *result)
+{
+    unsigned low = output728 & 0x1f;
+    unsigned selected;
+
+    *result = backing;
+    if (presence) {
+        if (low || (output724 & 0x4000)) {
+            return false;
+        }
+        selected = 0x3f; /* All six rows selected for the global sense. */
+    } else {
+        unsigned remaining;
+
+        selected = (low ^ 0x1f) |
+            ((output724 & 0x4000) ? 0 : 0x20);
+        /* The row scanner selects its first anchor plus the current row. */
+        remaining = selected & (selected - 1);
+        if (!selected || (remaining & (remaining - 1))) {
+            return false;
+        }
+    }
+    if (pressed && (row >= 6 ||
+        !(sense == 30 || sense == 29 || sense == 27 ||
+          sense == 23 || sense == 15))) {
+        return false;
+    }
+    *result = (backing & 0xffe0) |
+        (pressed && (selected & (1U << row)) ? sense : 0x1f);
+    return true;
+}
+
+/* Temporary opt-in electrical approximation, independent of control backing. */
+static bool msm5xxx_poc_loop_sense(uint16_t backing, uint16_t output728,
+                                  uint16_t output720, bool presence,
+                                  bool pressed, unsigned row, unsigned sense,
+                                  uint16_t *value)
+{
+    unsigned low = output728 & 31, selected = 6;
+    bool all = presence && low == 0 && !(output720 & 32);
+
+    *value = backing;
+    if (!all) {
+        if (presence) {
+            if (low != 30 || !(output720 & 32)) {
+                return false;
+            }
+            selected = 0;
+        } else if (low == 31 && !(output720 & 32)) {
+            selected = 5;
+        } else if (output720 & 32) {
+            for (unsigned i = 0; i < 5; i++) {
+                if (low == (31u ^ (1u << i))) {
+                    selected = i;
+                }
+            }
+            if (selected == 6) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    unsigned result = 31;
+    if (pressed && row < 6 && (all || row == selected) &&
+        (sense == 30 || sense == 29 || sense == 27 || sense == 23)) {
+        result = sense;
+    }
+    *value = (backing & 0xffe0) | result;
+    return true;
+}
+
+static uint32_t msm5xxx_poc_guest_u32(hwaddr address);
+static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s);
+/* Experimental occupancy model: inclusive half-full or empty threshold.
+ * Physical fetch timing and pin latch semantics remain approximations. */
+static bool msm5xxx_poc_ma2_irq_gate(MSM5xxxPOCMachineState *s)
+{
+    const uint32_t *r = s->audio_irq_route;
+    uint64_t end = (uint64_t)s->ram_base + MACHINE(s)->ram_size;
+    uint32_t state;
+    unsigned i;
+
+    s->audio_irq_gate_status = 1;
+    if (!s->audio_irq_configured || !s->audio_ma2 || !s->audio_enabled ||
+        s->rex_irq_c80 || s->rex_irq_read_consume ||
+        s->rex_irq_bank_count != 2 || s->rex_irq_status_address != 0x03000620 ||
+        s->rex_irq_enable_address != 0x03000628 || s->audio_stream_rejected ||
+        s->ma2_audio.adpcm_irq_ctrl || s->ma2_audio.soft_reset_mask ||
+        (s->ma2_audio.control & (MSM5XXX_MA2_ADPCM_START | MSM5XXX_MA2_DIRECT_START)) ||
+        msm5xxx_ma2_rejected(&s->ma2_audio)) {
+        return false;
+    }
+    if (r[0] < s->ram_base || (uint64_t)r[0] + 28 > end ||
+        r[7] < s->ram_base || (uint64_t)r[7] + 8 > end ||
+        r[8] < s->ram_base || (uint64_t)r[8] + 16 > end ||
+        r[4] < s->ram_base || (uint64_t)r[4] + 2 > end ||
+        r[5] < s->ram_base || (uint64_t)r[5] + 2 > end) {
+        return false;
+    }
+    s->audio_irq_gate_status = 2;
+    for (i = 0; i < 5; i++) {
+        if (msm5xxx_poc_guest_u32(r[0] + i * 4) != r[i + 1]) {
+            return false;
+        }
+    }
+    /* Descriptor +24 low halfword is a wrapping guest IRQ counter. */
+    if (msm5xxx_poc_guest_u32(r[0] + 20) != (r[6] | 1) ||
+        (msm5xxx_poc_guest_u32(r[0] + 24) >> 16) != 0) {
+        return false;
+    }
+    s->audio_irq_gate_status = 3;
+    state = msm5xxx_poc_guest_u32(r[7] + 4);
+    if (((state >> 8) & 0xff) < 1 || ((state >> 8) & 0xff) > 4 ||
+        (state >> 16) & ~0xfu) {
+        return false;
+    }
+    for (i = 0; i < 4; i++) {
+        if ((state & (1u << (16 + i))) &&
+            msm5xxx_poc_guest_u32(r[8] + i * 4) == (r[9] | 1)) {
+            s->audio_irq_gate_status = 4;
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint8_t msm5xxx_poc_ma2_fifo_flags(MSM5xxxPOCMachineState *s)
+{
+    unsigned point = s->ma2_audio.fm_irq_ctrl & 7;
+    uint8_t flags = 0;
+    unsigned i;
+
+    if (point != 0 && point != 3) {
+        return 0;
+    }
+    for (i = 0; i < 4; i++) {
+        if (!s->audio_command_pending_count[i] &&
+            s->ma2_audio.fifo_count[i] <= (point == 3 ? 48 : 0)) {
+            flags |= 1u << i;
+        }
+    }
+    return flags;
+}
+
+static void msm5xxx_poc_ma2_irq_update(MSM5xxxPOCMachineState *s)
+{
+    bool level;
+    uint16_t mask;
+
+    if (!s->audio_irq_configured) {
+        return;
+    }
+    mask = s->audio_irq_route[3];
+    qemu_mutex_lock(&s->audio_core_lock);
+    level = msm5xxx_poc_ma2_irq_gate(s) &&
+            (s->ma2_audio.control & MSM5XXX_MA2_FM_START) &&
+            (msm5xxx_poc_ma2_fifo_flags(s) & (s->ma2_audio.fm_irq_ctrl >> 4));
+    qemu_mutex_unlock(&s->audio_core_lock);
+    if (level) {
+        s->rex_irq_pending[1] |= mask;
+        if (!s->audio_irq_asserted) {
+            s->audio_irq_assertions++;
+        }
+    } else if (s->audio_irq_asserted) {
+        s->rex_irq_pending[1] &= ~mask;
+    }
+    s->audio_irq_asserted = level;
+    msm5xxx_poc_rex_irq_update(s);
+}
+
+
+static bool msm5xxx_poc_loop_status_matches(MSM5xxxPOCMachineState *s)
+{
+    return s->matrix_input_loop && s->board_status_input_enabled &&
+           s->board_status_input_descriptor == s->matrix_input_descriptor &&
+           s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
+           s->board_status_input_mask == 0x10;
+}
+
+/* Descriptor-gated status shares the original GPIO backing. Host status owns
+ * only its mask; invalid/uninitialized descriptors retain native reads. */
+static uint64_t msm5xxx_poc_board_status_halfword_read(void *opaque,
+                                                       hwaddr offset,
+                                                       unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint64_t backing = msm5xxx_poc_backing_read(msm,
+        s->board_status_input_address - MSM5XXX_POC_MSM_BASE + offset, size);
+    CPUState *cpu = current_cpu;
+
+    if (offset || (s->matrix_input_loop && size != 2) ||
+        !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) ||
+        !cpu->running || !cpu->neg.can_do_io) {
+        return backing;
+    }
+    if (msm5xxx_poc_guest_u32(s->board_status_input_descriptor + 4) !=
+            s->board_status_input_address) {
+        s->board_status_input_rejections++;
+        return backing;
+    }
+    return (backing & ~(uint64_t)s->board_status_input_mask) |
+           s->board_status_input_level;
+}
+
+static void msm5xxx_poc_board_status_halfword_write(void *opaque, hwaddr offset,
+                                                     uint64_t value,
+                                                     unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+        s->board_status_input_address - MSM5XXX_POC_MSM_BASE + offset,
+        value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_board_status_halfword_ops = {
+    .read = msm5xxx_poc_board_status_halfword_read,
+    .write = msm5xxx_poc_board_status_halfword_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 2,
+};
+
+
+static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
+                                            unsigned size);
+static void msm5xxx_poc_eeprom_gpio_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size);
+
+/* Mapped halfword and distributed byte overlays retain the effective EEPROM
+ * GPIO owner. Legacy classes keep their original backing and write behavior. */
+static uint64_t msm5xxx_poc_halfword_backing_read(MSM5xxxPOCMachineState *s,
+                                                 hwaddr offset, unsigned size)
+{
+    uint64_t address = MSM5XXX_POC_MSM_BASE + offset;
+
+    if ((s->matrix_input_row_mask || s->matrix_input_gpio || s->matrix_input_loop) &&
+        s->eeprom_gpio_enabled &&
+        address >= s->eeprom_gpio_base &&
+        address + size <= (uint64_t)s->eeprom_gpio_base +
+                          MSM5XXX_POC_EEPROM_GPIO_SIZE) {
+        return msm5xxx_poc_eeprom_gpio_read(s,
+            address - s->eeprom_gpio_base, size);
+    }
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                   offset, size);
+}
+
+static void msm5xxx_poc_halfword_backing_write(MSM5xxxPOCMachineState *s,
+                                               hwaddr offset, uint64_t value,
+                                               unsigned size)
+{
+    uint64_t address = MSM5XXX_POC_MSM_BASE + offset;
+
+    if ((s->matrix_input_row_mask || s->matrix_input_gpio || s->matrix_input_loop) &&
+        s->eeprom_gpio_enabled &&
+        address >= s->eeprom_gpio_base &&
+        address + size <= (uint64_t)s->eeprom_gpio_base +
+                          MSM5XXX_POC_EEPROM_GPIO_SIZE) {
+        msm5xxx_poc_eeprom_gpio_write(s,
+            address - s->eeprom_gpio_base, value, size);
+        return;
+    }
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              offset, value, size);
+}
+
+static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
+                                                  unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint64_t backing = msm5xxx_poc_halfword_backing_read(s, 0x72c + offset, size);
+    CPUState *cpu = current_cpu;
+    uint32_t pc;
+
+    if (offset || size != 2 || !qemu_in_vcpu_thread() ||
+        cpu != CPU(s->cpu) || !cpu->running || !cpu->neg.can_do_io) {
+        return backing;
+    }
+    pc = CPU_GET_CLASS(cpu)->get_pc(cpu) & ~1U;
+    /* Explicit electrical approximation at one descriptor-qualified read only. */
+    if (s->experimental_matrix_contact_enabled &&
+        pc == s->experimental_matrix_contact_site) {
+        if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 8) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x34) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c) {
+            s->matrix_input_rejections++;
+            return backing;
+        }
+        return (backing & ~(uint64_t)0x10) |
+               s->experimental_matrix_contact_level;
+    }
+    if (pc != s->matrix_input_presence_site &&
+        pc != s->matrix_input_sense_site &&
+        (!s->matrix_input_loop || pc != s->matrix_input_contact_site)) {
+        return backing;
+    }
+    if (s->matrix_input_loop) {
+        uint16_t value;
+
+        if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor) !=
+                MSM5XXX_POC_MSM_BASE + 0x720 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 8) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x20) !=
+                MSM5XXX_POC_MSM_BASE + 0x728 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x34) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c) {
+            s->matrix_input_rejections++;
+            return backing;
+        }
+        /* Dedicated contact remains released; no host raw-contact support. */
+        if (pc == s->matrix_input_contact_site) {
+            return backing | 0x10;
+        }
+        if (!msm5xxx_poc_loop_sense(backing,
+                msm5xxx_poc_halfword_backing_read(s, 0x728, 2),
+                msm5xxx_poc_halfword_backing_read(s, 0x720, 2),
+                pc == s->matrix_input_presence_site, s->matrix_input_pressed,
+                s->matrix_input_row, s->matrix_input_sense, &value)) {
+            s->matrix_input_rejections++;
+            return backing;
+        }
+        if (s->matrix_input_pressed && (value & 31) != 31) {
+            s->matrix_input_active_reads++;
+        }
+        return value;
+    }
+    if (s->matrix_input_low5) {
+        uint16_t value;
+
+        if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor) !=
+                MSM5XXX_POC_MSM_BASE + 0x720 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x10) !=
+                MSM5XXX_POC_MSM_BASE + 0x724 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x20) !=
+                MSM5XXX_POC_MSM_BASE + 0x728 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x34) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c ||
+            !msm5xxx_poc_low5_sense(backing,
+                msm5xxx_poc_backing_read(msm, 0x728, 2),
+                msm5xxx_poc_backing_read(msm, 0x724, 2),
+                pc == s->matrix_input_presence_site, s->matrix_input_pressed,
+                s->matrix_input_row, s->matrix_input_sense, &value)) {
+            s->matrix_input_rejections++;
+            return backing;
+        }
+        if (s->matrix_input_pressed && (value & 0x1f) != 0x1f) {
+            s->matrix_input_active_reads++;
+        }
+        return value;
+    }
+    if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x10) !=
+            MSM5XXX_POC_MSM_BASE + 0x724 ||
+        msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x34) !=
+            MSM5XXX_POC_MSM_BASE + 0x72c) {
+        s->matrix_input_rejections++;
+        return backing;
+    }
+    uint16_t value;
+    uint16_t output = msm5xxx_poc_halfword_backing_read(s, 0x724, 2);
+
+    if (s->matrix_input_row_mask) {
+        if (!msm5xxx_poc_mapped_halfword_sense(backing, output,
+                s->matrix_input_row_mask, pc == s->matrix_input_presence_site,
+                s->matrix_input_pressed, s->matrix_input_row,
+                s->matrix_input_sense, &value)) {
+            s->matrix_input_rejections++;
+            return backing;
+        }
+    } else {
+        value = msm5xxx_poc_halfword_sense(backing, output,
+            s->matrix_input_pressed, s->matrix_input_row, s->matrix_input_sense);
+    }
+    if (s->matrix_input_pressed && (value & 0xf) != 0xf) {
+        s->matrix_input_active_reads++;
+    }
+    return value;
+}
+
+static void msm5xxx_poc_matrix_halfword_write(void *opaque, hwaddr offset,
+                                               uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_halfword_backing_write(s, 0x72c + offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_matrix_halfword_ops = {
+    .read = msm5xxx_poc_matrix_halfword_read,
+    .write = msm5xxx_poc_matrix_halfword_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 2,
+};
+
+static bool msm5xxx_poc_matrix_gpio_conflict(MSM5xxxPOCMachineState *s)
+{
+    if (s->primary_nor_size < 2 ||
+        s->matrix_input_presence_site > s->primary_nor_size - 2 ||
+        s->matrix_input_sense_site > s->primary_nor_size - 2 ||
+        s->board_status_input_descriptor) {
+        return true;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t address = i == 3 ? s->matrix_input_address :
+            s->matrix_input_gpio_port[i];
+        unsigned mask = i == 3 ? 0xf : s->matrix_input_gpio_mask[i];
+
+        if (s->board_status_input_enabled &&
+            s->board_status_input_address == address) {
+            return true;
+        }
+        if (s->eeprom_gpio_enabled &&
+            ((address == s->eeprom_gpio_base + s->eeprom_data_offset &&
+              (mask & s->eeprom_data_mask)) ||
+             (address == s->eeprom_gpio_base + s->eeprom_direction_offset &&
+              (mask & s->eeprom_data_mask)) ||
+             (address == s->eeprom_gpio_base + s->eeprom_clock_offset &&
+              (mask & s->eeprom_clock_mask)))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Temporary electrical approximation: opt-in distributed active-low rows.
+ * Port order and ascending mask bits define rows; unrelated pins stay owned. */
+static uint64_t msm5xxx_poc_matrix_gpio_read(void *opaque, hwaddr offset,
+                                            unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t backing;
+    CPUState *cpu = current_cpu;
+    uint16_t output = 0, result;
+    unsigned row = 0;
+    uint32_t pc;
+
+    if (!size || size > sizeof(backing) ||
+        offset > MSM5XXX_POC_MSM_SIZE ||
+        (uint64_t)s->matrix_input_address + offset + size >
+            (uint64_t)MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE) {
+        return 0;
+    }
+    backing = msm5xxx_poc_halfword_backing_read(s,
+        s->matrix_input_address - MSM5XXX_POC_MSM_BASE + offset, size);
+    if (offset || size != 1 || !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) ||
+        !cpu->running || !cpu->neg.can_do_io) {
+        return backing;
+    }
+    pc = CPU_GET_CLASS(cpu)->get_pc(cpu) & ~1U;
+    if (pc != s->matrix_input_presence_site &&
+        pc != s->matrix_input_sense_site) {
+        return backing;
+    }
+    for (unsigned port = 0; port < 3; port++) {
+        unsigned value = msm5xxx_poc_halfword_backing_read(s,
+            s->matrix_input_gpio_port[port] - MSM5XXX_POC_MSM_BASE, 1);
+
+        for (unsigned bit = 1; bit <= 0x80; bit <<= 1) {
+            if (s->matrix_input_gpio_mask[port] & bit) {
+                if (value & bit) {
+                    output |= 1U << row;
+                }
+                row++;
+            }
+        }
+    }
+    if (!msm5xxx_poc_mapped_halfword_sense(backing, output, 0x3f,
+            pc == s->matrix_input_presence_site, s->matrix_input_pressed,
+            s->matrix_input_row, s->matrix_input_sense, &result)) {
+        s->matrix_input_rejections++;
+        return backing;
+    }
+    if (s->matrix_input_pressed && (result & 0xf) != 0xf) {
+        s->matrix_input_active_reads++;
+    }
+    return result;
+}
+
 static uint64_t msm5xxx_poc_matrix_input_read(void *opaque, hwaddr offset,
                                                unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
     CPUClass *cc = CPU_GET_CLASS(s->cpu);
 
+    if (s->matrix_input_gpio) {
+        return msm5xxx_poc_matrix_gpio_read(opaque, offset, size);
+    }
     if (offset || size != 1) {
         return 0;
     }
@@ -1421,6 +2025,13 @@ static void msm5xxx_poc_matrix_input_write(void *opaque, hwaddr offset,
 {
     MSM5xxxPOCMachineState *s = opaque;
 
+    if (s->matrix_input_gpio) {
+        if (!offset && size == 1) {
+            msm5xxx_poc_halfword_backing_write(s,
+                s->matrix_input_address - MSM5XXX_POC_MSM_BASE, value, 1);
+        }
+        return;
+    }
     if (!offset && size == 1) {
         s->matrix_input_backing = value;
     }
@@ -1517,10 +2128,24 @@ static void msm5xxx_poc_audio_pcm_prepare(MSM5xxxPOCMachineState *s)
     s->audio_pcm_offset = 0u;
 }
 
+/* The core lock serializes timer and writable retries of the same packet. */
+static void msm5xxx_poc_audio_pcm_cancel_watch(MSM5xxxPOCMachineState *s)
+{
+    if (s->audio_pcm_watch) {
+        g_source_remove(s->audio_pcm_watch);
+        s->audio_pcm_watch = 0;
+    }
+}
+
+static gboolean msm5xxx_poc_audio_pcm_writable(void *unused,
+                                               GIOCondition condition,
+                                               void *opaque);
+
 static void msm5xxx_poc_audio_pcm_reject(MSM5xxxPOCMachineState *s)
 {
     s->audio_pcm_length = 0u;
     s->audio_pcm_offset = 0u;
+    msm5xxx_poc_audio_pcm_cancel_watch(s);
     s->audio_stream_rejected = true;
     s->audio_stream_status_pending = MSM5XXX_POC_AUDIO_STATUS_REJECTED;
     s->audio_output_started = false;
@@ -1536,6 +2161,7 @@ static int msm5xxx_poc_audio_pcm_flush(MSM5xxxPOCMachineState *s)
     while (true) {
         msm5xxx_poc_audio_pcm_prepare(s);
         if (!s->audio_pcm_length) {
+            msm5xxx_poc_audio_pcm_cancel_watch(s);
             return 1;
         }
         while (s->audio_pcm_offset < s->audio_pcm_length) {
@@ -1548,13 +2174,40 @@ static int msm5xxx_poc_audio_pcm_flush(MSM5xxxPOCMachineState *s)
                 continue;
             }
             if (written < 0 && errno == EAGAIN) {
+                if (!s->audio_pcm_watch) {
+                    s->audio_pcm_watch = qemu_chr_fe_add_watch(
+                        &s->audio_stream_chr,
+                        G_IO_OUT | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
+                        msm5xxx_poc_audio_pcm_writable, s);
+                }
+                /* A backend without watches retains the timer retry. */
                 return 0;
             }
+            msm5xxx_poc_audio_pcm_cancel_watch(s);
             return -1;
         }
         s->audio_pcm_length = 0u;
         s->audio_pcm_offset = 0u;
     }
+}
+
+static gboolean msm5xxx_poc_audio_pcm_writable(void *unused,
+                                               GIOCondition condition,
+                                               void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    qemu_mutex_lock(&s->audio_core_lock);
+    s->audio_pcm_watch = 0;
+    if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL)) {
+        s->audio_pcm_failed = true;
+    } else if (!s->audio_stream_rejected && !s->audio_pcm_failed &&
+               s->audio_pcm_length &&
+               msm5xxx_poc_audio_pcm_flush(s) < 0) {
+        s->audio_pcm_failed = true;
+    }
+    qemu_mutex_unlock(&s->audio_core_lock);
+    return G_SOURCE_REMOVE;
 }
 
 static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
@@ -1572,6 +2225,11 @@ static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
         3u, 0u, 0u, 0u, 3u, 5u, 15u, 0u, 5u, 0u, 2u, 0u,
         2u, 0u, 1u, 0u, 0u, 0u,
     };
+    static const uint8_t sine2_descriptor[] = {
+        16u, 0u, 0u, 1u, 1u, 0u,
+        0u, 0u, 0u, 0u, 10u, 1u, 6u, 6u, 25u, 2u, 2u, 0u, 2u, 0u, 1u, 0u, 0u, 6u,
+        0u, 0u, 0u, 0u, 10u, 15u, 7u, 0u, 0u, 0u, 2u, 0u, 2u, 0u, 1u, 0u, 0u, 0u,
+    };
     static const uint8_t multiplier[] = {7u, 1u, 12u, 1u};
     static const uint8_t level[] = {24u, 0u, 36u, 5u};
     const MSM5xxxMA2FMVoice *voice;
@@ -1582,22 +2240,59 @@ static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
         return false;
     }
     voice = &s->ma2_audio.fm_voice[channel->active_voice_slot];
-    if (!voice->valid || voice->operator_count != 4u ||
-        memcmp(voice->decoded, descriptor, sizeof(descriptor)) != 0) {
+    if (!voice->valid) {
+        return false;
+    }
+    if (voice->operator_count == 4u &&
+        memcmp(voice->decoded, descriptor, sizeof(descriptor)) == 0) {
+        event->timbre_algorithm = 5u;
+        event->timbre_operator_count = 4u;
+        event->timbre_feedback = 0u;
+        memcpy(event->timbre_multiplier, multiplier, sizeof(multiplier));
+        memcpy(event->timbre_level, level, sizeof(level));
+    } else if (voice->operator_count == 2u &&
+               memcmp(voice->decoded, sine2_descriptor,
+                      sizeof(sine2_descriptor)) == 0) {
+        /* Provisional normal-mode sine series; envelope rates are approximate. */
+        event->timbre_algorithm = 0u;
+        event->timbre_operator_count = 2u;
+        event->timbre_feedback = 6u;
+        event->timbre_decay_threshold_valid = true;
+        for (index = 0u; index < 2u; index++) {
+            event->timbre_multiplier[index] = 1u;
+            event->timbre_level[index] = voice->decoded[14u + index * 18u];
+        }
+    } else {
         return false;
     }
 
-    /* ponytail: one proven descriptor; unmatched voices keep triangle. */
+    /* ponytail: bounded descriptor classes; unmatched voices keep triangle. */
     event->timbre_valid = true;
-    event->timbre_algorithm = 5u;
-    event->timbre_operator_count = 4u;
-    memcpy(event->timbre_multiplier, multiplier, sizeof(multiplier));
-    memcpy(event->timbre_level, level, sizeof(level));
-    for (index = 0u; index < MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT; index++) {
+    for (index = 0u; index < event->timbre_operator_count; index++) {
         event->timbre_attack_step[index] = UINT32_C(0x0094f20a);
         event->timbre_decay_factor[index] = UINT32_C(0x40000000);
         event->timbre_sustain_factor[index] = UINT32_C(0x40000000);
         event->timbre_release_factor[index] = UINT32_C(0x3eb1aa70);
+        if (event->timbre_decay_threshold_valid) {
+            uint8_t rate = voice->decoded[11u + index * 18u];
+            uint8_t release_rate = voice->decoded[10u + index * 18u];
+            uint8_t level_code = voice->decoded[13u + index * 18u];
+            double attenuation = level_code == 15u ? 93.0 : 3.0 * level_code;
+            /* Provisional four-second slowest decay, doubling per raw rate.
+             * Keyboard-rate correction is pending; this is not a chip clock. */
+            double decay_rate = rate == 0u ? 0.0 : ldexp(0.25, rate - 1u);
+
+            event->timbre_decay_factor[index] = (uint32_t)(
+                exp(-decay_rate / MSM5XXX_AUDIO_SAMPLE_RATE) *
+                1073741824.0 + 0.5);
+            /* Exact admitted RR is nonzero. RR-only release is provisional;
+             * channel mode/key correction and physical timing remain unverified. */
+            event->timbre_release_factor[index] = (uint32_t)(
+                exp(-ldexp(0.25, release_rate - 1u) /
+                    MSM5XXX_AUDIO_SAMPLE_RATE) * 1073741824.0 + 0.5);
+            event->timbre_decay_threshold[index] = (uint32_t)(
+                pow(10.0, -attenuation / 20.0) * 2147483648.0 + 0.5);
+        }
     }
     return true;
 }
@@ -1608,6 +2303,7 @@ static bool msm5xxx_poc_ma2_synth_output(MSM5xxxPOCMachineState *s,
     const MSM5xxxMA2FMChannel *channel;
     MSM5xxxAudioEvent event;
     uint64_t timestamp_ns = output->timestamp_ns;
+    bool accepted;
 
     if (output->stream >= MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE ||
         output->channel >= MSM5XXX_MA2_FM_CHANNEL_COUNT) {
@@ -1637,7 +2333,17 @@ static bool msm5xxx_poc_ma2_synth_output(MSM5xxxPOCMachineState *s,
     }
     timestamp_ns = msm5xxx_audio_synth_clamp_event_timestamp(
         &s->audio_synth, timestamp_ns);
-    return msm5xxx_audio_synth_event(&s->audio_synth, timestamp_ns, &event);
+    accepted = msm5xxx_audio_synth_event(&s->audio_synth, timestamp_ns, &event);
+    if (accepted && event.kind == MSM5XXX_AUDIO_EVENT_NOTE_ON &&
+        event.timbre_valid) {
+        qemu_log_mask(LOG_UNIMP,
+            "msm5xxx-ma2 provisional-timbre algorithm=%u operators=%u "
+            "feedback=%u channel=%u voice=%u note=%u time_ns=%" PRIu64 "\n",
+            event.timbre_algorithm, event.timbre_operator_count,
+            event.timbre_feedback, event.channel, event.voice_id, event.note,
+            timestamp_ns);
+    }
+    return accepted;
 }
 
 static bool msm5xxx_poc_ma2_synth_stop(MSM5xxxPOCMachineState *s)
@@ -1734,6 +2440,7 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
         s->audio_pcm_failed = false;
         msm5xxx_poc_audio_pcm_reject(s);
         qemu_mutex_unlock(&s->audio_core_lock);
+        msm5xxx_poc_ma2_irq_update(s);
         return;
     }
     for (;;) {
@@ -1742,10 +2449,12 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
             s->audio_stream_reject_code =
                 msm5xxx_ma2_reject_reason(&s->ma2_audio);
             s->ma2_audio_timer_rejected = true;
+            msm5xxx_poc_audio_pcm_cancel_watch(s);
             s->audio_stream_rejected = true;
             s->audio_stream_status_pending =
                 MSM5XXX_POC_AUDIO_STATUS_REJECTED;
             qemu_mutex_unlock(&s->audio_core_lock);
+            msm5xxx_poc_ma2_irq_update(s);
             return;
         }
         if (!msm5xxx_ma2_scheduler_step(&s->ma2_audio, now, &output)) {
@@ -1757,11 +2466,28 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
                     ((uint32_t)s->ma2_audio.control << 24);
             }
             s->ma2_audio_timer_rejected = true;
+            msm5xxx_poc_audio_pcm_cancel_watch(s);
             s->audio_stream_rejected = true;
             s->audio_stream_status_pending =
                 MSM5XXX_POC_AUDIO_STATUS_REJECTED;
             qemu_mutex_unlock(&s->audio_core_lock);
+            msm5xxx_poc_ma2_irq_update(s);
             return;
+        }
+        /* Opt-in -d unimp diagnostics describe committed consumption, including
+         * suppressed unassigned notes. FIFO writes alone cannot identify it. */
+        if (output.unhandled_reason != MSM5XXX_MA2_UNHANDLED_NONE) {
+            const MSM5xxxMA2FMChannel *channel =
+                &s->ma2_audio.fm_channel[output.channel];
+
+            qemu_log_mask(LOG_UNIMP,
+                "msm5xxx-ma2 consumed reason=%u event=%u stream=%u "
+                "channel=%u bank=%u program=%u slot=%u "
+                "time_ns=%" PRIu64 " total=%" PRIu64 "\n",
+                (unsigned)output.unhandled_reason, (unsigned)output.event.kind,
+                (unsigned)output.stream, output.channel, channel->bank,
+                channel->program, channel->active_voice_slot,
+                output.timestamp_ns, s->ma2_audio.fm_state_unhandled);
         }
         switch (output.kind) {
         case MSM5XXX_MA2_OUTPUT_EVENT:
@@ -1784,10 +2510,12 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
                     s->ma2_audio_timer_rejected = true;
                     s->audio_stream_reject_code =
                         MSM5XXX_POC_AUDIO_REJECT_SYNTH_EVENT;
+                    msm5xxx_poc_audio_pcm_cancel_watch(s);
                     s->audio_stream_rejected = true;
                     s->audio_stream_status_pending =
                         MSM5XXX_POC_AUDIO_STATUS_REJECTED;
                     qemu_mutex_unlock(&s->audio_core_lock);
+                    msm5xxx_poc_ma2_irq_update(s);
                     return;
                 }
                 qemu_mutex_unlock(&s->audio_synth_lock);
@@ -1803,9 +2531,11 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
             qemu_mutex_unlock(&s->audio_synth_lock);
             s->ma2_audio_timer_rejected = true;
             s->audio_stream_reject_code = MSM5XXX_POC_AUDIO_REJECT_SYNTH_CLOCK;
+            msm5xxx_poc_audio_pcm_cancel_watch(s);
             s->audio_stream_rejected = true;
             s->audio_stream_status_pending = MSM5XXX_POC_AUDIO_STATUS_REJECTED;
             qemu_mutex_unlock(&s->audio_core_lock);
+            msm5xxx_poc_ma2_irq_update(s);
             return;
         }
         if (!s->audio_output_started &&
@@ -1828,10 +2558,12 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
         if (deadline > INT64_MAX) {
             s->ma2_audio_timer_rejected = true;
             s->audio_stream_reject_code = MSM5XXX_POC_AUDIO_REJECT_DEADLINE;
+            msm5xxx_poc_audio_pcm_cancel_watch(s);
             s->audio_stream_rejected = true;
             s->audio_stream_status_pending =
                 MSM5XXX_POC_AUDIO_STATUS_REJECTED;
             qemu_mutex_unlock(&s->audio_core_lock);
+            msm5xxx_poc_ma2_irq_update(s);
             return;
         }
     } else {
@@ -1847,6 +2579,7 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
         qemu_mutex_unlock(&s->audio_synth_lock);
     }
     qemu_mutex_unlock(&s->audio_core_lock);
+    msm5xxx_poc_ma2_irq_update(s);
     if (deadline != UINT64_MAX) {
         timer_mod_ns(s->ma2_audio_timer, deadline);
     }
@@ -1905,6 +2638,26 @@ static MemTxResult msm5xxx_poc_audio_opaque_read(
         !msm5xxx_poc_audio_site_owned(s, false, offset, pc)) {
         return MEMTX_ERROR;
     }
+    if (s->experimental_audio_readback) {
+        uint8_t result;
+        if (offset == 0) {
+            *value = msm5xxx_audio_readback_status(&s->audio_readback);
+            return MEMTX_OK;
+        }
+        if (!msm5xxx_audio_readback_read(&s->audio_readback, &result)) {
+            if (!s->audio_readback_rejection_reported) {
+                warn_report("experimental audio readback: no modeled result "
+                            "for index=%02x address=%x type=%u",
+                            s->audio_readback.index,
+                            s->audio_readback.request.address,
+                            s->audio_readback.request.type);
+                s->audio_readback_rejection_reported = true;
+            }
+            return MEMTX_ERROR;
+        }
+        *value = result;
+        return MEMTX_OK;
+    }
     *value = 0;
     return MEMTX_OK;
 }
@@ -1931,6 +2684,13 @@ static MemTxResult msm5xxx_poc_audio_opaque_write(
         return MEMTX_ERROR;
     }
     s->audio_backing[offset] = value;
+    if (s->experimental_audio_readback) {
+        if (offset == 0) {
+            msm5xxx_audio_readback_index(&s->audio_readback, value);
+        } else if (!msm5xxx_audio_readback_write(&s->audio_readback, value)) {
+            return MEMTX_ERROR;
+        }
+    }
     return MEMTX_OK;
 }
 
@@ -1999,6 +2759,7 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
             if (!accepted) {
                 s->audio_stream_reject_code =
                     MSM5XXX_POC_AUDIO_REJECT_COMMAND_QUEUE;
+                msm5xxx_poc_audio_pcm_cancel_watch(s);
                 s->audio_stream_rejected = true;
                 s->audio_stream_status_pending =
                     MSM5XXX_POC_AUDIO_STATUS_REJECTED;
@@ -2016,6 +2777,7 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
                 accepted = false;
                 s->audio_stream_reject_code =
                     MSM5XXX_POC_AUDIO_REJECT_SYNTH_EVENT;
+                msm5xxx_poc_audio_pcm_cancel_watch(s);
                 s->audio_stream_rejected = true;
                 s->audio_stream_status_pending =
                     MSM5XXX_POC_AUDIO_STATUS_REJECTED;
@@ -2033,6 +2795,7 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
             ((uint32_t)s->ma2_audio.fifo_count[0] << 8) |
             ((uint32_t)s->ma2_audio.fifo_count[1] << 16) |
             ((uint32_t)s->ma2_audio.fifo_count[2] << 24);
+        msm5xxx_poc_audio_pcm_cancel_watch(s);
         s->audio_stream_rejected = true;
         s->audio_stream_status_pending =
             MSM5XXX_POC_AUDIO_STATUS_REJECTED;
@@ -2040,6 +2803,7 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
     qemu_mutex_unlock(&s->audio_core_lock);
     if (accepted) {
         msm5xxx_poc_ma2_audio_kick(s);
+        msm5xxx_poc_ma2_irq_update(s);
     }
     s->audio_stream_started = true;
     s->audio_stream_order++;
@@ -2061,9 +2825,12 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
             s, MSM5XXX_POC_AUDIO_STREAM_WRITE, size, pc,
             offset | ((value & UINT8_MAX) << 8),
             s->audio_stream_order)) {
+        qemu_mutex_lock(&s->audio_core_lock);
+        msm5xxx_poc_audio_pcm_cancel_watch(s);
         s->audio_stream_rejected = true;
         s->audio_stream_dropped = 1;
         s->audio_stream_status_pending = MSM5XXX_POC_AUDIO_STATUS_OVERFLOW;
+        qemu_mutex_unlock(&s->audio_core_lock);
     }
     return true;
 }
@@ -2089,6 +2856,12 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
         return false;
     }
     qemu_mutex_lock(&s->audio_core_lock);
+    if (s->audio_irq_configured && s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
+        s->ma2_audio.index == MSM5XXX_MA2_STATUS1 && msm5xxx_poc_ma2_irq_gate(s)) {
+        *value = msm5xxx_poc_ma2_fifo_flags(s);
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return true;
+    }
     if (s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
         (s->ma2_audio.index <= MSM5XXX_MA2_ADPCM_WAVE_DATA ||
          s->ma2_audio.index == MSM5XXX_MA2_STATUS1 ||
@@ -2103,6 +2876,7 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
                 ((uint32_t)s->ma2_audio.page << 8) |
                 ((uint32_t)s->ma2_audio.index << 16) |
                 ((uint32_t)s->ma2_audio.control << 24);
+            msm5xxx_poc_audio_pcm_cancel_watch(s);
             s->audio_stream_rejected = true;
             s->audio_stream_status_pending =
                 MSM5XXX_POC_AUDIO_STATUS_REJECTED;
@@ -2201,6 +2975,17 @@ static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s)
     );
     bool level = (!s->rex_irq_c80 || s->rex_irq_route_active) &&
                  enabled & s->rex_irq_pending[0];
+
+    /* The legacy two-bank W1C controller has paired enable halfwords. */
+    if (!s->rex_irq_c80 && !s->rex_irq_read_consume &&
+        s->rex_irq_bank_count == 2 &&
+        s->rex_irq_status_address == 0x03000620 && offset == 8) {
+        uint16_t second_enabled = msm5xxx_poc_backing_read(
+            s->rex_irq_backing, offset + 4, 2
+        );
+
+        level |= (second_enabled & s->rex_irq_pending[1]) != 0;
+    }
 
     if (level && !s->rex_irq_level) {
         s->rex_irq_assertions++;
@@ -2361,6 +3146,7 @@ static void msm5xxx_poc_rex_irq_write(void *opaque, hwaddr offset,
         !(s->rex_irq_pending[0] & s->rex_irq_mask)) {
         s->rex_irq_acks++;
     }
+    msm5xxx_poc_ma2_irq_update(s);
     msm5xxx_poc_rex_irq_update(s);
     msm5xxx_poc_rex_irq_schedule(s);
 }
@@ -2445,6 +3231,20 @@ static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
             value |= (uint64_t)s->eeprom_data_mask << shift;
         }
     }
+    /* Explicit diagnostic electrical approximation after the actual owner read. */
+    if (s->experimental_matrix_status_enabled && size == 2 &&
+        (uint64_t)s->eeprom_gpio_base + offset == MSM5XXX_POC_MSM_BASE + 0x728 &&
+        qemu_in_vcpu_thread() && current_cpu == CPU(s->cpu) &&
+        current_cpu->running && current_cpu->neg.can_do_io &&
+        (CPU_GET_CLASS(current_cpu)->get_pc(current_cpu) & ~1U) ==
+            s->experimental_matrix_status_site) {
+        if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x24) !=
+                MSM5XXX_POC_MSM_BASE + 0x728) {
+            s->matrix_input_rejections++;
+            return value;
+        }
+        return (value & ~(uint64_t)2) | s->experimental_matrix_status_level;
+    }
     return value;
 }
 
@@ -2528,11 +3328,13 @@ static uint64_t msm5xxx_poc_sbi_read(void *opaque, hwaddr offset,
         if (s->sbi_status == MSM5XXX_POC_SBI_ACCEPTED) {
             if (s->sbi_board_adc_phase == 4 ||
                 s->sbi_board_adc_phase == 6 ||
-                s->sbi_board_adc_phase == 8) {
+                s->sbi_board_adc_phase == 8 ||
+                s->sbi_board_adc_phase == 10) {
                 s->sbi_board_adc_phase++;
             } else if (s->sbi_board_adc_phase != 5 &&
                        s->sbi_board_adc_phase != 7 &&
-                       s->sbi_board_adc_phase != 9) {
+                       s->sbi_board_adc_phase != 9 &&
+                       s->sbi_board_adc_phase != 11) {
                 s->sbi_board_adc_phase = 0;
             }
         }
@@ -2615,6 +3417,11 @@ static void msm5xxx_poc_sbi_write(void *opaque, hwaddr offset,
                     value == (s->sbi_board_adc_selector & ~0x0080)) ||
                    (s->sbi_board_adc_phase == 7 && value == 0x8b00)) {
             s->sbi_board_adc_phase++;
+        } else if (s->sbi_board_adc_phase == 7 && value == 0x0c80) {
+            /* Optional setup write must complete its own status poll. */
+            s->sbi_board_adc_phase = 10;
+        } else if (s->sbi_board_adc_phase == 11 && value == 0x8b00) {
+            s->sbi_board_adc_phase = 8;
         } else {
             s->sbi_board_adc_phase = 0;
         }
@@ -3045,6 +3852,208 @@ static const MemoryRegionOps msm5xxx_poc_raw_nand_data_ops = {
     .impl.max_access_size = 2,
 };
 
+/* An explicit experimental protocol class, independently relocated in firmware.
+ * It shares the LCD aperture: no overlay, and foreign accesses retain backing.
+ * Check the currently mapped NOR, after loader/state import, on each owned I/O. */
+static bool msm5xxx_poc_audio_packet_nor(MSM5xxxPOCMachineState *s,
+                                        hwaddr address, uint8_t *data,
+                                        unsigned size)
+{
+    MemoryRegionSection section;
+    bool valid;
+
+    if (size > s->primary_nor_size || address > s->primary_nor_size - size) {
+        return false;
+    }
+    section = memory_region_find(get_system_memory(), address, size);
+    valid = section.mr == &s->nor &&
+            int128_ge(section.size, int128_make64(size));
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    return valid && address_space_read(&address_space_memory, address,
+        MEMTXATTRS_UNSPECIFIED, data, size) == MEMTX_OK;
+}
+
+static bool msm5xxx_poc_audio_packet_gate(MSM5xxxPOCMachineState *s,
+                                         hwaddr address, unsigned size,
+                                         bool write)
+{
+    static const uint8_t shape[72] = {
+        0x41,0x21,0xc9,0x04,0x00,0xb5,0x08,0x70,0,0,0,0,0x08,0xbc,0x18,0x47,
+        0x41,0x20,0xc0,0x04,0x80,0xb5,0x07,0x78,0,0,0,0,0x38,0x1c,0x80,0xbc,
+        0x08,0xbc,0x18,0x47,0x41,0x21,0xc9,0x04,0x00,0xb5,0x88,0x70,0,0,0,0,
+        0x08,0xbc,0x18,0x47,0x41,0x20,0xc0,0x04,0x80,0xb5,0x87,0x78,0,0,0,0,
+        0x38,0x1c,0x80,0xbc,0x08,0xbc,0x18,0x47,
+    };
+    static const unsigned calls[4] = {8, 24, 44, 60};
+    CPUState *cpu = current_cpu;
+    uint8_t code[sizeof(shape)], delay[2];
+    uint32_t entry, pc, expected, target = 0;
+    unsigned i;
+
+    if (s->audio_packet_begin < 6 || s->primary_nor_size < sizeof(shape) ||
+        s->audio_packet_begin - 6 > s->primary_nor_size - sizeof(shape) ||
+        (s->audio_packet_begin & 1) || size != 1 ||
+        (address != 0x02080000 && address != 0x02080002) ||
+        !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
+        !cpu->neg.can_do_io || !s->cpu->env.thumb) {
+        return false;
+    }
+    expected = s->audio_packet_begin + (address & 2 ? 0x24 : 0) +
+               (write ? 0 : 0x10);
+    pc = CPU_GET_CLASS(cpu)->get_pc(cpu);
+    if ((pc & ~1U) != expected) {
+        return false;
+    }
+    entry = s->audio_packet_begin - 6;
+    if (!msm5xxx_poc_audio_packet_nor(s, entry, code, sizeof(code))) {
+        goto reject;
+    }
+    for (i = 0; i < ARRAY_SIZE(calls); i++) {
+        unsigned offset = calls[i];
+        uint16_t first = lduw_le_p(code + offset);
+        uint16_t second = lduw_le_p(code + offset + 2);
+        int32_t delta = ((first & 0x7ff) << 12) | ((second & 0x7ff) << 1);
+        int64_t destination;
+
+        if ((first & 0xf800) != 0xf000 || (second & 0xf800) != 0xf800) {
+            goto reject;
+        }
+        if (delta & 0x400000) {
+            delta -= 0x800000;
+        }
+        destination = (int64_t)entry + offset + 4 + delta;
+        if (destination < 0 || destination > (int64_t)s->primary_nor_size - 2 ||
+            (i && destination != target)) {
+            goto reject;
+        }
+        target = destination;
+        memset(code + offset, 0, 4);
+    }
+    if (memcmp(code, shape, sizeof(code)) ||
+        !msm5xxx_poc_audio_packet_nor(s, target, delay, sizeof(delay)) ||
+        lduw_le_p(delay) != 0x4770) {
+        goto reject;
+    }
+    return true;
+reject:
+    if (!s->audio_packet_gate_reported) {
+        warn_report("experimental audio packet gate rejected: mapped wrapper "
+                    "or delay mismatch; LCD fallback retained");
+        s->audio_packet_gate_reported = true;
+    }
+    return false;
+}
+
+static void msm5xxx_poc_audio_packet_reject(MSM5xxxPOCMachineState *s,
+                                           uint8_t value)
+{
+    s->audio_packet_fault = true;
+    s->audio_packet_fifo_empty_known = false;
+    if (!s->audio_packet_reported) {
+        warn_report("experimental audio packet rejected: index=%02x value=%02x "
+                    "reason=%u address=%x registers=%u memory=%u; "
+                    "renderer unavailable",
+                    s->audio_packet_index, value, s->audio_packet_sink.reject,
+                    s->audio_packet_sink.rejected_address,
+                    s->audio_packet_sink.register_writes,
+                    s->audio_packet_sink.memory_writes);
+        s->audio_packet_reported = true;
+    }
+}
+
+static bool msm5xxx_poc_audio_packet_read(MSM5xxxPOCMachineState *s,
+                                         hwaddr address, unsigned size,
+                                         uint64_t *value)
+{
+    if (!msm5xxx_poc_audio_packet_gate(s, address, size, false)) {
+        return false;
+    }
+    if (address & 2) {
+        /* No query/result model: preserve backing and withdraw capacity. */
+        msm5xxx_poc_audio_packet_reject(s, 0);
+        return false;
+    }
+    /* Synchronous sink capacity, not FIFO timing or a completed query/result. */
+    *value = !s->audio_packet_fault && !s->audio_packet_sink.reject &&
+             !(s->audio_packet_control & 0x80) ?
+             1 | (s->audio_packet_fifo_empty_known ? 2 : 0) : 0;
+    return true;
+}
+
+static bool msm5xxx_poc_audio_packet_write(MSM5xxxPOCMachineState *s,
+                                          hwaddr address, uint64_t value,
+                                          unsigned size)
+{
+    uint8_t byte = value;
+    uint8_t rising;
+    unsigned writes;
+
+    if (!msm5xxx_poc_audio_packet_gate(s, address, size, true)) {
+        return false;
+    }
+    if (!(address & 2)) {
+        s->audio_packet_index = byte & 0x3f;
+        return true; /* Selecting/restoring a command never resets framing. */
+    }
+    if (s->audio_packet_index == 4) {
+        rising = byte & ~s->audio_packet_control;
+        if (byte & ~0xd3) {
+            msm5xxx_poc_audio_packet_reject(s, byte);
+            return true;
+        }
+        if (rising & 0x80) {
+            msm5xxx_audio_packet_sink_reset(&s->audio_packet_sink);
+            s->audio_packet_fault = false;
+            /* Reset establishes empty; unsupported FIFO writes invalidate it. */
+            s->audio_packet_fifo_empty_known = true;
+            s->audio_packet_reported = false;
+            s->audio_packet_mode = 0;
+            s->audio_packet_init_valid = 0;
+            memset(s->audio_packet_init, 0, sizeof(s->audio_packet_init));
+            /* Reset defaults are unknown; invalid mirrors provide no readback. */
+            s->audio_packet_control = byte;
+            return true; /* Full reset skips the new byte's low-bit mode. */
+        } else if (rising & 0x50) {
+            msm5xxx_audio_packet_reset(&s->audio_packet_sink.packet);
+        }
+        s->audio_packet_mode = byte & 3;
+        /* Repeated high control bits clear in the retained control mirror. */
+        s->audio_packet_control = byte & ~(byte & s->audio_packet_control & 0xfc);
+        return true;
+    }
+    if (s->audio_packet_fault || (s->audio_packet_control & 0x80)) {
+        msm5xxx_poc_audio_packet_reject(s, byte);
+        return true;
+    }
+    if (s->audio_packet_index == 5 || s->audio_packet_index == 6) {
+        unsigned slot = s->audio_packet_index - 5;
+
+        /* Raw banked initialization latches; no voice/query/render effect. */
+        s->audio_packet_init[s->audio_packet_mode][slot] = byte;
+        s->audio_packet_init_valid |= 1u << (2 * s->audio_packet_mode + slot);
+        return true;
+    }
+    if (s->audio_packet_index != 2) {
+        msm5xxx_poc_audio_packet_reject(s, byte);
+        return true;
+    }
+    writes = s->audio_packet_sink.register_writes;
+    if (!msm5xxx_audio_packet_sink_feed(&s->audio_packet_sink, byte)) {
+        msm5xxx_poc_audio_packet_reject(s, byte);
+    } else if (writes != s->audio_packet_sink.register_writes &&
+               s->audio_packet_trace_count < 16) {
+        /* Bounded diagnostic evidence of actual sink mutation, not PCM. */
+        warn_report("experimental audio packet consumed: registers=%u "
+                    "memory=%u; renderer unavailable",
+                    s->audio_packet_sink.register_writes,
+                    s->audio_packet_sink.memory_writes);
+        s->audio_packet_trace_count++;
+    }
+    return true;
+}
+
 static uint64_t msm5xxx_poc_lcd_aperture_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
@@ -3054,6 +4063,9 @@ static uint64_t msm5xxx_poc_lcd_aperture_read(void *opaque, hwaddr offset,
 
     if (offset + size > MSM5XXX_POC_LCD_APERTURE_SIZE) {
         return 0;
+    }
+    if (msm5xxx_poc_audio_packet_read(s, address, size, &value)) {
+        return value;
     }
     if (s->audio_enabled && address >= s->audio_base &&
         address <= s->audio_base + s->audio_data_offset &&
@@ -3072,6 +4084,9 @@ static void msm5xxx_poc_lcd_aperture_write(void *opaque, hwaddr offset,
     hwaddr address = MSM5XXX_POC_LCD_APERTURE_BASE + offset;
 
     if (offset + size > MSM5XXX_POC_LCD_APERTURE_SIZE) {
+        return;
+    }
+    if (msm5xxx_poc_audio_packet_write(s, address, value, size)) {
         return;
     }
     if (s->audio_enabled && address >= s->audio_base &&
@@ -3296,6 +4311,45 @@ static uint64_t msm5xxx_poc_read(void *opaque, hwaddr offset, unsigned size)
         return s->reset_callbacks;
     case 0xc0:
         return s->last_reset_callback_pc;
+    case 0xc4:
+        return s->audio_irq_gate_status;
+    case 0xc8:
+        return s->audio_irq_assertions;
+    case 0xcc:
+    case 0xd0:
+    case 0xd4:
+    case 0xd8: {
+        unsigned stream = (offset - 0xcc) / 4;
+        uint32_t result;
+        qemu_mutex_lock(&s->audio_core_lock);
+        result = s->ma2_audio.fifo_count[stream] |
+                 ((uint32_t)s->audio_command_pending_count[stream] << 16);
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return result;
+    }
+    case 0xdc:
+    case 0xe0:
+    case 0xe4:
+    case 0xe8: {
+        unsigned stream = (offset - 0xdc) / 4;
+        uint32_t result;
+        MSM5xxxMA2SequenceState *sequence = &s->ma2_audio.sequence[stream];
+        qemu_mutex_lock(&s->audio_core_lock);
+        result = sequence->started | (sequence->running << 1) |
+                 (sequence->pending << 2) | (sequence->end_pending << 3) |
+                 (sequence->ended << 4) | ((uint32_t)sequence->parser.length << 16);
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return result;
+    }
+    case 0xec: {
+        uint32_t result;
+        qemu_mutex_lock(&s->audio_core_lock);
+        result = s->ma2_audio.control | ((uint32_t)s->ma2_audio.fm_irq_ctrl << 8) |
+                 ((uint32_t)s->ma2_audio.fifo_control << 16) |
+                 ((uint32_t)msm5xxx_poc_ma2_fifo_flags(s) << 24);
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return result;
+    }
     default:
         return 0;
     }
@@ -3347,6 +4401,7 @@ static void msm5xxx_poc_audio_reset(void *opaque)
     if (s->audio_voice) {
         AUD_set_active_out(s->audio_voice, false);
     }
+    msm5xxx_poc_audio_pcm_cancel_watch(s);
     s->audio_pcm_length = 0u;
     s->audio_pcm_offset = 0u;
     s->audio_pcm_failed = false;
@@ -3363,6 +4418,16 @@ static void msm5xxx_poc_audio_reset(void *opaque)
     }
     s->audio_index = 0;
     memset(s->audio_backing, 0, sizeof(s->audio_backing));
+    memset(&s->audio_readback, 0, sizeof(s->audio_readback));
+    msm5xxx_audio_packet_sink_reset(&s->audio_packet_sink);
+    s->audio_packet_index = s->audio_packet_control = 0;
+    s->audio_packet_mode = s->audio_packet_init_valid = 0;
+    memset(s->audio_packet_init, 0, sizeof(s->audio_packet_init));
+    s->audio_packet_fault = s->audio_packet_reported = false;
+    s->audio_packet_fifo_empty_known = false;
+    s->audio_packet_gate_reported = false;
+    s->audio_packet_trace_count = 0;
+    s->audio_readback_rejection_reported = false;
     s->audio_stream_order = 0;
     s->audio_stream_dropped = 0;
     s->audio_stream_reject_code = 0;
@@ -3372,6 +4437,9 @@ static void msm5xxx_poc_audio_reset(void *opaque)
         MSM5XXX_POC_AUDIO_STATUS_RESET :
         (s->audio_voice || s->audio_stream_chardev ?
          MSM5XXX_POC_AUDIO_STATUS_NATIVE : 0);
+    s->audio_irq_asserted = false;
+    s->audio_irq_gate_status = 0;
+    s->audio_irq_assertions = 0;
     s->ma2_audio_events = 0;
     s->ma2_audio_gate_offs = 0;
     s->ma2_audio_ends = 0;
@@ -3467,10 +4535,7 @@ static void msm5xxx_poc_reset(void *opaque)
     s->board_status_input_backing =
         s->board_status_input_level & s->board_status_input_mask;
     s->matrix_input_backing = s->matrix_input_reset;
-    s->matrix_input_pressed = false;
-    s->matrix_input_row = 0;
-    s->matrix_input_sense = 0;
-    /* Chardev frames cross guest reset; preserve partial command and ACK. */
+    /* Host contacts and chardev frames survive guest reset. */
     s->matrix_input_host_events = 0;
     s->matrix_input_active_reads = 0;
     s->matrix_input_rejections = 0;
@@ -3479,7 +4544,7 @@ static void msm5xxx_poc_reset(void *opaque)
     s->rex_irq_arm_backing = 0;
     memset(s->rex_irq_pending, 0, sizeof(s->rex_irq_pending));
     s->rex_irq_armed = (s->rex_irq_enabled && s->rex_irq_c80 &&
-                        !s->rex_irq_read_consume);
+                        !s->rex_irq_read_consume && !s->rex_irq_arm_address);
     s->rex_irq_level = false;
     s->rex_irq_route_active = false;
     s->rex_idle_seen = false;
@@ -3656,6 +4721,151 @@ static void msm5xxx_poc_init(MachineState *machine)
             error_report("amd-x16-nor must overlap the detected RAM aperture");
             exit(EXIT_FAILURE);
         }
+    }
+    /* Reject an EEPROM boundary through either mapped halfword register. */
+    if ((s->matrix_input_row_mask || s->matrix_input_loop) && s->eeprom_gpio_enabled) {
+        uint64_t start = s->eeprom_gpio_base;
+        uint64_t end = start + MSM5XXX_POC_EEPROM_GPIO_SIZE;
+
+        const unsigned loop_offsets[] = { 0x720, 0x728, 0x72c };
+        for (unsigned port_index = 0; port_index < (s->matrix_input_loop ? 3 : 2); port_index++) {
+            unsigned offset = s->matrix_input_loop ? loop_offsets[port_index] : 0x724 + 8 * port_index;
+            uint64_t address = MSM5XXX_POC_MSM_BASE + offset;
+
+            if (start < address + 2 && end > address &&
+                !(start <= address && end >= address + 2)) {
+                error_report("mapped halfword register partially overlaps "
+                             "EEPROM GPIO aperture");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    /* Loop selector and sense apertures cannot bypass unrelated owners. */
+    if (s->matrix_input_loop) {
+        const unsigned offsets[] = { 0x720, 0x728, 0x72c };
+        for (unsigned port_index = 0; port_index < sizeof(offsets) / sizeof(offsets[0]); port_index++) {
+            uint64_t address = MSM5XXX_POC_MSM_BASE + offsets[port_index];
+            bool ready = s->ready_poll_enabled && !s->ready_poll_lcd_enabled;
+            if ((s->board_revision_enabled &&
+                 (uint64_t)s->board_revision_address < address + 2 &&
+                 (uint64_t)s->board_revision_address + 4 > address) ||
+                (s->board_status_input_enabled &&
+                 !msm5xxx_poc_loop_status_matches(s) &&
+                 (uint64_t)s->board_status_input_address < address + 2 &&
+                 (uint64_t)s->board_status_input_address +
+                    (s->board_status_input_descriptor ? 2 : 1) > address) ||
+                (ready &&
+                 ((s->ready_status_address >= address &&
+                   s->ready_status_address < address + 2) ||
+                  (s->ready_pulse_address >= address &&
+                   s->ready_pulse_address < address + 2) ||
+                  (s->ready_poll_control_enabled &&
+                   s->ready_control_address >= address &&
+                   s->ready_control_address < address + 2)))) {
+                error_report("matrix-halfword-loop conflicts with an MMIO owner");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    /* Diagnostic contact cannot replace an EEPROM protocol pin or another class. */
+    if (s->experimental_matrix_contact_enabled) {
+        uint64_t address = MSM5XXX_POC_MSM_BASE + 0x72c;
+        uint32_t site = s->experimental_matrix_contact_site;
+        bool pin_collision = s->eeprom_gpio_enabled &&
+            (((uint64_t)s->eeprom_gpio_base + s->eeprom_data_offset == address &&
+              (s->eeprom_data_mask & 0x10)) ||
+             ((uint64_t)s->eeprom_gpio_base + s->eeprom_clock_offset == address &&
+              (s->eeprom_clock_mask & 0x10)) ||
+             ((uint64_t)s->eeprom_gpio_base + s->eeprom_direction_offset == address &&
+              (s->eeprom_data_mask & 0x10)));
+
+        if (!s->matrix_input_halfword || !s->matrix_input_row_mask ||
+            s->matrix_input_loop || s->matrix_input_low5 || s->matrix_input_gpio ||
+            s->primary_nor_size < 2 || (site & 1) ||
+            site > s->primary_nor_size - 2 ||
+            site == s->matrix_input_presence_site ||
+            site == s->matrix_input_sense_site || pin_collision) {
+            error_report("experimental-matrix-contact requires an exclusive "
+                         "mapped halfword read site and unowned bit 0x10");
+            exit(EXIT_FAILURE);
+        }
+    }
+    /* Status diagnostic requires this EEPROM owner and an unowned input bit. */
+    if (s->experimental_matrix_status_enabled) {
+        uint64_t address = MSM5XXX_POC_MSM_BASE + 0x728;
+        uint64_t base = s->eeprom_gpio_base;
+        uint32_t site = s->experimental_matrix_status_site;
+        bool ready = s->ready_poll_enabled && !s->ready_poll_lcd_enabled;
+        bool owner_conflict =
+            (s->board_revision_enabled &&
+             (uint64_t)s->board_revision_address < address + 2 &&
+             (uint64_t)s->board_revision_address + 4 > address) ||
+            (s->board_status_input_enabled &&
+             (uint64_t)s->board_status_input_address < address + 2 &&
+             (uint64_t)s->board_status_input_address +
+                 (s->board_status_input_descriptor ? 2 : 1) > address) ||
+            (ready && ((s->ready_status_address >= address &&
+                        s->ready_status_address < address + 2) ||
+                       (s->ready_pulse_address >= address &&
+                        s->ready_pulse_address < address + 2) ||
+                       (s->ready_poll_control_enabled &&
+                        s->ready_control_address >= address &&
+                        s->ready_control_address < address + 2)));
+        bool pin_collision =
+            (base + s->eeprom_data_offset == address && (s->eeprom_data_mask & 2)) ||
+            (base + s->eeprom_clock_offset == address && (s->eeprom_clock_mask & 2)) ||
+            (base + s->eeprom_direction_offset == address && (s->eeprom_data_mask & 2));
+
+        if (!s->matrix_input_halfword || !s->matrix_input_row_mask ||
+            s->matrix_input_loop || s->matrix_input_low5 || s->matrix_input_gpio ||
+            !s->eeprom_gpio_enabled || base > address ||
+            base + MSM5XXX_POC_EEPROM_GPIO_SIZE < address + 2 ||
+            s->primary_nor_size < 2 || (site & 1) ||
+            site > s->primary_nor_size - 2 ||
+            site == s->matrix_input_presence_site || site == s->matrix_input_sense_site ||
+            (s->experimental_matrix_contact_enabled &&
+             site == s->experimental_matrix_contact_site) || owner_conflict || pin_collision) {
+            error_report("experimental-matrix-status requires exclusive mapped "
+                         "halfword EEPROM read ownership and unowned bit 0x02");
+            exit(EXIT_FAILURE);
+        }
+    }
+    /* Final property ordering must preserve GPIO owners and code bounds. */
+    if (s->matrix_input_gpio && msm5xxx_poc_matrix_gpio_conflict(s)) {
+        error_report("matrix-gpio conflicts with the final memory map");
+        exit(EXIT_FAILURE);
+    }
+    if (s->matrix_input_halfword &&
+        (s->matrix_input_descriptor < s->ram_base ||
+         (uint64_t)s->matrix_input_descriptor + 0x38 >
+             (uint64_t)s->ram_base + machine->ram_size ||
+         s->matrix_input_presence_site >= s->primary_nor_size - 2 ||
+         s->matrix_input_sense_site >= s->primary_nor_size - 2 ||
+         (s->matrix_input_loop &&
+          s->matrix_input_contact_site >= s->primary_nor_size - 2) ||
+         (s->board_status_input_enabled &&
+          s->board_status_input_address >= MSM5XXX_POC_MSM_BASE + 0x72c &&
+          s->board_status_input_address < MSM5XXX_POC_MSM_BASE + 0x72e))) {
+        error_report("matrix-halfword conflicts with the final memory map");
+        exit(EXIT_FAILURE);
+    }
+    if (s->board_status_input_descriptor &&
+        (!s->board_status_input_enabled || !s->matrix_input_halfword ||
+         s->matrix_input_low5 || s->matrix_input_row_mask ||
+         s->board_status_input_descriptor != s->matrix_input_descriptor ||
+         s->board_status_input_address != MSM5XXX_POC_MSM_BASE + 0x720 ||
+         s->board_status_input_mask != (s->matrix_input_loop ? 0x10 : 4))) {
+        error_report("board-status-descriptor requires matching halfword "
+                     "matrix and status GPIO class");
+        exit(EXIT_FAILURE);
+    }
+    /* Status reads use native RAM backing; do not bypass EEPROM GPIO ownership. */
+    if (msm5xxx_poc_loop_status_matches(s) && s->eeprom_gpio_enabled &&
+        (uint64_t)s->eeprom_gpio_base < MSM5XXX_POC_MSM_BASE + 0x722 &&
+        (uint64_t)s->eeprom_gpio_base + MSM5XXX_POC_EEPROM_GPIO_SIZE >
+            MSM5XXX_POC_MSM_BASE + 0x720) {
+        error_report("loop status conflicts with EEPROM GPIO ownership");
+        exit(EXIT_FAILURE);
     }
     if (s->raw_nand_main_enabled &&
         (upper_nor_enabled || s->eeprom_gpio_enabled)) {
@@ -4135,7 +5345,8 @@ static void msm5xxx_poc_init(MachineState *machine)
             get_system_memory(), s->rex_irq_status_address,
             &s->rex_irq_controller, 1
         );
-        if (s->rex_irq_c80 && !s->rex_irq_read_consume) {
+        if (s->rex_irq_c80 && !s->rex_irq_read_consume &&
+            !s->rex_irq_arm_address) {
             s->rex_irq_armed = true;
             s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                               s->rex_irq_interval;
@@ -4296,8 +5507,11 @@ static void msm5xxx_poc_init(MachineState *machine)
         s->board_status_input_backing =
             s->board_status_input_level & s->board_status_input_mask;
         memory_region_init_io(&s->board_status_input, OBJECT(machine),
-                              &msm5xxx_poc_board_status_input_ops, s,
-                              "msm5xxx-poc.board-status-input", 1);
+                              s->board_status_input_descriptor ?
+                                  &msm5xxx_poc_board_status_halfword_ops :
+                                  &msm5xxx_poc_board_status_input_ops, s,
+                              "msm5xxx-poc.board-status-input",
+                              s->board_status_input_descriptor ? 2 : 1);
         memory_region_add_subregion_overlap(
             get_system_memory(), s->board_status_input_address,
             &s->board_status_input, 2
@@ -4305,12 +5519,27 @@ static void msm5xxx_poc_init(MachineState *machine)
     }
     if (s->matrix_input_enabled) {
         memory_region_init_io(&s->matrix_input, OBJECT(machine),
-                              &msm5xxx_poc_matrix_input_ops, s,
-                              "msm5xxx-poc.matrix-input", 1);
+                              s->matrix_input_halfword ?
+                                  &msm5xxx_poc_matrix_halfword_ops :
+                                  &msm5xxx_poc_matrix_input_ops, s,
+                              "msm5xxx-poc.matrix-input",
+                              s->matrix_input_halfword ? 2 : 1);
         memory_region_add_subregion_overlap(
             get_system_memory(), s->matrix_input_address,
             &s->matrix_input, 1
         );
+    }
+    if (s->audio_packet_begin) {
+        if (!s->memory_profile_enabled || s->audio_enabled ||
+            s->audio_packet_begin < 6 || (s->audio_packet_begin & 1) ||
+            s->primary_nor_size < 72 ||
+            s->audio_packet_begin - 6 > s->primary_nor_size - 72) {
+            error_report("experimental-audio-packet-bus requires a primary "
+                         "NOR wrapper, memory-profile and no other audio profile");
+            exit(EXIT_FAILURE);
+        }
+        warn_report("experimental audio packet interface: synchronous partial "
+                    "register/RAM consumer; timing, queries and renderer unavailable");
     }
     if (s->audio_sites_enabled) {
         bool have_index_site = false;
@@ -4333,6 +5562,24 @@ static void msm5xxx_poc_init(MachineState *machine)
             error_report("audio-sites requires index and data write sites");
             exit(EXIT_FAILURE);
         }
+    }
+    if (s->experimental_audio_readback) {
+        bool status_read = false, data_read = false;
+        unsigned index;
+        for (index = 0; index < s->audio_site_count; index++) {
+            status_read |= !s->audio_site_write[index] &&
+                           s->audio_site_port[index] == 0;
+            data_read |= !s->audio_site_write[index] &&
+                         s->audio_site_port[index] == s->audio_data_offset;
+        }
+        if (!s->audio_enabled || s->audio_ma2 || !s->audio_sites_enabled ||
+            !status_read || !data_read) {
+            error_report("experimental-audio-readback requires an opaque "
+                         "audio aperture and index/data read/write sites");
+            exit(EXIT_FAILURE);
+        }
+        warn_report("experimental audio readback: inferred reset values and "
+                    "synchronous capacity; unknown results remain rejected");
     }
     if (s->audio_enabled && !s->audio_ma2 && !s->audio_sites_enabled) {
         error_report("opaque audio-aperture requires audio-sites");
@@ -4411,6 +5658,37 @@ static bool msm5xxx_poc_get_audio_pcm(Object *obj, Error **errp)
 static void msm5xxx_poc_set_audio_pcm(Object *obj, bool value, Error **errp)
 {
     MSM5XXX_POC_MACHINE(obj)->audio_pcm_enabled = value;
+}
+
+static bool msm5xxx_poc_get_audio_readback(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->experimental_audio_readback;
+}
+
+static void msm5xxx_poc_set_audio_readback(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->experimental_audio_readback = value;
+}
+
+static char *msm5xxx_poc_get_audio_packet_bus(Object *obj, Error **errp)
+{
+    return g_strdup_printf("%x", MSM5XXX_POC_MACHINE(obj)->audio_packet_begin);
+}
+
+static void msm5xxx_poc_set_audio_packet_bus(Object *obj, const char *value,
+                                           Error **errp)
+{
+    const char *end;
+    uint64_t begin;
+
+    if (!value || !g_ascii_isxdigit(value[0]) ||
+        qemu_strtou64(value, &end, 16, &begin) < 0 || *end ||
+        begin > UINT32_MAX || (begin & 1) || (begin && begin < 6)) {
+        error_setg(errp, "experimental-audio-packet-bus requires an even hex "
+                   "wrapper access address, or 0 to disable");
+        return;
+    }
+    MSM5XXX_POC_MACHINE(obj)->audio_packet_begin = begin;
 }
 
 static void msm5xxx_poc_set_sbi(Object *obj, bool value, Error **errp)
@@ -4646,8 +5924,20 @@ static char *msm5xxx_poc_get_ready_poll_sites(Object *obj, Error **errp)
     g_string_printf(value, "%x:%x:%x:", s->ready_status_address,
                     s->ready_status_mask, s->ready_pulse_address);
     for (index = 0; index < s->ready_poll_site_count; index++) {
+        const MSM5xxxPOCReadyPollSite *site = &s->ready_poll_sites[index];
+
         g_string_append_printf(value, "%s%x", index ? ";" : "",
-                               s->ready_poll_sites[index]);
+                               site->entry);
+        if (s->ready_poll_sites_explicit) {
+            g_string_append_printf(value, ",%x,%x,%x", site->read_offset,
+                                   site->set_offset, site->clear_offset);
+            if (site->rx_empty_offset) {
+                g_string_append_printf(value, ",%x", site->rx_empty_offset);
+                if (site->rx_frame_offset) {
+                    g_string_append_printf(value, ",%x", site->rx_frame_offset);
+                }
+            }
+        }
     }
     return g_string_free(value, false);
 }
@@ -4659,9 +5949,11 @@ static void msm5xxx_poc_set_ready_poll_sites(Object *obj, const char *value,
     g_auto(GStrv) fields = NULL;
     g_auto(GStrv) entries = NULL;
     uint32_t parsed[3];
-    uint32_t sites[MSM5XXX_POC_READY_POLL_MAX_SITES];
+    MSM5xxxPOCReadyPollSite sites[MSM5XXX_POC_READY_POLL_MAX_SITES] = { 0 };
     size_t count;
     size_t index;
+    bool explicit;
+    bool uart = false;
 
     if (!value || !*value || s->ready_poll_enabled) {
         goto invalid;
@@ -4692,21 +5984,71 @@ static void msm5xxx_poc_set_ready_poll_sites(Object *obj, const char *value,
         (parsed[1] & (parsed[1] - 1)) || s->primary_nor_size < 22) {
         goto invalid;
     }
+    explicit = strchr(entries[0], ',') != NULL;
     for (index = 0; index < count; index++) {
-        const char *end;
-        unsigned long number;
+        g_auto(GStrv) tuple = g_strsplit(entries[index], ",", -1);
+        size_t length = g_strv_length(tuple);
+        uint32_t values[6] = { 0, 2, 12, 16, 0, 0 };
+        uint32_t max_offset;
+        size_t field;
         size_t prior;
 
-        if (!*entries[index] ||
-            qemu_strtoul(entries[index], &end, 16, &number) < 0 || *end ||
-            number > UINT32_MAX || (number & 1) ||
-            number > s->primary_nor_size - 22) {
+        if ((!explicit && length != 1) ||
+            (explicit && (length < 4 || length > 6))) {
             goto invalid;
         }
-        sites[index] = (uint32_t)number;
-        for (prior = 0; prior < index; prior++) {
-            if (sites[prior] == sites[index]) {
+        for (field = 0; field < length; field++) {
+            const char *end;
+            unsigned long number;
+
+            if (!*tuple[field] ||
+                qemu_strtoul(tuple[field], &end, 16, &number) < 0 ||
+                *end || number > UINT32_MAX || (number & 1)) {
                 goto invalid;
+            }
+            values[field] = (uint32_t)number;
+        }
+        max_offset = MAX(values[1], MAX(values[2], values[3]));
+        max_offset = MAX(max_offset, MAX(values[4], values[5]));
+        if (values[0] > s->primary_nor_size - 22 ||
+            values[2] >= values[3] || values[1] == values[2] ||
+            values[1] == values[3] || max_offset > 0x1000 ||
+            max_offset + 2 > s->primary_nor_size ||
+            values[0] > s->primary_nor_size - max_offset - 2 ||
+            (length >= 5 && (parsed[1] != 8 || values[4] <= values[3] ||
+                             values[4] == values[1])) ||
+            (length == 6 && (values[5] <= values[4] ||
+                            values[5] == values[1]))) {
+            goto invalid;
+        }
+        sites[index] = (MSM5xxxPOCReadyPollSite) {
+            .entry = values[0], .read_offset = values[1],
+            .set_offset = values[2], .clear_offset = values[3],
+            .rx_empty_offset = values[4], .rx_frame_offset = values[5],
+        };
+        uart |= length >= 5;
+        for (prior = 0; prior < index; prior++) {
+            if (sites[prior].entry == sites[index].entry) {
+                goto invalid;
+            }
+            if (explicit) {
+                const uint32_t prior_offsets[] = {
+                    sites[prior].read_offset, sites[prior].set_offset,
+                    sites[prior].clear_offset, sites[prior].rx_empty_offset,
+                    sites[prior].rx_frame_offset,
+                };
+                size_t left;
+                size_t right;
+
+                for (left = 1; left < length; left++) {
+                    for (right = 0; right < G_N_ELEMENTS(prior_offsets); right++) {
+                        if ((right < 3 || prior_offsets[right]) &&
+                            sites[index].entry + values[left] ==
+                            sites[prior].entry + prior_offsets[right]) {
+                            goto invalid;
+                        }
+                    }
+                }
             }
         }
     }
@@ -4715,18 +6057,25 @@ static void msm5xxx_poc_set_ready_poll_sites(Object *obj, const char *value,
     s->ready_pulse_address = parsed[2];
     memcpy(s->ready_poll_sites, sites, count * sizeof(sites[0]));
     s->ready_poll_site_count = (unsigned)count;
-    s->ready_poll_entry = sites[0];
-    s->ready_poll_active_entry = sites[0];
-    s->ready_status_pc_offset = 2;
-    s->ready_pulse_set_pc_offset = 12;
-    s->ready_pulse_clear_pc_offset = 16;
+    s->ready_poll_sites_explicit = explicit;
+    s->ready_poll_entry = sites[0].entry;
+    s->ready_poll_active_entry = sites[0].entry;
+    s->ready_status_pc_offset = sites[0].read_offset;
+    s->ready_pulse_set_pc_offset = sites[0].set_offset;
+    s->ready_pulse_clear_pc_offset = sites[0].clear_offset;
+    s->ready_poll_active_set_offset = sites[0].set_offset;
+    s->ready_poll_active_clear_offset = sites[0].clear_offset;
+    s->ready_uart_rx_empty_read_pc_offset = sites[0].rx_empty_offset;
+    s->ready_uart_rx_empty_frame_read_pc_offset = sites[0].rx_frame_offset;
+    s->ready_uart_rx_empty_enabled = uart;
     s->ready_poll_enabled = true;
     return;
 
 invalid:
     error_setg(errp,
                "ready-poll-sites must be STATUS:ONE_BIT_MASK:PULSE:"
-               "ENTRY;ENTRY[;ENTRY...] for 2..%u unique even sites",
+               "SITE;SITE[;SITE...] for 2..%u unique even sites; SITE is ENTRY"
+               " or ENTRY,READ_OFF,SET_OFF,CLEAR_OFF[,RX_OFF[,RX_FRAME_OFF]]",
                MSM5XXX_POC_READY_POLL_MAX_SITES);
 }
 
@@ -5033,7 +6382,7 @@ static char *msm5xxx_poc_get_matrix_input(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
-    if (!s->matrix_input_enabled) {
+    if (!s->matrix_input_enabled || s->matrix_input_gpio) {
         return g_strdup("");
     }
     if (s->matrix_input_host_enabled) {
@@ -5139,11 +6488,44 @@ static void msm5xxx_poc_set_board_status_input(Object *obj, const char *value,
         error_setg(errp, "board-status-input must be ADDRESS:MASK:DEFAULT");
         return;
     }
+    if (s->matrix_input_gpio) {
+        for (unsigned i = 0; i < 4; i++) {
+            if (address == (i == 3 ? s->matrix_input_address :
+                            s->matrix_input_gpio_port[i])) {
+                error_setg(errp, "board-status-input conflicts with matrix-gpio");
+                return;
+            }
+        }
+    }
     s->board_status_input_address = address;
     s->board_status_input_mask = mask;
     s->board_status_input_default = default_value;
     s->board_status_input_level = default_value;
     s->board_status_input_enabled = true;
+}
+
+static char *msm5xxx_poc_get_board_status_descriptor(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return g_strdup_printf("%x", s->board_status_input_descriptor);
+}
+
+static void msm5xxx_poc_set_board_status_descriptor(Object *obj,
+                                                      const char *value,
+                                                      Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint64_t descriptor;
+
+    if (s->matrix_input_gpio || s->matrix_input_low5 ||
+        s->matrix_input_row_mask ||
+        qemu_strtou64(value, NULL, 16, &descriptor) || !descriptor ||
+        descriptor > UINT32_MAX - 0x38 || descriptor & 3) {
+        error_setg(errp, "board-status-descriptor requires aligned descriptor");
+        return;
+    }
+    s->board_status_input_descriptor = descriptor;
 }
 
 static char *msm5xxx_poc_get_audio_aperture(Object *obj, Error **errp)
@@ -5192,6 +6574,55 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
     s->audio_data_offset = data_offset;
     s->audio_ma2 = ma2;
     s->audio_enabled = true;
+}
+
+static char *msm5xxx_poc_get_audio_irq_route(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *text = g_string_new("");
+    unsigned i;
+
+    if (s->audio_irq_configured) {
+        for (i = 0; i < 10; i++) {
+            g_string_append_printf(text, "%s%x", i ? ":" : "", s->audio_irq_route[i]);
+        }
+    }
+    return g_string_free(text, false);
+}
+
+static void msm5xxx_poc_set_audio_irq_route(Object *obj, const char *value,
+                                            Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) parts = g_strsplit(value ? value : "", ":", -1);
+    uint32_t r[10];
+    unsigned i;
+
+    if (g_strv_length(parts) != 10) {
+        error_setg(errp, "audio-irq-route requires ten hex fields");
+        return;
+    }
+    for (i = 0; i < 10; i++) {
+        const char *end;
+        uint64_t number;
+
+        if (!g_ascii_isxdigit(parts[i][0]) ||
+            qemu_strtou64(parts[i], &end, 16, &number) < 0 || *end || number > UINT32_MAX) {
+            error_setg(errp, "invalid audio-irq-route field");
+            return;
+        }
+        r[i] = number;
+    }
+    if (r[1] != 0x03000624 || r[2] != 0x0300062c ||
+        !r[3] || r[3] > 0x8000 || (r[3] & (r[3] - 1)) ||
+        (r[0] & 3) || (r[4] & 1) || (r[5] & 1) ||
+        (r[6] & 1) || (r[7] & 3) || (r[8] & 3) || (r[9] & 1) ||
+        r[6] >= 0x02000000 || r[9] >= 0x02000000) {
+        error_setg(errp, "audio-irq-route outside supported descriptor class");
+        return;
+    }
+    memcpy(s->audio_irq_route, r, sizeof(r));
+    s->audio_irq_configured = true;
 }
 
 static char *msm5xxx_poc_get_audio_sites(Object *obj, Error **errp)
@@ -5282,6 +6713,14 @@ static void msm5xxx_poc_set_matrix_input(Object *obj, const char *value,
     bool host_enabled;
     char trailing;
 
+    if (s->matrix_input_gpio) {
+        error_setg(errp, "matrix-input conflicts with matrix-gpio");
+        return;
+    }
+    if (s->matrix_input_halfword) {
+        error_setg(errp, "matrix-input conflicts with matrix-halfword");
+        return;
+    }
     host_enabled = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x%c", &address,
                           &sense_site, &no_key, &reset, &row_register, &rows,
                           &sideband_mask, &sense_bitmap, &trailing) == 8;
@@ -5326,6 +6765,362 @@ static void msm5xxx_poc_set_matrix_input(Object *obj, const char *value,
         s->matrix_input_sense_bitmap = sense_bitmap;
     }
     s->matrix_input_enabled = true;
+}
+
+static char *msm5xxx_poc_get_matrix_halfword(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    (void)errp;
+
+    if (!s->matrix_input_halfword || s->matrix_input_low5 || s->matrix_input_loop) {
+        return g_strdup("");
+    }
+    if (s->matrix_input_row_mask) {
+        return g_strdup_printf("%x:%x:%x:%x", s->matrix_input_descriptor,
+                               s->matrix_input_presence_site,
+                               s->matrix_input_sense_site,
+                               s->matrix_input_row_mask);
+    }
+    return g_strdup_printf("%x:%x:%x", s->matrix_input_descriptor,
+                           s->matrix_input_presence_site,
+                           s->matrix_input_sense_site);
+}
+
+static void msm5xxx_poc_set_matrix_halfword(Object *obj, const char *value,
+                                             Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint64_t fields[4] = {0};
+    const char *field = value;
+    unsigned count, rows = 0;
+
+    if (s->matrix_input_enabled) {
+        goto invalid;
+    }
+    for (count = 0; count < 4; count++) {
+        const char *end;
+
+        if (!field || !g_ascii_isxdigit(*field) ||
+            qemu_strtou64(field, &end, 16, &fields[count]) < 0 ||
+            fields[count] > UINT32_MAX) {
+            goto invalid;
+        }
+        if (!*end) {
+            count++;
+            break;
+        }
+        if (*end != ':' || count == 3) {
+            goto invalid;
+        }
+        field = end + 1;
+    }
+    if (count < 3 || fields[0] & 3 || fields[1] & 1 || fields[2] & 1 ||
+        fields[1] == fields[2] || fields[1] > UINT32_MAX - 2 ||
+        fields[2] > UINT32_MAX - 2 ||
+        (count == 4 && (!fields[3] || fields[3] > UINT16_MAX ||
+                        s->board_status_input_descriptor))) {
+        goto invalid;
+    }
+    for (unsigned bits = fields[3]; bits; bits &= bits - 1) {
+        rows++;
+    }
+    s->matrix_input_halfword = true;
+    s->matrix_input_row_mask = fields[3];
+    s->matrix_input_descriptor = fields[0];
+    s->matrix_input_presence_site = fields[1];
+    s->matrix_input_sense_site = fields[2];
+    s->matrix_input_address = MSM5XXX_POC_MSM_BASE + 0x72c;
+    s->matrix_input_no_key = 0xf;
+    s->matrix_input_rows = rows ? rows : 6;
+    s->matrix_input_sense_bitmap = (1U << 14) | (1U << 13) |
+                                   (1U << 11) | (1U << 7);
+    s->matrix_input_host_enabled = true;
+    s->matrix_input_enabled = true;
+    return;
+
+invalid:
+    error_setg(errp, "matrix-halfword requires exclusive "
+               "DESCRIPTOR:PRESENCE_SITE:SENSE_SITE[:ROW_MASK]");
+}
+
+static char *msm5xxx_poc_get_experimental_matrix_contact(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    (void)errp;
+    return s->experimental_matrix_contact_enabled ?
+        g_strdup_printf("%x:%x", s->experimental_matrix_contact_site,
+                        s->experimental_matrix_contact_level) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_experimental_matrix_contact(Object *obj,
+                                                       const char *value,
+                                                       Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint64_t fields[2];
+    const char *field = value;
+
+    if (s->experimental_matrix_contact_enabled) {
+        goto invalid;
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        const char *end;
+
+        if (!field || !g_ascii_isxdigit(*field) ||
+            qemu_strtou64(field, &end, 16, &fields[i]) < 0 ||
+            fields[i] > UINT32_MAX || (i == 0 ? *end != ':' : *end != '\0')) {
+            goto invalid;
+        }
+        field = end + 1;
+    }
+    if ((fields[0] & 1) || fields[0] > UINT32_MAX - 2 ||
+        (fields[1] != 0 && fields[1] != 0x10)) {
+        goto invalid;
+    }
+    s->experimental_matrix_contact_site = fields[0];
+    s->experimental_matrix_contact_level = fields[1];
+    s->experimental_matrix_contact_enabled = true;
+    return;
+
+invalid:
+    error_setg(errp, "experimental-matrix-contact requires exclusive "
+               "CONTACT_PC:LEVEL (hex 0 or 10)");
+}
+
+static char *msm5xxx_poc_get_experimental_matrix_status(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    (void)errp;
+    return s->experimental_matrix_status_enabled ?
+        g_strdup_printf("%x:%x", s->experimental_matrix_status_site,
+                        s->experimental_matrix_status_level) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_experimental_matrix_status(Object *obj,
+                                                       const char *value,
+                                                       Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint64_t fields[2];
+    const char *field = value;
+
+    if (s->experimental_matrix_status_enabled) {
+        goto invalid;
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        const char *end;
+
+        if (!field || !g_ascii_isxdigit(*field) ||
+            qemu_strtou64(field, &end, 16, &fields[i]) < 0 ||
+            fields[i] > UINT32_MAX || (i == 0 ? *end != ':' : *end != '\0')) {
+            goto invalid;
+        }
+        field = end + 1;
+    }
+    if ((fields[0] & 1) || fields[0] > UINT32_MAX - 2 ||
+        (fields[1] != 0 && fields[1] != 0x02)) {
+        goto invalid;
+    }
+    s->experimental_matrix_status_site = fields[0];
+    s->experimental_matrix_status_level = fields[1];
+    s->experimental_matrix_status_enabled = true;
+    return;
+
+invalid:
+    error_setg(errp, "experimental-matrix-status requires exclusive "
+               "STATUS_PC:LEVEL (hex 0 or 2)");
+}
+
+static char *msm5xxx_poc_get_matrix_low5(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->matrix_input_low5 ?
+        g_strdup_printf("%x:%x:%x", s->matrix_input_descriptor,
+                        s->matrix_input_presence_site,
+                        s->matrix_input_sense_site) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
+                                         Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned descriptor, presence, sense;
+    char trailing;
+
+    if (s->matrix_input_enabled || s->board_status_input_descriptor ||
+        sscanf(value, "%x:%x:%x%c", &descriptor, &presence, &sense,
+               &trailing) != 3 || !descriptor || descriptor & 3 ||
+        descriptor > UINT32_MAX - 0x38 || presence & 1 || sense & 1 ||
+        presence == sense || presence > UINT32_MAX - 2 ||
+        sense > UINT32_MAX - 2) {
+        error_setg(errp, "matrix-low5 requires exclusive aligned "
+                   "DESCRIPTOR:PRESENCE_SITE:SENSE_SITE");
+        return;
+    }
+    s->matrix_input_low5 = true;
+    s->matrix_input_halfword = true;
+    s->matrix_input_descriptor = descriptor;
+    s->matrix_input_presence_site = presence;
+    s->matrix_input_sense_site = sense;
+    s->matrix_input_address = MSM5XXX_POC_MSM_BASE + 0x72c;
+    s->matrix_input_no_key = 0x1f;
+    s->matrix_input_rows = 6;
+    s->matrix_input_sideband_mask = 0;
+    s->matrix_input_sense_bitmap = (1U << 30) | (1U << 29) |
+        (1U << 27) | (1U << 23) | (1U << 15);
+    s->matrix_input_host_enabled = true;
+    s->matrix_input_enabled = true;
+}
+
+static char *msm5xxx_poc_get_matrix_loop(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    (void)errp;
+    return s->matrix_input_loop ?
+        g_strdup_printf("%x:%x:%x:%x", s->matrix_input_descriptor,
+            s->matrix_input_contact_site, s->matrix_input_presence_site,
+            s->matrix_input_sense_site) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_matrix_loop(Object *obj, const char *value,
+                                       Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned descriptor, contact, presence, row;
+    uint64_t fields[4];
+    const char *field = value;
+
+    for (unsigned i = 0; i < 4; i++) {
+        const char *end;
+
+        if (!g_ascii_isxdigit(*field) ||
+            qemu_strtou64(field, &end, 16, &fields[i]) < 0 ||
+            fields[i] > UINT32_MAX || (i == 3 ? *end != 0 : *end != ':')) {
+            error_setg(errp, "matrix-halfword-loop requires four bounded hex fields");
+            return;
+        }
+        field = end + 1;
+    }
+    descriptor = fields[0]; contact = fields[1];
+    presence = fields[2]; row = fields[3];
+
+    if (s->matrix_input_enabled ||
+        (s->board_status_input_descriptor &&
+         s->board_status_input_descriptor != descriptor) ||
+        !descriptor || descriptor & 3 ||
+        descriptor > UINT32_MAX - 0x38 || contact & 1 || presence & 1 ||
+        row & 1 || contact == presence || contact == row || presence == row ||
+        contact > UINT32_MAX - 2 || presence > UINT32_MAX - 2 ||
+        row > UINT32_MAX - 2) {
+        error_setg(errp, "matrix-halfword-loop requires exclusive aligned "
+                   "DESCRIPTOR:CONTACT:PRESENCE:ROW");
+        return;
+    }
+    s->matrix_input_loop = s->matrix_input_halfword = true;
+    s->matrix_input_descriptor = descriptor;
+    s->matrix_input_contact_site = contact;
+    s->matrix_input_presence_site = presence;
+    s->matrix_input_sense_site = row;
+    s->matrix_input_address = MSM5XXX_POC_MSM_BASE + 0x72c;
+    s->matrix_input_no_key = 31;
+    s->matrix_input_rows = 6;
+    s->matrix_input_sideband_mask = 0;
+    s->matrix_input_sense_bitmap = (1U << 30) | (1U << 29) |
+                                  (1U << 27) | (1U << 23);
+    s->matrix_input_host_enabled = s->matrix_input_enabled = true;
+}
+
+static char *msm5xxx_poc_get_matrix_gpio(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    (void)errp;
+    return s->matrix_input_gpio ? g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x",
+        s->matrix_input_address, s->matrix_input_presence_site,
+        s->matrix_input_sense_site, s->matrix_input_gpio_port[0],
+        s->matrix_input_gpio_mask[0], s->matrix_input_gpio_port[1],
+        s->matrix_input_gpio_mask[1], s->matrix_input_gpio_port[2],
+        s->matrix_input_gpio_mask[2]) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
+                                       Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint64_t fields[9];
+    const char *field = value;
+    unsigned rows = 0;
+
+    if (s->matrix_input_enabled || s->board_status_input_descriptor) {
+        goto invalid;
+    }
+    for (unsigned i = 0; i < 9; i++) {
+        const char *end;
+
+        if (!field || !g_ascii_isxdigit(*field) ||
+            qemu_strtou64(field, &end, 16, &fields[i]) < 0 ||
+            fields[i] > UINT32_MAX || (i == 8 ? *end != 0 : *end != ':')) {
+            goto invalid;
+        }
+        field = end + (i != 8);
+    }
+    if (fields[0] < MSM5XXX_POC_MSM_BASE ||
+        fields[0] >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+        fields[1] & 1 || fields[2] & 1 || fields[1] == fields[2] ||
+        s->primary_nor_size < 2 || fields[1] > s->primary_nor_size - 2 ||
+        fields[2] > s->primary_nor_size - 2) {
+        goto invalid;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        uint64_t address = fields[3 + 2 * i], mask = fields[4 + 2 * i];
+
+        if (address < MSM5XXX_POC_MSM_BASE ||
+            address >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+            address == fields[0] || !mask || mask > UINT8_MAX) {
+            goto invalid;
+        }
+        for (unsigned j = 0; j < i; j++) {
+            if (address == fields[3 + 2 * j]) {
+                goto invalid;
+            }
+        }
+        for (unsigned bits = mask; bits; bits &= bits - 1) {
+            rows++;
+        }
+        if (s->board_status_input_enabled &&
+            s->board_status_input_address == address) {
+            goto invalid;
+        }
+    }
+    if (rows != 6 || (s->board_status_input_enabled &&
+        s->board_status_input_address == fields[0])) {
+        goto invalid;
+    }
+    s->matrix_input_address = fields[0];
+    s->matrix_input_presence_site = fields[1];
+    s->matrix_input_sense_site = fields[2];
+    for (unsigned i = 0; i < 3; i++) {
+        s->matrix_input_gpio_port[i] = fields[3 + 2 * i];
+        s->matrix_input_gpio_mask[i] = fields[4 + 2 * i];
+    }
+    s->matrix_input_gpio = true;
+    s->matrix_input_rows = 6;
+    s->matrix_input_no_key = 0xf;
+    s->matrix_input_sideband_mask = 0;
+    s->matrix_input_sense_bitmap = (1U << 14) | (1U << 13) |
+        (1U << 11) | (1U << 7);
+    s->matrix_input_host_enabled = true;
+    s->matrix_input_enabled = true;
+    return;
+
+invalid:
+    error_setg(errp, "matrix-gpio requires exclusive "
+               "ADDRESS:PRESENCE_PC:ROW_PC:PORT0:MASK0:PORT1:MASK1:PORT2:MASK2");
 }
 
 static void msm5xxx_poc_set_fujitsu_x16_nor(Object *obj, const char *value,
@@ -5647,8 +7442,11 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
         parsed = fields == 11 && consumed >= 0 && !value[consumed];
     }
     if (!parsed || s->rex_irq_enabled ||
-            status != 0x03000c80 || enable != status + 0x14 ||
+            (status != 0x03000c80 && status != 0x03000fb0) ||
+            enable != status + 0x14 ||
             (bank_count != 2 && bank_count != 3) ||
+            (status == 0x03000fb0 &&
+             (bank_count != 2 || handler_size != 0x182)) ||
             status + (bank_count == 3 ?
                       MSM5XXX_POC_REX_C80_THREE_BANK_SIZE :
                       MSM5XXX_POC_REX_C80_CONTROLLER_SIZE) >
@@ -5668,6 +7466,8 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
     }
     s->rex_irq_status_address = status;
     s->rex_irq_enable_address = enable;
+    /* The FB0 timer class requires the firmware's byte-2 arm write. */
+    s->rex_irq_arm_address = status == 0x03000fb0 ? 0x030006e0 : 0;
     s->rex_irq_mask = mask;
     s->rex_irq_interval = interval;
     s->rex_irq_vector_target = vector_target;
@@ -6062,21 +7862,73 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "board-status-input",
         "Detector-provided persistent board-status bits");
+    object_class_property_add_str(oc, "board-status-descriptor",
+                                  msm5xxx_poc_get_board_status_descriptor,
+                                  msm5xxx_poc_set_board_status_descriptor);
+    object_class_property_set_description(
+        oc, "board-status-descriptor",
+        "Experimental live descriptor guard for halfword status GPIO");
     object_class_property_add_str(oc, "matrix-input",
                                   msm5xxx_poc_get_matrix_input,
                                   msm5xxx_poc_set_matrix_input);
     object_class_property_set_description(
         oc, "matrix-input", "Detector-provided direct matrix input state");
+    object_class_property_add_str(oc, "matrix-halfword",
+                                  msm5xxx_poc_get_matrix_halfword,
+                                  msm5xxx_poc_set_matrix_halfword);
+    object_class_property_set_description(
+        oc, "matrix-halfword", "Experimental descriptor-gated halfword matrix "
+        "with optional active-low ROW_MASK");
+    object_class_property_add_str(oc, "experimental-matrix-contact",
+                                  msm5xxx_poc_get_experimental_matrix_contact,
+                                  msm5xxx_poc_set_experimental_matrix_contact);
+    object_class_property_set_description(oc, "experimental-matrix-contact",
+        "Explicit mapped-matrix contact electrical approximation; no default level");
+    object_class_property_add_str(oc, "experimental-matrix-status",
+                                  msm5xxx_poc_get_experimental_matrix_status,
+                                  msm5xxx_poc_set_experimental_matrix_status);
+    object_class_property_set_description(oc, "experimental-matrix-status",
+        "Explicit mapped-matrix status electrical approximation; no default level");
+    object_class_property_add_str(oc, "matrix-low5",
+                                  msm5xxx_poc_get_matrix_low5,
+                                  msm5xxx_poc_set_matrix_low5);
+    object_class_property_set_description(
+        oc, "matrix-low5", "Temporary descriptor-qualified low-five sense plane");
+    object_class_property_add_str(oc, "matrix-halfword-loop",
+                                  msm5xxx_poc_get_matrix_loop,
+                                  msm5xxx_poc_set_matrix_loop);
+    object_class_property_set_description(oc, "matrix-halfword-loop",
+        "Temporary opt-in loop matrix sense plane; contact released approximation");
+    object_class_property_add_str(oc, "matrix-gpio",
+                                  msm5xxx_poc_get_matrix_gpio,
+                                  msm5xxx_poc_set_matrix_gpio);
+    object_class_property_set_description(
+        oc, "matrix-gpio", "Temporary qualified distributed byte matrix");
     object_class_property_add_str(oc, "audio-aperture",
                                   msm5xxx_poc_get_audio_aperture,
                                   msm5xxx_poc_set_audio_aperture);
     object_class_property_set_description(
         oc, "audio-aperture", "Detector-provided audio transport aperture");
+    object_class_property_add_str(oc, "audio-irq-route",
+                                  msm5xxx_poc_get_audio_irq_route,
+                                  msm5xxx_poc_set_audio_irq_route);
     object_class_property_add_str(oc, "audio-sites",
                                   msm5xxx_poc_get_audio_sites,
                                   msm5xxx_poc_set_audio_sites);
     object_class_property_set_description(
         oc, "audio-sites", "Detector-provided audio bus access PCs");
+    object_class_property_add_bool(oc, "experimental-audio-readback",
+                                  msm5xxx_poc_get_audio_readback,
+                                  msm5xxx_poc_set_audio_readback);
+    object_class_property_set_description(
+        oc, "experimental-audio-readback",
+        "Opt-in inferred reset readback; not validated silicon behavior");
+    object_class_property_add_str(oc, "experimental-audio-packet-bus",
+                                  msm5xxx_poc_get_audio_packet_bus,
+                                  msm5xxx_poc_set_audio_packet_bus);
+    object_class_property_set_description(
+        oc, "experimental-audio-packet-bus",
+        "Opt-in primary-NOR wrapper for partial command-2 state; no renderer");
     object_class_property_add_str(oc, "primary-x16-nor",
                                   msm5xxx_poc_get_primary_x16_nor,
                                   msm5xxx_poc_set_primary_x16_nor);
@@ -6174,11 +8026,17 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         oc, "dc0-board-adc-value", "Detector-provided DC0 board ADC byte");
 }
 
+static void msm5xxx_poc_instance_finalize(Object *obj)
+{
+    msm5xxx_poc_audio_pcm_cancel_watch(MSM5XXX_POC_MACHINE(obj));
+}
+
 static const TypeInfo msm5xxx_poc_machine_typeinfo = {
     .name = TYPE_MSM5XXX_POC_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(MSM5xxxPOCMachineState),
     .instance_init = msm5xxx_poc_instance_init,
+    .instance_finalize = msm5xxx_poc_instance_finalize,
     .class_init = msm5xxx_poc_machine_class_init,
     .interfaces = arm_machine_interfaces,
 };

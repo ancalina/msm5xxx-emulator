@@ -152,7 +152,30 @@ def _controller_timer_advance_at(image: bytes, position: int) -> bool:
 def _controller_two_bank_handler_at(
         image: bytes, position: int, masks: int, status: int,
 ) -> bool:
-    """Validate the common C80 two-bank mask/dispatch controller shape."""
+    """Validate isolated C80/FB0 two-bank mask/dispatch shapes."""
+    if status == 0x03000FB0:
+        # Exact body; relocated calls are bounded and relevant ABIs closed below.
+        if _normalized_thumb_sha256(image, position, 0x182) != (
+            "a4a7b1ec46eb3f925c0c0ec155e143760ebdcfff7303475242d879917c9e6225",
+            (0x30, 0x92, 0xB6, 0xEE, 0x106, 0x142, 0x148, 0x15A),
+        ):
+            return False
+        literals = ((0, 2, masks), (0x12, 2, masks), (0x6C, 2, masks),
+                    (0x150, 7, masks), (0x9E, 1, masks + 0x0C),
+                    (0x48, 1, masks + 0x0C + 0x1B * 0x1C + 0x20))
+        ports = ((0x0E, 1), (0x84, 1), (0xA4, 3), (0xC8, 1),
+                 (0xCE, 3), (0xE8, 1), (0x118, 1), (0x164, 1))
+        thunks = [thumb_bl_target(image, position + delta)
+                  for delta in (0xB6, 0xEE, 0x106)]
+        return (
+            all(thumb_literal_value(image, position + delta, register) == value
+                for delta, register, value in literals)
+            and all(thumb_literal_value(image, position + delta, register)
+                    == status - 0x10 for delta, register in ports)
+            and len(set(thunks)) == 1 and thunks[0] is not None
+            and 0 <= thunks[0] <= len(image) - 2
+            and image[thunks[0]:thunks[0] + 2] == b"\x00\x47"
+        )
     if position < 0 or position + 0x100 > len(image):
         return False
     words = struct.unpack_from("<33H", image, position)
@@ -251,9 +274,20 @@ def _controller_two_bank_handler_at(
 
 
 def _controller_registrar_at(
-        image: bytes, position: int, default: int,
+        image: bytes, position: int, default: int, *, fb0: bool = False,
 ) -> int | None:
     """Validate row-0x1c registration and return its descriptor-table base."""
+    if fb0:
+        if (_normalized_thumb_sha256(image, position, 0x80) != (
+                "cdeb88a1799aec812a625e545d713c23322c8b8ae0e593621109b7d2c6532ee8",
+                (0x06, 0x1C, 0x26, 0x76),
+            ) or thumb_literal_value(image, position + 0x0E, 6) != default):
+            return None
+        table = thumb_literal_value(image, position + 0x2C, 1)
+        if (table is None or thumb_literal_value(image, position + 0x36, 1)
+                != table + 0x1B * 0x1C):
+            return None
+        return table
     if position < 0 or position + 0x44 > len(image):
         return None
     words = struct.unpack_from("<34H", image, position)
@@ -331,6 +365,106 @@ def _normalized_thumb_sha256(
         calls.append(offset)
         normalized[offset:offset + 4] = b"\0" * 4
     return hashlib.sha256(normalized).hexdigest(), tuple(calls)
+
+
+def _c80_full_handler_span(image: bytes, handler: int, masks: int,
+                           wrapper: int, ram_base: int, ram_size: int) -> int | None:
+    """Close known complete bodies before extending native PC ownership."""
+    sd = _normalized_thumb_sha256(image, handler, 0x150) == (
+        "b1b2c73d6bebf0bf1262d1258f2c1bf0787b25cfba27bfc9f24566fc9676f627",
+        (4, 0x3E, 0x9E, 0xC2, 0xFE, 0x116))
+    compact = _normalized_thumb_sha256(image, handler, 0x100) == (
+        "3f1f01622095fd32e398eb2feebe581a7fa27b5dc2274fa48791b7e36dc77f7f",
+        (4, 0x34, 0x94, 0xB8, 0xF4))
+    if not (sd or compact):
+        return None
+    size = 0x1B6 if sd else 0x188
+    calls = ((4, 0x3E, 0x9E, 0xC2, 0xFE, 0x116, 0x164, 0x178, 0x17E, 0x190)
+             if sd else (4, 0x34, 0x94, 0xB8, 0xF4, 0x10C, 0x14A, 0x150, 0x162))
+    digest = ("9553279ed5fa0394656a19decfb07d0bcaf1921b82c97f3b5b49dab82ec8051a"
+              if sd else "a07151a844355b265996fb4d3d3954052f38505481b84c6bcd2393c8163185c2")
+    if _normalized_thumb_sha256(image, handler, size) != (digest, calls):
+        return 0
+
+    def target(delta: int) -> int | None:
+        p = thumb_bl_target(image, handler + delta)
+        return p if p is not None and 0 <= p <= len(image) - 2 else None
+
+    def unwrap(p: int | None) -> int | None:
+        if p is None or not 0 <= p <= len(image) - 2:
+            return None
+        if image[p:p + 12] == bytes.fromhex("7847c04600c09fe51cff2fe1"):
+            if p & 3 or p + 16 > len(image):
+                return None
+            pointer = struct.unpack_from("<I", image, p + 12)[0]
+            p = pointer & ~1 if pointer & 1 else -1
+        return p if 0 <= p <= len(image) - 2 else None
+
+    def body(p: int | None, expected: bytes) -> bool:
+        return p is not None and p + len(expected) <= len(image) and image[p:p + len(expected)] == expected
+
+    if any(target(d) is None for d in calls):
+        return 0
+    unlocked, locked = ((0x3E, 0x9E), (0x178, 0x190)) if sd else ((0x34, 0x94), (0x14A, 0x162))
+    for offsets, instruction in ((unlocked, 0xE3C010C0), (locked, 0xE38010C0)):
+        helper = unwrap(target(offsets[0]))
+        if (helper is None or helper & 3 or target(offsets[0]) != target(offsets[1])
+                or not body(helper,
+                bytes.fromhex("78470000") + struct.pack("<5I", 0xE10F0000, instruction, 0xE121F001, 0xE20000C0, 0xE12FFF1E))):
+            return 0
+    fanout = (0xC2, 0xFE, 0x116) if sd else (0xB8, 0xF4, 0x10C)
+    if len({target(d) for d in fanout}) != 1 or not body(unwrap(target(fanout[0])), b"\x00\x47"):
+        return 0
+    header = unwrap(target(4))
+    if not body(header, bytes.fromhex("02480921c08cc90508717047")) or not _ram_contains(
+            thumb_literal_value(image, header, 0) or 0, 0x28, ram_base, ram_size):
+        return 0
+    if sd and not body(target(0x164), b"\x70\x47"):
+        optional = target(0x164)
+        if optional is None or _normalized_thumb_sha256(image, optional, 0x7C) != (
+                "feaa334a720859ccfd0dc331ce590ba84be9bc96e3a795b2ef8ce943828b47c5",
+                (0x36, 0x76)):
+            return 0
+        state = thumb_literal_value(image, optional, 1)
+        callees = [thumb_bl_target(image, optional + d) for d in (0x36, 0x76)]
+        # Close this callable body and bounded shared target, not its service semantics.
+        if (state is None or state & 1 or not _ram_contains(state, 0x38, ram_base, ram_size)
+                or callees[0] != callees[1] or any(
+                    callee is None or callee & 1 or not 0 <= callee <= len(image) - 2
+                    for callee in callees)):
+            return 0
+    drain = target(0x17E if sd else 0x150)
+    if (drain != handler - 0x2C or not body(drain, b"\x80\xb5")
+            or not body(drain + 8, bytes.fromhex("071c0ad0f8683969ba68"))
+            or not body(unwrap(thumb_bl_target(image, drain + 18)), b"\x10\x47")
+            or not body(drain + 22, bytes.fromhex("00203871012080bc08bc1847"))
+            or not _ram_contains(thumb_literal_value(image, drain + 2, 0) or 0, 8, ram_base, ram_size)):
+        return 0
+    literals = ([(8,7,masks),(0x16,1,masks+12),(0x20,3,masks),(0x56,1,masks+0x374),
+                 (0x7A,2,masks),(0xAA,1,masks+12),(0x146,2,masks+0x380),(0x186,7,masks)]
+                if sd else [(8,2,masks),(0x16,2,masks),(0x4C,1,masks+0x374),
+                            (0x70,2,masks),(0xA0,1,masks+12),(0x158,7,masks)])
+    ports = ([(0x1C,7),(0x7E,7),(0xB0,3),(0xD4,1),(0xDA,3),(0xF8,1),(0x128,1),(0x19A,1)]
+             if sd else [(0x12,7),(0x74,7),(0xA6,3),(0xCA,1),(0xD0,3),(0xEE,1),(0x11E,1),(0x16C,1)])
+    if any(thumb_literal_value(image, handler+d, r) != v for d,r,v in literals) or any(
+            thumb_literal_value(image, handler+d, r) != 0x03000C80 for d,r in ports):
+        return 0
+    depth = thumb_literal_value(image, handler + (0x42 if sd else 0x38), 0)
+    statistic = thumb_literal_value(image, handler + (0x1A6 if sd else 0x178), 1)
+    if (not _ram_contains(depth or 0, 2, ram_base, ram_size)
+            or not _ram_contains(statistic or 0, 2, ram_base, ram_size)
+            or not 0 <= wrapper <= len(image)-0x5C):
+        return 0
+    for delta, expected in ((0x14, "b010d0e1011081e2b010c0e1"), (0x50, "b010d0e1011051e2b010c0e1")):
+        word = struct.unpack_from("<I", image, wrapper + delta - 4)[0]
+        p = wrapper + delta + 4 + (word & 0xFFF)
+        if (word & 0xFFFFF000 != 0xE59F0000 or p > len(image)-4
+                or struct.unpack_from("<I", image, p)[0] != depth
+                or not body(wrapper+delta, bytes.fromhex(expected))):
+            return 0
+    if sd and not _ram_contains(thumb_literal_value(image, handler+0x15A, 0) or 0, 0x20, ram_base, ram_size):
+        return 0
+    return size
 
 
 def _ram_contains(address: int, size: int, base: int, length: int) -> bool:
@@ -440,8 +574,9 @@ def _find_rex_620_static_controller_callback_candidate(
             (0x30, 0x90, 0xD4, 0xFE, 0x13A, 0x140, 0x152),
         ): (
             "legacy-msm5000-620-two-bank-read-consume-group10-v1", 10,
-            0x72,
-            ("210b20af82bd778d9f17b5b00abc5adf1530778909a55260ec00a50cf17fda11",
+            # End at BX r3; the following default-handler literal is checked below.
+            0x70,
+            ("ed69c76589103931751b1e00818205148bf4438831add7bd61dbb82fa787eb37",
              (0x06, 0x20, 0x66)),
             0x26, "consume-on-read", "temporary-evidence-gated",
         ),
@@ -619,30 +754,37 @@ def find_rex_static_controller_callback_candidate(
     """
     if len(image) < 0x100:
         return None
-    prefix = struct.pack("<3I", 0x03000C80, 0x03000C94, 0x200)
     seeds: list[tuple[int, tuple[int, ...]]] = []
-    offset = 0
-    while (offset := image.find(prefix, offset)) >= 0:
-        if offset + 28 <= len(image):
-            seed = struct.unpack_from("<7I", image, offset)
-            if (seed[4] == seed[3] + 6
-                    and _ram_contains(seed[3], 4, ram_base, ram_size)
-                    and seed[5] & 1 and (seed[5] & ~1) < len(image)
-                    and seed[6] == 0):
-                seeds.append((offset, seed))
-        offset += 1
+    for status, enable in ((0x03000C80, 0x03000C94),
+                           (0x03000FB0, 0x03000FC4)):
+        prefix = struct.pack("<3I", status, enable, 0x200)
+        offset = 0
+        while (offset := image.find(prefix, offset)) >= 0:
+            if offset + 28 <= len(image):
+                seed = struct.unpack_from("<7I", image, offset)
+                if (seed[4] == seed[3] + 6
+                        and _ram_contains(seed[3], 4, ram_base, ram_size)
+                        and seed[5] & 1 and (seed[5] & ~1) < len(image)
+                        and seed[6] == 0):
+                    seeds.append((offset, seed))
+            offset += 1
     if not seeds:
         return _find_rex_620_static_controller_callback_candidate(
             image, ram_base=ram_base, ram_size=ram_size
         )
 
+    fb0 = seeds[0][1][0] == 0x03000FB0
+    index = 0x1B if fb0 else 0x1E
+    control = 0x030006E0 if fb0 else 0x030007A0
+    signature = ("static-fb0-controller-callback-v1" if fb0 else
+                 "static-c80-controller-callback-v1")
     semantic_limit = (
         "static topology only; native pending, IRQ, and idle remain unproven"
     )
 
     def rejected(reason: str) -> dict[str, object]:
         return {
-            "signature": "static-c80-controller-callback-v1",
+            "signature": signature,
             "accepted": False,
             "active": False,
             "semantic_limit": semantic_limit,
@@ -664,15 +806,16 @@ def find_rex_static_controller_callback_candidate(
         return rejected("descriptor-seed-ambiguous")
     descriptor_file_offset, seed = seeds[0]
     status, enable, mask, masks, _unused, default, _reserved = seed
-    handler = (default & ~1) + 0x68
+    handler = (default & ~1) + (0x64 if fb0 else 0x68)
     if not _controller_two_bank_handler_at(image, handler, masks, status):
         return rejected("two-bank-handler-not-closed")
     handler_validation_size = (
+        0x182 if fb0 else
         0x150 if struct.unpack_from("<H", image, handler + 2)[0] == 0xB087
         else 0x100
     )
     group_row_size = (
-        10 if handler_validation_size == 0x150 else
+        10 if fb0 or handler_validation_size == 0x150 else
         12 if _normalized_thumb_sha256(image, handler, 0x100) == (
             "e2d286a40ba316e36638235247203ba5ab1800c3f1b50149a9a36be770d40f17",
             (0x04, 0x34, 0x94, 0xBA, 0xF6),
@@ -689,9 +832,9 @@ def find_rex_static_controller_callback_candidate(
             registration_positions.append(registration)
         offset += 1
     for registration in registration_positions:
-        if (struct.unpack_from("<H", image, registration)[0] != 0x201E
+        if (struct.unpack_from("<H", image, registration)[0] != (0x2000 | index)
                 or thumb_literal_value(image, registration - 2, 1) is None
-                or thumb_literal_value(image, registration - 8, 1) != 0x030007A0
+                or thumb_literal_value(image, registration - 8, 1) != control
                 or struct.unpack_from("<2H", image, registration - 6)
                 != (0x2002, 0x7008)):
             continue
@@ -701,18 +844,62 @@ def find_rex_static_controller_callback_candidate(
                 or registrar is None):
             continue
         callback = callback_pointer & ~1
-        table = _controller_registrar_at(image, registrar, default)
+        table = _controller_registrar_at(image, registrar, default, fb0=fb0)
         advance = _controller_callback_advance(image, callback)
         if (table is not None
                 and _ram_contains(table, 4, ram_base, ram_size)
                 and advance is not None):
             registrations.append((registration, callback, registrar, advance))
     if len(registrations) != 1:
-        return rejected("row1e-callback-route-not-unique")
+        return rejected(f"row{index:02x}-callback-route-not-unique")
     registration, callback, registrar, advance = registrations[0]
-    table = _controller_registrar_at(image, registrar, default)
+    table = _controller_registrar_at(image, registrar, default, fb0=fb0)
     if table is None or not _ram_contains(table, 4, ram_base, ram_size):
         return rejected("registrar-not-closed")
+    if fb0:
+        source, destination, size, _wrapper = vector_copy
+        # Body hashes erase BL immediates, so every erased target needs bounds.
+        calls = [(handler, (0x30, 0x92, 0xB6, 0xEE, 0x106, 0x142, 0x148, 0x15A)),
+                 (registrar, (0x06, 0x1C, 0x26, 0x76))]
+        if any(target is None or not 0 <= target <= len(image) - 2
+               for body, offsets in calls for delta in offsets
+               for target in (thumb_bl_target(image, body + delta),)):
+            return rejected("fb0-call-target-outside-image")
+        mask_helper = thumb_bl_target(image, registrar + 0x06)
+        restore_helper = thumb_bl_target(image, registrar + 0x76)
+        # Thumb BX PC enters ARM; preserve the exact CPSR I/F mask return ABI.
+        for target, instruction in ((mask_helper, 0xE38010C0),
+                                    (restore_helper, 0xE3C010C0)):
+            expected = b"\x78\x47\x00\x00" + struct.pack(
+                "<5I", 0xE10F0000, instruction, 0xE121F001,
+                0xE20000C0, 0xE12FFF1E,
+            )
+            if target & 3 or image[target:target + len(expected)] != expected:
+                return rejected("fb0-mask-restore-abi-not-closed")
+        diagnostic = thumb_bl_target(image, handler + 0x148)
+        # Close only this callable body and its callee bounds, not nested queue
+        # or diagnostic semantics. Registrar error calls likewise have bounds only.
+        if (_normalized_thumb_sha256(image, diagnostic, 0x26) != (
+                "1f121709790fffac7e869f0e87027b3541ff08d8ac602ff7bd155e06b07b05b4",
+                (0x04, 0x12),
+            ) or any(target is None or not 0 <= target <= len(image) - 2
+                     for delta in (0x04, 0x12)
+                     for target in (thumb_bl_target(image, diagnostic + delta),))):
+            return rejected("fb0-diagnostic-body-not-closed")
+        row = table + index * 0x1C
+        if (table != masks + 0x0C
+                or not _ram_contains(masks, 12, destination, size)
+                or not _ram_contains(row, 28, destination, size)
+                or source + row - destination != descriptor_file_offset
+                or thumb_bl_target(image, registrar + 0x06)
+                != thumb_bl_target(image, handler + 0x142)
+                or thumb_bl_target(image, registrar + 0x06)
+                != thumb_bl_target(image, handler + 0x15A)
+                or thumb_bl_target(image, registrar + 0x76)
+                != thumb_bl_target(image, handler + 0x30)
+                or thumb_bl_target(image, registrar + 0x76)
+                != thumb_bl_target(image, handler + 0x92)):
+            return rejected("copied-descriptor-relations-not-closed")
     wrapper_prefix = struct.pack("<4I", 0xE24EE004, 0xE92D540F,
                                  0xE14F0000, 0xE92D0001)
     wrappers: list[tuple[int, int, int]] = []
@@ -770,14 +957,41 @@ def find_rex_static_controller_callback_candidate(
             setters.append((position, setter))
     if len(setters) != 1:
         return rejected("handler-setter-not-unique")
-    callback_slot = masks + 0x0C + 0x1E * 0x1C + 0x14
+    callback_slot = (table if fb0 else masks + 0x0C) + index * 0x1C + 0x14
     if not _ram_contains(callback_slot, 4, ram_base, ram_size):
-        return rejected("row1e-callback-slot-invalid")
+        return rejected(f"row{index:02x}-callback-slot-invalid")
     callback_shape = rex_legacy_5ms_callback_shape_at(image, callback)
     if callback_shape is None:
         return rejected("legacy-callback-validator-not-closed")
+    if not fb0:
+        full_span = _c80_full_handler_span(image, handler, masks, wrapper,
+                                          ram_base, ram_size)
+        if full_span == 0:
+            return rejected("controller-handler-full-span-not-closed")
+        if full_span is not None:
+            handler_validation_size = full_span
+        if full_span == 0x188:
+            # Compact group-10 body is closed above; its copied tick row must
+            # also bind the group consumer to this descriptor and registrar.
+            source, destination, size, _wrapper = vector_copy
+            group = masks + 0x374
+            row = masks + 12 + index * 0x1C
+            group_rom = source + group - destination
+            if (thumb_literal_value(image, registrar + 0x32, 1) == masks + 12
+                    and _ram_contains(masks, 12, destination, size)
+                    and _ram_contains(row, 28, destination, size)
+                    and _ram_contains(group, 40, destination, size)
+                    and source + row - destination == descriptor_file_offset
+                    and 0 <= group_rom <= len(image) - 40
+                    and image[handler + 0x48:handler + 0x4C]
+                    == bytes.fromhex("05980a23")
+                    and image[handler + 0x4E:handler + 0x54]
+                    == bytes.fromhex("584340180090")
+                    and image[group_rom + 30:group_rom + 40]
+                    == struct.pack("<4H2B", mask, 0, mask, 4, index, index)):
+                group_row_size = 10
     return {
-        "signature": "static-c80-controller-callback-v1",
+        "signature": signature,
         "accepted": True,
         "active": False,
         "semantic_limit": (
@@ -787,6 +1001,7 @@ def find_rex_static_controller_callback_candidate(
             if group_row_size is not None else semantic_limit
         ),
         "controller_class": (
+            "legacy-fb0-index1b-delta5-controller-candidate-v1" if fb0 else
             "legacy-c80-index1e-delta5-controller-candidate-v1"
         ),
         "descriptor_file_offset": descriptor_file_offset,
@@ -821,7 +1036,7 @@ def find_rex_static_controller_callback_candidate(
         "callback_validation_size": REX_LEGACY_5MS_CALLBACK_SIZE,
         "callback_validation_shape": callback_shape,
         **({
-            "promotion": "temporary-evidence-gated",
+            "promotion": "experimental-only" if fb0 else "temporary-evidence-gated",
             "status_bank_count": 2,
             "group_row_size": group_row_size,
             "pending_read_semantics": "latched-read",
@@ -829,6 +1044,7 @@ def find_rex_static_controller_callback_candidate(
             "time_tick_status_bank": status,
             "time_tick_clear_bank": status,
             "time_tick_mask": mask,
+            **({"time_tick_control_address": control} if fb0 else {}),
         } if group_row_size is not None else {}),
     }
 

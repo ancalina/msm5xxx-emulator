@@ -116,8 +116,11 @@ class LiveWindow(Window):
             available[0] // 2, available[1] // 2, image=self.secondary_photo,
         )
         power = {True: "On", False: "Off", None: "Power unknown"}[snapshot["enabled"]]
+        note = ("Last byte preview · colors/orientation unverified"
+                if snapshot.get("encoding") == "unverified-byte-preview"
+                else "panel role unverified")
         self.secondary_status.configure(
-            text=f"{power} · {width}×{height} · panel role unverified")
+            text=f"{power} · {width}×{height} · {note}")
         self._secondary_cache = snapshot
         self._secondary_size = available
         self.display_menu.entryconfigure(0, state="normal")

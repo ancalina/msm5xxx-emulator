@@ -154,6 +154,8 @@ public final class MainActivity extends Activity {
     private TextView ackView;
     private FrameView frameView;
     private FrameView secondaryFrameView;
+    private TextView secondaryPreviewNotice;
+    private TextView presentationPreviewNotice;
     private FrameLayout displayHost;
     private FrameLayout secondaryPanel;
     private boolean secondaryHidden;
@@ -369,6 +371,17 @@ public final class MainActivity extends Activity {
         return content;
     }
 
+    private TextView previewNotice(Context context) {
+        TextView notice = new TextView(context);
+        notice.setText(R.string.display_preview_notice);
+        notice.setTextSize(10);
+        notice.setTextColor(Color.WHITE);
+        notice.setBackgroundColor(Color.argb(190, 0, 0, 0));
+        notice.setVisibility(latestStatus != null && latestStatus.secondaryPreview
+                ? View.VISIBLE : View.GONE);
+        return notice;
+    }
+
     private void buildSecondaryPanel() {
         secondaryPanel = new FrameLayout(this);
         secondaryPanel.setBackgroundColor(Color.rgb(40, 40, 40));
@@ -398,6 +411,11 @@ public final class MainActivity extends Activity {
         FrameLayout.LayoutParams handle = new FrameLayout.LayoutParams(dp(32), dp(32));
         handle.gravity = Gravity.BOTTOM | Gravity.RIGHT;
         secondaryPanel.addView(resize, handle);
+        secondaryPreviewNotice = previewNotice(this);
+        FrameLayout.LayoutParams noticeBounds = new FrameLayout.LayoutParams(-1, -2);
+        noticeBounds.gravity = Gravity.BOTTOM;
+        noticeBounds.rightMargin = dp(32);
+        secondaryPanel.addView(secondaryPreviewNotice, noticeBounds);
         resize.setOnTouchListener((view, event) -> moveSecondary(view, event, true));
         displayHost.addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> {
             if (r > l && b > t && (r - l != or - ol || b - t != ob - ot)) {
@@ -552,8 +570,13 @@ public final class MainActivity extends Activity {
             Presentation presentation = new Presentation(this, display);
             FrameView output = new FrameView(presentation.getContext());
             output.setBackgroundColor(Color.BLACK);
-            presentation.setContentView(output,
-                    new FrameLayout.LayoutParams(-1, -1));
+            FrameLayout content = new FrameLayout(presentation.getContext());
+            content.addView(output, new FrameLayout.LayoutParams(-1, -1));
+            presentationPreviewNotice = previewNotice(presentation.getContext());
+            FrameLayout.LayoutParams noticeBounds = new FrameLayout.LayoutParams(-1, -2);
+            noticeBounds.gravity = Gravity.BOTTOM;
+            content.addView(presentationPreviewNotice, noticeBounds);
+            presentation.setContentView(content, new FrameLayout.LayoutParams(-1, -1));
             secondaryPresentation = presentation;
             presentationFrameView = output;
             presentationDisplayId = uniqueId;
@@ -573,6 +596,7 @@ public final class MainActivity extends Activity {
         FrameView oldView = presentationFrameView;
         secondaryPresentation = null;
         presentationFrameView = null;
+        presentationPreviewNotice = null;
         presentationDisplayId = null;
         if (oldView != null) {
             oldView.moveFrameTo(secondaryFrameView);
@@ -1115,6 +1139,10 @@ public final class MainActivity extends Activity {
         boolean secondaryAvailabilityChanged = latestStatus == null
                 || latestStatus.secondaryAvailable != status.secondaryAvailable;
         latestStatus = status;
+        secondaryPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
+        if (presentationPreviewNotice != null) {
+            presentationPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
+        }
         if (secondaryAvailabilityChanged) {
             updateSecondaryPresentation();
         }

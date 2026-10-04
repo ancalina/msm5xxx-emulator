@@ -1,14 +1,94 @@
 """Descriptor-bound secondary scanout and lossless candidate rejection."""
 from collections import Counter
+import struct
 import unittest
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
 
 from msm5xxx_emulator.devices.display.controller import DisplayControllerMixin
 from msm5xxx_emulator.devices.display.page_panel import PagePanel
+from msm5xxx_emulator.detection.display import find_byte_main_page_secondary
 
 
 class SecondaryPagePanelTests(unittest.TestCase):
+    def test_color_byte_page_contract_requires_shared_object_and_unique_links(self):
+        # Synthetic instructions and relocated links, not a firmware fixture.
+        image = bytearray(0x1000)
+        descriptor = 0x01002000
+        def put(address, hexbytes):
+            value = bytes.fromhex(hexbytes)
+            image[address:address + len(value)] = value
+        def bl(address, target):
+            delta = target - address - 4
+            struct.pack_into('<HH', image, address,
+                             0xf000 | ((delta >> 12) & 0x7ff),
+                             0xf800 | ((delta >> 1) & 0x7ff))
+        def literal(address, register, slot, value=descriptor):
+            delta = slot - ((address + 4) & ~3)
+            struct.pack_into('<H', image, address, 0x4800 | register << 8 | delta // 4)
+            struct.pack_into('<I', image, slot, value)
+        command, data, window = 0x40, 0x50, 0x60
+        selector, setup, caller, byte, color = 0x100, 0x200, 0x300, 0x400, 0x700
+        put(command, '0121490608807047')
+        put(data, '0121490688807047')
+        put(window, '90b443270524e405278020802180422020802280238090bc7047')
+        put(selector, '80b5002817d10527ff0500290e480bd02c21398000000000512038800b480000000080bc08bc184750213980000000002d203880f5e7002901d0af2000e0ae2000000000ede7')
+        bl(selector + 0x40, command)
+        put(0x380, '397d002000000000397d012000000000')
+        bl(0x384, selector)
+        bl(0x38c, selector)
+        put(setup, '80b5ae2000000000402000000000a02000000000102000000000002000000000a62000000000a32000000000c820000000002c20000000007d27ff00381c000000002e2000000000381c000000002f2000000000381c0000000024200000000081200000000023200000000006490320886200224a625f200862ca610000000080bc08bc1847')
+        for offset in (4, 10, 16, 22, 28, 34, 40, 46, 52, 68, 80, 92, 98, 104):
+            bl(setup + offset, command)
+        literal(setup + 0x6c, 1, 0x2a0)
+        bl(setup + 0x7c, byte)
+        put(caller, '064a042010805160012000000000')
+        literal(caller, 2, 0x320)
+        bl(caller + 10, setup)
+        put(byte, 'f0b5004c004fe0690028')
+        literal(byte + 2, 4, 0x600)
+        put(byte + 0x18, '206a5f2806dd')
+        put(byte + 0x28, '5f202062606a0028')
+        put(byte + 0x40, 'a06a032806dd')
+        put(byte + 0x50, '0320a062')
+        for offset in (0x70, 0x7a, 0x84):
+            bl(byte + offset, command)
+        put(byte + 0x88, 'e8690204120c60247c4307e068682018805c0000000001321204120c286a824201dc602af2db01373f043f0ca86a874201dc042fd0db')
+        bl(byte + 0x9a, data)
+        put(color - 0xc0, 'a068002801da0020a060e068772801dd7720e0602069002801da0020206160698f2801dd8f206061')
+        put(color, '004c3a1ca068e1686369000000007820a168784340184000e11d273140180523db057821491b490009e02a1c03e0068802309e80')
+        literal(color, 4, 0x800)
+        bl(color + 10, window)
+        expected = (0x02000000, 'temporary-color-page-consumer-awaiting-runtime')
+        self.assertEqual(find_byte_main_page_secondary(bytes(image)), expected)
+        for label, address, replacement in (
+                ('shared-object', 0x800, struct.pack('<I', descriptor + 4)),
+                ('page-bound', byte + 0x42, bytes.fromhex('0728')),
+                ('setup-consumer', setup + 0x7c, bytes(4)),
+                ('selector-leaf', selector + 0x40, bytes(4))):
+            with self.subTest(label=label):
+                broken = image.copy()
+                broken[address:address + len(replacement)] = replacement
+                self.assertEqual(find_byte_main_page_secondary(bytes(broken)),
+                                 (None, 'temporary-color-page-contract-rejected'))
+        duplicate = image.copy()
+        duplicate[0x900:0x900 + 14] = image[caller:caller + 14]
+        # Relocated duplicate valid caller and its object link is ambiguous.
+        delta = setup - 0x90a - 4
+        struct.pack_into('<HH', duplicate, 0x90a, 0xf000 | ((delta >> 12) & 0x7ff),
+                         0xf800 | ((delta >> 1) & 0x7ff))
+        struct.pack_into('<H', duplicate, 0x900, 0x4a07)
+        struct.pack_into('<I', duplicate, 0x920, descriptor)
+        self.assertEqual(find_byte_main_page_secondary(bytes(duplicate)),
+                         (None, 'temporary-color-page-contract-rejected'))
+        self.assertEqual(find_byte_main_page_secondary(bytes(0x100)),
+                         (None, 'mixed-descriptor-missing-or-ambiguous'))
+        # Existing descriptor admission/rejection takes precedence over this class.
+        put(0xa00, 'b0b5141c1f1c0028004d0fd17820288395206883122028844b221202081ce962ff21'
+                   '00000000ac60ef60b0bd6020a8834020e8830820288669632c616f61')
+        self.assertEqual(find_byte_main_page_secondary(bytes(image)),
+                         (None, 'mixed-initializer-clear-unproven'))
+
     def test_primary_power_requires_qualified_complete_transaction_and_retains_ram(self):
         controller, fallback = self.controller()
         controller._lcd_primary_page_port = 0x02800000

@@ -13,8 +13,29 @@ _UART_FRAMED_READ = b"\x01\x79\x48\x08"  # LDRB r1,[r0,#4]; LSRS r0,r1,#1
 _ROTATED_READY_POLL = bytes.fromhex(
     "90b400200122064f044901e00a7008703c792309fad390bc70470000"
 )
+_ROTATED_ARITHMETIC_READY_POLLS = tuple(
+    # Literal pulse base; closed ADD or SUB chain produces the status base.
+    bytes.fromhex(producer + "01e00a7008703c792309fad390bc70470000")
+    for producer in (
+        "90b407490020cf1dff370122aa37",
+        "90b407490020cf1fff3f01226a3f",
+    )
+)
+_UART_CLOCK_RX_DRAIN = bytes.fromhex(
+    "ff201071302010731020107310732020107310730120107304211173"
+)
 _LCD_HALFWORD_HELPER = bytes.fromhex("0521c905088188897047")
 _THUMB_BL = re.compile(rb".[\xf0-\xf7].[\xf8-\xff]", re.S)
+_UART_CLOCK_SETUP_PREFIX = re.compile(
+    rb"\x80\xb5" + _THUMB_BL.pattern
+    + rb".\x49\x1d\x22\x52\x01\x89\x18\x0a\x89.\x4b\x1a\x40"
+      rb"\x0a\x81\x09\x89.\x4a\x11\x82\x00\x28\x01\xd1"
+    + _THUMB_BL.pattern + _THUMB_BL.pattern
+    + rb".\x49\xc0\x20\x90\x31\x08\x71\xaf\x20\x08\x72"
+      rb"\x80\x20\x08\x73.\x49\x19\x20\xa0\x31\x08\x70"
+      rb".\x49\x00\x20\x80\x31\x08\x70\x88\x81\x1e\x20\x08\x81"
+      rb".\x49\x00\x20\x60\x31\x88\x81", re.S,
+)
 
 
 def _conditional_target(address: int, word: int) -> int:
@@ -281,23 +302,37 @@ def _find_compact_ready_poll_profile(
 def _find_rotated_ready_poll_profile(
         image: bytes) -> dict[str, object] | None:
     """Find the exact register-rotated ready/pulse loop class."""
-    candidates: list[tuple[int, tuple[int, int, int]]] = []
-    cursor = 0
-    while True:
-        entry = image.find(_ROTATED_READY_POLL, cursor)
-        if entry < 0:
-            break
-        cursor = entry + 2
-        if entry & 1 or entry + 36 > len(image):
-            continue
-        pulse_address, status_base = struct.unpack_from("<2I", image, entry + 28)
-        contract = (status_base + 4, 0x08, pulse_address)
-        if (not 0x03000000 <= contract[0] < 0x04000000
-                or not 0x03000000 <= pulse_address < 0x04000000
-                or contract[0] == pulse_address):
-            continue
-        candidates.append((entry, contract))
-    targets = {entry for entry, _contract in candidates}
+    candidates: list[tuple[int, tuple[int, int, int], int]] = []
+    for pattern in (_ROTATED_READY_POLL, *_ROTATED_ARITHMETIC_READY_POLLS):
+        cursor = 0
+        while True:
+            entry = image.find(pattern, cursor)
+            if entry < 0:
+                break
+            cursor = entry + 2
+            if entry & 1 or entry + 36 > len(image):
+                continue
+            if pattern == _ROTATED_READY_POLL:
+                pulse_address, status_base = struct.unpack_from("<2I", image, entry + 28)
+                read_offset = 0x10
+            else:
+                pulse_address = thumb_literal_value(image, entry + 2, 1)
+                if pulse_address is None:
+                    continue
+                words = struct.unpack_from("<7H", image, entry)
+                displacement = ((words[3] >> 6 & 7) + (words[4] & 0xFF)
+                                + (words[6] & 0xFF))
+                if words[3] & 0x0200:  # SUBS r7,r1,#imm; SUBS r7,#imm.
+                    displacement = -displacement
+                status_base = pulse_address + displacement
+                read_offset = 0x14
+            contract = (status_base + 4, 0x08, pulse_address)
+            if (not 0x03000000 <= contract[0] < 0x04000000
+                    or not 0x03000000 <= pulse_address < 0x04000000
+                    or contract[0] == pulse_address):
+                continue
+            candidates.append((entry, contract, read_offset))
+    targets = {entry for entry, _contract, _offset in candidates}
     called = {
         target for match in _THUMB_BL.finditer(image)
         if (callsite := match.start()) % 2 == 0
@@ -305,21 +340,85 @@ def _find_rotated_ready_poll_profile(
     }
     candidates = [candidate for candidate in candidates
                   if candidate[0] in called]
-    entries = [entry for entry, _contract in candidates]
-    contracts = {contract for _entry, contract in candidates}
+    entries = [entry for entry, _contract, _offset in candidates]
+    contracts = {contract for _entry, contract, _offset in candidates}
     if len(entries) != 1 or len(contracts) != 1:
         return None
     status_address, mask, pulse_address = contracts.pop()
+    read_offset = candidates[0][2]
     return {
         "signature": "thumb-lsrs-bcc-pulse-rotated-v1",
         "admission": "temporary-evidence-gated",
         "status_address": status_address,
         "mask": mask,
         "pulse_address": pulse_address,
-        "status_read_pc_offset": 0x10,
-        "pulse_set_pc_offset": 0x0C,
-        "pulse_clear_pc_offset": 0x0E,
+        "status_read_pc_offset": read_offset,
+        "pulse_set_pc_offset": read_offset - 4,
+        "pulse_clear_pc_offset": read_offset - 2,
         "entries": entries,
+    }
+
+
+def _find_rotated_uart_csr_sr_profile(
+        image: bytes, rotated: dict[str, object]) -> dict[str, object] | None:
+    """Close the mapped byte-UART clock setup and empty-RX drain together."""
+    # This class has no incoming UART data. Accepted SR reads use the existing
+    # UART idle response at all PCs, keeping CSR writes out of SR readback.
+    # Other status maps retain the original ready-poll response.
+    if rotated["status_address"] not in (0x030007B4, 0x030003B4):
+        return None
+    entry = rotated["entries"][0]
+    calls = [
+        (match.start(), target)
+        for match in _THUMB_BL.finditer(image)
+        if (match.start() & 1) == 0
+        and (target := thumb_bl_target(image, match.start())) is not None
+    ]
+    called_entries = {target for _callsite, target in calls}
+    candidates: list[int] = []
+    cursor = 8
+    while True:
+        setup = image.find(_UART_CLOCK_RX_DRAIN, cursor)
+        if setup < 0:
+            break
+        cursor = setup + 2
+        read = setup + 0x28
+        if setup & 1 or setup + 0x34 > len(image):
+            continue
+        producer = struct.unpack_from("<4H", image, setup - 8)
+        if (producer[0] & 0xF800 != 0x4800
+                or producer[0] >> 8 & 7 != 2
+                or producer[1:] != (0x2034, 0x3270, 0x7010)
+                or thumb_literal_value(image, setup - 8, 2)
+                   != rotated["status_address"] - 4 - 0x70):
+            continue
+        words = struct.unpack_from("<12H", image, setup + 0x1C)
+        if (words[0] & 0xF800 != 0x4800 or words[0] >> 8 & 7 != 1
+                or thumb_literal_value(image, setup + 0x1C, 1)
+                   != rotated["pulse_address"]
+                or words[1:] != (0x2300, 0xE002, 0x7A17, 0x7008,
+                                0x700B, 0x7917, 0x087F, 0xD2F9,
+                                0xBC80, 0xBC08, 0x4718)):
+            continue
+        helper = setup - 0x5E
+        if (helper < 0 or helper not in called_entries
+                or not _UART_CLOCK_SETUP_PREFIX.fullmatch(image[helper:setup - 8])
+                or thumb_bl_target(image, helper + 0x24) != entry
+                or any(thumb_literal_value(image, helper + offset, 1)
+                       != rotated["status_address"] - 4 - 0x70
+                       for offset in (0x28, 0x38, 0x40, 0x4E))
+                or not any(target == helper and callsite >= 4
+                           and thumb_bl_target(image, callsite - 4) == entry
+                           for callsite, target in calls)
+                or not 0 < read - entry <= 0x1000):
+            continue
+        candidates.append(read)
+    if len(candidates) != 1:
+        return None
+    return {
+        **rotated,
+        "signature": "thumb-uart-csr-sr-rx-empty-v1",
+        "uart_rx_empty_read_pc_offset": candidates[0] - entry,
     }
 
 
@@ -543,12 +642,20 @@ def find_ready_poll_profile(image: bytes) -> dict[str, object] | None:
         if uart is not None:
             compact = uart
     rotated = _find_rotated_ready_poll_profile(image)
+    if rotated is not None:
+        uart = _find_rotated_uart_csr_sr_profile(image, rotated)
+        if uart is not None:
+            rotated = uart
     if compact is not None and rotated is not None:
         fields = ("status_address", "mask", "pulse_address")
         if any(compact[field] != rotated[field] for field in fields):
             return None
-        if compact["signature"] == "thumb-uart-csr-sr-rx-empty-v1":
-            return None
+        rotated = {
+            "signature": "thumb-byte-ready-pulse-variants-v1",
+            "admission": "temporary-evidence-gated",
+            **{field: compact[field] for field in fields},
+            "variants": [compact, rotated],
+        }
         compact = None
     control = _find_control_ready_poll_profile(image)
     if control is not None:

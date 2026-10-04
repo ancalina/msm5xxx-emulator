@@ -107,6 +107,10 @@ class DisplayControllerMixin:
     def secondary_display_snapshot(self) -> dict[str, object] | None:
         panel = getattr(self, "_lcd_secondary_panel", None)
         if panel is None:
+            indexed = getattr(self, "_lcd_indexed_byte_panel", None)
+            if indexed is not None:
+                with self._display_lock:
+                    return indexed.snapshot()
             return None
         with self._display_lock:
             return {"width": 96, "height": 64, "frame": panel.frame,
@@ -443,6 +447,10 @@ class DisplayControllerMixin:
             return
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        indexed = getattr(self, "_lcd_indexed_byte_panel", None)
+        if indexed is not None:
+            with self._display_lock:
+                indexed.write(address, size, value)
         segmented = getattr(self, "_lcd_segmented_panel", None)
         if segmented is not None:
             with self._display_lock:
@@ -662,8 +670,10 @@ class DisplayControllerMixin:
                     and self._lcd_page_qualified):
                 return
             if (value in (0, 1)
-                    and self._lcd_protocol not in (
-                        "parallel-2", "direct", "cursor-bgr444")):
+                    and (self._lcd_protocol not in (
+                        "parallel-2", "direct", "cursor-bgr444")
+                         or (address, size) == (
+                             getattr(self, "_lcd_selector_static_port", None), 2))):
                 if address == 0x02000000 and not value and self._lcd_selector_expected:
                     self._lcd_selector_reset()
                 self._lcd_protocol = "selector-4"

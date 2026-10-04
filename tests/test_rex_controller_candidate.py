@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.arm import thumb_bl_target
 from msm5xxx_emulator.detection.rex import (
     _controller_registrar_at,
     _legacy_620_vector_copy,
@@ -468,6 +469,30 @@ class StaticControllerCandidateTests(unittest.TestCase):
             "two-bank-read-consume-handler-not-closed",
         )
 
+    def test_620_registrar_body_excludes_but_validates_literal(self) -> None:
+        firmware = (Path(__file__).resolve().parents[2] / "firmwares" /
+                    "incoming-20260914/SCH-X700_UG25_JTAG.bin")
+        if not firmware.is_file():
+            self.skipTest("private firmware corpus unavailable")
+        image = firmware.read_bytes()
+        candidate = find_rex_static_controller_callback_candidate(image, **RAM_5000)
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate["accepted"])
+        self.assertEqual(candidate["controller_class"],
+                         "legacy-msm5000-620-two-bank-read-consume-group10-v1")
+        registrar = candidate["registrar_file_offset"]
+        # Reject a changed executable instruction and a disconnected pool literal.
+        for offset in (0x28, 0x70):
+            with self.subTest(offset=offset):
+                changed = bytearray(image)
+                changed[registrar + offset] ^= 1
+                rejected = find_rex_static_controller_callback_candidate(
+                    changed, **RAM_5000)
+                self.assertIsNotNone(rejected)
+                assert rejected is not None
+                self.assertFalse(rejected["accepted"])
+
     def test_620_w1c_two_peer_class_closes_exact_routes(self) -> None:
         root = Path(__file__).resolve().parents[2] / "firmwares/incoming-20260814"
         expected = {
@@ -506,6 +531,81 @@ class StaticControllerCandidateTests(unittest.TestCase):
             assert rejected is not None
             self.assertFalse(rejected["accepted"])
 
+    def test_fb0_exact_copied_route_is_experimental_and_fails_closed(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares"
+        image = (root / "incoming-20260914/KTF-X3300.bin").read_bytes()
+        result = find_rex_static_controller_callback_candidate(image, **RAM_5000)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result["accepted"])
+        self.assertFalse(result["active"])
+        self.assertEqual(result["signature"], "static-fb0-controller-callback-v1")
+        self.assertEqual(result["controller_class"],
+                         "legacy-fb0-index1b-delta5-controller-candidate-v1")
+        self.assertEqual(result["promotion"], "experimental-only")
+        for field, value in {
+            "status": 0x03000FB0, "enable": 0x03000FC4, "mask": 0x200,
+            "descriptor_file_offset": 0x85D0E0, "descriptor_table": 0x01002D70,
+            "callback_slot": 0x01003078, "handler_slot": 0x010A5788,
+            "handler_file_offset": 0xA9444, "registrar_file_offset": 0xA9664,
+            "callback_file_offset": 0xB480, "handler_validation_size": 0x182,
+            "group_row_size": 10, "status_bank_count": 2,
+            "time_tick_control_address": 0x030006E0,
+        }.items():
+            self.assertEqual(result[field], value, field)
+        self.assertEqual(result["pending_read_semantics"], "latched-read")
+        self.assertEqual(result["pending_ack_semantics"], "write-one-to-clear")
+
+        mutations = {
+            "descriptor": (0x85D0E0 + 12, struct.pack("<I", 0x01002D66)),
+            "copy": (0x2310B4 + 8, struct.pack("<I", 0x3064)),
+            "handler": (0xA9444 + 0x10, b"\x00\x00"),
+            "handler-port": (0xA95CC, struct.pack("<I", 0x03000FA4)),
+            "handler-thunk": (0x2320CC, b"\x70\x47"),
+            "registration": (0xB4F4, struct.pack("<H", 0x201A)),
+            "registrar-limit": (0xA967C, struct.pack("<H", 0x2C1F)),
+            "registrar-table": (0xA96EC, struct.pack("<I", 0x01002D74)),
+            "duplicate": (0x85D0E0 + 28, image[0x85D0E0:0x85D0E0 + 28]),
+        }
+        for label, (offset, replacement) in mutations.items():
+            with self.subTest(label=label):
+                changed = bytearray(image)
+                changed[offset:offset + len(replacement)] = replacement
+                rejected = find_rex_static_controller_callback_candidate(
+                    changed, **RAM_5000
+                )
+                self.assertTrue(rejected is None or not rejected["accepted"])
+
+        call_mutations = {
+            "mask-outside": ((0xA966A, 0xA9586, 0xA959E), -2),
+            "mask-wrong-in-image": ((0xA966A, 0xA9586, 0xA959E), 0),
+            "restore-wrong-in-image": ((0xA96DA, 0xA9474, 0xA94D6), 0),
+            "diagnostic-isolated": ((0xA958C,), 0),
+            "registrar-error-outside": ((0xA9680,), -2),
+            "diagnostic-callee-outside": ((0xA941C,), -2),
+        }
+        for label, (sites, target) in call_mutations.items():
+            with self.subTest(label=label):
+                changed = bytearray(image)
+                for site in sites:
+                    changed[site:site + 4] = _bl(site, target)
+                rejected = find_rex_static_controller_callback_candidate(
+                    changed, **RAM_5000
+                )
+                assert rejected is not None
+                self.assertFalse(rejected["accepted"])
+                self.assertTrue(rejected["reject_reason"].startswith("fb0-"))
+
+        peer = (root / "KTFT_X3500_verX3p56.73.0_riffdump_clean.bin").read_bytes()
+        c80 = find_rex_static_controller_callback_candidate(peer, **RAM_5000)
+        assert c80 is not None
+        self.assertTrue(c80["accepted"])
+        self.assertEqual(c80["signature"], "static-c80-controller-callback-v1")
+        self.assertEqual(c80["controller_class"],
+                         "legacy-c80-index1e-delta5-controller-candidate-v1")
+        self.assertFalse(c80["active"])
+        self.assertNotIn("time_tick_control_address", c80)
+
     def test_c80_group10_relocated_vector_three_peer_topology(self) -> None:
         root = Path(__file__).resolve().parents[2] / "firmwares"
         expected = {
@@ -525,7 +625,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
             self.assertEqual(candidate["vector_copy_source"], source)
             self.assertEqual(candidate["vector_copy_size"], 0x140)
             self.assertEqual(candidate["wrapper_file_offset"], wrapper)
-            self.assertEqual(candidate["handler_validation_size"], 0x150)
+            self.assertEqual(candidate["handler_validation_size"], 0x1B6)
             self.assertEqual(candidate["promotion"],
                              "temporary-evidence-gated")
             self.assertEqual(candidate["group_row_size"], 10)
@@ -559,6 +659,110 @@ class StaticControllerCandidateTests(unittest.TestCase):
         self.assertFalse(rejected["accepted"])
         self.assertEqual(rejected["reject_reason"],
                          "two-bank-handler-not-closed")
+
+    def test_compact_group10_requires_copied_tick_row(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares"
+        image = (root / "KTFT_X3500_verX3p56.73.0_riffdump_clean.bin").read_bytes()
+        result = find_rex_static_controller_callback_candidate(image, **RAM_5000)
+        assert result is not None
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["group_row_size"], 10)
+        self.assertEqual(result["handler_validation_size"], 0x188)
+        self.assertEqual(result["promotion"], "temporary-evidence-gated")
+        self.assertFalse(result["active"])
+        h = result["handler_file_offset"]
+        load = result["registrar_file_offset"] + 0x32
+        pool = ((load + 4) & ~3) + (struct.unpack_from("<H", image, load)[0] & 255) * 4
+        for label, offset, value in (
+                ("stride", h + 0x4A, b"\x0c\x23"),
+                ("registrar-table", pool, struct.pack("<I", result["mask_table"] + 16)),
+                ("tick-membership", result["descriptor_file_offset"] + 0x20 + 30,
+                 b"\x00\x00")):
+            with self.subTest(label=label):
+                changed = bytearray(image)
+                changed[offset:offset + len(value)] = value
+                fallback = find_rex_static_controller_callback_candidate(changed, **RAM_5000)
+                self.assertTrue(fallback is None or not fallback["accepted"]
+                                or "group_row_size" not in fallback)
+        # A second eligible copy tuple makes the provenance ambiguous.
+        from msm5xxx_emulator.detection.rex import _legacy_620_vector_copy
+        source, target, size, _ = _legacy_620_vector_copy(image, **RAM_5000)
+        changed = bytearray(image)
+        record = image.find(struct.pack("<4I", source, target, size, target + size))
+        self.assertGreaterEqual(record, 0)
+        changed[record + 16:record + 32] = image[record:record + 16]
+        fallback = find_rex_static_controller_callback_candidate(changed, **RAM_5000)
+        self.assertTrue(fallback is None or not fallback["accepted"]
+                        or "group_row_size" not in fallback)
+
+    def test_c80_full_handler_span_closes_tail_and_relocated_abis(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "firmwares"
+        cases = (
+            ("KTFT_X3500_verX3p56.73.0_riffdump_clean.bin", RAM_5000, 0x188),
+            ("LG-SD810-General.bin", RAM_5100, 0x1B6),
+            ("LG-SD810-AfterSKTVer.bin", RAM_5100, 0x1B6),
+            ("LG-SD840-FullDump.bin", RAM_5100, 0x1B6),
+            ("incoming-20260814/LG-KP2600.bin", RAM_5100, 0x1B6),
+            ("incoming-20260814/LG-KP8500.bin", RAM_5100, 0x1B6),
+        )
+        for name, ram, size in cases:
+            image = (root / name).read_bytes()
+            result = find_rex_static_controller_callback_candidate(image, **ram)
+            assert result is not None
+            self.assertTrue(result["accepted"])
+            self.assertEqual(result["handler_validation_size"], size)
+            self.assertEqual(result["promotion"], "temporary-evidence-gated")
+            self.assertEqual(result["group_row_size"], 10)
+            h = result["handler_file_offset"]
+            tail_call = h + (0x162 if size == 0x188 else 0x190)
+            port_load = h + (0x16C if size == 0x188 else 0x19A)
+            word = struct.unpack_from("<H", image, port_load)[0]
+            pool = ((port_load + 4) & ~3) + (word & 255) * 4
+            mutations = {
+                "tail-opcode": (h + size - 2, b"\x70\x47"),
+                "erased-bl-outside": (tail_call, _bl(tail_call, -2)),
+                "erased-bl-wrong-abi": (tail_call, _bl(tail_call, 0)),
+                "late-port-literal": (pool, struct.pack("<I", 0x03000C84)),
+            }
+            for label, (offset, replacement) in mutations.items():
+                with self.subTest(firmware=name, mutation=label):
+                    changed = bytearray(image)
+                    changed[offset:offset + len(replacement)] = replacement
+                    rejected = find_rex_static_controller_callback_candidate(changed, **ram)
+                    self.assertTrue(rejected is None or not rejected["accepted"])
+
+            if size == 0x1B6:
+                optional = thumb_bl_target(image, h + 0x164)
+                assert optional is not None
+                if image[optional:optional + 2] != b"\x70\x47":
+                    for label, offset, replacement in (
+                        ("optional-body", optional + 0x7A, b"\x70\x47"),
+                        ("optional-call-outside", optional + 0x36, _bl(optional + 0x36, -2)),
+                        ("optional-call-different", optional + 0x36, _bl(optional + 0x36, 0)),
+                        ("optional-RAM-literal", ((optional + 4) & ~3) + 0x7C,
+                         struct.pack("<I", 0x03000C80)),
+                    ):
+                        with self.subTest(firmware=name, mutation=label):
+                            changed = bytearray(image)
+                            changed[offset:offset + len(replacement)] = replacement
+                            rejected = find_rex_static_controller_callback_candidate(changed, **ram)
+                            self.assertTrue(rejected is None or not rejected["accepted"])
+
+            lock_sites = (0x14A, 0x162) if size == 0x188 else (0x178, 0x190)
+            lock = thumb_bl_target(image, h + lock_sites[0])
+            assert lock is not None
+            veneer = image[lock:lock + 12] == bytes.fromhex("7847c04600c09fe51cff2fe1")
+            helper = struct.unpack_from("<I", image, lock + 12)[0] & ~1 if veneer else lock
+            destination = 0x6B0002 if size == 0x188 else (len(image) - 0x100 & ~3) + 2
+            for label in (("misaligned-cpsr", "misaligned-arm-veneer") if veneer else ("misaligned-cpsr",)):
+                with self.subTest(firmware=name, mutation=label):
+                    changed = bytearray(image)
+                    source, length = (lock, 16) if label == "misaligned-arm-veneer" else (helper, 24)
+                    changed[destination:destination + length] = image[source:source + length]
+                    for delta in lock_sites:
+                        changed[h + delta:h + delta + 4] = _bl(h + delta, destination)
+                    rejected = find_rex_static_controller_callback_candidate(changed, **ram)
+                    self.assertTrue(rejected is None or not rejected["accepted"])
 
     def test_closed_static_candidate_accepts_and_mutations_reject(self) -> None:
         image, offsets = _candidate_image()

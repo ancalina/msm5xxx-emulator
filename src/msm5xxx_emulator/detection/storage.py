@@ -566,6 +566,118 @@ def _record_amd_x16_shape_at(
             and hashlib.sha256(body).hexdigest() == expected_hash)
 
 
+def seeded_amd_x16_nor_profile(
+        image: bytes, load_address: int, flash_size: int,
+        ram_base: int, ram_size: int,
+) -> tuple[tuple[int, int, tuple[tuple[int, int], ...], int, int] | None,
+           str | None]:
+    """Temporary evidence-gated seeded descriptor class, with native fallback.
+
+    Byte-sized sector entries omit two reserved bottom sectors. Do not derive
+    capacity from the driver's overpermissive doubled-span bounds check.
+    Independent firmware reproduction is required before widening this class.
+    """
+    primary = image[:flash_size]
+    writer_prefix = bytes.fromhex("f8b5041c8818171c")
+    writers = find_all(primary, writer_prefix)
+    if not writers:
+        return None, None
+    if len(writers) != 1 or load_address != 0 or len(primary) != flash_size:
+        return None, "seeded-writer-map"
+    writer = writers[0]
+    records = find_all(primary, struct.pack("<3I", 0x009C0098, 0, 1))
+    if len(records) != 1:
+        return None, "seeded-descriptor-ambiguity"
+    matches = []
+    for record in records:
+        if record < 0x124 or record + 0x30 > len(primary):
+            continue
+        fields = struct.unpack_from("<12I", primary, record)
+        _, _, _, usable, span, reader, program, erase, _, _, _, context = fields
+        if (program != writer + 1 or not reader & 1 or not erase & 1
+                or context & 3
+                or not ram_base + 4 <= context <= ram_base + ram_size - 0x160
+                or (usable, span) != (0x804000, 0x3FC000)
+                or usable + span > flash_size):
+            continue
+        table = record - 0x124
+        if (struct.unpack_from("<I", primary, table + 4)[0] != 69
+                or struct.unpack_from("<69I", primary, table + 8)
+                != (0x2000,) * 6 + (0x10000,) * 63):
+            continue
+        matches.append((reader - 1, erase - 1, context - 4))
+    if len(matches) != 1:
+        return None, "seeded-descriptor-geometry"
+    reader, erase, context_global = matches[0]
+    eraser = thumb_bl_target(primary, erase + 0x4A)
+    if eraser is None:
+        return None, "seeded-erase-link"
+    shapes = (
+        (reader, "f0b5061c88180f1c", 0x56, (0x2A, 0x46, 0x4E),
+         "8f21ec8e07acbdb32e85d0c41aac7c96964e2ab78060c83421a8d00e0de42a25"),
+        (writer, writer_prefix.hex(), 0xF8,
+         (0x4A, 0x64, 0x6C, 0xA2, 0xBE, 0xC6, 0xD4, 0xE8, 0xF0),
+         "a4bb489e451032d1b09dd39967144c828a2e8ff3536054e82fd2f8ae0b91d0c8"),
+        (erase, "b8b51b4c071c2079", 0x70, (0x22, 0x3A, 0x44, 0x4A, 0x60),
+         "99a4336548fb90419928808bde5e5cb1bf01ddde958688a9ace084262a50222a"),
+        (eraser, "b0b5071c", 0x48, (0x04, 0x24, 0x2C, 0x38),
+         "d3a82d96162f4fb98af9a6d986bbf150a1ad68c190c0e2da7bc2eba0a92f1bcb"),
+    )
+    if not all(_record_amd_x16_shape_at(primary, pos, bytes.fromhex(prefix),
+                                       size, calls, digest)
+               for pos, prefix, size, calls, digest in shapes):
+        return None, "seeded-driver-shape"
+    if (any(thumb_literal_value(primary, pos, reg) != context_global
+            for pos, reg in ((reader + 8, 1), (reader + 0x30, 0),
+                             (writer + 8, 2), (erase + 0x26, 0)))
+            or any(thumb_literal_value(primary, pos, reg) != value
+                   for pos, reg, value in (
+                       (writer + 0x4E, 2, 0x80AAA0),
+                       (writer + 0xA6, 2, 0x80AAA0),
+                       (writer + 0x54, 3, 0x805540),
+                       (writer + 0xAC, 3, 0x805540),
+                       (eraser + 8, 2, 0x80AAA0),
+                       (eraser + 0xE, 5, 0x805540)))):
+        return None, "seeded-driver-literals"
+    status = thumb_literal_value(primary, writer + 0x18, 3)
+    if (status is None or status & 3
+            or not ram_base <= status <= ram_base + ram_size - 12
+            or thumb_literal_value(primary, reader + 0x1A, 1) != status
+            or thumb_literal_value(primary, reader + 0x32, 1) != status
+            or thumb_literal_value(primary, erase + 2, 4) != status
+            or thumb_bl_target(primary, writer + 0x6C)
+               != thumb_bl_target(primary, eraser + 0x2C)):
+        return None, "seeded-driver-state"
+    consumers = [pos for pos in find_all(primary, bytes.fromhex("f8b500250026"))
+                 if _record_amd_x16_shape_at(
+                     primary, pos, bytes.fromhex("f8b500250026"), 0xAC,
+                     (0x06, 0x2C, 0x3C, 0x66),
+                     "9470bcfe234ab5dd26dbdff97e7f7c2229c9bd8405c64b1d90626e63ee709f0f")]
+    if len(consumers) != 1:
+        return None, "seeded-sector-consumer"
+    getter = thumb_bl_target(primary, consumers[0] + 6)
+    if (getter is None or getter < 0
+            or primary[getter:getter + 14]
+               != bytes.fromhex("03480068002800d1704704307047")
+            or thumb_literal_value(primary, getter, 0) != context_global):
+        return None, "seeded-sector-context"
+    builder = consumers[0]
+    array_base = thumb_literal_value(primary, builder + 0x80, 7)
+    offset_getters = find_all(primary, bytes.fromhex(
+        "01b500ab1878044980000858597801b008bc090240181847"))
+    if (array_base is None or (array_base + 0x96) & 3
+            or not ram_base <= array_base <= ram_base + ram_size - 0x96 - 69 * 4
+            or any(thumb_literal_value(primary, builder + offset, register)
+                   != array_base for offset, register in
+                   ((0x0E, 7), (0x62, 0), (0x6A, 2), (0x78, 0)))
+            or len(offset_getters) != 1
+            or thumb_literal_value(primary, offset_getters[0] + 6, 1)
+               != array_base + 0x96):
+        return None, "seeded-sector-array"
+    return (0x800000, 0x400000, ((8, 0x2000), (63, 0x10000)),
+            0x98, 0x9C), None
+
+
 def find_record_amd_x16_nor(
         image: bytes, flash_size: int,
 ) -> tuple[int, int, int] | None:

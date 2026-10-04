@@ -9,11 +9,90 @@ import unittest
 from msm5xxx import GenericMSMEmulator, detect_lcd_width_hint
 from msm5xxx_emulator.detection.display import (find_dual_page_ports,
                                               find_paired_display_state_ports,
-                                              find_packed_cursor_port)
+                                              find_packed_cursor_port,
+                                              detect_packed_selector_port)
 from msm5xxx_emulator.devices.display.protocols.direct import _028_SPLIT16_PREFIX
 
 
 class LCDGeometryTests(unittest.TestCase):
+    def test_packed_selector_static_writer_requires_linked_records(self):
+        import struct
+        from msm5xxx_emulator.detection.display import (
+            _SELECTOR_FULL, _SELECTOR_PARTIAL, _SELECTOR_TAIL)
+
+        def fixture(full=0x40, partial=0x200):
+            image = bytearray(0x600)
+            image[full:full + len(_SELECTOR_FULL)] = _SELECTOR_FULL
+            image[partial:partial + len(_SELECTOR_PARTIAL)] = _SELECTOR_PARTIAL
+            image[partial + 0xA8:partial + 0xD4] = _SELECTOR_TAIL
+            def literal(pc, register, target, value):
+                delta = target - ((pc + 4) & ~3)
+                self.assertEqual(delta % 4, 0)
+                struct.pack_into("<H", image, pc, 0x4800 | register << 8 | delta // 4)
+                struct.pack_into("<I", image, target, value)
+            literal(full + 2, 0, 0x420, 0x40000100)
+            literal(full + 0x60, 0, 0x424, 0x03000600)
+            literal(partial + 2, 0, 0x428, 0x40000100)
+            literal(partial + 0x1A, 0, 0x42C, 0x40000200)
+            for offset, register in ((0x34, 2), (0x4E, 2), (0x58, 3)):
+                literal(partial + offset, register, 0x430, 0x047F)
+            literal(partial + 0xBA, 1, 0x434, 0xC6BF)
+            return image
+
+        expected = (0x02000000, "temporary-static-writer-match")
+        image = fixture()
+        self.assertEqual(detect_packed_selector_port(image, 0x40000000, 0x1000), expected)
+        self.assertEqual(detect_packed_selector_port(fixture(0x80, 0x240),
+                                                   0x40000000, 0x1000), expected)
+        for at, value in ((0x420, 0x40000104), (0x428, 0x40001000),
+                          (0x42C, 0x40000FF8), (0x430, 0x047E)):
+            bad = bytearray(image)
+            struct.pack_into("<I", bad, at, value)
+            self.assertIsNone(detect_packed_selector_port(bad, 0x40000000, 0x1000)[0])
+        for at in (0x40 + 0x14, 0x40 + 0x5A, 0x200 + 0x70,
+                   0x200 + 0xB0, 0x200 + 0xC0):
+            bad = bytearray(image); bad[at] ^= 1
+            self.assertIsNone(detect_packed_selector_port(bad, 0x40000000, 0x1000)[0])
+        bad = bytearray(image)
+        bad[0x100:0x100 + len(_SELECTOR_FULL)] = image[0x40:0x40 + len(_SELECTOR_FULL)]
+        self.assertEqual(detect_packed_selector_port(bad, 0x40000000, 0x1000),
+                         (None, "writer-signature-ambiguous"))
+        self.assertIsNone(detect_packed_selector_port(image, 0x50000000, 0x1000)[0])
+        bad = bytearray(image)
+        struct.pack_into("<H", bad, 0x200 + 0xBA, 0x49FF)
+        self.assertIsNone(detect_packed_selector_port(bad, 0x40000000, 0x1000)[0])
+
+    def test_static_selector_survives_other_aperture_and_retains_partial(self):
+        emulator = self._routing_emulator(width=128, height=160)
+        emulator._lcd_selector_static_port = 0x02000000
+        emulator._lcd_selector_static_reason = "temporary-static-writer-match"
+        def write(address, value):
+            emulator._lcd_write(None, 0, address, 2, value, None)
+        # The unrelated aperture established parallel-2 before selector setup.
+        write(0x02C00000, 5)
+        self.assertEqual(emulator._lcd_protocol, "parallel-2")
+        write(0x02000000, 0); write(0x02000004, 0x0D01)
+        def window(bounds, pixels):
+            write(0x02000000, 0)
+            for word in (0x200 | bounds[0], 0x300 | bounds[1],
+                         0x400 | bounds[2], 0x500 | bounds[3], 0x1500, 0x0E00):
+                write(0x02000004, word)
+            write(0x02000000, 1)
+            for pixel in pixels: write(0x02000004, pixel)
+        window((0, 0, 127, 159), [0x001F] * (128 * 160))
+        window((1, 2, 2, 2), [0xF800, 0x07E0])
+        offset = (2 * 128 + 1) * 3
+        self.assertEqual(emulator.display_frame[offset:offset + 6],
+                         bytes((255, 0, 0, 0, 255, 0)))
+        self.assertEqual(emulator.display_frame[:3], bytes((0, 0, 255)))
+        self.assertEqual(emulator._lcd_selector_full_transfers, 1)
+        self.assertEqual(emulator._lcd_selector_partial_transfers, 1)
+        fallback = self._routing_emulator(width=128, height=160)
+        fallback._lcd_write(None, 0, 0x02C00000, 2, 5, None)
+        fallback._lcd_write(None, 0, 0x02000000, 2, 0, None)
+        self.assertEqual(fallback._lcd_protocol, "parallel-2")
+        self.assertEqual(fallback._lcd_selector_full_transfers, 0)
+
     def test_proven_window_rejects_other_port_unframed_scanout(self):
         emulator = self._routing_emulator()
         for value in (0x43, 0, 127, 0x42, 0, 127):
@@ -665,6 +744,8 @@ class LCDGeometryTests(unittest.TestCase):
                          bytes((255, 0, 0, 0, 255, 0)))
         self.assertEqual(emulator._lcd_frame_protocol, "selector-rgb565")
         self.assertEqual(emulator._lcd_selector_telemetry(), {
+            "static_port": None,
+            "static_reason": "writer-signature-not-found",
             "full_transfers": 0,
             "partial_transfers": 1,
             "recent": [{
@@ -1042,6 +1123,36 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_write(None, 0, 0x02800004, 2, 0x0101, None)
         self.assertEqual(emulator._lcd_page_data_count, count)
         self.assertEqual(bytes(emulator._lcd_page_ram), ram)
+
+    def test_rendered_page_rejects_other_aperture_unframed_scanout(self) -> None:
+        emulator = self._routing_emulator()
+        first_row = bytes((1, 0, 0, 1, 1, 1, 0, 0)) + bytes(248)
+        for page in range(2, 16):
+            for command in (0xB0 + page, 0x10, 0x00):
+                emulator._lcd_write(None, 0, 0x02800000, 2, command, None)
+            for value in first_row if page == 2 else bytes(256):
+                emulator._lcd_write(None, 0, 0x02800004, 2, value, None)
+        emulator._lcd_write(None, 0, 0x02800000, 2, 0xB2, None)
+        self.assertTrue(emulator._lcd_page_qualified)
+        self.assertTrue(emulator._lcd_page_geometry_rendered)
+        self.assertEqual(emulator._lcd_page_bits_per_pixel, 2)
+        self.assertEqual(emulator._lcd_frame_protocol, "page-2bpp")
+        ram = bytes(emulator._lcd_page_ram)
+        before = emulator.display_snapshot()
+        sequence = emulator.frame_sequence
+
+        for _ in range(128 * 128):
+            emulator._lcd_write(None, 0, 0x02000004, 2, 0x001F, None)
+
+        self.assertEqual(bytes(emulator._lcd_page_ram), ram)
+        self.assertEqual(emulator.display_snapshot(), before)
+        self.assertEqual(emulator.frame_sequence, sequence)
+        self.assertEqual(emulator._lcd_frame_protocol, "page-2bpp")
+        port = (0x02000004, 2)
+        self.assertEqual(emulator._lcd_raw_counts[port], 128 * 128)
+        self.assertEqual(tuple(emulator._lcd_raw_streams[port]),
+                         (0x001F,) * (128 * 128))
+        self.assertEqual(emulator._lcd_raw_frames[port], 0)
 
     def test_028_parallel_window_promotes_complete_direct_grammar(self) -> None:
         emulator = self._routing_emulator(width=2, height=2)

@@ -641,6 +641,17 @@ class PageProtocolMixin:
             # A controller-bounded window outranks another port's unframed
             # length heuristic. Keep its raw capture, not a shared scanout.
             return
+        page_port = getattr(self, "_lcd_page_port", None)
+        if (getattr(self, "_lcd_page_qualified", False)
+                and getattr(self, "_lcd_page_geometry_rendered", False)
+                and (getattr(self, "_lcd_page_width", 0),
+                     getattr(self, "_lcd_page_height", 0))
+                    == (self.config.width, self.config.height)
+                and isinstance(page_port, int)
+                and (address & ~0xFFF) != (page_port & ~0xFFF)):
+            # A rendered page controller outranks another aperture's
+            # unframed length heuristic; retain its raw observations only.
+            return
         values = tuple(stream)
         if len(values) != pixels or not any(values):
             return

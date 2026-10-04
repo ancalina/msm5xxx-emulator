@@ -7,6 +7,7 @@ import re
 import struct
 
 from .arm import (
+    arm_b_target,
     _thumb_callable_entry,
     _thumb_fingerprint,
     _thumb_function_start,
@@ -525,6 +526,305 @@ def _same_image_keyemu_ok_mapping(
         ),
         "semantic_grammar_fingerprint": KEYEMU_GRAMMAR_FINGERPRINT,
     }}
+
+
+_SAMSUNG_CONFIRM_CONVERTER = bytes.fromhex(
+    "512834d021dc342848d00edc312841d006dc23284ed02a284ad030285ed1f7463228"
+    "39d0332859d1f74638283cd006dc352835d0362835d037284fd1f746392834d05028"
+    "4ad1be20f7465f2840d010dc552841d007dc52282ed0532830d054283cd1c220f746"
+    "5b2828d05e2836d1bf20f746652828d007dc60282bd0632821d064282bd19220f746"
+    "66281fd0872825d19420f7463120f7463220f7463420f7463520f7463620f7463820"
+    "f7463920f7462a20f7462320f7460820f7468120f7468320f7468d20f7468e20f746"
+    "9120f746c020f746c120f746c320f7460123db031843f746"
+)
+_SAMSUNG_CONFIRM_PRESS = bytes.fromhex(
+    "00b582b0012100ab197059705880684600f000f802b000bd"
+)
+_SAMSUNG_CONFIRM_MESSAGE_SINK = bytes.fromhex(
+    "80b410490cc908399a1a402a17da0e4a402b06da5f1cdb004f609f180cc80cc708e0"
+    "5f1cdb009a184f60d71fff3f0cc8fa3f0cc748680968401a80bcf7460020c043fae7"
+)
+_SAMSUNG_CONFIRM_NAMESPACE = (
+    *ASCII_KEY_EVENTS, 0x53, 0x54, 0x55, 0x5B, 0x63, 0x64, 0x65, 0x66,
+)
+_SAMSUNG_CONFIRM_RULE = "same-image-ring32-confirm-consumer-v1"
+_SAMSUNG_CONFIRM_FINGERPRINT = hashlib.sha256(
+    _SAMSUNG_CONFIRM_CONVERTER + _SAMSUNG_CONFIRM_PRESS
+    + _SAMSUNG_CONFIRM_MESSAGE_SINK + bytes(_SAMSUNG_CONFIRM_NAMESPACE)
+    + b"raw-dequeue-delta:0x60;paired-raw-guards+saved-r7-press-v1"
+).hexdigest()
+
+_SAMSUNG_CONFIRM_STATE_CONVERTER = bytes.fromhex(
+    "522852d022dc352850d010dc312846d006dc232854d02a2850d030285ed1f7463228"
+    "3ed033283ed0342857d1f746392842d006dc36283bd037283bd038284dd1f7465028"
+    "4bd0512848d14ae063283fd012dc5b2838d007dc532837d0542844d055283bd1c320"
+    "f7465e283ad05f283ad0602833d1c120f7460021c943792836d007dc642828d06528"
+    "24d0662826d19120f7467a282bd0872820d19420f7463120f7463220f7463320f746"
+    "0be03520f7463620f7463720f7463920f7462a20f7462320f7460820f7468120f746"
+    "8320f7468d20f7468e20f7469220f74609e0be20f746bf20f746c020f746c220f746"
+    "081cf7460123db031843f746"
+)
+_SAMSUNG_CONFIRM_STATE_RULE = "same-image-ring32-confirm-saved-state-v1"
+
+# Reached aligned-path contracts. Preserve branches, stores and constants;
+# relocation-sensitive BL and PC-load displacements are checked separately.
+_SAMSUNG_CONFIRM_CLOCK_CONTRACTS = {
+    "clock": (130, "fa8ec97207aa8b5c1f7825c4b80878c6f96a6b0e037c5e33774b4a4cd63f7aa0"),
+    "hardware": (64, "91a7e5a29998704101222fab0e80895d9f83e7678423c38fd25c005c6b82c7d8"),
+    "copy": (14, "382df184ea60a0c8346efe76cf05e08520406e57bdd881dd782c65a8ae140571"),
+    "assign": (12, "c4be156fe24ce917ee6573eb030476ef39f44a9966ac68d9bf055ffa82899089"),
+    "add": (34, "84e1145cff7f91a33235d0e682fabe9fbdb609262463ece765910670f762f0ba"),
+    "sum": (92, "812185ab79eb3b4c33af50ea4da425d621e07e9cb8d6e9505285b36009eb244e"),
+    "multiply": (64, "4d2b12f5d49fbd1520a1537fb0fcc5090f193023a79fb297ef3234c39aad89c3"),
+    "divide": (72, "8ad910c95849e7e5858cef1d53832b0e6f474c6f191398c9c049f089ff5d69a8"),
+}
+_SAMSUNG_CONFIRM_CLOCK_RAW_CONTRACTS = {
+    "lock": (28, "05bb1a2e651a889ae08f19e98607f956161b40424ed99b20b412b687a6667f10"),
+    "unlock": (28, "d961305ca13c6c8a3d2a5bd54d508f2977a58483bff33d6de0ae24fa06c4fe82"),
+    "scalar": (72, "ca730b18f8ed52cbcee991280aafffbb0d5520734787dba42d7fa265689aa3d9"),
+}
+_SAMSUNG_CONFIRM_STATE_FINGERPRINT = hashlib.sha256(
+    _SAMSUNG_CONFIRM_STATE_CONVERTER + _SAMSUNG_CONFIRM_PRESS
+    + _SAMSUNG_CONFIRM_MESSAGE_SINK + bytes(_SAMSUNG_CONFIRM_NAMESPACE)
+    + json.dumps(_SAMSUNG_CONFIRM_CLOCK_CONTRACTS, sort_keys=True).encode()
+    + json.dumps(_SAMSUNG_CONFIRM_CLOCK_RAW_CONTRACTS, sort_keys=True).encode()
+    + b"raw-dequeue-delta:0x66;saved-state+0x20;aligned-clock-output+0x18"
+).hexdigest()
+
+
+def _confirm_clock_code_matches(image: bytes, at: int, size: int,
+                                digest: str, *, raw: bool = False) -> bool:
+    if at < 0 or at & 1 or at + size > len(image):
+        return False
+    block = bytearray(image[at:at + size])
+    if not raw:
+        offset = 0
+        while offset + 2 <= size:
+            word = struct.unpack_from("<H", block, offset)[0]
+            if (word & 0xF800 == 0xF000 and offset + 4 <= size
+                    and struct.unpack_from("<H", block, offset + 2)[0] & 0xF800 == 0xF800):
+                block[offset:offset + 4] = bytes.fromhex("00f000f8")
+                offset += 4
+                continue
+            if word & 0xF800 == 0x4800:
+                block[offset] = 0
+            offset += 2
+    return hashlib.sha256(block).hexdigest() == digest
+
+
+def _confirm_saved_state_clock_closed(image: bytes, call: int,
+                                     raw_call: int) -> bool:
+    """Preserve saved payload under aligned task-stack/callee-saved ABI."""
+    if not _thumb_path_preserves_register(
+            image, raw_call - 0xA, raw_call + 0xA, raw_call + 0xC, 4):
+        return False
+    clock = thumb_bl_target(image, call + 0x10)
+    if clock is None or not _confirm_clock_code_matches(
+            image, clock, *_SAMSUNG_CONFIRM_CLOCK_CONTRACTS["clock"]):
+        return False
+    nodes = {"clock": clock}
+    for name, offset in (("lock", 0xA), ("copy", 0x20), ("hardware", 0x26),
+                         ("unlock", 0x2E), ("assign", 0x4A), ("multiply", 0x56),
+                         ("add", 0x60), ("sum", 0x6A)):
+        target = thumb_bl_target(image, clock + offset)
+        if target is None:
+            return False
+        nodes[name] = target
+    if thumb_bl_target(image, clock + 0x7A) != nodes["add"]:
+        return False
+    if nodes["lock"] & 3 or nodes["unlock"] & 3:
+        return False
+    divide = thumb_bl_target(image, nodes["hardware"] + 0x2E)
+    stub = thumb_bl_target(image, nodes["multiply"] + 0x20)
+    if (divide is None or stub is None or stub < 0 or stub & 3
+            or image[stub:stub + 8] != bytes.fromhex("784700000030a0e3")):
+        return False
+    scalar = arm_b_target(image, stub + 8)
+    if scalar is None or scalar & 3:
+        return False
+    nodes.update(divide=divide, scalar=scalar)
+    if any(not _confirm_clock_code_matches(image, nodes[name], *contract)
+           for name, contract in _SAMSUNG_CONFIRM_CLOCK_CONTRACTS.items()):
+        return False
+    if any(not _confirm_clock_code_matches(image, nodes[name], *contract, raw=True)
+           for name, contract in _SAMSUNG_CONFIRM_CLOCK_RAW_CONTRACTS.items()):
+        return False
+    state = thumb_literal_value(image, raw_call + 8, 5)
+    destination = thumb_literal_value(image, raw_call - 0xC, 4)
+    hardware = nodes["hardware"]
+    flag = thumb_literal_value(image, hardware + 8, 2)
+    inputs = (thumb_literal_value(image, clock + 6, 6),
+              thumb_literal_value(image, clock + 0x10, 0),
+              thumb_literal_value(image, clock + 0x6E, 0))
+    return (
+        state is not None and destination is not None and flag is not None
+        and 0x01000000 <= state <= 0x04000000 - 0x24 and not state & 3
+        and destination == state + 0x18
+        and 0x01000000 <= flag < 0x04000000
+        and not destination <= flag < state + 0x24
+        and all(value is not None and not value & 3
+                and 0x01000000 <= value <= 0x04000000 - 0x5C for value in inputs)
+        and thumb_literal_value(image, hardware + 2, 1) == 0x030006E0
+        and thumb_literal_value(image, hardware + 0x28, 3) == 0x3C1
+    )
+
+
+def _same_image_ring32_confirm_mapping(
+        image: bytes, profile: dict[str, object], load_address: int,
+) -> tuple[dict[int, dict[str, object]], dict[str, object]]:
+    """Bind one provisional confirm class to its physical scanner's raw ring."""
+    def reject(reason: str):
+        return {}, {
+            "ok_mapping_status": "rejected",
+            "ok_mapping_reject_reasons": [reason],
+        }
+
+    dequeue = profile.get("raw_dequeue")
+    ring = profile.get("raw_ring")
+    if (profile.get("event_sink_family") != SAMSUNG_RING32
+            or type(dequeue) is not int or type(ring) is not int
+            or not 0x01000000 <= ring < 0x04000000
+            or profile.get("raw_consumer_evidence") not in (
+                SAMSUNG_RAW_CONSUMER_EVIDENCE,
+                SAMSUNG_RAW_R7_CONSUMER_EVIDENCE,
+                SAMSUNG_RAW_SAVED_CONSUMER_EVIDENCE,
+            )):
+        return reject("raw-consumer-not-closed")
+    dequeue -= load_address
+    if dequeue & 1 or not 0 <= dequeue <= len(image) - 2:
+        return reject("raw-consumer-not-closed")
+    events = list(profile.get("event_codes", ()))
+    if any(events.count(event) != 1 for event in _SAMSUNG_CONFIRM_NAMESPACE):
+        return reject("namespace-not-unique")
+    converters = [position for position in find_all(
+        image, _SAMSUNG_CONFIRM_CONVERTER
+    ) if not position & 1]
+    saved_state = not converters
+    if saved_state:
+        converters = [position for position in find_all(
+            image, _SAMSUNG_CONFIRM_STATE_CONVERTER
+        ) if not position & 1]
+    if len(converters) != 1:
+        return reject("exact-converter-missing-or-ambiguous")
+    converter = converters[0]
+    calls = []
+    for match in THUMB_BL.finditer(image):
+        call = match.start()
+        if not call & 1 and thumb_bl_target(image, call) == converter:
+            calls.append(call)
+            if len(calls) > 1:
+                break
+    if len(calls) != 1:
+        return reject("converter-caller-not-unique")
+    call = calls[0]
+    raw_call = call - (0x66 if saved_state else 0x60)
+    end = min(len(image), call + 0x100)
+    if (raw_call < (0xC if saved_state else 0)
+            or call + (0x1A if saved_state else 0x18) > len(image)
+            or thumb_bl_target(image, raw_call) != dequeue):
+        return reject("dequeue-call-mismatch")
+
+    def word(at: int) -> int:
+        return struct.unpack_from("<H", image, at)[0]
+
+    if word(raw_call + 4) != 0x2800 or word(raw_call + 6) & 0xFF00 != 0xD000:
+        return reject("raw-release-guard-unclosed")
+    empty = set(_thumb_successors(image, raw_call + 6, end)) - {raw_call + 8}
+    raw_guard = None
+    if (saved_state and word(raw_call + 8) & 0xFF00 == 0x4D00
+            and word(raw_call + 0xA) == 0x1C26
+            and word(raw_call + 0xC) == 0x28FF):
+        raw_guard = raw_call + 0xE
+        shape = "saved-state-timestamp"
+    elif not saved_state and word(raw_call + 8) == 0x28FF:
+        raw_guard = raw_call + 0xA
+        shape = "valid-event-timestamp"
+    elif (not saved_state and word(raw_call + 8) & 0xFF00 == 0x4D00
+          and word(raw_call + 0xA) == 0x28FF):
+        raw_guard = raw_call + 0xC
+        shape = "conditional-timestamp"
+    if (raw_guard is None or word(raw_guard) & 0xFF00 != 0xD100
+            or set(_thumb_successors(image, raw_guard, end))
+            != {raw_guard + 2, call}):
+        return reject("raw-release-guard-unclosed")
+
+    if shape == "saved-state-timestamp":
+        press_call = call + 0x16
+        skip = set(_thumb_successors(image, call + 0xC, end)) - {call + 0xE}
+        valid = (
+            image[call + 4:call + 0xC] == bytes.fromhex("01232c1cd8422862")
+            and word(call + 0xC) & 0xFF00 == 0xD000
+            and len(skip) == 1 and press_call + 4 <= next(iter(skip)) < end
+            and word(call + 0xE) == 0x1C30 and word(call + 0x14) == 0x6A20
+        )
+        if valid and not _confirm_saved_state_clock_closed(image, call, raw_call):
+            return reject("saved-state-clock-unclosed")
+    elif shape == "valid-event-timestamp":
+        press_call = call + 0x14
+        skip = set(_thumb_successors(image, call + 0xA, end)) - {call + 0xC}
+        valid = (
+            image[call + 4:call + 0xA] == bytes.fromhex("0123071cd842")
+            and word(call + 0xA) & 0xFF00 == 0xD000
+            and len(skip) == 1
+            and press_call + 4 <= next(iter(skip)) < end
+            and word(call + 0xC) & 0xFF00 == 0x4800
+            and thumb_bl_target(image, call + 0xE) is not None
+            and word(call + 0x12) == 0x1C38
+        )
+    else:
+        press_call = call + 0x12
+        valid = (
+            image[call + 4:call + 8] == bytes.fromhex("071cbf28")
+            and word(call + 8) & 0xFF00 == 0xD100
+            and set(_thumb_successors(image, call + 8, end))
+            == {call + 0xA, call + 0x10}
+            and word(call + 0xA) & 0xFF00 == 0x4800
+            and thumb_bl_target(image, call + 0xC) is not None
+            and word(call + 0x10) == 0x1C38
+        )
+    if (not valid or (not saved_state and not _thumb_path_preserves_register(
+            image, call + 8, press_call, press_call + 4, 7))):
+        return reject("translated-press-shape-unclosed")
+    if len(empty) != 1 or not press_call + 4 <= next(iter(empty)) < end:
+        return reject("raw-release-guard-unclosed")
+    press = thumb_bl_target(image, press_call)
+    if (press is None or not _matches_relocated_thumb_bl(
+            image, press, _SAMSUNG_CONFIRM_PRESS, 0x10)):
+        return reject("press-message-abi-mismatch")
+    sink = thumb_bl_target(image, press + 0x10)
+    if (sink is None or sink < 0
+            or image[sink:sink + len(_SAMSUNG_CONFIRM_MESSAGE_SINK)]
+            != _SAMSUNG_CONFIRM_MESSAGE_SINK
+            or any(value is None or not 0x01000000 <= value < 0x04000000
+                   for value in (thumb_literal_value(image, sink + 2, 1),
+                                 thumb_literal_value(image, sink + 0xE, 2)))):
+        return reject("message-sink-unclosed")
+    mapping = {5: {
+        "event": 0x53,
+        "semantic_status": "provisional-cross-firmware-class",
+        "rule": _SAMSUNG_CONFIRM_RULE,
+        "evidence": (
+            "scanner-linked-dequeue+exact-converter+press-message"
+            "+cross-firmware-selection"
+        ),
+        "semantic_grammar_fingerprint": _SAMSUNG_CONFIRM_FINGERPRINT,
+        "raw_dequeue": load_address + dequeue,
+        "converter_callsite": load_address + call,
+        "converter": load_address + converter,
+        "press_callsite": load_address + press_call,
+        "press_message_sink": load_address + sink,
+    }}
+    if saved_state:
+        mapping[5].update(
+            semantic_status="temporary-evidence-gated-provisional",
+            rule=_SAMSUNG_CONFIRM_STATE_RULE,
+            evidence="scanner-linked-dequeue+exact-converter+saved-state-aligned-clock+selection",
+            semantic_grammar_fingerprint=_SAMSUNG_CONFIRM_STATE_FINGERPRINT,
+        )
+    return mapping, {
+        "ok_mapping_status": "accepted-provisional",
+        "ok_mapping_reject_reasons": [],
+    }
 
 
 def _producer_feature_names(word: int) -> tuple[str, ...]:
@@ -1335,6 +1635,11 @@ def resolve_direct_matrix_input(
         mappings = _same_image_keyemu_ok_mapping(
             profile, detect_keyemu_semantics(image, load_address)
         )
+        if not mappings and profile["event_sink_family"] == SAMSUNG_RING32:
+            mappings, ok_metadata = _same_image_ring32_confirm_mapping(
+                image, profile, load_address,
+            )
+            profile.update(ok_metadata)
         if mappings:
             profile["provisional_mappings"] = mappings
         return profile, "accepted", rejected
@@ -1368,3 +1673,258 @@ __all__ = (
     "resolve_direct_matrix_input",
     "validate_matrix_event_sink",
 )
+
+
+def _distributed_word(image: bytes, pc: int) -> int:
+    return struct.unpack_from('<H', image, pc)[0] if 0 <= pc <= len(image) - 2 else -1
+
+
+def _distributed_ram(pointer: int | None, size: int) -> bool:
+    return isinstance(pointer, int) and 0x01000000 <= pointer <= 0x03000000 - size
+
+
+def _distributed_irq(image: bytes, pc: int | None, enable: bool) -> bool:
+    """Direct Thumb-to-ARM wrapper; previous IRQ mask returned in r0."""
+    body = bytes.fromhex('7847000001e08ee300000fe1c010' +
+                         ('c0' if enable else '80') +
+                         'e301f021e1c00000e21eff2fe1')
+    return pc is not None and 0 <= pc <= len(image) - len(body) and image[pc:pc + len(body)] == body
+
+
+def _distributed_branch(image: bytes, pc: int, end: int, condition: int | None = None):
+    word = _distributed_word(image, pc)
+    if condition is None:
+        if word & 0xf800 != 0xe000:
+            return None
+    elif word & 0xff00 != 0xd000 | condition << 8:
+        return None
+    edges = _thumb_successors(image, pc, end)
+    target = edges[-1] if edges else None
+    return target if target is not None and 0 <= target < end else None
+
+
+def _distributed_hop(image: bytes, pc: int | None, goal: int, lower: int, end: int):
+    """At most two unconditional trampolines, never arbitrary instructions."""
+    for _ in range(3):
+        if pc == goal:
+            return True
+        if pc is None or not lower <= pc < end:
+            return False
+        pc = _distributed_branch(image, pc, end)
+    return False
+
+
+def _distributed_gpio_arm(image: bytes, start: int, sense: int, unlock_site: int,
+                          lock: int, unlock: int):
+    """Three protected byte shadow updates and their GPIO store consumers."""
+    pc = start
+    if _distributed_word(image, pc) & 0xf800 == 0xe000:
+        pc = _distributed_branch(image, pc, sense)
+    blocks = []
+    for offset in (12, 8, 4):
+        if pc is None or not start <= pc < sense - 24 or thumb_bl_target(image, pc) != lock:
+            return None
+        shadow = thumb_literal_value(image, pc + 4, 1)
+        mask_word = _distributed_word(image, pc + 6)
+        if (not _distributed_ram(shadow, 1)
+                or mask_word & 0xff00 != 0x2300 or not mask_word & 255
+                or image[pc + 8:pc + 10] != bytes.fromhex('0a78')):
+            return None
+        mask, value, cursor = mask_word & 255, 0, pc + 10
+        if _distributed_word(image, cursor) == 0x439a:
+            cursor += 2
+            if _distributed_word(image, cursor) & 0xff00 == 0x2300:
+                value = _distributed_word(image, cursor) & 255
+                cursor += 2
+                if _distributed_word(image, cursor) != 0x431a:
+                    return None
+                cursor += 2
+        elif _distributed_word(image, cursor) == 0x431a:
+            value, cursor = mask, cursor + 2
+        else:
+            return None
+        if value & ~mask or image[cursor:cursor + 4] != bytes.fromhex('0a700978'):
+            return None
+        base = thumb_literal_value(image, cursor + 4, 2)
+        if base is None:
+            return None
+        cursor += 6
+        if _distributed_word(image, cursor) & 0xf800 == 0xe000:
+            cursor = _distributed_branch(image, cursor, sense)
+        if (cursor is None or not start <= cursor <= sense - 6
+                or _distributed_word(image, cursor) != 0x7011 | offset << 6):
+            return None
+        compare = cursor + 2
+        if _distributed_word(image, compare) & 0xf800 == 0xe000:
+            compare = _distributed_branch(image, compare, sense)
+        if compare is None or not start <= compare <= sense - 6 or _distributed_word(image, compare) != 0x2800:
+            return None
+        next_pc = compare + 8
+        taken = _distributed_branch(image, compare + 2, sense + 2, 1)
+        if offset != 4:
+            if taken != next_pc or thumb_bl_target(image, compare + 4) != unlock:
+                return None
+        else:
+            if (not _distributed_hop(image, taken, sense, sense - 0x300, sense + 2)
+                    or not _distributed_hop(image, compare + 4, unlock_site, start, sense + 2)):
+                return None
+        blocks.append({'shadow': shadow, 'address': base + offset,
+                       'mask': mask, 'value': value, 'store': cursor})
+        pc = next_pc
+    return blocks
+
+
+def _distributed_clear(image: bytes, helper: int, lock: int, unlock: int, ports):
+    if not 0 <= helper <= len(image) - 84 or image[helper:helper + 2] != bytes.fromhex('80b5'):
+        return False
+    base = thumb_literal_value(image, helper + 12, 7)
+    for block, call, offset, port in zip((6, 34, 60), (2, 30, 56), (12, 8, 4), ports):
+        pc = helper + block
+        shift = 2 if block == 6 else 0  # First block loads the shared GPIO pointer.
+        if (thumb_bl_target(image, helper + call) != lock
+                or thumb_literal_value(image, pc, 1) != port['shadow']
+                or _distributed_word(image, pc + 2) != 0x2300 | port['mask']
+                or _distributed_word(image, pc + 4) != 0x780a
+                or image[pc + 6 + shift:pc + 12 + shift] != bytes.fromhex('9a430a700978')
+                or _distributed_word(image, pc + 12 + shift) != 0x7039 | offset << 6
+                or _distributed_word(image, pc + 14 + shift) != 0x2800
+                or _distributed_branch(image, pc + 16 + shift, helper + 84, 1) != pc + 22 + shift
+                or thumb_bl_target(image, pc + 18 + shift) != unlock
+                or base is None or port['address'] != base + offset):
+            return False
+    return image[helper + 82:helper + 84] == bytes.fromhex('80bd')
+
+
+def _distributed_ring32(image: bytes, sink: int, lock: int, unlock: int):
+    if not 0 <= sink <= len(image) - 126 or image[sink:sink + 2] != bytes.fromhex('b0b5') or image[sink + 4:sink + 6] != bytes.fromhex('071c'):
+        return None
+    state = thumb_literal_value(image, sink + 2, 4)
+    queue = thumb_literal_value(image, sink + 62, 0)
+    tail = bytes.fromhex('2d0c417803784a1cd206d20e9a4207d009188f7041780131c906c90e417003e0')
+    if (not _distributed_ram(state, 0x34) or not _distributed_ram(queue, 34)
+            or thumb_bl_target(image, sink + 56) != lock
+            or image[sink + 60:sink + 62] != bytes.fromhex('0504')
+            or image[sink + 64:sink + 96] != tail
+            or thumb_bl_target(image, sink + 108) != unlock
+            or image[sink + 124:sink + 126] != bytes.fromhex('b0bd')
+            or not _thumb_path_preserves_register(image, sink + 6, sink + 82, sink + 126, 7)):
+        return None
+    dequeues = [pc for pc in find_all(image, SAMSUNG_RAW_DEQUEUE)
+                if not pc & 1 and thumb_literal_value(image, pc, 2) == queue]
+    if len(dequeues) != 1:
+        return None
+    return {'family': 'distributed-filtered-byte-ring32-v1', 'ring': queue,
+            'state': state, 'state_size': 0x34, 'slots': 32, 'event_offset': 2, 'wrap_mask': 31,
+            'enqueue': sink, 'dequeue': dequeues[0], 'event_store': sink + 82,
+            'write_index_store': sink + 92, 'read_index_store': dequeues[0] + 24}
+
+
+def resolve_distributed_matrix_input(image: bytes, load_address: int = 0):
+    """Opt-in temporary distributed GPIO byte scanner; numeric tokens only."""
+    if load_address != 0:
+        return None, 'unsupported-load-address', []
+    candidates, rejected = [], []
+    anchors = find_all(image, bytes.fromhex('f0b587b000276846'))
+    if len(anchors) > MAX_DIRECT_MATRIX_TAILS:
+        return None, 'candidate-cap', []
+    for start in anchors:
+        end = min(start + 0x700, len(image))
+        if start & 1 or end < start + 0x560:
+            continue
+        # A class-local compiled layout: no absolute code/data addresses.
+        global_load, sense_load, switch = start + 0xca, start + 0x310, start + 0xe8
+        helper = thumb_bl_target(image, global_load - 4)
+        arms = [switch + 16 + 2 * v for v in image[switch + 16:switch + 22]]
+        lock = thumb_bl_target(image, arms[0]) if len(arms) == 6 else None
+        unlock = thumb_bl_target(image, sense_load - 4)
+        scanner_state = thumb_literal_value(image, start + 0x40, 4)
+        reason = None
+        if (image[start + 16:start + 18] != bytes.fromhex('0026')
+                or image[global_load + 2:global_load + 10] != bytes.fromhex('01790907090f0f29')
+                or image[sense_load + 2:sense_load + 10] != bytes.fromhex('00790007000f0f28')
+                or thumb_literal_value(image, global_load, 0) != thumb_literal_value(image, sense_load, 0)
+                or not _distributed_irq(image, lock, False) or not _distributed_irq(image, unlock, True)
+                or not _thumb_path_preserves_register(image, start + 18, switch, end, 6)
+                or not _thumb_path_preserves_register(image, start + 0x42, switch, end, 4)
+                or not _distributed_ram(scanner_state, 0xA)
+                or _distributed_branch(image, sense_load + 10, end, 0) != sense_load + 76
+                or not _distributed_hop(image, _distributed_branch(image, global_load + 10, end, 0), sense_load + 0x190, start, end)
+                or not _distributed_hop(image, _distributed_branch(image, switch + 4, end, 2), sense_load, switch, end)
+                or image[switch:switch + 4] != bytes.fromhex('039a062a')
+                or image[switch + 6:switch + 14] != bytes.fromhex('02a39b5c5b009f44')
+                or len(set(arms)) != 6 or any(not switch + 22 <= a < sense_load for a in arms)):
+            reason = 'scanner-switch-or-read-link'
+        rows = [] if reason else [_distributed_gpio_arm(image, a, sense_load, sense_load - 4, lock, unlock) for a in arms]
+        if not reason and (any(row is None for row in rows) or helper is None):
+            reason = 'gpio-arm-not-closed'
+        if not reason:
+            ports = [{k: v for k, v in port.items() if k not in ('value', 'store')} for port in rows[0]]
+            base = ports[0]['address'] - 12
+            masks = [port['mask'] for port in ports]
+            flat_mask = sum(mask << (8 * i) for i, mask in enumerate(masks))
+            selections = [sum(port['value'] << (8 * i) for i, port in enumerate(row)) for row in rows]
+            ordered_bits = [1 << bit for bit in range(24) if flat_mask & (1 << bit)]
+            if (not 0x03000000 <= base <= 0x03001000 - 53 or base & 31
+                    or thumb_literal_value(image, sense_load, 0) != base + 48
+                    or any([{k: v for k, v in port.items() if k not in ('value', 'store')} for port in row] != ports for row in rows)
+                    or len({port['shadow'] for port in ports}) != 3
+                    or flat_mask.bit_count() != 6
+                    or [flat_mask ^ value for value in selections] != ordered_bits
+                    or not _distributed_clear(image, helper, lock, unlock, ports)):
+                reason = 'gpio-mask-owner-or-clear-link'
+        # Exact bounded column enumeration, stack batch store and row loop.
+        batch = bytes.fromhex('0107090f0020ca43069201218140069a11400cd006214143')
+        batch_tail = bytes.fromhex('8918039a8b5c711c0a06120e311c161c6a4653540a2e0eda01300006000e0428e6db0a2e07da039a501c0206120e0392062a00da')
+        table = thumb_literal_value(image, sense_load + 36, 2)
+        if not reason and (image[sense_load + 12:sense_load + 36] != batch
+                or image[sense_load + 38:sense_load + 90] != batch_tail
+                or _distributed_branch(image, sense_load + 90, end) != switch - 4
+                or thumb_bl_target(image, sense_load + 92) != helper
+                or thumb_bl_target(image, switch - 4) != helper
+                or image[switch - 8:switch - 4] != bytes.fromhex('00220392')
+                or table is None or not 0 <= table <= len(image) - 24):
+            reason = 'column-batch-row-loop-link'
+        # Single-element batch branch and R7 path through the existing state gate.
+        pick, move = sense_load + 0x18a, sense_load + 0x222
+        state_load = sense_load + 0x156
+        batch_state = thumb_literal_value(image, state_load, 2)
+        sink = thumb_bl_target(image, move + 2)
+        if not reason and (image[sense_load + 96:sense_load + 100] != bytes.fromhex('012e5edd')
+                or _distributed_branch(image, sense_load + 98, end, 13) != sense_load + 0x122
+                or _distributed_branch(image, sense_load + 0x122, end) != sense_load + 0x152
+                or image[sense_load + 0x152:sense_load + 0x154] != bytes.fromhex('012e')
+                or image[state_load + 2:state_load + 6] != bytes.fromhex('517b0029')
+                or not _distributed_ram(batch_state, 0xE)
+                or _distributed_branch(image, state_load + 6, end, 13) != pick
+                or image[pick:pick + 4] != bytes.fromhex('00af3f78')
+                or not _thumb_path_preserves_register(image, pick + 4, move, end, 7)
+                or image[move:move + 2] != bytes.fromhex('381c') or sink is None):
+            reason = 'single-batch-stateful-transfer-link'
+        producer = None if reason else _distributed_ring32(image, sink, lock, unlock)
+        if not reason and (producer is None
+                or thumb_literal_value(image, sense_load + 0x1fc, 0) != batch_state
+                or thumb_literal_value(image, sense_load + 0x1ac, 1) != producer['state']):
+            reason = 'ring32-provenance-or-state-link'
+        events = [] if table is None or not 0 <= table <= len(image) - 24 else list(image[table:table + 24])
+        if not reason and any(events.count(v) != 1 for v in ASCII_KEY_EVENTS):
+            reason = 'numeric-event-missing-or-duplicated'
+        if reason:
+            rejected.append({'function': start, 'reasons': [reason]})
+            continue
+        candidates.append({'grammar': 'distributed-six-byte-numeric-v1',
+            'function': start, 'scanner_state': scanner_state, 'scanner_state_size': 0xA,
+            'batch_state': batch_state, 'batch_state_size': 0xE,
+            'presence_site': global_load + 2, 'sense_site': sense_load + 2,
+            'register': base + 52, 'register_width': 1, 'no_key': 15,
+            'rows': 6, 'columns': 4, 'sense_bits': 4, 'single_key_column_sense': list(SINGLE_KEY_COLUMN_SENSE),
+            'gpio_ports': ports, 'row_values': [[p['value'] for p in row] for row in rows],
+            'global_values': [0, 0, 0], 'event_table': table, 'event_codes': events,
+            'token_cells': [{'token': chr(v), 'event': v, 'row': events.index(v) % 6,
+                             'column': events.index(v) // 6} for v in ASCII_KEY_EVENTS],
+            'event_transfer': {'batch_store': sense_load + 56, 'single_pick': pick,
+                               'move': move, 'call': move + 2},
+            'producer': producer, 'runtime_admitted': False,
+            'limits': 'Temporary opt-in numeric-only static class; GPIO owner/readback and natural input consumption require runtime validation.'})
+    if len(candidates) > 1:
+        return None, 'ambiguous-scanners', candidates
+    return (candidates[0], 'static-candidate', rejected) if candidates else (None, 'rejected' if rejected else 'not-found', rejected)

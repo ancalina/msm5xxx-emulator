@@ -16,6 +16,10 @@ from gdb_remote import Remote
 from msm5xxx_emulator.core import FirmwareConfig, GenericMSMEmulator
 from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO
 from msm5xxx_emulator.detection import detect
+from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
+from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
+from msm5xxx_emulator.detection.input_matrix import resolve_distributed_matrix_input
+from msm5xxx_emulator.devices.input import SAMSUNG_RING32_KEY_EVENTS
 from msm5xxx_emulator.detection.arm import (
     thumb_bl_target,
     thumb_literal_value,
@@ -55,6 +59,7 @@ from msm5xxx_emulator.detection.storage import (
     find_record_amd_x16_nor,
     mapped_primary_intel_x16_nor_profile,
     primary_probe_x16_nor_profile,
+    seeded_amd_x16_nor_profile,
 )
 from msm5xxx_emulator.detection.upper_nor import (
     UPPER_FLASH_ADDRESS,
@@ -146,11 +151,64 @@ def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
         "senses", profile.get("single_key_column_sense", ())
     ))
     no_key = int(profile["no_key"])
+    low5 = profile.get("grammar") == "lg-descriptor-low5-6x5-raw-v1"
+    loop = profile.get("grammar") == "indirect-halfword-loop-six-row-v1"
+    if loop and (no_key != 31 or senses != (30, 29, 27, 23)):
+        raise ValueError("invalid detector-resolved loop senses")
+    if low5 and (no_key != 0x1F or set(senses) != {30, 29, 27, 23, 15}):
+        raise ValueError("invalid detector-resolved five-column senses")
     if (not senses or len(set(senses)) != len(senses)
-            or any(not 0 <= value <= 0x0F or value == no_key
+            or any(not 0 <= value <= (0x1F if low5 or loop else 0x0F) or value == no_key
                    for value in senses)):
         raise ValueError("invalid detector-resolved matrix senses")
     return senses
+
+
+def qemu_low5_matrix_property(
+        image: bytes, config: object, profile: dict[str, object] | None,
+) -> tuple[str | None, str | None]:
+    """Serialize an admitted scanner; native reads also gate descriptor/selector.
+
+    Temporary electrical approximation: released columns follow the firmware's
+    no-key predicate. Other reads and upper sense bits retain native backing.
+    """
+    if profile is None or profile.get("grammar") != "lg-descriptor-low5-6x5-raw-v1":
+        return None, None
+    if getattr(config, "board_status_input", None) is not None:
+        return None, "conflicting-status-profile"
+    if (profile.get("rows") != 6 or profile.get("columns") != 5
+            or profile.get("sense_bits") != 5
+            or profile.get("register") != 0x0300072C
+            or profile.get("event_sink_validation") != "validated-raw-enqueue-callsites"
+            or not profile.get("descriptor_mmio_provenance")
+            or not profile.get("timer_bridge")):
+        return None, "unclosed-scanner-profile"
+    try:
+        matrix_senses(profile)
+    except (KeyError, TypeError, ValueError):
+        return None, "invalid-sense-table"
+    descriptor = profile.get("descriptor_pointer")
+    if (type(descriptor) is not int or descriptor & 3
+            or not config.ram_base <= descriptor <= config.ram_base + config.ram_size - 0x38):
+        return None, "descriptor-outside-ram"
+    sites = []
+    for role in ("global_sense_sites", "row_sense_sites"):
+        candidates = profile.get(role)
+        if (not isinstance(candidates, (list, tuple)) or len(candidates) != 1
+                or type(candidates[0]) is not int or candidates[0] & 1):
+            return None, "ambiguous-sense-roles"
+        offset = candidates[0] - config.load_address
+        if not 0 <= offset <= min(len(image), config.flash_size) - 4:
+            return None, "sense-outside-primary-nor"
+        pointer, read = struct.unpack_from("<HH", image, offset)
+        register = pointer & 7
+        if (pointer & 0xF800 != 0x6800 or (pointer >> 6 & 31) != 0x34 // 4
+                or read != 0x8800 | register << 3 | register):
+            return None, "sense-load-shape-mismatch"
+        sites.append(candidates[0] + 2)  # Actual LDRH, not its pointer load.
+    if sites[0] == sites[1]:
+        return None, "ambiguous-sense-roles"
+    return f"matrix-low5={descriptor:x}:{sites[0]:x}:{sites[1]:x}", None
 
 
 def unicorn_state(emulator: GenericMSMEmulator) -> dict[str, int]:
@@ -280,6 +338,43 @@ def qemu_raw_nand_main_profile(
     return None, "incomplete-main-geometry-shape"
 
 
+def qemu_audio_irq_property(audio: object, config: FirmwareConfig) -> tuple[str | None, str | None]:
+    """Provisional route for owned MA2 accessors; native readback gates use."""
+    if not isinstance(audio, dict) or audio.get('static_status') != 'accepted':
+        return None, 'audio-transport-unavailable'
+    route = audio.get('irq_controller_candidate')
+    if (audio.get('family') != 'ma2' or audio.get('grammar') != 'ma2-command-v1'
+            or not isinstance(route, dict) or route.get('status') != 'candidate'
+            or route.get('profile') != 'two-bank-callback-descriptor-v1'):
+        return None, 'descriptor-class-unavailable'
+    link = route.get('callback_linkage')
+    words = route.get('words')
+    if (not isinstance(link, dict) or not isinstance(words, list) or len(words) != 7
+            or any(type(word) is not int for word in words)):
+        return None, 'callback-linkage-unavailable'
+    fields = [route.get('descriptor_address'), *words[:5],
+              route.get('dispatcher_offset'), link.get('state_address'),
+              link.get('table_address'), link.get('callback_offset')]
+    read = link.get('data_read_offset')
+    if (any(type(value) is not int or not 0 <= value <= 0xffffffff for value in fields)
+            or type(read) is not int or config.load_address != 0
+            or read not in audio.get('sites', {}).get('read_2', [])
+            or any(not 0 <= address < config.flash_size or address & 1
+                   for address in (fields[6], fields[9]))):
+        return None, 'audio-route-mapping-unverified'
+    start, end = config.ram_base, config.ram_base + config.ram_size
+    if (any(not start <= fields[index] <= end - size or fields[index] % alignment
+            for index, size, alignment in ((0, 28, 4), (4, 2, 2), (5, 2, 2),
+                                           (7, 8, 4), (8, 16, 4)))
+            or fields[1:3] != [0x03000624, 0x0300062c]
+            or not 0 < fields[3] <= 0x8000 or fields[3] & (fields[3] - 1)
+            or words[6] != 0
+            or config.rex_irq_status_address != 0x03000620
+            or config.rex_irq_enable_address != 0x03000628):
+        return None, 'audio-route-controller-unverified'
+    return 'audio-irq-route=' + ':'.join(f'{value:x}' for value in fields), None
+
+
 def qemu_audio_sites(audio: object) -> str | None:
     """Serialize detector-owned audio bus PCs for the native QEMU gate."""
     if not isinstance(audio, dict):
@@ -372,6 +467,292 @@ def qemu_audio_sites(audio: object) -> str | None:
                     for kind, port, pc in entries)
 
 
+def qemu_mapped_scan_gate_property(image: bytes, config: object,
+                                   matrix: dict) -> tuple[str | None, str | None]:
+    """Qualify provisional scan levels without assigning physical contact roles."""
+    gates = matrix.get("scan_gates")
+    if (config.load_address != 0 or not isinstance(gates, dict)
+            or gates.get("grammar") != "mapped-halfword-contact-status-gates-v1"
+            or gates.get("promotion") != "temporary-evidence-gated"
+            or gates.get("runtime_admitted") is not False
+            or gates.get("physical_role", False) is not None
+            or gates.get("default_level", False) is not None):
+        return None, "unclosed-mapped-scan-gates"
+    contract = {"contact_mask": 16, "status_mask": 2,
+                "contact_pointer_offset": 0x34, "configuration_pointer_offset": 8,
+                "status_pointer_offset": 0x24, "contact_width": 2, "status_width": 2,
+                "status_state_offset": 8, "status_set_bit_state": 0,
+                "status_clear_bit_state": 1}
+    if any(type(gates.get(k)) is not int or gates[k] != v for k, v in contract.items()):
+        return None, "invalid-mapped-gate-contract"
+    try:
+        sink = int(matrix.get("queue_sink", ""), 16)
+    except (TypeError, ValueError):
+        return None, "mapped-gate-sink-mismatch"
+    descriptor, state = gates.get("descriptor"), gates.get("scanner_state")
+    if (descriptor != matrix.get("descriptor") or type(gates.get("queue_sink")) is not int
+            or gates["queue_sink"] != sink
+            or any(type(p) is not int or p & 3
+                   or not config.ram_base <= p <= config.ram_base + config.ram_size - n
+                   for p, n in ((descriptor, 0x38), (state, 0x20)))
+            or descriptor < state + 0x20 and state < descriptor + 0x38):
+        return None, "mapped-gate-state-mismatch"
+    spans = gates.get("ram_spans")
+    if (not isinstance(spans, list) or not spans
+            or any(not isinstance(span, (list, tuple)) or len(span) != 2
+                   or any(type(value) is not int for value in span)
+                   or span[1] <= 0 or not config.ram_base <= span[0]
+                   <= config.ram_base + config.ram_size - span[1] for span in spans)):
+        return None, "mapped-gate-ram-spans-mismatch"
+    ordered = sorted(tuple(span) for span in spans)
+    if ((descriptor, 0x38) not in ordered or (state, 0x20) not in ordered
+            or any(start + size > following[0]
+                   for (start, size), following in zip(ordered, ordered[1:]))):
+        return None, "mapped-gate-ram-spans-mismatch"
+    sites = (gates.get("contact_site"), gates.get("status_site"),
+             matrix.get("presence_site"), matrix.get("sense_site"))
+    extent = min(len(image), config.flash_size)
+    if (any(type(p) is not int or p & 1 or not 2 <= p <= extent - 2 for p in sites)
+            or len(set(sites)) != 4 or not 0 <= sink <= extent - 2
+            or image[sites[0]-2:sites[0]+2] != bytes.fromhex("706b0088")
+            or image[sites[1]-2:sites[1]+2] != bytes.fromhex("406a0088")):
+        return None, "mapped-gate-site-mismatch"
+    copy = matrix.get("descriptor_copy")
+    if not isinstance(copy, dict):
+        return None, "unclosed-mapped-gate-copy"
+    rom, source, target, size = (copy.get(k) for k in
+                                ("descriptor_rom", "source", "target", "size"))
+    if (any(type(p) is not int for p in (rom, source, target, size))
+            or (rom | source | target) & 3 or size < 0x38
+            or not 0 <= source <= extent - size
+            or not config.ram_base <= target <= config.ram_base + config.ram_size - size
+            or copy.get("descriptor_ram") != descriptor
+            or not target <= descriptor <= target + size - 0x38
+            or rom != source + descriptor - target
+            or [struct.unpack_from("<I", image, rom + off)[0] for off in (8, 0x24, 0x34)]
+               != [0x0300072c, 0x03000728, 0x0300072c]):
+        return None, "unclosed-mapped-gate-copy"
+    if getattr(config, "board_status_input", None) is not None:
+        return None, "conflicting-status-profile"
+    revision, _ = qemu_board_revision_property(config)
+    ready = getattr(config, "ready_poll", None)
+    ready_property, _ = qemu_ready_poll_property(ready)
+    for address in (0x03000728, 0x0300072c):
+        if (revision and config.board_revision_register < address + 2
+                and config.board_revision_register + 4 > address):
+            return None, "mapped-gate-mmio-owner-conflict"
+        if (ready_property and not ready_property.startswith("lcd-status-poll=")
+                and any(type(ready.get(k)) is int and address <= ready[k] < address + 2
+                        for k in ("status_address", "pulse_address", "control_address"))):
+            return None, "mapped-gate-mmio-owner-conflict"
+    eeprom, _ = eeprom_gpio_profile(image, config)
+    if eeprom is None:
+        return None, "mapped-gate-eeprom-owner-missing"
+    base, data, data_mask, clock, clock_mask, direction, _ = eeprom
+    if not base <= 0x03000728 < 0x0300072e <= base + 0x20:
+        return None, "mapped-gate-eeprom-aperture-mismatch"
+    for address, mask in ((0x03000728, 2), (0x0300072c, 16)):
+        if any(base + offset == address and pins & mask
+               for offset, pins in ((data, data_mask), (clock, clock_mask), (direction, data_mask))):
+            return None, "mapped-gate-eeprom-pin-conflict"
+    # Temporary scan-enabling policy verified through ordinary numeric UI input.
+    # These levels do not identify a physical switch or its released default.
+    return (f"experimental-matrix-contact={sites[0]:x}:10,"
+            f"experimental-matrix-status={sites[1]:x}:2"), None
+
+
+def qemu_halfword_matrix_property(image: bytes, config: object,
+                                  profile: dict, *, enabled: bool = True) -> tuple[str | None, str | None]:
+    """Serialize closed classes; explicit opt-in retains raw mapped gate backing."""
+    grammar = profile.get("grammar")
+    automatic_mapped = (not enabled and grammar == "indirect-halfword-mapped-row-v1"
+                        and isinstance(profile.get("scan_gates"), dict))
+    if not enabled and not automatic_mapped and not (
+            grammar == "indirect-halfword-loop-six-row-v1"
+            and profile.get("promotion") == "temporary-evidence-gated"):
+        return None, "experimental-only-halfword-profile"
+    if grammar not in ("indirect-halfword-six-row-v1",
+                       "indirect-halfword-mapped-row-v1",
+                       "indirect-halfword-loop-six-row-v1"):
+        return None, "unsupported-halfword-grammar"
+    descriptor = profile.get("descriptor")
+    sites = (profile.get("presence_site"), profile.get("sense_site"))
+    if (type(descriptor) is not int or descriptor & 3
+            or not config.ram_base <= descriptor <= config.ram_base + config.ram_size - 0x38
+            or any(type(site) is not int or site & 1
+                   or not 0 <= site < config.flash_size - 2 for site in sites)):
+        return None, "outside-memory-map"
+    if grammar == "indirect-halfword-loop-six-row-v1":
+        if (profile.get("rows") != 6 or profile.get("columns") != 4
+                or profile.get("no_key") != 31
+                or profile.get("single_key_column_sense") != [30, 29, 27, 23]):
+            return None, "invalid-loop-row-contract"
+        if getattr(config, "board_status_input", None) is not None:
+            return None, "conflicting-status-profile"
+        contact = profile.get("contact_site")
+        all_sites = (contact, *sites)
+        if (any(type(site) is not int or site & 1 or site < 2
+                or site + 2 > min(len(image), config.flash_size)
+                for site in all_sites) or len(set(all_sites)) != 3
+                or any(image[site-2:site+2] != bytes.fromhex("686b0088")
+                       for site in all_sites)):
+            return None, "sense-load-shape-mismatch"
+        copied = profile.get("copied_descriptor")
+        copy = profile.get("descriptor_copy")
+        if (type(copied) is not int or copied & 3 or not isinstance(copy, dict)
+                or copy.get("target") != copied
+                or type(copy.get("size")) is not int or not 0x38 <= copy["size"] <= 0x100
+                or not config.ram_base <= copied <= config.ram_base + config.ram_size - copy["size"]
+                or type(copy.get("source")) is not int or copy["source"] & 3
+                or not 0 <= copy["source"] <= min(len(image), config.flash_size) - copy["size"]
+                or type(copy.get("copy_loop")) is not int or copy["copy_loop"] & 1
+                or not 0 <= copy["copy_loop"] < min(len(image), config.flash_size)):
+            return None, "unclosed-descriptor-copy"
+        if [struct.unpack_from("<I", image, copy["source"] + off)[0]
+                for off in (0, 8, 0x20, 0x34)] != [0x3000720, 0x300072c, 0x3000728, 0x300072c]:
+            return None, "descriptor-port-mismatch"
+        return f"matrix-halfword-loop={descriptor:x}:{contact:x}:{sites[0]:x}:{sites[1]:x}", None
+    value = f"matrix-halfword={descriptor:x}:{sites[0]:x}:{sites[1]:x}"
+    if grammar == "indirect-halfword-mapped-row-v1":
+        mask = profile.get("row_select_mask")
+        if (type(mask) is not int or not 0 < mask <= 0xFFFF
+                or mask.bit_count() != 7 or profile.get("rows") != 7
+                or profile.get("columns") != 4 or profile.get("no_key") != 15
+                or profile.get("single_key_column_sense") != [14, 13, 11, 7]
+                or profile.get("row_select_bits") != [bit for bit in range(16) if mask & (1 << bit)]):
+            return None, "invalid-mapped-row-contract"
+        if (sites[0] == sites[1] or any(site < 2 or site + 2 > len(image)
+                or image[site - 2:site + 2] != bytes.fromhex("706b0088") for site in sites)):
+            return None, "sense-load-shape-mismatch"
+        value += f":{mask:x}"
+        if automatic_mapped:
+            gates, reason = qemu_mapped_scan_gate_property(image, config, profile)
+            if gates is None:
+                return None, reason
+            value += "," + gates
+    return value, None
+
+
+def qemu_distributed_matrix_property(image: bytes, config: object,
+                                     profile: dict) -> tuple[str | None, str | None]:
+    """Temporary numeric-only byte class; GPIO ownership stays with native devices."""
+    if (profile.get("grammar") != "distributed-six-byte-numeric-v1"
+            or config.load_address != 0 or profile.get("rows") != 6
+            or profile.get("columns") != 4 or profile.get("register_width") != 1
+            or profile.get("no_key") != 15
+            or profile.get("single_key_column_sense") != [14, 13, 11, 7]):
+        return None, "unsupported-distributed-contract"
+    ports = profile.get("gpio_ports")
+    if (not isinstance(ports, list) or len(ports) != 3
+            or any(not isinstance(port, dict)
+                   or type(port.get("address")) is not int
+                   or type(port.get("mask")) is not int
+                   or not 0 < port["mask"] <= 255 for port in ports)):
+        return None, "invalid-gpio-ports"
+    base = ports[0]["address"] - 12
+    address = profile.get("register")
+    masks = [port["mask"] for port in ports]
+    if (not 0x03000000 <= base <= 0x03001000 - 53 or base & 31
+            or type(address) is not int or address != base + 52
+            or [p["address"] for p in ports] != [base + n for n in (12, 8, 4)]):
+        return None, "invalid-gpio-ports"
+    rows = []
+    for index, mask in enumerate(masks):
+        for bit in range(8):
+            if mask & (1 << bit):
+                values = masks.copy()
+                values[index] &= ~(1 << bit)
+                rows.append(values)
+    if (len(rows) != 6 or profile.get("row_values") != rows
+            or profile.get("global_values") != [0, 0, 0]):
+        return None, "invalid-gpio-row-order"
+    producer = profile.get("producer", {})
+    if (not isinstance(producer, dict)
+            or producer.get("family") != "distributed-filtered-byte-ring32-v1"
+            or producer.get("slots") != 32 or producer.get("wrap_mask") != 31):
+        return None, "unclosed-ring-profile"
+    spans = [(profile.get("scanner_state"), 0xA),
+             (profile.get("batch_state"), 0xE),
+             (producer.get("state"), 0x34), (producer.get("ring"), 34)]
+    spans += [(port.get("shadow"), 1) for port in ports]
+    if (any(type(start) is not int or not config.ram_base <= start
+            <= config.ram_base + config.ram_size - size for start, size in spans)
+            or len({port["shadow"] for port in ports}) != 3):
+        return None, "state-outside-ram"
+    sites = (profile.get("presence_site"), profile.get("sense_site"))
+    if (any(type(site) is not int or site & 1 or not 2 <= site
+            <= min(len(image), config.flash_size) - 2 for site in sites)
+            or sites[0] == sites[1]):
+        return None, "sense-outside-primary-nor"
+    for site, instruction in zip(sites, (b"\x01\x79", b"\x00\x79")):
+        if (image[site:site + 2] != instruction
+                or thumb_literal_value(image, site - 2, 0) != address - 4):
+            return None, "sense-load-shape-mismatch"
+    status = getattr(config, "board_status_input", None)
+    if status is not None and status.address in [address] + [p["address"] for p in ports]:
+        return None, "conflicting-status-profile"
+    fields = [address, *sites]
+    for port in ports:
+        fields.extend((port["address"], port["mask"]))
+    return "matrix-gpio=" + ":".join(f"{value:x}" for value in fields), None
+
+
+def qemu_halfword_status_property(image: bytes, load_address: int,
+                                  matrix: dict | None, level: int | None,
+                                  existing_status: object = None
+                                  ) -> tuple[str | None, str | None]:
+    """Use the closed loop's provisional scan level; no physical fold claim."""
+    if level is None:
+        if not (isinstance(matrix, dict)
+                and matrix.get("grammar") == "indirect-halfword-loop-six-row-v1"
+                and matrix.get("promotion") == "temporary-evidence-gated"):
+            return None, None
+        # Provisional full-scan level, verified through public-key UI response.
+        # Its physical contact role remains unassigned; explicit 0 is preserved.
+        level = 16
+    if type(level) is not int or level not in (0, 4, 16):
+        return None, "invalid-level"
+    if existing_status is not None:
+        return None, "conflicting-status-profile"
+    if not isinstance(matrix, dict) or matrix.get("grammar") not in (
+            "indirect-halfword-six-row-v1", "indirect-halfword-loop-six-row-v1"):
+        return None, "halfword-matrix-not-admitted"
+    loop = matrix["grammar"] == "indirect-halfword-loop-six-row-v1"
+    mask = 16 if loop else 4
+    if level not in (0, mask):
+        return None, "invalid-level"
+    profile, status, _ = resolve_indirect_board_status(image, load_address)
+    if profile is None:
+        return None, status
+    try:
+        sink = int(matrix.get("queue_sink", ""), 16)
+    except (ValueError, TypeError):
+        return None, "matrix-status-mismatch"
+    descriptor = matrix.get("descriptor")
+    if (not isinstance(profile, dict) or type(descriptor) is not int
+            or descriptor & 3 or not 0x1000000 <= descriptor <= 0x2000000-0x38
+            or profile.get("descriptor") != descriptor
+            or type(profile.get("descriptor")) is not int
+            or profile.get("queue_sink") != sink
+            or type(profile.get("queue_sink")) is not int):
+        return None, "matrix-status-mismatch"
+    if not loop and profile.get("grammar") not in (None, "indirect-halfword-status-events-v1"):
+        return None, "matrix-status-mismatch"
+    if loop and (profile.get("grammar") != "indirect-halfword-loop-status-events-v1"
+                 or type(profile.get("mask")) is not int or profile["mask"] != mask
+                 or type(profile.get("width")) is not int or profile["width"] != 2
+                 or type(profile.get("pointer_offset")) is not int or profile["pointer_offset"] != 4
+                 or profile.get("promotion") != "temporary-evidence-gated"
+                 or profile.get("runtime_admitted") is not False
+                 or profile.get("default_level") is not None
+                 or profile.get("physical_role") is not None
+                 or not 0 <= sink <= len(image)-4):
+        return None, "unsupported-loop-status-contract"
+    # Temporary GPIO class; native verifies live descriptor+4 before each read.
+    return (f"board-status-input=3000720:{mask:x}:{level:x},"
+            f"board-status-descriptor={profile['descriptor']:x}"), None
+
+
 def qemu_ready_poll_property(
         profile: object) -> tuple[str | None, str | None]:
     """Serialize only recognized, unambiguous ready-poll contracts."""
@@ -379,6 +760,70 @@ def qemu_ready_poll_property(
         return None, None
     if not isinstance(profile, dict):
         return None, "malformed-profile"
+    if profile.get("signature") == "thumb-byte-ready-pulse-variants-v1":
+        if profile.get("admission") != "temporary-evidence-gated":
+            return None, "unsupported-admission"
+        variants = profile.get("variants")
+        if not isinstance(variants, list) or not 2 <= len(variants) <= READY_POLL_SITE_LIMIT:
+            return None, "malformed-variants"
+        fields = ("status_address", "mask", "pulse_address")
+        common = tuple(profile.get(field) for field in fields)
+        if (any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF
+                for value in common)
+                or not 0x03000000 <= common[0] < 0x04000000
+                or not 0x03000000 <= common[2] < 0x04000000
+                or common[0] == common[2] or not 0 < common[1] <= 0xFF
+                or common[1] & (common[1] - 1)):
+            return None, "malformed-fields"
+        sites = []
+        entries_seen = set()
+        owned_pcs = set()
+        for variant in variants:
+            if (not isinstance(variant, dict) or variant.get("signature") not in (
+                    "thumb-lsrs-bhs-pulse-v1",
+                    "thumb-lsrs-bcc-pulse-rotated-v1",
+                    "thumb-uart-csr-sr-rx-empty-v1")):
+                return None, "unsupported-variant"
+            if tuple(variant.get(field) for field in fields) != common:
+                return None, "variant-contract-mismatch"
+            argument, reason = qemu_ready_poll_property(variant)
+            if reason is not None or argument is None:
+                return None, "variant-" + (reason or "malformed-profile")
+            if variant["signature"] == "thumb-lsrs-bhs-pulse-v1":
+                offsets = [2, 0xC, 0x10]
+            else:
+                offsets = [variant[field] for field in (
+                    "status_read_pc_offset", "pulse_set_pc_offset",
+                    "pulse_clear_pc_offset")]
+                if variant["signature"] == "thumb-uart-csr-sr-rx-empty-v1":
+                    offsets.append(variant["uart_rx_empty_read_pc_offset"])
+                    if "uart_rx_empty_frame_read_pc_offset" in variant:
+                        offsets.append(variant["uart_rx_empty_frame_read_pc_offset"])
+            if (any(offset & 1 or offset > 0x1000 for offset in offsets)
+                    or len(set(offsets)) != len(offsets)
+                    or offsets[1] >= offsets[2]
+                    or (len(offsets) > 3 and
+                        (common[1] != 8 or offsets[3] <= offsets[2]))
+                    or (len(offsets) > 4 and offsets[4] <= offsets[3])):
+                return None, "malformed-variant-offsets"
+            for entry in variant["entries"]:
+                if entry in entries_seen:
+                    return None, "duplicate-variant-entry"
+                pcs = {entry + offset for offset in offsets}
+                if max(pcs) > 0xFFFFFFFF:
+                    return None, "wrapped-variant-pc"
+                if pcs & owned_pcs:
+                    return None, "overlapping-variant-sites"
+                entries_seen.add(entry)
+                owned_pcs.update(pcs)
+                # QEMU -M encodes literal value commas as doubled commas.
+                sites.append(",,".join(f"{value:x}" for value in [entry, *offsets]))
+                if len(sites) > READY_POLL_SITE_LIMIT:
+                    return None, "entry-count-limit"
+        if len(sites) < 2:
+            return None, "ambiguous-entry-count"
+        prefix = ":".join(f"{value:x}" for value in common)
+        return f"ready-poll-sites={prefix}:" + ";".join(sites), None
     entries = profile.get("entries")
     if not isinstance(entries, list):
         return None, "malformed-entries"
@@ -922,11 +1367,13 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
     )
     if not enabled and not automatic:
         return None
+    fb0 = signature == "static-fb0-controller-callback-v1"
     overlay = signature == "static-c80-overlay-controller-callback-v1"
     required = {
         "signature": signature,
         "controller_class": (
             "legacy-c80-three-bank-group14-v1" if overlay else
+            "legacy-fb0-index1b-delta5-controller-candidate-v1" if fb0 else
             "legacy-c80-index1e-delta5-controller-candidate-v1"
         ),
         "accepted": True,
@@ -939,6 +1386,7 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
     if (signature not in (
             "static-c80-controller-callback-v1",
             "static-c80-overlay-controller-callback-v1",
+            "static-fb0-controller-callback-v1",
     ) or any(candidate.get(key) != value
              for key, value in required.items())):
         return None
@@ -980,7 +1428,8 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
             or any(getattr(config, field, None) is not None
                    for field in direct_fields)
             or getattr(config, "rex_irq_mask", 0)
-            or status != 0x03000C80 or enable != status + 0x14
+            or status != (0x03000FB0 if fb0 else 0x03000C80)
+            or enable != status + 0x14
             or not ram_base <= vector_target <= ram_end - 4
             or any(address & 3 or not ram_base <= address <= ram_end - 4
                    for address in (handler_slot, callback_slot))
@@ -1046,8 +1495,23 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
                 or (runtime_wrapper, runtime_handler, runtime_callback)
                    != (wrapper, handler, callback)
         )
+        if fb0:
+            class_invalid |= (
+                candidate.get("promotion") != "experimental-only"
+                or candidate.get("status_bank_count") != 2
+                or candidate.get("group_row_size") != 10
+                or candidate.get("pending_read_semantics") != "latched-read"
+                or candidate.get("pending_ack_semantics") != "write-one-to-clear"
+                or candidate.get("time_tick_status_bank") != status
+                or candidate.get("time_tick_clear_bank") != status
+                or candidate.get("time_tick_mask") != 0x0200
+                or candidate.get("time_tick_control_address") != 0x030006E0
+                or handler_size != 0x182
+            )
     if common_invalid or class_invalid:
         return None
+    # The experimental FB0 class shares the provisional 5-unit cadence;
+    # physical timer frequency is not inferred from the callback alone.
     values = (
         status, enable, 0x0200, 5_000_000,
         vector_target, runtime_wrapper, handler_slot, runtime_handler,
@@ -1480,13 +1944,30 @@ class Transport:
                  audio_pcm: bool = True,
                  icount_shift: int = 6,
                  observe_uis_idle: bool = True,
-                 observe_rex_idle_candidate: bool = False) -> None:
+                 observe_rex_idle_candidate: bool = False,
+                 experimental_halfword: bool = False,
+                 experimental_status_level: int | None = None,
+                 experimental_audio_refill: bool = True,
+                 experimental_low5: bool = False,
+                 experimental_distributed: bool = True) -> None:
+        if type(experimental_audio_refill) is not bool:
+            raise ValueError("invalid experimental audio refill setting")
         if not 0 <= icount_shift <= 10:
             raise ValueError("invalid QEMU icount shift")
         if type(observe_uis_idle) is not bool:
             raise ValueError("invalid UI-idle observer setting")
         if type(observe_rex_idle_candidate) is not bool:
             raise ValueError("invalid REX-idle observer setting")
+        if type(experimental_halfword) is not bool:
+            raise ValueError("invalid halfword matrix setting")
+        if type(experimental_low5) is not bool:
+            raise ValueError("invalid five-column matrix setting")
+        if type(experimental_distributed) is not bool:
+            raise ValueError("invalid distributed matrix setting")
+        if (experimental_status_level is not None and
+                (not experimental_halfword or type(experimental_status_level) is not int
+                 or experimental_status_level not in (0, 4, 16))):
+            raise ValueError("status level requires halfword opt-in and integer 0, 4 or 16")
         self.config = config if config is not None else detect(firmware)
         state_dir = qemu_state_directory(state_dir, self.config)
         self.temporary = tempfile.TemporaryDirectory(prefix="msm5xxx-qemu-gui-")
@@ -1734,6 +2215,82 @@ class Transport:
                 )
                 self.matrix_input_profile = direct
                 self.matrix_input_sideband_producer = sideband
+        if experimental_low5:
+            low5_property, low5_reject = qemu_low5_matrix_property(
+                detector_image, self.config, direct
+            )
+            if low5_property is not None:
+                machine += f",{low5_property}"
+                self.matrix_input_profile = direct
+                self.config.detection_notes.append(
+                    "QEMU five-column matrix temporary: descriptor/selector-gated electrical input"
+                )
+            elif low5_reject is not None:
+                self.config.detection_notes.append(
+                    f"QEMU five-column matrix rejected: {low5_reject}; native fallback retained"
+                )
+        if experimental_halfword or direct is None:
+            halfword, status, _ = resolve_indirect_matrix_input(
+                detector_image, self.config.load_address
+            )
+            if halfword is not None and direct is None:
+                halfword_property, status = qemu_halfword_matrix_property(
+                    detector_image, self.config, halfword, enabled=experimental_halfword
+                )
+                if halfword_property is not None:
+                    machine += f",{halfword_property}"
+                    self.matrix_input_profile = halfword
+                    self.config.detection_notes.append(
+                        "QEMU halfword matrix temporary: static scanner; live descriptor gates"
+                    )
+                    if not experimental_halfword and halfword.get("scan_gates") is not None:
+                        self.config.detection_notes.append(
+                            "QEMU mapped input provisional: scan-enabled contact/status levels; "
+                            "physical roles unassigned; live descriptor/read-site gates"
+                        )
+            elif halfword is not None:
+                status = "conflicting-direct-profile"
+            if self.matrix_input_profile is not halfword or halfword is None:
+                self.config.detection_notes.append(
+                    f"QEMU halfword matrix rejected: {status}; native fallback retained"
+                )
+        if experimental_distributed:
+            distributed, status, _ = resolve_distributed_matrix_input(
+                detector_image, self.config.load_address
+            )
+            if distributed is not None and direct is None and self.matrix_input_profile is None:
+                distributed_property, status = qemu_distributed_matrix_property(
+                    detector_image, self.config, distributed
+                )
+                if distributed_property is not None:
+                    machine += f",{distributed_property}"
+                    self.matrix_input_profile = distributed
+                    self.config.detection_notes.append(
+                        "QEMU distributed matrix temporary: numeric-only; live GPIO selectors"
+                    )
+            elif distributed is not None:
+                status = "conflicting-matrix-profile"
+            if distributed is None or self.matrix_input_profile is not distributed:
+                self.config.detection_notes.append(
+                    f"QEMU distributed matrix rejected: {status}; native fallback retained"
+                )
+        status_property, status_reject = qemu_halfword_status_property(
+            detector_image, self.config.load_address, self.matrix_input_profile,
+            experimental_status_level, board_status
+        )
+        if status_property is not None:
+            machine += f",{status_property}"
+            self.config.detection_notes.append(
+                "QEMU status input provisional: scan-enabled electrical level; "
+                "live descriptor gate; physical role unassigned"
+                if experimental_status_level is None else
+                "QEMU status input experimental: explicit electrical level; "
+                "live descriptor gate; physical role unassigned"
+            )
+        elif status_reject is not None:
+            self.config.detection_notes.append(
+                f"QEMU status input rejected: {status_reject}; native fallback retained"
+            )
         audio = self.config.audio_transport
         audio_family = audio.get("family") if audio is not None else None
         audio_grammar = audio.get("grammar") if audio is not None else None
@@ -1751,6 +2308,13 @@ class Transport:
                 )
                 self.audio_stream_enabled = True
                 self.audio_stream_status = "pending"
+                if experimental_audio_refill:
+                    irq_property, irq_reject = qemu_audio_irq_property(audio, self.config)
+                    if irq_property is not None:
+                        machine += ',' + irq_property
+                    self.config.detection_notes.append(
+                        'QEMU audio refill provisional: half-full/empty occupancy approximation; live route gate'
+                        if irq_property else f'QEMU audio refill rejected: {irq_reject}; native fallback retained')
                 if not audio_pcm:
                     machine += ",audio-pcm=off"
                 elif (audio_listener is not None
@@ -1844,7 +2408,8 @@ class Transport:
             detector_image, self.config.load_address, self.config.flash_size,
             0, self.config.ram_base, self.config.ram_size,
         )
-        if intel_profile is not None and amd_profile is not None:
+        direct_protocol_conflict = intel_profile is not None and amd_profile is not None
+        if direct_protocol_conflict:
             intel_profile = None
             amd_profile = None
             self.config.detection_notes.append(
@@ -1864,6 +2429,24 @@ class Transport:
             self.config.ram_image_offset, self.config.ram_image_size,
             self.config.ram_size,
         )
+        if not direct_protocol_conflict and all(profile is None for profile in (
+                primary_profile, probe_profile, intel_profile, amd_profile,
+                mapped_primary_profile)):
+            seeded_profile, seeded_reject = seeded_amd_x16_nor_profile(
+                detector_image, self.config.load_address, self.config.flash_size,
+                self.config.ram_base, self.config.ram_size,
+            )
+            if seeded_profile is not None:
+                probe_profile = seeded_profile
+                self.config.detection_notes.append(
+                    "temporary seeded x16 NOR descriptor/driver class; "
+                    "byte-sector geometry and read/write context verified"
+                )
+            elif seeded_reject is not None:
+                self.config.detection_notes.append(
+                    f"seeded x16 NOR detector rejected: {seeded_reject}; "
+                    "native fallback retained"
+                )
         primary_profile, primary_regions, profile_reject = (
             select_primary_x16_nor_profile(primary_profile, probe_profile)
         )
@@ -2430,7 +3013,7 @@ class Transport:
                     "-nographic", "-monitor", "none", "-serial", "none",
                     "-S", "-gdb", "chardev:gdb",
                     "-icount", f"shift={icount_shift},align=on,sleep=on",
-                    "-no-reboot", "-no-shutdown",
+                    "-no-shutdown",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=self.stderr,
@@ -3149,9 +3732,59 @@ class Transport:
                 self._audio_ready.notify()
             return record
 
+    def _matrix_input_position(
+            self, bit: int, event_code: int | None,
+    ) -> tuple[int, int, int] | None:
+        profile = self.matrix_input_profile
+        if profile is None or profile.get("grammar") not in (
+                "indirect-halfword-six-row-v1", "indirect-halfword-mapped-row-v1",
+                "indirect-halfword-loop-six-row-v1",
+                "distributed-six-byte-numeric-v1"):
+            return self.decoder._direct_matrix_position(bit, event_code)
+        mappings = profile.get("provisional_mappings")
+        confirm = mappings.get(5) if isinstance(mappings, dict) else None
+        functional_confirm = (
+            profile["grammar"] == "indirect-halfword-loop-six-row-v1"
+            and type(bit) is int and bit == 5
+            and profile.get("ok_mapping_status") == "accepted-provisional"
+            and isinstance(confirm, dict)
+            and confirm.get("rule") == "same-image-loop-functional-confirm-v1"
+            and confirm.get("semantic_status") == "temporary-evidence-gated-provisional"
+            and confirm.get("functional_only") is True
+            and type(confirm.get("event")) is int and confirm["event"] == 0x53
+        )
+        event = (confirm["event"] if functional_confirm else
+                 SAMSUNG_RING32_KEY_EVENTS.get(bit)) if event_code is None else event_code
+        if (profile["grammar"] in ("indirect-halfword-mapped-row-v1", "distributed-six-byte-numeric-v1",
+                                  "indirect-halfword-loop-six-row-v1")
+                and (type(event) is not int or event not in b"123456789*0#")):
+            if type(event) is not int or not functional_confirm or event != confirm["event"]:
+                return None
+            events = profile.get("event_codes", ())
+            tokens = [cell for cell in profile["token_cells"] if cell.get("token") == "O"]
+            if (not isinstance(events, (list, tuple)) or len(events) != 24
+                    or events.count(event) != 1 or len(tokens) != 1):
+                return None
+            index = events.index(event)
+            if tokens[0] != {"token": "O", "event": event,
+                             "row": index % 6, "column": index // 6}:
+                return None
+        cells = [cell for cell in profile["token_cells"] if cell["event"] == event]
+        # No table-order fallback or ambiguous semantic aliases.
+        if len(cells) != 1:
+            return None
+        cell = cells[0]
+        return cell["event"], cell["row"], cell["column"]
+
     def _sideband_input_producer(
             self, bit: int, event_code: int | None,
     ) -> dict[str, object] | None:
+        if (self.matrix_input_profile is not None and
+                self.matrix_input_profile.get("grammar") in (
+                    "indirect-halfword-six-row-v1", "indirect-halfword-mapped-row-v1",
+                "indirect-halfword-loop-six-row-v1",
+                    "distributed-six-byte-numeric-v1")):
+            return None
         producer = self.decoder._direct_sideband_producer(bit, event_code)
         return (producer if producer == self.matrix_input_sideband_producer
                 else None)
@@ -3183,7 +3816,7 @@ class Transport:
         profile = self.matrix_input_profile
         return (profile is not None and
                 (self._sideband_input_producer(bit, event_code) is not None
-                 or self.decoder._direct_matrix_position(bit, event_code)
+                 or self._matrix_input_position(bit, event_code)
                  is not None))
 
     def set_key(self, bit: int, pressed: bool,
@@ -3200,7 +3833,7 @@ class Transport:
                 )
                 return False
             sideband = self._sideband_input_producer(bit, event_code)
-            position = self.decoder._direct_matrix_position(bit, event_code)
+            position = self._matrix_input_position(bit, event_code)
             if sideband is not None:
                 packet = sideband_input_command(sideband, True)
             elif position is not None:

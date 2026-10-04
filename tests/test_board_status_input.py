@@ -107,9 +107,46 @@ class BoardStatusInputTests(unittest.TestCase):
         uc.mem_write(0x03000670, b"\x03")
         emulator._refresh_board_status_input(uc)
         self.assertEqual(uc.mem_read(0x03000670, 1), b"\x0b")
+
         uc.mem_write(0x03000670, b"\x03")
         emulator._refresh_board_status_input(uc, 0x03000670, 1)
         self.assertEqual(uc.mem_read(0x03000670, 1), b"\x0b")
+
+    def test_and_flags_class_relocated_and_mutations(self) -> None:
+        for start, reg in ((0x100, 0), (0x202, 1)):
+            image = bytearray(b"\xff" * 0x800)
+            def words(offset: int, *values: int) -> None:
+                struct.pack_into("<" + "H" * len(values), image,
+                                 start + offset, *values)
+            def literal(offset: int, register: int, pool: int, value: int) -> None:
+                delta = start + pool - ((start + offset + 4) & ~3)
+                words(offset, 0x4800 | register << 8 | delta // 4)
+                struct.pack_into("<I", image, start + pool, value)
+            pool = 0x180 - (start & 3)
+            words(0, 0xB5F0)
+            literal(2, 0, pool, 0x03000670)
+            words(4, 0x7800, 0x2308, 0x4018)
+            literal(10, 4, pool + 4, 0x01001000)
+            words(12, 0xD010)  # BEQ clear path at +0x30.
+            words(0x2A, 0x2000, 0x7220, 0xE004)
+            words(0x30, 0x2700, 0x2001)
+            literal(0x34, 1, pool + 8, 0x01002000)
+            words(0x36, 0x7220, 0x7008)
+            for offset, field, threshold in ((0x40, 6, 1), (0x50, 7, 2)):
+                words(offset, 0x7820 | field << 6 | reg,
+                      0x3001 | reg << 8, 0x0600 | reg << 3 | reg,
+                      0x0E00 | reg << 3 | reg, 0x7020 | field << 6 | reg,
+                      0x2800 | reg << 8 | threshold)
+            words(0x60, 0x255F)
+            words(0x70, 0x1C28, 0xF000, 0xF805)  # Shared event call.
+            words(0x90, 0x2560, 0xE7ED, 0x1C28, 0xBCF0, 0xBC08, 0x4718)
+            self.assertEqual(find_board_status_input(image),
+                             BoardStatusInput(0x03000670, 8, 8))
+            for offset in (8, 12, 0x2C, 0x36, 0x4A, 0x5A, 0x60, 0x70, 0x90, 0x96):
+                broken = image.copy()
+                broken[start + offset:start + offset + 2] = b"\x00\x00"
+                with self.subTest(start=start, offset=offset):
+                    self.assertIsNone(find_board_status_input(broken))
 
 
 if __name__ == "__main__":

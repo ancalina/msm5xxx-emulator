@@ -226,6 +226,15 @@ typedef enum MSM5xxxMA2OutputKind {
     MSM5XXX_MA2_OUTPUT_END,
 } MSM5xxxMA2OutputKind;
 
+typedef enum MSM5xxxMA2UnhandledReason {
+    MSM5XXX_MA2_UNHANDLED_NONE = 0,
+    MSM5XXX_MA2_UNHANDLED_VOICE_LOOKUP_MISS,
+    MSM5XXX_MA2_UNHANDLED_UNASSIGNED_NOTE,
+    MSM5XXX_MA2_UNHANDLED_CONTROL,
+    MSM5XXX_MA2_UNHANDLED_SYSEX,
+    MSM5XXX_MA2_UNHANDLED_UNSUPPORTED_EVENT,
+} MSM5xxxMA2UnhandledReason;
+
 typedef struct MSM5xxxMA2Output {
     MSM5xxxMA2OutputKind kind;
     uint64_t timestamp_ns;
@@ -234,6 +243,7 @@ typedef struct MSM5xxxMA2Output {
     uint8_t channel;
     uint8_t note;
     MSM5xxxMA2CompactEvent event;
+    MSM5xxxMA2UnhandledReason unhandled_reason;
 } MSM5xxxMA2Output;
 
 /*

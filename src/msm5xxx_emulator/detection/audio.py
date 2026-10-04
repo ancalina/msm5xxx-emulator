@@ -6,6 +6,7 @@ import re
 import struct
 
 from .arm import thumb_bl_target
+from .audio_irq import find_audio_irq_candidate
 
 
 _STRONG_MARKERS = {
@@ -284,6 +285,8 @@ def find_audio_transport(image: bytes) -> dict[str, object]:
                    for site in sites)
         },
         "block_write_offsets": selected["block_write_offsets"],
+        **({"irq_controller_candidate": find_audio_irq_candidate(image)}
+           if family == "ma2" else {}),
         **({"aperture_write_sites": selected["aperture_write_sites"]}
            if family == "ma5" else {}),
     }

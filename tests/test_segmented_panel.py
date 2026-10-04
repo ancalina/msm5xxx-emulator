@@ -58,6 +58,32 @@ def check_protocol():
 
 
 class SegmentedPanelTests(unittest.TestCase):
+    def test_complete_reinitialization_requires_exact_stream_and_admitted_ram(self):
+        from msm5xxx_emulator.devices.display.segmented_panel import REINITIALIZE
+        setup = commands(REINITIALIZE)
+        def replay(events):
+            panel = SegmentedPanel(PORT)
+            for _, size, address, value in events:
+                panel.write(address, size, value)
+            return panel
+        self.assertIsNone(replay(setup).scanout_snapshot())
+        panel = replay(full() + setup)
+        self.assertIsNotNone(panel.snapshot())
+        self.assertEqual(panel.reason, 'complete paired-class reinitialization')
+        # A fresh rectangle updates retained RAM after setup, with no stale axes.
+        for _, size, address, value in commands([0x43, 0, 0, 0x42, 6, 6]) + [(1, 2, DATA, 0xffff)]:
+            panel.write(address, size, value)
+        self.assertEqual(panel.ram[0, 6], 0xffff)
+        for index in range(len(setup)):
+            broken = setup.copy()
+            broken[index] = (1, 2, PORT, 0x99)
+            self.assertIsNone(replay(full() + broken).scanout_snapshot(), index)
+        for tail in (setup[:-1], setup[:10] + [(1, 2, DATA, 0)] + setup[10:],
+                     setup[:10] + [(1, 1, PORT, setup[10][3])] + setup[11:]):
+            self.assertIsNone(replay(full() + tail).scanout_snapshot())
+        foreign = [(1, 2, 0x02000000, 0x99)]
+        self.assertIsNotNone(replay(full() + setup[:10] + foreign + setup[10:]).snapshot())
+
     def test_admission_rectangles_power_and_recovery(self):
         check_protocol()
 

@@ -25,7 +25,7 @@ from qemu_transport import (  # noqa: E402
     AUDIO_STATUS_NATIVE, AUDIO_STATUS_OVERFLOW, AUDIO_STATUS_REJECTED,
     AUDIO_STATUS_RESET, AUDIO_TIMING_TELEMETRY,
     AUDIO_WRITE, LCD_WRITE, TELEMETRY, Transport,
-    bounded_audio_socket_pair, qemu_audio_sites,
+    bounded_audio_socket_pair, qemu_audio_sites, qemu_audio_irq_property,
 )
 
 ANDROID_RUNTIME = (
@@ -35,6 +35,34 @@ ANDROID_RUNTIME = (
 
 
 class QEMUAudioTransportTests(unittest.TestCase):
+    def test_irq_route_requires_owned_read_and_mapped_descriptor(self):
+        from copy import deepcopy
+        audio = dict(static_status='accepted', family='ma2', grammar='ma2-command-v1',
+                     sites={'read_2': [0x120]}, irq_controller_candidate={
+                         'status': 'candidate', 'profile': 'two-bank-callback-descriptor-v1',
+                         'descriptor_address': 0x1000100,
+                         'words': [0x3000624, 0x300062c, 2, 0x1000200, 0x1000202, 0, 0],
+                         'dispatcher_offset': 0x200,
+                         'callback_linkage': {'state_address': 0x1000300,
+                                              'table_address': 0x1000400,
+                                              'callback_offset': 0x300,
+                                              'data_read_offset': 0x120}})
+        config = SimpleNamespace(load_address=0, flash_size=0x1000000,
+                                 ram_base=0x1000000, ram_size=0x800000,
+                                 rex_irq_status_address=0x3000620,
+                                 rex_irq_enable_address=0x3000628)
+        value, reason = qemu_audio_irq_property(audio, config)
+        self.assertIsNone(reason)
+        self.assertEqual(value, 'audio-irq-route=1000100:3000624:300062c:2:1000200:1000202:200:1000300:1000400:300')
+        bad = deepcopy(audio)
+        bad['sites']['read_2'] = []
+        self.assertIsNone(qemu_audio_irq_property(bad, config)[0])
+        bad = deepcopy(audio)
+        bad['irq_controller_candidate']['descriptor_address'] = 0x17ffff0
+        self.assertIsNone(qemu_audio_irq_property(bad, config)[0])
+        config.load_address = 0x400000
+        self.assertIsNone(qemu_audio_irq_property(audio, config)[0])
+
     @staticmethod
     def native_transport() -> Transport:
         transport = object.__new__(Transport)

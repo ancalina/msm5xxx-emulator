@@ -12,6 +12,11 @@ from src.msm5xxx_emulator.detection.input_matrix import (
     SAMSUNG_DUAL_PLANE_RING32,
     SAMSUNG_RING32,
     _same_image_keyemu_ok_mapping,
+    _same_image_ring32_confirm_mapping,
+    _SAMSUNG_CONFIRM_CONVERTER,
+    _SAMSUNG_CONFIRM_STATE_CONVERTER,
+    _SAMSUNG_CONFIRM_PRESS,
+    _SAMSUNG_CONFIRM_MESSAGE_SINK,
     _samsung_consumer_route_metadata,
     _samsung_raw_saved_consumer_metadata,
     classify_matrix_event_sink,
@@ -106,6 +111,249 @@ class DirectInputMatrixTests(unittest.TestCase):
         self.assertEqual(mapping[5]["event"], 0x53)
         profile["event_codes"].append(0x53)
         self.assertEqual(_same_image_keyemu_ok_mapping(profile, semantics), {})
+
+    def test_ring32_confirm_mapping_requires_complete_paired_consumer(self) -> None:
+        def fixture(shape: str, relocation: int = 0, load_address: int = 0x100000):
+            image = bytearray(b"\xff" * 0x1400)
+            call, converter, press, sink, dequeue = (
+                position + relocation
+                for position in (0x200, 0x700, 0xA00, 0xB00, 0xC00)
+            )
+            raw = call - 0x60
+
+            def bl(at: int, target: int) -> None:
+                displacement = target - at - 4
+                struct.pack_into(
+                    "<2H", image, at,
+                    0xF000 | (displacement >> 12 & 0x7FF),
+                    0xF800 | (displacement >> 1 & 0x7FF),
+                )
+
+            def branch(at: int, target: int, opcode: int) -> None:
+                struct.pack_into("<H", image, at,
+                                 opcode | ((target - at - 4) // 2 & 0xFF))
+
+            image[converter:converter + len(_SAMSUNG_CONFIRM_CONVERTER)] = _SAMSUNG_CONFIRM_CONVERTER
+            image[press:press + len(_SAMSUNG_CONFIRM_PRESS)] = _SAMSUNG_CONFIRM_PRESS
+            image[sink:sink + len(_SAMSUNG_CONFIRM_MESSAGE_SINK)] = _SAMSUNG_CONFIRM_MESSAGE_SINK
+            bl(call, converter)
+            bl(raw, dequeue)
+            struct.pack_into("<H", image, raw + 4, 0x2800)
+            branch(raw + 6, call + 0x70, 0xD000)
+            if shape == "valid-event-timestamp":
+                struct.pack_into("<H", image, raw + 8, 0x28FF)
+                raw_guard = raw + 0xA
+                image[call + 4:call + 0xA] = bytes.fromhex("0123071cd842")
+                branch(call + 0xA, call + 0x44, 0xD000)
+                struct.pack_into("<H", image, call + 0xC, 0x4800)
+                bl(call + 0xE, 0xD00)
+                struct.pack_into("<H", image, call + 0x12, 0x1C38)
+                press_call = call + 0x14
+            else:
+                struct.pack_into("<2H", image, raw + 8, 0x4D00, 0x28FF)
+                raw_guard = raw + 0xC
+                image[call + 4:call + 8] = bytes.fromhex("071cbf28")
+                branch(call + 8, call + 0x10, 0xD100)
+                struct.pack_into("<H", image, call + 0xA, 0x4800)
+                bl(call + 0xC, 0xD00)
+                struct.pack_into("<H", image, call + 0x10, 0x1C38)
+                press_call = call + 0x12
+            branch(raw_guard, call, 0xD100)
+            bl(press_call, press)
+            bl(press + 0x10, sink)
+            struct.pack_into("<2I", image, sink + 0x44,
+                             0x01003000, 0x01004000)
+            profile = {
+                "event_sink_family": SAMSUNG_RING32,
+                "raw_ring": 0x01002000,
+                "raw_dequeue": load_address + dequeue,
+                "raw_consumer_evidence": "samsung-byte-ring32-r0-receiver-v1",
+                "event_codes": [*b"123456789*0#", 0x53, 0x54, 0x55,
+                                0x5B, 0x63, 0x64, 0x65, 0x66],
+            }
+            return image, profile, load_address, bl, {
+                "call": call, "raw": raw, "dequeue": dequeue,
+                "converter": converter, "raw_guard": raw_guard,
+                "press_call": press_call, "press": press, "sink": sink,
+            }
+
+        fingerprints = set()
+        for shape in ("valid-event-timestamp", "conditional-timestamp"):
+            for relocation, base in ((0, 0), (0, 0x100000), (0x100, 0x200000)):
+                with self.subTest(shape=shape, relocation=relocation, base=base):
+                    image, profile, load, _, sites = fixture(shape, relocation, base)
+                    mapping, metadata = _same_image_ring32_confirm_mapping(
+                        bytes(image), profile, load,
+                    )
+                    self.assertEqual(mapping[5]["event"], 0x53)
+                    self.assertEqual(mapping[5]["converter"], load + sites["converter"])
+                    self.assertEqual(metadata, {
+                        "ok_mapping_status": "accepted-provisional",
+                        "ok_mapping_reject_reasons": [],
+                    })
+                    fingerprints.add(mapping[5]["semantic_grammar_fingerprint"])
+        self.assertEqual(len(fingerprints), 1)
+
+        negatives = {
+            "other-ring": "dequeue-call-mismatch",
+            "raw-guard-edge": "raw-release-guard-unclosed",
+            "empty-edge": "raw-release-guard-unclosed",
+            "result-save": "translated-press-shape-unclosed",
+            "invalid-edge": "translated-press-shape-unclosed",
+            "press-target": "press-message-abi-mismatch",
+            "press-action": "press-message-abi-mismatch",
+            "sink-target": "message-sink-unclosed",
+            "sink-body": "message-sink-unclosed",
+            "sink-literal": "message-sink-unclosed",
+            "missing-caller": "converter-caller-not-unique",
+            "multiple-callers": "converter-caller-not-unique",
+            "multiple-converters": "exact-converter-missing-or-ambiguous",
+            "converter-variant": "exact-converter-missing-or-ambiguous",
+            "duplicate-event": "namespace-not-unique",
+            "missing-event": "namespace-not-unique",
+            "missing-raw-metadata": "raw-consumer-not-closed",
+        }
+        for mutation, expected in negatives.items():
+            with self.subTest(mutation=mutation):
+                image, profile, load, bl, sites = fixture("valid-event-timestamp")
+                if mutation == "other-ring":
+                    bl(sites["raw"], sites["dequeue"] + 0x40)
+                elif mutation == "raw-guard-edge":
+                    image[sites["raw_guard"]] ^= 1
+                elif mutation == "empty-edge":
+                    struct.pack_into("<H", image, sites["raw"] + 6, 0xD000)
+                elif mutation == "result-save":
+                    image[sites["call"] + 6] ^= 1
+                elif mutation == "invalid-edge":
+                    struct.pack_into("<H", image, sites["call"] + 0xA, 0xD000)
+                elif mutation == "press-target":
+                    bl(sites["press_call"], sites["press"] + 2)
+                elif mutation == "press-action":
+                    image[sites["press"] + 4] = 2
+                elif mutation == "sink-target":
+                    bl(sites["press"] + 0x10, sites["sink"] + 2)
+                elif mutation == "sink-body":
+                    image[sites["sink"] + 0x1C] ^= 1
+                elif mutation == "sink-literal":
+                    struct.pack_into("<I", image, sites["sink"] + 0x44, 0)
+                elif mutation == "missing-caller":
+                    bl(sites["call"], sites["converter"] + 2)
+                elif mutation == "multiple-callers":
+                    bl(0x1000, sites["converter"])
+                elif mutation == "multiple-converters":
+                    image[0x1000:0x1000 + len(_SAMSUNG_CONFIRM_CONVERTER)] = _SAMSUNG_CONFIRM_CONVERTER
+                elif mutation == "converter-variant":
+                    image[sites["converter"]] ^= 1
+                elif mutation == "duplicate-event":
+                    profile["event_codes"].append(0x53)
+                elif mutation == "missing-event":
+                    profile["event_codes"].remove(0x54)
+                else:
+                    del profile["raw_dequeue"]
+                mapping, metadata = _same_image_ring32_confirm_mapping(bytes(image), profile, load)
+                self.assertEqual(mapping, {})
+                self.assertEqual(metadata["ok_mapping_reject_reasons"], [expected])
+
+    def test_confirm_class_preserves_keyemu_priority_and_admits_saved_state(self) -> None:
+        root = _test_firmware_root()
+        cases = (
+            ("SCH-X250.bin", "same-image-exact-keyemul-O-unique-cell"),
+            ("incoming-msm5xxx-candidates-20260726/Samsung/SCH-X250/X250rus/extracted/X250rus.bin",
+             "same-image-exact-keyemul-O-unique-cell"),
+            ("SCH-X350_UJ08_JTAG.bin", "same-image-ring32-confirm-consumer-v1"),
+            ("schx150.bin", "same-image-ring32-confirm-saved-state-v1"),
+        )
+        if root is None or any(not (root / path).is_file() for path, _ in cases):
+            self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
+        for path, expected_rule in cases:
+            with self.subTest(path=path):
+                profile, status, rejected = resolve_direct_matrix_input((root / path).read_bytes())
+                self.assertEqual((status, rejected), ("accepted", []))
+                self.assertIsNotNone(profile)
+                mapping = profile.get("provisional_mappings", {}).get(5)
+                if expected_rule is None:
+                    self.assertIsNone(mapping)
+                    self.assertEqual(profile["ok_mapping_reject_reasons"],
+                                     ["exact-converter-missing-or-ambiguous"])
+                else:
+                    self.assertEqual(mapping["event"], 0x53)
+                    self.assertEqual(mapping["rule"], expected_rule)
+
+    def test_saved_state_confirm_requires_reached_clock_preservation(self) -> None:
+        root = _test_firmware_root()
+        if root is None or not (root / "schx150.bin").is_file():
+            self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
+        original = (root / "schx150.bin").read_bytes()
+        profile, status, rejected = resolve_direct_matrix_input(original)
+        self.assertEqual((status, rejected), ("accepted", []))
+        original_mapping = profile["provisional_mappings"][5]
+        call = original_mapping["converter_callsite"]
+        raw = call - 0x66
+
+        from src.msm5xxx_emulator.detection.arm import thumb_bl_target
+
+        def literal_slot(image, at):
+            word = struct.unpack_from("<H", image, at)[0]
+            return ((at + 4) & ~3) + (word & 0xFF) * 4
+
+        def bl(image, at, target):
+            displacement = target - at - 4
+            struct.pack_into("<2H", image, at,
+                             0xF000 | (displacement >> 12 & 0x7FF),
+                             0xF800 | (displacement >> 1 & 0x7FF))
+
+        for relocation, base in ((0, 0), (0x100, 0x100000)):
+            with self.subTest(relocation=relocation, base=base):
+                image = b"\xff" * relocation + original
+                relocated_profile = dict(profile, raw_dequeue=profile["raw_dequeue"] + relocation + base)
+                mapping, metadata = _same_image_ring32_confirm_mapping(image, relocated_profile, base)
+                self.assertEqual(metadata["ok_mapping_status"], "accepted-provisional")
+                self.assertEqual(mapping[5]["converter_callsite"], call + relocation + base)
+                self.assertEqual(mapping[5]["semantic_status"], "temporary-evidence-gated-provisional")
+                self.assertEqual(mapping[5]["semantic_grammar_fingerprint"],
+                                 original_mapping["semantic_grammar_fingerprint"])
+
+        clock = thumb_bl_target(original, call + 0x10)
+        hardware = thumb_bl_target(original, clock + 0x26)
+        state = struct.unpack_from("<I", original, literal_slot(original, raw + 8))[0]
+        for mutation in ("clock-store", "callee-store", "output-alias", "flag-alias",
+                         "unaligned-state", "store-offset", "reload-offset", "bad-edge",
+                         "clock-edge", "ambiguous-signature", "ambiguous-caller", "zero-divisor",
+                         "timestamp-pointer-clobber"):
+            with self.subTest(mutation=mutation):
+                image = bytearray(original)
+                expected = "saved-state-clock-unclosed"
+                if mutation == "clock-store":
+                    image[clock + 0x18] ^= 1
+                elif mutation == "timestamp-pointer-clobber":
+                    struct.pack_into("<H", image, raw - 8, 0x2400)
+                elif mutation == "callee-store":
+                    addition = thumb_bl_target(original, clock + 0x60)
+                    image[addition + 0x1E] ^= 1
+                elif mutation == "output-alias":
+                    struct.pack_into("<I", image, literal_slot(image, raw - 0xC), state + 0x20)
+                elif mutation == "flag-alias":
+                    struct.pack_into("<I", image, literal_slot(image, hardware + 8), state + 0x20)
+                elif mutation == "unaligned-state":
+                    struct.pack_into("<I", image, literal_slot(image, raw + 8), state + 1)
+                elif mutation in ("store-offset", "reload-offset"):
+                    image[call + (0xA if mutation == "store-offset" else 0x14)] ^= 0x40
+                    expected = "translated-press-shape-unclosed"
+                elif mutation == "bad-edge":
+                    bl(image, clock + 0x20, clock + 2)
+                elif mutation == "clock-edge":
+                    bl(image, call + 0x10, clock + 2)
+                elif mutation == "ambiguous-signature":
+                    image += b"\xff" * (len(image) & 1) + _SAMSUNG_CONFIRM_STATE_CONVERTER
+                    expected = "exact-converter-missing-or-ambiguous"
+                elif mutation == "ambiguous-caller":
+                    bl(image, 0, original_mapping["converter"])
+                    expected = "converter-caller-not-unique"
+                else:
+                    struct.pack_into("<I", image, literal_slot(image, hardware + 0x28), 0)
+                mapping, metadata = _same_image_ring32_confirm_mapping(bytes(image), profile, 0)
+                self.assertEqual(mapping, {})
+                self.assertEqual(metadata["ok_mapping_reject_reasons"], [expected])
 
     def test_dual_plane_features_must_share_one_return_path(self) -> None:
         image = bytearray(b"\xff" * 0x30)
