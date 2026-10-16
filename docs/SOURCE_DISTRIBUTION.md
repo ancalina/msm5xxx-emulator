@@ -56,7 +56,6 @@ This distribution uses GPLv2 section3(a), providing complete corresponding
 source. It does not substitute an upstream repository link or a separate
 three-year written source offer for the included source companions.
 
-The Windows corresponding-source artifact also contains exact project archives
-for the previous Windows builds listed in `previous-project-sources/BUILD-SOURCE-MAP.json`.
-Pair each with its original run's QEMU source artifact. The included Windows
-dependency companion supplies their identical six DLL versions and recipes.
+Each Windows corresponding-source artifact pairs with its own runtime build.
+Earlier previews retain their original source artifacts and release companions;
+their dependency versions must not be substituted with those of a newer preview.

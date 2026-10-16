@@ -27,18 +27,18 @@
     },
     {
       "package": "mingw-w64-x86_64-glib2",
-      "version": "2.90.0-1",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-glib2-2.90.0-1.src.tar.zst",
-      "source_archive": "sources/mingw-w64-glib2-2.90.0-1.src.tar.zst",
-      "source_archive_sha256": "580246fb9db6083e0191ac7fd0e44af71df6ec0dc52cfd384b5ae07f8665cc9e",
-      "source_archive_bytes": 5835342,
+      "version": "2.90.1-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-glib2-2.90.1-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-glib2-2.90.1-1.src.tar.zst",
+      "source_archive_sha256": "ac3bc00e4079e6b51dd0a1fb9ccc420fff033b4e9095e4487dbf6cf01312cee6",
+      "source_archive_bytes": 5875958,
       "source_root": "mingw-w64-glib2",
-      "recipe_sha256": "0ad17a7ab5835acc95990c1eba2d85f351a8df0604e528f23b4212402380430b",
+      "recipe_sha256": "ca768ab894a3a5b9c07cbcf56411fbca55e1c60b8243c6e6409f3496ae46e6d8",
       "pkgbuild_license": "('spdx:LGPL-2.1-or-later')",
       "bundled_dlls": [
         {
           "file": "bin/libglib-2.0-0.dll",
-          "sha256": "9778ba7e7a3a3e92e7c1802a45cd9350a905ff3fbff193566630b6c47a3e7b9c"
+          "sha256": "84b15dc907fd1d3bb1cd799fc034d2edcbc3946c8c4acd6a8dd3ace381f9e568"
         }
       ],
       "runtime_license_files": [
@@ -70,18 +70,18 @@
     },
     {
       "package": "mingw-w64-x86_64-libwinpthread",
-      "version": "14.0.0.r426.g4564ee4b5-1",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-1.src.tar.zst",
-      "source_archive": "sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-1.src.tar.zst",
-      "source_archive_sha256": "5493832de1b7e24f09edb556ed409091b0844f9677212c4865618d6f93c508be",
-      "source_archive_bytes": 54807189,
+      "version": "14.0.0.r426.g4564ee4b5-2",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-2.src.tar.zst",
+      "source_archive": "sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-2.src.tar.zst",
+      "source_archive_sha256": "d2d540bb20b227f5d920d8f509e4e0c413e8310d08a96347c1bdeb9af8844d72",
+      "source_archive_bytes": 55135349,
       "source_root": "mingw-w64-winpthreads",
-      "recipe_sha256": "5d86650fa3fb5ab39e96000f1bd37b5e1ed0136eced1b8fb1cae6af40d83cba8",
-      "pkgbuild_license": "('spdx:MIT AND BSD-3-Clause-Clear')",
+      "recipe_sha256": "c70b65fd94cd0aa66373427155b70ab33774f78ec06d83c96a72f4cc3ed2374c",
+      "pkgbuild_license": "('spdx:MIT AND BSD-3-Clause')",
       "bundled_dlls": [
         {
           "file": "bin/libwinpthread-1.dll",
-          "sha256": "72bf8802de3a99d28f0bc2db9a11f281a9f9f3fa83dab2bc67e69fac3bd3d9c0"
+          "sha256": "c26528202c73151e4bff49d0fae08c7e6dd6b78c0d45278253d46e33f2f1417e"
         }
       ],
       "runtime_license_files": [
