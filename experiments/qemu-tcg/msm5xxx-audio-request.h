@@ -99,6 +99,15 @@ typedef struct MSM5xxxAudioPacketSink {
     /* 0x163 raw smoothing config: mute[5:4], channel volume[3:2], panpot[1:0]. */
     uint8_t smoothing_config;
     bool smoothing_config_valid;
+    uint16_t sequence_parameter, sequence_pending_parameter;
+    /* Pending stage: 1/2 parameter high/pair, 3 raw timer time, 4 raw timer0 time. */
+    uint8_t sequence_config, sequence_pending_stage;
+    /* Standalone config preserves parameter validity; packet ownership forbids API mixing. */
+    bool sequence_parameter_valid, sequence_config_valid, sequence_packet;
+    uint8_t timer_time, timer_control, timer_pending_time;
+    bool timer_time_valid, timer_control_valid;
+    uint8_t timer0_timebase, timer0_time, timer0_control, timer0_pending_time;
+    bool timer0_timebase_valid, timer0_time_valid, timer0_control_valid;
     MSM5xxxAudioPacketReject reject;
     uint32_t rejected_address;
     uint8_t rejected_value;
@@ -113,6 +122,16 @@ typedef struct MSM5xxxAudioPacketSink {
  * A rejected byte may advance framing but cannot mutate consumer state. */
 void msm5xxx_audio_packet_sink_reset(MSM5xxxAudioPacketSink *sink);
 bool msm5xxx_audio_packet_sink_feed(MSM5xxxAudioPacketSink *sink, uint8_t value);
+/* Opt-in raw 0x15e/0x15f pair followed by terminal 0x160 config 04.
+ * Standalone terminal 0x160 config04 preserves the parameter and its validity.
+ * Also admits fresh 0x157 time -> terminal 0x158 control05, or standalone
+ * terminal 0x158 control00 rollback. Mirrors only; no units, IRQ or timing.
+ * Also retains terminal 0x152 raw1b and fresh 0x154 -> terminal 0x155 raw00.
+ * shortcut: raw mirrors only, add count/IRQ effects after consumer proof.
+ * Every byte including the header must use this API for typed writes.
+ * Only complete same-packet typed pairs/triples commit parameter/timer values. */
+bool msm5xxx_audio_packet_sink_feed_sequence(MSM5xxxAudioPacketSink *sink,
+                                            uint8_t value);
 
 /* Explicit experimental profile: firmware-inferred reset readback only.
  * No chip identity, IRQ, FIFO timing or synthesis accuracy is implied. */

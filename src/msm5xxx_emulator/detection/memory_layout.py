@@ -474,8 +474,16 @@ def _image_offset(address: int, image_size: int, load_address: int) -> int | Non
     return None
 
 
-def find_linker_layout(image: bytes, load_address: int = 0) -> LinkerLayout | None:
-    """Find Qualcomm scatter-load data/BSS tuple without model addresses."""
+def find_linker_layout(image: bytes, load_address: int = 0, *,
+                       required_span: tuple[int, int] | None = None) -> LinkerLayout | None:
+    """Find scatter-load metadata; a required data span must have one mapping."""
+    if required_span is not None:
+        if (not isinstance(required_span, tuple) or len(required_span) != 2
+                or any(type(value) is not int for value in required_span)
+                or required_span[0] < 0 or required_span[1] <= 0
+                or sum(required_span) > 0x100000000):
+            return None
+    matches = []
     limit = min(len(image) - 20, 0x20000)
     preferred = (0x10028,)
     offsets = (*preferred, *(range(0, limit + 1, 4)))
@@ -501,8 +509,15 @@ def find_linker_layout(image: bytes, load_address: int = 0) -> LinkerLayout | No
             and bss + bss_size <= 0x08000000
         )
         if valid:
-            return LinkerLayout(offset, source, target, size, bss, bss_size)
-    return None
+            layout = LinkerLayout(offset, source, target, size, bss, bss_size)
+            if required_span is None:
+                return layout
+            address, length = required_span
+            if length <= size and target <= address <= target + size - length:
+                matches.append(layout)
+                if len(matches) > 1:
+                    return None
+    return matches[0] if matches else None
 
 
 def find_overlays(image: bytes, load_address: int = 0) -> list[CopyLayout]:

@@ -13,15 +13,19 @@ from src.msm5xxx_emulator.detection.input_matrix import (
     SAMSUNG_RING32,
     _same_image_keyemu_ok_mapping,
     _same_image_ring32_confirm_mapping,
+    _same_image_selected_confirm_mapping,
     _SAMSUNG_CONFIRM_CONVERTER,
     _SAMSUNG_CONFIRM_STATE_CONVERTER,
     _SAMSUNG_CONFIRM_PRESS,
     _SAMSUNG_CONFIRM_MESSAGE_SINK,
     _samsung_consumer_route_metadata,
+    _samsung_flags_sideband_51_metadata,
+    _samsung_sideband_51_family_metadata,
     _samsung_raw_saved_consumer_metadata,
     classify_matrix_event_sink,
     find_direct_matrix_scanners,
     resolve_direct_matrix_input,
+    resolve_distributed_matrix_input,
 )
 from src.msm5xxx_emulator.detection.input_semantics import (
     KEYEMU_GRAMMAR_FINGERPRINT,
@@ -667,6 +671,36 @@ class DirectInputMatrixTests(unittest.TestCase):
             ["shape-word-0x028-mismatch"],
         )
 
+    def test_sideband_flags_and_two_classified_release_paths(self) -> None:
+        root = _test_firmware_root()
+        if root is None or not (root / "SPH-X4500.bin").is_file():
+            self.skipTest("firmware corpus unavailable")
+        image = (root / "SPH-X4500.bin").read_bytes()
+        parent, status, _ = resolve_distributed_matrix_input(image)
+        self.assertEqual(status, "static-candidate")
+        assert parent is not None
+        arguments = (parent["function"], parent["sense_site"],
+                     parent["producer"]["enqueue"], 0)
+        result = _samsung_sideband_51_family_metadata(image, *arguments)
+        self.assertEqual(result["sideband_detection_status"], "accepted")
+        producer = result["sideband_producers"][0]
+        self.assertEqual((producer["register"], producer["mask"],
+                          producer["event"], producer["press_callsite"]),
+                         (0x03000694, 0x10, 0x51, 0x80664))
+        self.assertEqual(producer["release_callsites"], [0x8060A, 0x80632])
+        for address, opcode in ((0x80170, b"\x00\x24"),
+                                (0x80172, b"\x0e\xd0"),
+                                (0x8016C, b"\x08\x23"),
+                                (0x80608, b"\xfe\x20"),
+                                (0x80630, b"\xfe\x20")):
+            with self.subTest(address=address):
+                changed = bytearray(image)
+                changed[address:address + 2] = opcode
+                rejected = _samsung_sideband_51_family_metadata(
+                    bytes(changed), *arguments)
+                self.assertNotEqual(rejected.get("sideband_detection_status"),
+                                    "accepted")
+
     def test_samsung_sideband_family_closes_compiler_variants(self) -> None:
         expected = {
             "schx150.bin": (0x330C4, 0x33056, 0x32958),
@@ -813,6 +847,650 @@ class DirectInputMatrixTests(unittest.TestCase):
             scanner["callable_entry_evidence"],
             "pc-literal+inbound-reference+post-push-consumer",
         )
+
+
+
+class SelectedFunctionalConfirmTests(unittest.TestCase):
+    # Exact instruction spans only; BLs and RAM literal words built separately.
+    _SPANS = (
+        ("forward", 0xb98ac,
+         "542c01d0552c0cd102998878002805dc1c48007b1821c043084002d1201c00f000f8"
+         , ((30, -16860),)),
+        ("producer", 0xb56d0,
+         "90b5154c071c2068033004d54042c006c00e404201e0c006c00e6168884204d1ff2088300d4900f0"
+         "00f820680130011c002804da4042c006c00e404201e0c006c00e6268904203d02060400000190781"
+         "90bc08bc1847"
+         , ((38, -266836),)),
+        ("secondary", 0xb5b1e,
+         "184c683c19e0013004d54042c006c00e404201e0c006c00e164960600978002905d0400000190089"
+         "c82100f000f8606840000019008900f000f83878002803d0606821688142ded1"
+         , ((42, 288614), (54, 198054))),
+        ("app_entry", 0xe60c4,
+         "f0b5071ceb48ea499ab0"
+         , ()),
+        ("publication", 0xe6112,
+         "00290bd0381c00f000f8d549ff2301339842086001d100f000f801e0d1490f60"
+         , ((6, 538862), (22, 7294))),
+        ("global_read", 0xe615e,
+         "c549cb4a0868"
+         , ()),
+        ("outer_state", 0xe7dbe,
+         "104da87b00f000f8254f021c381c1fa100f000f8306800f000f8021c381c20a1336800f000f8a87b"
+         "0e2806d10e99214bc989994201d0204a118002383fe0"
+         , ((4, 11486), (16, 793034), (22, 3990), (34, 793034))),
+        ("outer_switch", 0xe7e7c,
+         "222800d377e002a31b5c5b009f440000"
+         , ()),
+        ("selected_call", 0xe7ee4,
+         "00f000f841e0"
+         , ((0, -103832),)),
+        ("handler_entry", 0xce94c,
+         "f0b5f54fd7b0f54e00207873b07c832109013873f24840185690c078002808d1ef48ff2300682133"
+         "984202d00133984208d10120b073387b092801d100f000f849203873e74841215590e74849015490"
+         "e348e84a09185391e149e4484f92401852905b20400240185190e148db4a40185090e148da4e4018"
+         "4e90e048c11d99314d91c11d79314c91c11d59314b91c11d39314a91d84920307031cc1d09344990"
+         "7920800120324892d54a4792c21d093292194692d34ad61dff36ba364596c84e89231b019e194496"
+         "c54e20339e194396c34ecd4b9e194296c54bc14e0f339e194196c94bbe4e5e3b9e194096bc4e7d23"
+         "9b019e193f96c54ec34b3e96103e3d96b74e243b9e193c96b54e0a3b9e193b96b34ebf4b9e193a96"
+         "b14ea419b9239b0139949c19ff32813235923894103b9c19b54ab74b4e3a921910333492da1fff3a"
+         "213a92193392b34a37943292b24a9c193192b24a36942e92a14aae4e89182d919d492036c0312c91"
+         "3096103e9c492f96441800f000f8"
+         , ((60, -5692), (370, 31610))),
+        ("raw_arm", 0xcec5c,
+         "334800685b2801d100f000f82fdc372801d100f000f814dc3228fad008dc2328f7d02a28f5d03028"
+         "f3d03128add1f0e73328eed03428ecd03528ead03628a4d1e7e7522800d130e109dc3828e1d03928"
+         "dfd05028ddd0512897d100f000f8532800d1e7e0542819d055288ed1"
+         , ((8, 3226), (18, 1860), (90, 29718))),
+        ("selection", 0xcee90,
+         "c64ac34e106bca4bc11d29313160d16b994211d1002803d1ff20053000f000f80a2801d13020f9e7"
+         "0b2801d12a20f5e70c281dd12320f1e7b64a914202d10928f8d015e0bb4a914204d10a28eed00b28"
+         "f0d00de0b84a914202d10a28e2d007e0b64a914203d1062802d15020d6e7b448022000f000f8"
+         , ((28, 5300), (114, 30150))),
+        ("tail", 0xd6456,
+         "387335e0"
+         , ()),
+        ("tail_return", 0xd64c6,
+         "387b002801d000f000f8787b57b0f0bc08bc1847"
+         , ((6, -31236),)),
+        ("state_bridge", 0xceac2,
+         "994aa9499074002038730870907c4a2804d203a31b181b5adb189f4400f000f80000"
+         , ((28, 31214),)),
+        ("selected_entry", 0xcebec,
+         "4d4e6149203ef06b884205d14c490868872801d100f000f84898484a407a00280dd1f06b007e0138"
+         "7063489901204872e078a070ff20e0705069013830633f4ad07c002804d00020d074514800f000f8"
+         "3949504e2039c86bb04206d12d99487a002802dd00f000f802e0012000f000f8"
+         , ((20, 184492), (76, -100084), (100, -720), (108, 91880))),
+        ("child", 0xcf3a0,
+         "00f000f8002804d1924a1068502800d181e48a4a904ed06bb04209d18d480068232801d1092239e0"
+         "30380206120e35e08a49884209d1874800682a2801d10a222ce02328f0d10b2228e08549884204d1"
+         "804800683028e7d1f1e7824988420bd17c4a1068502801d1062217e03628dbd1ff20013000f000f8"
+         "724988422ed17548ff2300680533984201d1002206e03028d5d02a28d7d02328c6d10c22049200f0"
+         "00f8002827d0654ad06bb04223d1007e049988421fdd6c480499405c00281ad0a0785f49e0700498"
+         "3030a0700498486148990020487200f000f83ce46349884206d15c4a1068c11f2a390629c0d89be7"
+         "584a1068fbe7514ad06b017e049b9942ebdd049909012691926b89180a79002a05d08a68002a02d1"
+         "ca68002addd0a278474b4c4ee270049a3032a270049a5a610b79424a002b00d18ce1d11d49310a68"
+         "d20052189060049a002a06d1484a904201d1002302e0012300e0049b0a68d200521853600a680132"
+         "0a6047994979002902d1049900f000f80499092904dcab2080010499301841722c4a2699906b0818"
+         "8068002805d047994979002901d100f000f8264ad11dd06b393108602699906b0818c068d063"
+         , ((0, -87088), (116, 11596), (158, -87088), (214, -36672), (372, -36408), (414, -843540))),
+    )
+    _LITERALS = (
+        (0xb5728, 0x20db078),
+        (0xb5b80, 0x20db0e0),
+        (0xced24, 0x20dd2a0),
+        (0xced28, 0x2006c70),
+        (0xced2c, 0x20dfad8),
+        (0xcf1a0, 0x20dfad8),
+        (0xcf1a4, 0x20077b8),
+        (0xcf1ac, 0x20dd280),
+        (0xcf1c0, 0x2008714),
+        (0xcf1c4, 0x2007f6c),
+        (0xcf1c8, 0x2008224),
+        (0xcf1cc, 0x20086d4),
+        (0xcf5dc, 0x20dd280),
+        (0xcf5e4, 0x2008714),
+        (0xcf5f4, 0x20dfad8),
+        (0xcf5f8, 0x20077b8),
+        (0xcf5fc, 0x2007f6c),
+        (0xcf600, 0x2008224),
+        (0xcf604, 0x20086d4),
+        (0xe6474, 0x20dfad8),
+        (0xe7e00, 0x200714c),
+    )
+
+    @classmethod
+    def fixture(cls, shift=0, ram_delta=0, load=0):
+        image = bytearray(b"\xff" * (0x1A9800 + shift))
+
+        def bl(at, target):
+            delta = target - at - 4
+            struct.pack_into("<HH", image, at + shift,
+                             0xF000 | (delta >> 12 & 0x7FF),
+                             0xF800 | (delta >> 1 & 0x7FF))
+
+        def branch(at, target):
+            struct.pack_into("<H", image, at + shift,
+                             0xE000 | ((target - at - 4) // 2 & 0x7FF))
+
+        for _, at, code, calls in cls._SPANS:
+            data = bytes.fromhex(code)
+            image[at + shift:at + shift + len(data)] = data
+            for offset, target in calls:
+                bl(at + offset, at + target)
+        for at, value in cls._LITERALS:
+            if 0x01000000 <= value < 0x04000000:
+                value += ram_delta
+            struct.pack_into("<I", image, at + shift, value)
+        # Synthetic r4-preserving task reaches the uniquely anchored forward call.
+        branch(0xB8EE4, 0xB96E4)
+        branch(0xB96E4, 0xB98AC)
+        bl(0xB98CE, 0x7F3D0)
+        image[0xB98D2 + shift:0xB98D6 + shift] = bytes.fromhex("041c01d0")
+        bl(0xB98D6, 0xB8EE4)
+        image[0x7F3D0 + shift:0x7F3EC + shift] = bytes.fromhex(
+            "064a50781178884201d10020704750180131c906c90e807811707047")
+        struct.pack_into("<I", image, 0x7F3EC + shift, 0x20BA8A8 + ram_delta)
+        image[0xCEAE8 + shift:0xCEAEA + shift] = bytes.fromhex("8600")
+        image[0xE7E8C + shift:0xE7EAE + shift] = bytes.fromhex(
+            "111447171a1d2029732c3573383b73413e23262f324a4d505b5e53675661646a6f44")
+        profile = {
+            "grammar": "direct-low-nibble-6-row-v1", "rows": 6, "columns": 4,
+            "event_sink_family": SAMSUNG_RING32,
+            "raw_consumer_evidence": "samsung-byte-ring32-saved-task-dispatch-v1",
+            "raw_task_register": 4, "raw_ring": 0x20BA8A8 + ram_delta,
+            "raw_dequeue": load + shift + 0x7F3D0,
+            "raw_dequeue_return": load + shift + 0xB98D2,
+            "raw_task_entry": load + shift + 0xB8EE4,
+            "event_codes": [0x53, 0x66, 0x31, 0x34, 0x37, 0x2A, 0x5B, 0x52,
+                            0x32, 0x35, 0x38, 0x30, 0x65, 0x50, 0x33, 0x36,
+                            0x39, 0x23, 0x63, 0x64, 0x87, 0, 0x54, 0x55],
+        }
+        return image, profile, load
+
+    def test_relocated_sparse_class(self):
+        for shift, ram_delta, load in ((0, 0, 0), (0x100, 0x1000, 0x200000)):
+            with self.subTest(shift=shift):
+                image, profile, base = self.fixture(shift, ram_delta, load)
+                mapping, metadata = _same_image_selected_confirm_mapping(bytes(image), profile, base)
+                self.assertEqual(metadata["ok_mapping_status"], "accepted-provisional")
+                self.assertEqual(mapping[5]["event"], 0x53)
+                self.assertTrue(mapping[5]["functional_only"])
+                self.assertEqual(mapping[5]["consumer"], load + shift + 0xCE94C)
+                self.assertNotIn("semantic_name", mapping[5])
+
+    def test_closed_edges_reject_independent_mutants(self):
+        mutations = {
+            "state-index-subtract": (0xE7DF8, b"\x03\x38"),
+            "selected-reentry-branch": (0xCEBF6, b"\x00\xd1"),
+            "forward-register": (0xB98C8, b"\x28\x1c"),
+            "forward-target": (0xB98CA, b"\x00\xf0\x00\xf8"),
+            "secondary-ring": (0xB5728, struct.pack("<I", 0x10DB07C)),
+            "consumer-ring": (0xB5B80, struct.pack("<I", 0x10DB0E4)),
+            "app-global": (0xE6474, struct.pack("<I", 0x10DFADC)),
+            "raw-event-branch": (0xCECBC, b"\x01\xd1"),
+            "selected-global": (0xCF1A0, struct.pack("<I", 0x10DFADC)),
+            "descriptor": (0xCF1C0, struct.pack("<I", 0x1008718)),
+            "state-bridge": (0xCEAC6, b"\x90\x73"),
+            "child-store": (0xCF554, b"\x90\x63"),
+            "unrelated-bl": (0xCF414, b"\x00\xf0\x00\xf8"),
+        }
+        for name, (at, replacement) in mutations.items():
+            with self.subTest(name=name):
+                image, profile, load = self.fixture()
+                image[at:at + len(replacement)] = replacement
+                mapping, metadata = _same_image_selected_confirm_mapping(bytes(image), profile, load)
+                self.assertEqual(mapping, {})
+                self.assertEqual(metadata["ok_mapping_status"], "rejected")
+        image, profile, load = self.fixture()
+        profile["event_codes"][1] = 0x53
+        self.assertEqual(_same_image_selected_confirm_mapping(bytes(image), profile, load)[0], {})
+        image, profile, load = self.fixture()
+        duplicate = 0xD0002
+        image[duplicate:duplicate + 0x48] = image[0xB5B1E:0xB5B66]
+        pool = (duplicate + 4 & ~3) + 0x18 * 4
+        struct.pack_into("<I", image, pool, 0x20DB0E0)
+        self.assertEqual(_same_image_selected_confirm_mapping(bytes(image), profile, load)[0], {})
+
+    def test_malformed_profiles_and_truncation(self):
+        image, profile, load = self.fixture()
+        for key in ("raw_dequeue", "raw_dequeue_return", "raw_task_entry", "raw_ring"):
+            for value in (None, True, -2, len(image) + 10):
+                with self.subTest(key=key, value=value):
+                    changed = dict(profile, **{key: value})
+                    self.assertEqual(_same_image_selected_confirm_mapping(bytes(image), changed, load)[0], {})
+        for length in (0, 1, 0xB98CE, 0xE6474):
+            self.assertEqual(_same_image_selected_confirm_mapping(bytes(image[:length]), profile, load)[0], {})
+
+    def test_auxiliary_bl_target_requires_backing_image(self):
+        image, profile, load = self.fixture()
+        # Main selected-handler spans remain present; one exact auxiliary target
+        # lies beyond this truncation, so a valid BL encoding alone is insufficient.
+        mapping, metadata = _same_image_selected_confirm_mapping(
+            bytes(image[:0xE7EEA]), profile, load,
+        )
+        self.assertEqual(mapping, {})
+        self.assertEqual(metadata["ok_mapping_status"], "rejected")
+
+    def test_actual_corpus_activation_both_closed_classes(self):
+        root = _test_firmware_root()
+        if root is None:
+            self.skipTest("local firmware corpus unavailable")
+        for name, accepted in (("SPH-X7509.bin", True), ("SPH-X7500-X75.00-WD01.bin", True)):
+            path = root / name
+            if not path.exists():
+                self.fail("required local corpus missing: " + name)
+            with self.subTest(name=name):
+                profile, status, _ = resolve_direct_matrix_input(path.read_bytes())
+                self.assertEqual(status, "accepted")
+                self.assertEqual(sum(profile["event_codes"].count(event) for event in b"123456789*0#"), 12)
+                mapping = profile.get("provisional_mappings", {}).get(5)
+                if accepted:
+                    self.assertEqual(mapping["rule"], "same-image-selected-functional-confirm-v1")
+                else:
+                    self.assertIsNone(mapping)
+
+
+class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
+    # Distinct saved-r7 class; only contract opcodes, synthetic calls/literals.
+    _SPANS = (
+        ("forward", 0xb3680,
+         "542f01d0552f02d1381c00f000f8"
+         , ((10, -16104),)),
+        ("producer", 0xaf798,
+         "90b5154c071c2068033004d54042c006c00e404201e0c006c00e6168884204d1ff207f300d4900f0"
+         "00f820680130011c002804da4042c006c00e404201e0c006c00e6268904203d02060400000190781"
+         "90bc08bc1847"
+         , ((38, -259788),)),
+        ("secondary", 0xafbf4,
+         "164c683c19e0013004d54042c006c00e404201e0c006c00e144960600978002905d0400000190089"
+         "c82100f000f8606840000019008900f000f83878002803d0606821688142ded1"
+         , ((42, 248016), (54, 188048))),
+        ("app_entry", 0xdda84,
+         "f0b5fb4d041c2878002799b0"
+         , ()),
+        ("app_global", 0xddaaa,
+         "f54df5482e18b07b012808d100f000f8f34909680831814201d80020b073f0480078002805d0ef48"
+         "0078002801d000f000f8ed4e092080013018407a012801d0032801d100f000f8e848e74900793031"
+         "1891"
+         , ((12, -813002), (46, -166444), (68, 498846))),
+        ("publication", 0xddafc,
+         "00280ed01898007b00280ad1201c00f000f8ff2301339842286001d100f000f800e02c60"
+         , ((14, 488656), (28, 8028))),
+        ("global_read", 0xddb4a,
+         "cd4dcc49d34a2868"
+         , ()),
+        ("outer_state", 0xdf900,
+         "584e403db07b02381e2800d36de002a31b5c5b009f440000"
+         , ()),
+        ("selected_call", 0xdf978,
+         "00f000f833e0"
+         , ((0, -102116),)),
+        ("handler_entry", 0xc6a94,
+         "f0b5e94ff7b000207872e848e84e807943243872f01dff305a307690c078002807d13068ff232133"
+         "984202d00133984205d1387a092801d100f000f83c72dd48de497590dc487391203972917490dc48"
+         "d749db4a40187190d948c032703040187090d848d24e6f90d748c11d99316e91c11d79316d91c11d"
+         "59316c91c11d20306a90d01f09383931bb235b019e196996c64e203b10366896c54e6b919e196796"
+         "cb4eca496696c14e9036f41f593c6494c84c65966394cc1dc04eff34ba3450366294f41d19346094"
+         "123c6196b84e3123db015f949c19ba4b5e9406339c192f26b34bf6015d94f418b44e3a365c960a3e"
+         "c5235b015b96ae4eff319e195a96ac4e813192195992b44a569192195892b24aaa49103a92191031"
+         "55915792a44aaf498918af4a5491d11d09315291ad49539251919f4940185090a848193840184f90"
+         "00f000f8"
+         , ((56, -5904), (320, 33884))),
+        ("raw_arm", 0xc6d2e,
+         "45480068552800d138e22edc362801d100f000f812dc3228fad008dc2328f7d02a28f5d03028f3d0"
+         "3128b6d1f0e73328eed03428ecd03528afd1e9e7512801d100f000f808dc3728e2d03828e0d03928"
+         "ded05028a1d1dbe7522800d126e1532800d1d4e0542898d1d2e2"
+         , ((16, 1914), (64, 30214))),
+        ("selection", 0xc6f3c,
+         "da48d94ac06bda4bc11d29311160b168994211d1002803d1ff20053000f000f80a2801d13020f9e7"
+         "0b2801d12a20f5e70c2831d12320f1e7ce4b994202d10928f8d029e0cc4b994204d10a28eed00b28"
+         "f0d021e0c94b994202d10a28e2d01be0c74b994203d1062816d15020d6e7c54b994202d10a28d5d0"
+         "0ee0c34b99420bd1012802d1ff205330c8e7022802d1ff205430c3e72e30c1e7022000f000f8"
+         , ((28, 18232), (154, 29898))),
+        ("tail_return", 0xceef0,
+         "387a002801d000f000f8787a77b0f0bc08bc1847"
+         , ((6, -33560),)),
+        ("state_bridge", 0xc6bd8,
+         "9949a84a88710020387210708879442804d203a31b181b5adb189f4400f000f8"
+         , ((28, 33548),)),
+        ("selected_entry", 0xc6cca,
+         "689a5c49507b002813d1594b594e10339868007e01381860689a012050734f9bd87898704f9bff20"
+         "d87088680138303ef0635049c879002804d00020c8715f4800f000f84b4e5e491036b068884206d1"
+         "50988079002802dd00f000f802e0012000f000f8"
+         , ((64, -91922), (88, -618), (96, 90182))),
+        ("child", 0xc74a8,
+         "00f000f8002804d184490868502800d159e47d4a864e40329068b04207d17f480068232801d10921"
+         "59e0303855e08149884209d1794800682a2801d10a214ee02328f2d10b214ae07b49884204d17348"
+         "00683028e9d1f1e77849884204d16f4800683028e1d1e9e7754988420bd16b490868502801d10621"
+         "31e03628d5d1ff20013000f000f8674988420fd16348ff2300680533984201d1002120e03028cdd0"
+         "2a28cfd02328c0d10c2118e0654988423cd15a49ff2308685333984201d101210de0ff2354339842"
+         "01d1022107e00a1cc11f2a39062925d82e380106090e1b9100f000f8002824d0474840308068b042"
+         "1fd1007e1b9988421bdd53481b99405c002816d04f9b44499878d8701b984f9b303098701b988860"
+         "689a0020507300f000f878e4ff20013000f000f83b4908687be7354a40329068017e1b9b9942f0dd"
+         "1b9909014891526889180a79002a05d08a68002a02d1ca68002ae2d04f9b2e4e9a78da701b9a4f9b"
+         "30329a701b9ab260254a0b794032002b00d199e1d11d15310a68d200521890601b9a002a06d12f4a"
+         "904201d1002302e0012300e01b9b0a68d200521853600a6801320a601c4a517c002902d11b9900f0"
+         "00f81b99092904dc164a23481b99101801720f4848994030406808188068002805d0114a517c0029"
+         "01d100f000f8084940318868c86048984a688018c0680a4a8860517c002929d00123b3602ae0"
+         , ((0, -73500), (130, 26664), (224, -73500), (286, -31224), (296, 18812), (438, -30960), (482, -811088))),
+    )
+    _LITERALS = (
+        (0xaf7f0, 0x20c8a98),
+        (0xafc50, 0x20c8b00),
+        (0xc6e3c, 0x20c9dc8),
+        (0xc6e40, 0x2005774),
+        (0xc6e44, 0x20cd420),
+        (0xc72a4, 0x20cd420),
+        (0xc72a8, 0x20c9d98),
+        (0xc72ac, 0x2006ebc),
+        (0xc72b0, 0x2006058),
+        (0xc72b4, 0x20066d4),
+        (0xc72b8, 0x20069ac),
+        (0xc72bc, 0x2006e7c),
+        (0xc72c0, 0x2006e1c),
+        (0xc72c4, 0x200690c),
+        (0xc76b0, 0x20c9d98),
+        (0xc76c4, 0x20cd420),
+        (0xc76cc, 0x2006ebc),
+        (0xc76d8, 0x2006058),
+        (0xc76dc, 0x20066d4),
+        (0xc76e0, 0x20069ac),
+        (0xc76e4, 0x2006e1c),
+        (0xc76e8, 0x2006e7c),
+        (0xc76ec, 0x200690c),
+        (0xdde80, 0x20cd420),
+        (0xdfa64, 0x2005b4c),
+    )
+
+    @classmethod
+    def fixture(cls, shift=0, ram_delta=0, load=0):
+        image = bytearray(b"\xff" * (0x160000 + shift))
+
+        def bl(at, target):
+            delta = target - at - 4
+            struct.pack_into("<HH", image, at + shift,
+                             0xF000 | (delta >> 12 & 0x7FF),
+                             0xF800 | (delta >> 1 & 0x7FF))
+
+        def branch(at, target):
+            struct.pack_into("<H", image, at + shift,
+                             0xE000 | ((target - at - 4) // 2 & 0x7FF))
+
+        for _, at, code, calls in cls._SPANS:
+            data = bytes.fromhex(code)
+            image[at + shift:at + shift + len(data)] = data
+            for offset, target in calls:
+                bl(at + offset, at + target)
+        for at, value in cls._LITERALS:
+            struct.pack_into("<I", image, at + shift, value + ram_delta)
+        # Saved r7 reaches the exact forwarding call without clobbering r7.
+        branch(0xB2BE2, 0xB3380)
+        branch(0xB3380, 0xB3680)
+        bl(0xB368E, 0x7B198)
+        image[0xB3692 + shift:0xB3696 + shift] = bytes.fromhex("071c01d0")
+        bl(0xB3696, 0xB2BE2)
+        image[0x7B198 + shift:0x7B1B4 + shift] = bytes.fromhex(
+            "064a50781178884201d10020704750180131c906c90e807811707047")
+        struct.pack_into("<I", image, 0x7B1B4 + shift, 0x20B5AEC + ram_delta)
+        image[0xC6BFC + shift:0xC6BFE + shift] = bytes.fromhex("6a00")
+        image[0xDF918 + shift:0xDF936 + shift] = bytes.fromhex(
+            "0f1245151821242d69303669393c693f272a33484b4e515c5f5462576542")
+        image[0xCE406 + shift:0xCE408 + shift] = bytes.fromhex("3872")
+        for at, target in ((0xCE408, 0xCDCD2), (0xCDCD2, 0xCD538),
+                           (0xCD538, 0xCCF50), (0xCCF50, 0xCCC42),
+                           (0xCCC42, 0xCC480), (0xCC480, 0xCBD00),
+                           (0xCBD00, 0xCB50C), (0xCB50C, 0xCB46E)):
+            branch(at, target)
+        bl(0xCB46E, 0xCEEF0)
+        profile = {
+            "grammar": "direct-low-nibble-6-row-v1", "rows": 6, "columns": 4,
+            "event_sink_family": SAMSUNG_RING32,
+            "raw_consumer_evidence": "samsung-byte-ring32-saved-task-dispatch-v1",
+            "raw_task_register": 7, "raw_ring": 0x20B5AEC + ram_delta,
+            "raw_dequeue": load + shift + 0x7B198,
+            "raw_dequeue_return": load + shift + 0xB3692,
+            "raw_task_entry": load + shift + 0xB2BE2,
+            "event_codes": [0x53, 0x66, 0x31, 0x34, 0x37, 0x2A, 0x5B, 0x52,
+                            0x32, 0x35, 0x38, 0x30, 0x65, 0x50, 0x33, 0x36,
+                            0x39, 0x23, 0x63, 0x64, 0x87, 0, 0x54, 0x55],
+        }
+        return image, profile, load
+
+    def test_relocated_r7_sparse_class(self):
+        for shift, ram_delta, load in ((0, 0, 0), (0x100, 0x1000, 0x200000)):
+            with self.subTest(shift=shift):
+                image, profile, base = self.fixture(shift, ram_delta, load)
+                mapping, metadata = _same_image_selected_confirm_mapping(bytes(image), profile, base)
+                self.assertEqual(metadata["ok_mapping_status"], "accepted-provisional")
+                self.assertEqual(mapping[5]["event"], 0x53)
+                self.assertTrue(mapping[5]["functional_only"])
+                self.assertEqual(mapping[5]["consumer"], load + shift + 0xC6A94)
+                self.assertNotIn("semantic_name", mapping[5])
+
+    def test_r7_independent_edges_fail_closed(self):
+        mutations = {
+            "saved-register": (0xB3688, b"\x20\x1c"),
+            "forward-call": (0xB368A, b"\x00\xf0\x00\xf8"),
+            "application-global": (0xDDE80, struct.pack("<I", 0x20CD424)),
+            "state-index": (0xDF906, b"\x03\x38"),
+            "state-dispatch": (0xDF914, b"\x9e\x44"),
+            "raw-53-arm": (0xC6D8E, b"\x01\xd1"),
+            "selected-global": (0xC72A4, struct.pack("<I", 0x20CD424)),
+            "descriptor-fork": (0xC76D8, struct.pack("<I", 0x200605C)),
+            "state-bridge": (0xC6BDC, b"\x88\x73"),
+            "state-table": (0xC6BFC, b"\x6b\x00"),
+            "tail-first": (0xCE408, b"\x00\xe0"),
+            "tail-middle": (0xCCC42, b"\x00\xe0"),
+            "tail-return": (0xCB46E, b"\x00\xf0\x00\xf8"),
+            "child-install": (0xC76A0, b"\x88\x63"),
+            "auxiliary-call": (0xC6F58, b"\x00\xf0\x00\xf8"),
+        }
+        for name, (at, data) in mutations.items():
+            with self.subTest(name=name):
+                image, profile, load = self.fixture()
+                image[at:at + len(data)] = data
+                self.assertEqual(_same_image_selected_confirm_mapping(bytes(image), profile, load)[0], {})
+
+    def test_r7_rejection_preserves_actual_numeric_profile(self):
+        root = _test_firmware_root()
+        if root is None:
+            self.skipTest("local firmware corpus unavailable")
+        image = bytearray((root / "SPH-X7500-X75.00-WD01.bin").read_bytes())
+        before, status, _ = resolve_direct_matrix_input(bytes(image))
+        self.assertEqual(status, "accepted")
+        image[0xC6D8E] ^= 1
+        after, status, _ = resolve_direct_matrix_input(bytes(image))
+        self.assertEqual(status, "accepted")
+        self.assertNotIn(5, after.get("provisional_mappings", {}))
+        self.assertEqual(after["ok_mapping_status"], "rejected")
+        for key in ("event_codes", "event_table", "rows", "columns", "raw_ring",
+                    "raw_dequeue", "raw_task_entry", "raw_task_register"):
+            self.assertEqual(after[key], before[key])
+
+    def test_r7_ambiguity_and_truncation(self):
+        image, profile, load = self.fixture()
+        profile["event_codes"][1] = 0x53
+        self.assertEqual(_same_image_selected_confirm_mapping(bytes(image), profile, load)[0], {})
+        image, profile, load = self.fixture()
+        # Duplicate independently relocated consumer and its decoded calls.
+        duplicate = 0xD0000
+        _, at, code, calls = next(span for span in self._SPANS if span[0] == "secondary")
+        image[duplicate:duplicate + 0x48] = bytes.fromhex(code)
+        for offset, target in calls:
+            delta = target - offset - 4
+            struct.pack_into("<HH", image, duplicate + offset,
+                             0xF000 | (delta >> 12 & 0x7FF), 0xF800 | (delta >> 1 & 0x7FF))
+        struct.pack_into("<I", image, duplicate + 4 + 0x16 * 4, 0x20C8B00)
+        self.assertEqual(_same_image_selected_confirm_mapping(bytes(image), profile, load)[0], {})
+        image, profile, load = self.fixture()
+        for length in (0, 1, 0xB368E, 0xDF97E):
+            self.assertEqual(_same_image_selected_confirm_mapping(bytes(image[:length]), profile, load)[0], {})
+        for register in (4, 7.0, None):
+            self.assertEqual(_same_image_selected_confirm_mapping(
+                bytes(image), dict(profile, raw_task_register=register), load)[0], {})
+        for key in ("raw_dequeue", "raw_dequeue_return", "raw_task_entry", "raw_ring"):
+            for value in (None, True, -2, len(image) + 10):
+                self.assertEqual(_same_image_selected_confirm_mapping(
+                    bytes(image), dict(profile, **{key: value}), load)[0], {})
+
+
+class FlagsSidebandEndTests(unittest.TestCase):
+    # Five exact spans only; no surrounding firmware resources.
+    _SPANS = (
+        (0x7b52c,
+         "f0b50421ce4800f000f800f000f8071c00d08be100f000f8002800d086e100f000f8061c"
+         , ((6, 1587208), (10, -652), (20, -300), (30, 1587008))),
+        (0x7b550,
+         "c748007910220240c748c649c74d13d1ec1f193ca27c052a05da0132a2740122c31f193b1a77a27c"
+         "052a25d1e27c0a2a0eda0132e2740be0bc4cbb4b0022203ca274203b1a770270e274a27c052a13d1"
+         "b64c203ce27c0a2a0ed1227a002a00d0fbe00078002803d0c878002800d1f4e05e2701226a72f0e0"
+         "ac4c203ca27c531e022b10d8a84a203a127f002a00d1e4e00979002903d1a6490978002901d00122"
+         "02705127d9e0"
+         , ()),
+        (0x7b610,
+         "687a012803d16a72ff2000f000f8"
+         , ((10, -1112),)),
+        (0x7b7aa,
+         "002e01d100f000f839480078002801d000272f722f482038c17b012911d0022919d0032944d1002f"
+         "41d100242c720122c273ff2000f000f82e492e480818447231e02f72002f02d00221c1732fe0c078"
+         "002828d02be0297a8f421dd10321c173017a002909d00178002911d1552f0fd0542f0dd00122c273"
+         "19e0882f08d11e480078002804d000f000f81c2800d15327381c00f000f80ae02f72002f07d10122"
+         "c27300222a72"
+         , ((4, 1586394), (52, -1522), (134, 399606), (146, -1522))),
+        (0x7b1b8,
+         "80b5071c30480078002802d0522f00d156e0ff2f01d0602f01d100f000f82b48817a002900d14be0"
+         "0179002902d1602f00d045e0017800290dd0007a00280ad05f2f03db872f00d13ae004e0542f02d0"
+         "552f00d034e01e481e4a007b002803d11d480078002807d0507811781d30c006c00e884200d123e0"
+         "50781378411cc906c90e994207d08018877050780130c006c00e507003e01149114800f000f81148"
+         "ff2f01d0078002e0ff210131018009480c388168002900d102e0406800f000f880bc08bc1847"
+         , ((26, 219948), (154, -45292), (188, 1588080))),
+    )
+    _LITERALS = (
+        (0x7b28c, 0x20b5aec),
+        (0x7b870, 0x3000690),
+        (0x7b874, 0x20cd580),
+        (0x7b878, 0x20b5b40),
+        (0x7b87c, 0x2001dd4),
+        (0x7b880, 0x2005588),
+        (0x7b898, 0x2006f12),
+    )
+
+    @classmethod
+    def fixture(cls, shift=0, ram_delta=0, load=0):
+        image = bytearray(b"\xff" * (0x200000 + shift))
+        for at, code, calls in cls._SPANS:
+            data = bytes.fromhex(code)
+            image[at + shift:at + shift + len(data)] = data
+            for offset, target in calls:
+                delta = target - offset - 4
+                struct.pack_into("<HH", image, at + offset + shift,
+                                 0xF000 | (delta >> 12 & 0x7FF),
+                                 0xF800 | (delta >> 1 & 0x7FF))
+        for at, value in cls._LITERALS:
+            value += ram_delta if value != 0x03000690 else 0
+            struct.pack_into("<I", image, at + shift, value)
+        # Original unqualified matrix-release route is reachable independently.
+        struct.pack_into("<H", image, 0x7B5F6 + shift, 0xE00B)
+        image[0x7B198 + shift:0x7B19A + shift] = bytes.fromhex("064a")
+        struct.pack_into("<I", image, 0x7B1B4 + shift, 0x20B5AEC + ram_delta)
+        profile = {
+            "grammar": "direct-low-nibble-6-row-v1", "event_sink_family": SAMSUNG_RING32,
+            "raw_consumer_evidence": "samsung-byte-ring32-saved-task-dispatch-v1",
+            "raw_task_register": 7, "function": load + shift + 0x7B52C,
+            "sense_site": load + shift + 0x7B77E,
+            "event_sink": load + shift + 0x7B1B8,
+            "raw_dequeue": load + shift + 0x7B198,
+            "raw_ring": 0x20B5AEC + ram_delta, "event_codes": list(b"123456789*0#"),
+        }
+        return image, profile, load
+
+    def test_exact_sideband_relocates_and_retains_parser_fields(self):
+        for shift, delta, load in ((0, 0, 0), (0x100, 0x1000, 0x200000)):
+            image, profile, base = self.fixture(shift, delta, load)
+            result = _samsung_flags_sideband_51_metadata(bytes(image), profile, base)
+            self.assertEqual(result["sideband_detection_status"], "accepted")
+            producer = result["sideband_producers"][0]
+            self.assertEqual((producer["semantic_key"], producer["event"], producer["mask"]), (7, 0x51, 0x10))
+            self.assertEqual(producer["press_callsite"], load + shift + 0x7B83C)
+            self.assertEqual(producer["release_callsite"], load + shift + 0x7B7DE)
+            self.assertEqual(producer["register"], 0x03000694)
+            self.assertEqual(producer["polarity"], "active-low")
+
+    def test_independent_end_contract_mutations_reject(self):
+        mutations = {
+            "flags-gap": (0x7B558, b"\x00\x20"),
+            "mask": (0x7B554, b"\x20\x22"),
+            "polarity": (0x7B55E, b"\x13\xd0"),
+            "branch-target": (0x7B55E, b"\x14\xd1"),
+            "active-flag-store": (0x7B574, b"\x5a\x77"),
+            "inactive-flag-store": (0x7B594, b"\x5a\x77"),
+            "gate-flag": (0x7B5D8, b"\x52\x7f"),
+            "gate-polarity": (0x7B5DC, b"\x00\xd0"),
+            "candidate-read": (0x7B800, b"\x69\x7a"),
+            "state-read": (0x7B7C2, b"\x01\x7c"),
+            "early-release": (0x7B61A, b"\x00\xf0\x00\xf8"),
+            "release-sink": (0x7B7DE, b"\x00\xf0\x00\xf8"),
+            "press-sink": (0x7B83C, b"\x00\xf0\x00\xf8"),
+            "flag-owner-alias": (0x7B878, struct.pack("<I", 0x2001DD4)),
+            "flag-owner-partial-overlap": (0x7B878, struct.pack("<I", 0x2001DF4)),
+            "candidate-owner-bounds": (0x7B87C, struct.pack("<I", 0x00FFFFF0)),
+            "ring-literal": (0x7B28C, struct.pack("<I", 0x20B5AF0)),
+            "dequeue-ring": (0x7B1B4, struct.pack("<I", 0x20B5AF0)),
+        }
+        for name, (at, data) in mutations.items():
+            with self.subTest(name=name):
+                image, profile, load = self.fixture()
+                image[at:at + len(data)] = data
+                result = _samsung_flags_sideband_51_metadata(bytes(image), profile, load)
+                self.assertNotEqual(result.get("sideband_detection_status"), "accepted")
+
+    def test_end_ambiguity_bounds_and_malformed_profiles(self):
+        image, profile, load = self.fixture()
+        for key in ("function", "sense_site", "event_sink", "raw_dequeue", "raw_ring"):
+            for value in (None, True, -2, len(image) + 10):
+                result = _samsung_flags_sideband_51_metadata(bytes(image), dict(profile, **{key: value}), load)
+                self.assertNotEqual(result.get("sideband_detection_status"), "accepted")
+        for value in (None, "51", True):
+            result = _samsung_flags_sideband_51_metadata(bytes(image), dict(profile, event_codes=value), load)
+            self.assertEqual(result, {})
+        for length in (0, 1, 0x7B850, 0x1FEC84):
+            result = _samsung_flags_sideband_51_metadata(bytes(image[:length]), profile, load)
+            self.assertNotEqual(result.get("sideband_detection_status"), "accepted")
+        changed = dict(profile, event_codes=[0x51])
+        self.assertEqual(_samsung_flags_sideband_51_metadata(bytes(image), changed, load)["sideband_detection_status"], "rejected")
+        # Reachable second 51 materialization outside the pinned producer span.
+        image[0x7B5F6:0x7B5FA] = bytes.fromhex("512709e0")
+        result = _samsung_flags_sideband_51_metadata(bytes(image), profile, load)
+        self.assertEqual(result["sideband_detection_reject_reasons"], ["flags-sideband-producer-release-ambiguity"])
+        image, profile, load = self.fixture()
+        site, target = 0x7B5F8, 0x7B1B8
+        image[0x7B5F6:0x7B5F8] = bytes.fromhex("ff20")
+        delta = target - site - 4
+        struct.pack_into("<HH", image, site, 0xF000 | (delta >> 12 & 0x7FF),
+                         0xF800 | (delta >> 1 & 0x7FF))
+        struct.pack_into("<H", image, site + 4, 0xE008)
+        result = _samsung_flags_sideband_51_metadata(bytes(image), profile, load)
+        self.assertEqual(result["sideband_detection_reject_reasons"], ["flags-sideband-producer-release-ambiguity"])
+
+    def test_actual_end_peer_and_rejection_keep_confirm_numeric(self):
+        root = _test_firmware_root()
+        if root is None:
+            self.skipTest("local firmware corpus unavailable")
+        for name in ("SPH-X7500-X75.00-WD01.bin", "SPH-X7509.bin"):
+            image = bytearray((root / name).read_bytes())
+            before, status, _ = resolve_direct_matrix_input(bytes(image))
+            self.assertEqual(status, "accepted")
+            self.assertEqual(before["sideband_detection_status"], "accepted")
+            self.assertEqual(before["sideband_producers"][0]["semantic_key"], 7)
+            self.assertEqual(before["provisional_mappings"][5]["event"], 0x53)
+            if name.endswith("WD01.bin"):
+                image[0x7B55E] ^= 1
+                after, status, _ = resolve_direct_matrix_input(bytes(image))
+                self.assertEqual(status, "accepted")
+                self.assertEqual(after["sideband_detection_status"], "rejected")
+                self.assertNotIn("sideband_producers", after)
+                for key in ("event_codes", "raw_ring", "provisional_mappings"):
+                    self.assertEqual(after[key], before[key])
 
 
 if __name__ == "__main__":

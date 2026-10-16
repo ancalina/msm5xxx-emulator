@@ -60,6 +60,8 @@ typedef struct {
     uint8_t audio_packet_init[4][2], audio_packet_init_valid;
     bool audio_packet_fault, audio_packet_reported, audio_packet_gate_reported;
     bool audio_packet_fifo_empty_known;
+    bool audio_packet_sequence, audio_packet_reset_armed, audio_packet_ready;
+    bool audio_packet_clear_pulse, audio_packet_clear_armed;
     unsigned audio_packet_trace_count;
     MSM5xxxAudioPacketSink audio_packet_sink;
     bool audio_enabled;
@@ -174,7 +176,8 @@ static void fallback(hwaddr address, unsigned size) {
     assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
     assert(index == s.audio_packet_index && control == s.audio_packet_control);
     assert(mode == s.audio_packet_mode && valid == s.audio_packet_init_valid);
-    assert(empty_known == s.audio_packet_fifo_empty_known);
+    assert(s.audio_packet_sequence && s.audio_packet_fault ?
+           !s.audio_packet_fifo_empty_known : empty_known == s.audio_packet_fifo_empty_known);
     assert(!memcmp(banks, s.audio_packet_init, sizeof(banks)));
 }
 
@@ -337,6 +340,178 @@ static void known_empty(void) {
     puts("full-reset known empty / unchanged capacity and rejection / no FIFO acceptance PASS");
 }
 
+static void sequence_receiver(void) {
+    fixture(0x400, 0x100);
+    assert(!s.audio_packet_sequence && status() == 1);
+    s.audio_packet_sequence = true;
+    assert(!status() && !s.audio_packet_ready);
+    control(0); assert(!status());
+    select_index(2); data(0x5e);
+    assert(s.audio_packet_fault && !status());
+    full_reset(); assert(status() == 3);
+    control(0x80); control(0x80);
+    assert(!status() && s.audio_packet_control == 0x80);
+    assert(s.audio_packet_reset_armed && !s.audio_packet_ready);
+    control(0); assert(status() == 3 && s.audio_packet_ready);
+    const uint8_t bytes[] = {0x5e, 0x82, 0x1b, 0, 0x84};
+    select_index(2); data(bytes[0]);
+    MSM5xxxAudioPacket partial = s.audio_packet_sink.packet;
+    select_index(1); select_index(2);
+    assert(!memcmp(&partial, &s.audio_packet_sink.packet, sizeof(partial)));
+    for (unsigned i = 1; i < sizeof(bytes); i++) { data(bytes[i]); }
+    assert(s.audio_packet_sink.sequence_parameter_valid);
+    assert(s.audio_packet_sink.sequence_parameter == 3456);
+    assert(s.audio_packet_sink.sequence_config_valid && s.audio_packet_sink.sequence_config == 4);
+    assert(status() == 3);
+    select_index(2); data(0x5e); data(0x82); data(0x1f);
+    assert(s.audio_packet_sink.sequence_pending_stage == 1);
+    control(0x10);
+    assert(!s.audio_packet_sink.sequence_pending_stage &&
+           !s.audio_packet_sink.sequence_pending_parameter);
+    assert(!s.audio_packet_sink.sequence_parameter_valid &&
+           !s.audio_packet_sink.sequence_config_valid &&
+           s.audio_packet_sink.sequence_parameter == 3456 &&
+           s.audio_packet_sink.sequence_config == 4 && status() == 3);
+    control(0);
+    MSM5xxxAudioPacketSink before = s.audio_packet_sink;
+    select_index(1); data(0x80);
+    assert(s.audio_packet_fault && !status() && !s.audio_packet_fifo_empty_known);
+    assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
+    select_index(2); data(0xff);
+    assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
+    full_reset(); assert(status() == 3 && !s.audio_packet_sink.sequence_parameter_valid);
+    arm.parent.pc = 0x1800;
+    fallback(0x02080000, 1);
+    assert(s.audio_packet_ready && !s.audio_packet_fault && status() == 3);
+    arm.parent.pc = s.audio_packet_begin;
+    fallback(0x02080000, 2);
+    assert(s.audio_packet_ready && !s.audio_packet_fault);
+    put16(0x100, 0x46c0);
+    arm.parent.pc = s.audio_packet_begin;
+    fallback(0x02080000, 1);
+    assert(s.audio_packet_fault && !s.audio_packet_ready && !s.audio_packet_fifo_empty_known);
+    put16(0x100, 0x4770); assert(!status());
+    full_reset(); assert(status() == 3);
+    short_section = true;
+    arm.parent.pc = s.audio_packet_begin;
+    fallback(0x02080000, 1);
+    assert(s.audio_packet_fault && !s.audio_packet_ready);
+    short_section = false; full_reset(); assert(status() == 3);
+    rom[0x400] ^= 1;
+    arm.parent.pc = s.audio_packet_begin;
+    fallback(0x02080000, 1);
+    assert(s.audio_packet_fault && !s.audio_packet_ready);
+    rom[0x400] ^= 1; full_reset(); assert(status() == 3);
+    arm.parent.pc = s.audio_packet_begin + 0x34;
+    s.lcd_aperture_backing[0x80002] = 0x5a;
+    assert(msm5xxx_poc_lcd_aperture_read(&s, 0x80002, 1) == 0x5a);
+    assert(s.audio_packet_fault && !s.audio_packet_ready && !status());
+    full_reset(); select_index(2);
+    data(0x5e); data(0x82); data(0x1b); data(0); data(0x85);
+    assert(s.audio_packet_fault && !status() && !s.audio_packet_sink.sequence_config_valid);
+    full_reset(); control(0x80); control(1);
+    assert(s.audio_packet_fault && !s.audio_packet_ready && !status());
+    puts("sequence opt-in / executed reset / unsupported and contract withdrawal PASS");
+}
+
+static void clear_fixture(void) {
+    fixture(0x400, 0x100);
+    s.audio_packet_sequence = s.audio_packet_clear_pulse = true;
+    full_reset(); packet();
+    select_index(2);
+    const uint8_t period[] = {0x5e,0x82,0x1b,0,0x84};
+    for (unsigned i = 0; i < sizeof(period); i++) { data(period[i]); }
+    assert(s.audio_packet_sink.sequence_parameter_valid &&
+           s.audio_packet_sink.sequence_parameter == 3456);
+    s.audio_packet_sink.memory[3] = 0xa7;
+    s.audio_packet_sink.timer_time = 7; s.audio_packet_sink.timer_time_valid = true;
+    s.audio_packet_sink.timer0_timebase = 0x1b;
+    s.audio_packet_sink.timer0_timebase_valid = true;
+    memcpy(s.audio_packet_init, "rawbanks", 8); s.audio_packet_init_valid = 255;
+    select_index(4);
+}
+static void clear_pulse(void) {
+    for (unsigned empty = 0; empty < 2; empty++) {
+        clear_fixture(); s.audio_packet_fifo_empty_known = empty;
+        MSM5xxxAudioPacketSink before = s.audio_packet_sink;
+        uint8_t banks[8]; memcpy(banks, s.audio_packet_init, 8);
+        data(0x28);
+        assert(s.audio_packet_clear_armed && !s.audio_packet_ready && !status());
+        assert(s.audio_packet_control == 0x28 && !s.audio_packet_fault);
+        assert(s.audio_packet_fifo_empty_known == (bool)empty);
+        assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
+        data(0);
+        assert(!s.audio_packet_clear_armed && s.audio_packet_ready);
+        assert(s.audio_packet_control == 0 && status() == (empty ? 3 : 1));
+        assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
+        assert(s.audio_packet_init_valid == 255 && !memcmp(banks, s.audio_packet_init, 8));
+    }
+    /* Capability defaults off; no widening of legacy control mask. */
+    fixture(0x400, 0x100);
+    assert(!s.audio_packet_clear_pulse && !s.audio_packet_clear_armed);
+    s.audio_packet_sequence = true; full_reset(); control(0x28);
+    assert(s.audio_packet_fault && !s.audio_packet_clear_armed && !status());
+    /* Reject every non-clean entry while preserving existing parser/raw mirrors. */
+    for (unsigned kind = 0; kind < 8; kind++) {
+        clear_fixture();
+        switch (kind) {
+        case 0: select_index(2); data(0x5e); break; /* Partial packet. */
+        case 1: select_index(2); data(0x5e); data(0x82); data(0x1f); break;
+        case 2: control(0x80); break;
+        case 3: s.audio_packet_fault = true; break;
+        case 4: s.audio_packet_sink.reject = MSM5XXX_AUDIO_PACKET_REJECT_REGISTER; break;
+        case 5: control(1); break;
+        case 6: s.audio_packet_sequence = false; break;
+        case 7: s.audio_packet_ready = false; break;
+        }
+        MSM5xxxAudioPacketSink before = s.audio_packet_sink;
+        uint8_t banks[8]; memcpy(banks, s.audio_packet_init, 8);
+        unsigned valid = s.audio_packet_init_valid;
+        control(0x28);
+        assert(s.audio_packet_fault && !s.audio_packet_ready && !s.audio_packet_clear_armed);
+        assert(!s.audio_packet_fifo_empty_known && !status());
+        assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
+        assert(s.audio_packet_init_valid == valid && !memcmp(banks, s.audio_packet_init, 8));
+        control(0); assert(s.audio_packet_fault && !s.audio_packet_ready && !status());
+    }
+    for (unsigned kind = 0; kind < 4; kind++) {
+        clear_fixture(); data(0x28);
+        MSM5xxxAudioPacketSink before = s.audio_packet_sink;
+        switch (kind) {
+        case 0: select_index(2); break; /* Owned selector interleave. */
+        case 1: data(1); break;
+        case 2:
+            arm.parent.pc = s.audio_packet_begin + 0x34;
+            (void)msm5xxx_poc_lcd_aperture_read(&s, 0x80002, 1); break;
+        case 3: data(0x28); break;
+        }
+        assert(s.audio_packet_fault && !s.audio_packet_clear_armed && !status());
+        assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
+        control(0); assert(!s.audio_packet_ready && !status()); /* Late release cannot heal. */
+    }
+    clear_fixture(); data(0x28); data(0x80);
+    assert(!s.audio_packet_clear_armed && s.audio_packet_reset_armed && !status());
+    assert(!s.audio_packet_sink.sequence_parameter_valid && !s.audio_packet_init_valid);
+    data(0); assert(s.audio_packet_ready && !s.audio_packet_reset_armed && status() == 3);
+    /* Foreign PC/width/address keeps the in-flight owned pulse unchanged. */
+    for (unsigned kind = 0; kind < 3; kind++) {
+        clear_fixture(); data(0x28);
+        arm.parent.pc = kind ? s.audio_packet_begin : 0x1800;
+        fallback(kind == 2 ? 0x02080004 : 0x02080000, kind == 1 ? 2 : 1);
+        assert(s.audio_packet_clear_armed && !s.audio_packet_ready && !s.audio_packet_fault);
+        assert(s.audio_packet_control == 0x28 && !status());
+        data(0); assert(status() == 3 && !s.audio_packet_clear_armed);
+    }
+    clear_fixture(); data(0x28);
+    MSM5xxxAudioPacketSink before = s.audio_packet_sink;
+    rom[0x400] ^= 1; arm.parent.pc = s.audio_packet_begin;
+    fallback(0x02080000, 1);
+    assert(s.audio_packet_fault && !s.audio_packet_clear_armed && !s.audio_packet_ready);
+    assert(!memcmp(&before, &s.audio_packet_sink, sizeof(before)));
+    rom[0x400] ^= 1; control(0); assert(!status());
+    puts("clear28 opt-in / clean pulse knowledge preservation / interleave sticky / fallback PASS");
+}
+
 int main(void) {
     s.lcd_aperture_backing = calloc(1, MSM5XXX_POC_LCD_APERTURE_SIZE);
     assert(s.lcd_aperture_backing);
@@ -460,7 +635,7 @@ int main(void) {
     MSM5xxxAudioPacketSink saved = s.audio_packet_sink;
     data(0xff); assert(!memcmp(&saved, &s.audio_packet_sink, sizeof(saved)));
     puts("selector persistence / full+parser reset / unknown and sticky rejection PASS");
-    controller(); known_empty();
+    controller(); known_empty(); sequence_receiver(); clear_pulse();
     free(s.lcd_aperture_backing); return 0;
 }
 '''

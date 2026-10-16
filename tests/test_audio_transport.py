@@ -11,6 +11,7 @@ import numpy as np
 
 from msm5xxx_emulator.detection.audio import _marker_families
 from msm5xxx_emulator.detection.audio import find_audio_transport
+from msm5xxx_emulator.detection.memory_layout import find_linker_layout
 from msm5xxx_emulator.core.lifecycle import ApproximateSmafPlayer as LifecycleAudioPlayer
 from msm5xxx_emulator.devices.audio import AudioMixin
 from msm5xxx_emulator.devices.audio_lle import AudioTransport
@@ -41,7 +42,229 @@ def _thumb_bl(source: int, target: int) -> bytes:
     )
 
 
+def _sequence_image(shift: int = 0) -> tuple[bytearray, dict[str, int]]:
+    spans = {
+        'timer': (0xb00, (156,),
+            'fcb51c1c0126f6430328079d07dc012d05dc012c03dc01278740fb0803d0301cfcbc08bc1847214bdb681e1c3e4002d00220c043f4e7061c5006400ea2006d002a43022e16da9b0712d1522400ab1c7082245c708023194300ab99705421d970822119715871802010439871072114e0002015e00121012c00d000210906090e572400ab1c7082245c7098700a43101c8023184300abd8700421684604f0aaf9024bd9683943d960bae7'),
+        'timer-stop': (0xbb0, (70,),
+            '98b5021c0020871e022a03dc01219140cb0803d0381c98bc08bc18470b4f0c1cfb689c4302d00020c043f4e75940f960022af0d1582000ab187082205870802098700321684604f07df9e4e7'),
+        'sequence': (0x100, (76,),
+            '9cb501228240930804d00120c0439cbc08bc1847104f7b6a1c1c144002d00220c043f4e71a437a62002812d15e2000ab187082205870c8114006400e98704806400ed870842018710521684604f052f9dde70020dbe7'),
+        'sender': (0x200, (8, 16, 36, 54, 72, 88, 104),
+            'f0b5071c0e1c022002f0a1fdb5090de002f082fe041c002800da11e0402403e03878013702f0a5fd013cf9d2013defd2b506ad0e14d002f06ffe041c00280dda0b4840682030007902f081fd201cf0bc08bc18473878013702f08bfd013df9d2034840682030007902f071fd0020eee7'),
+        'init': (0x400, (2, 8, 14, 20, 26, 32),
+            '042001f012fe002001f021fe052001f00cfe0e2001f01bfe062001f006fe3f2001f015fe'),
+        'alternate-init': (0x45e, (2, 8, 14, 20, 26, 32),
+            '042001f0e3fd002001f0f2fd052001f0ddfd0e2001f0ecfd062001f0d7fd3e2001f0e6fd'),
+        'reset': (0x43c, (2, 8, 12, 18),
+            '042001f0f4fd802001f003fe83f67efb002001f0fefd'),
+        'empty': (0x8ee, (4, 14, 26, 38, 50, 62, 78, 94, 120, 130, 142, 154, 166, 178, 188, 198),
+            'f0b50027fff7a8ff800800d30127fff7a3ff800801d302200743fff79dff800801d304200743fff797ff800801d308200743fff791ff800801d310200743fff78bff022318402024002800d02743fff783ff022318404025002800d02f43fff77bff022318408026002800d03743002f34d0ff2f2ed00027fff76eff800800d30127fff769ff800801d302200743fff763ff800801d304200743fff75dff800801d308200743fff757ff800801d310200743fff751ff800800d32743fff74cff800800d32f43fff747ff800800d33743ff2f03d10120f0bc08bc18470020fae7'),
+        'ready': (0xa00, (14, 24, 36, 48, 60, 72, 84, 94),
+            'f0b5224c00204025802620700027fff71aff400800d30127fff715ff400801d302200743fff70fff400801d304200743fff709ff400801d308200743fff703ff400801d310200743fff7fdfe400801d320200743fff7f7fe400800d32f43fff7f2fe400800d337432078013020700006000e642805dd00202070c043f0bc08bc1847ff2fc2d10020f8e7'),
+        'wrapper': (0x600, (8, 24, 44, 60),
+            '4121c90400b5087081f689fd08bc18474120c00480b5077881f681fd381c80bc08bc18474121c90400b5887081f677fd08bc18474120c00480b5877881f66ffd381c80bc08bc1847'),
+    }
+    image = bytearray(b"\xff" * (0xe00 + shift))
+    targets = {
+        "timer": [0x200], "timer-stop": [0x200],
+        "sequence": [0x200],
+        "sender": [0x600, 0xa00, 0x624, 0xa00, 0x600, 0x624, 0x600],
+        "init": [0x600, 0x624] * 3,
+        "alternate-init": [0x600, 0x624] * 3,
+        "reset": [0x600, 0x624, 0x800, 0x624],
+        "empty": [0x610] * 16, "ready": [0x610] * 8,
+        "wrapper": [0x800] * 4,
+    }
+    for role, (offset, calls, hex_code) in spans.items():
+        code = bytes.fromhex(hex_code)
+        start = offset + shift
+        image[start:start + len(code)] = code
+        for call, target in zip(calls, targets[role]):
+            image[start + call:start + call + 4] = _thumb_bl(start + call, target + shift)
+    image[0x49a + shift:0x4b0 + shift] = image[0x43c + shift:0x452 + shift]
+    for call, target in zip((2, 8, 12, 18), targets["reset"]):
+        start = 0x49a + shift + call
+        image[start:start + 4] = _thumb_bl(start, target + shift)
+    image[0x800 + shift:0x802 + shift] = b"\x70\x47"
+    struct.pack_into("<I", image, 0x200 + shift + 112, 0x1000100)
+    struct.pack_into("<I", image, 0x100 + shift + 88, 0x1000200)
+    struct.pack_into("<I", image, 0xbac + shift, 0x1000200)
+    struct.pack_into("<I", image, 0xbfc + shift, 0x1000200)
+    struct.pack_into("<I", image, 0xa00 + shift + 140, 0x1000300)
+    return image, {role: offset + shift for role, (offset, _, _) in spans.items()}
+
+
+def _sequence_clear_image(shift: int = 0) -> tuple[bytearray, dict[str, int]]:
+    image, roles = _sequence_image(shift)
+    clear = 0xd00 + shift
+    code = bytes.fromhex(
+        "90b5042001f0f3fe282001f002ff83f67dfc002001f0fdfe03211448fff740f9"
+        "124f0020163f21227968520189180873796889184873002441007b680130c918"
+        "89184c820428f7db78682030007901f0cefe78682030c4717868203044707868"
+        "2030047090bc08bc00201847")
+    image[clear:clear + 108] = code
+    for offset, target in zip((4, 10, 14, 20, 28, 78),
+                              (roles["wrapper"], roles["wrapper"] + 0x24,
+                               0x800 + shift, roles["wrapper"] + 0x24,
+                               roles["sender"], roles["wrapper"])):
+        image[clear + offset:clear + offset + 4] = _thumb_bl(clear + offset, target)
+    payload = 0x1000116
+    struct.pack_into("<I", image, clear + 108, payload)
+    source = len(image)
+    image.extend(b"\xff" * 0x200)
+    table = 0x300 + shift
+    struct.pack_into("<5I", image, table, source, 0x1000000, 0x200,
+                     0x1000200, 0x1000)
+    image[source + 0x116:source + 0x119] = b"\x60\x82\x84"
+    return image, {**roles, "clear": clear, "copy": table, "payload_rom": source + 0x116}
+
+
 class AudioTransportTests(unittest.TestCase):
+    def test_optional_clear_contract_relocated_and_byte_dependencies(self):
+        for shift in (0, 0x2000):
+            image, roles = _sequence_clear_image(shift)
+            found = find_audio_transport(bytes(image))
+            self.assertEqual(found["static_status"], "accepted")
+            self.assertEqual(found["control_clear_status"], "accepted")
+            self.assertIsNone(found["control_clear_reject_reason"])
+            self.assertEqual(found["control_clear_producer"], roles["clear"])
+            self.assertEqual(found["control_clear_payload"], 0x1000116)
+            self.assertEqual(found["ram_dependencies"][-3:],
+                             [[0x1000116 + i, 1] for i in range(3)])
+            self.assertIn([roles["payload_rom"], 3], found["nor_dependencies"])
+            self.assertIn([roles["copy"], 20], found["nor_dependencies"])
+
+    def test_optional_clear_failures_preserve_existing_sequence(self):
+        image, roles = _sequence_clear_image()
+        mutations = {}
+        for offset in (4, 10, 14, 20, 28, 78):
+            bad = bytearray(image)
+            site = roles["clear"] + offset
+            bad[site:site + 4] = _thumb_bl(site, roles["timer"])
+            mutations[f"other-in-image-target-{offset}"] = bad
+            bad = bytearray(image)
+            bad[site:site + 4] = b"\xc0\x46" * 2
+            mutations[f"erased-bl-{offset}"] = bad
+        for offset in (8, 18, 24):
+            bad = bytearray(image)
+            bad[roles["clear"] + offset] ^= 1
+            mutations[f"opcode-{offset}"] = bad
+        bad = bytearray(image)
+        struct.pack_into("<I", bad, roles["clear"] + 108, 0x1000117)
+        mutations["wrong-shared-state"] = bad
+        bad = bytearray(image)
+        bad[roles["payload_rom"] + 2] ^= 1
+        mutations["wrong-payload"] = bad
+        for field, value in ((0, len(image)), (8, 0x118), (12, 0x1000300)):
+            bad = bytearray(image)
+            struct.pack_into("<I", bad, roles["copy"] + field, value)
+            mutations[f"invalid-copy-{field}"] = bad
+        bad = bytearray(image)
+        # Two valid covering copies are ambiguous, even if one payload matches.
+        struct.pack_into("<5I", bad, 0x2a0, roles["payload_rom"] - 0x11a,
+                         0x1000000, 0x200, 0x1000200, 0x1000)
+        mutations["ambiguous-covering-copy"] = bad
+        bad = bytearray(image)
+        duplicate = 0xc20
+        bad[duplicate:duplicate + 112] = image[roles["clear"]:roles["clear"] + 112]
+        for offset, target in zip((4, 10, 14, 20, 28, 78),
+                                  (0x600, 0x624, 0x800, 0x624, 0x200, 0x600)):
+            bad[duplicate + offset:duplicate + offset + 4] = _thumb_bl(duplicate + offset, target)
+        mutations["duplicate-clear"] = bad
+        mutations["truncated-clear-literal"] = image[:roles["clear"] + 110]
+        absent, _ = _sequence_image()
+        mutations["absent-clear"] = absent
+        for label, bad in mutations.items():
+            with self.subTest(label=label):
+                found = find_audio_transport(bytes(bad))
+                self.assertEqual(found["static_status"], "accepted")
+                self.assertEqual(found["grammar"], "repeated-bit-sequence-v1")
+                self.assertEqual(found["control_clear_status"], "unavailable")
+                self.assertTrue(found["control_clear_reject_reason"])
+                self.assertNotIn("control_clear_producer", found)
+                self.assertNotIn("control_clear_payload", found)
+                self.assertEqual(found["ram_dependencies"],
+                                 [[0x1000100, 8], [0x1000200, 40], [0x1000300, 1]])
+
+    def test_optional_clear_copy_selection_preserves_default(self):
+        image, roles = _sequence_clear_image()
+        struct.pack_into("<5I", image, 0x2a0, 0x100, 0x13feffc, 0x34,
+                         0x13ff030, 0x978)
+        default = find_linker_layout(bytes(image))
+        self.assertEqual(default.table_offset, 0x2a0)
+        self.assertEqual(default.data_target, 0x13feffc)
+        selected = find_linker_layout(bytes(image), required_span=(0x1000116, 3))
+        self.assertEqual(selected.table_offset, roles["copy"])
+        self.assertEqual(find_audio_transport(bytes(image))["control_clear_status"], "accepted")
+        for span in ([], (), (1,), (1, 2, 3), (True, 3), (-1, 3),
+                     (0x1000116, 0), (0xffffffff, 3), (0x1000200, 1)):
+            with self.subTest(span=span):
+                self.assertIsNone(find_linker_layout(bytes(image), required_span=span))
+        duplicate = bytearray(image)
+        duplicate[0x2c0:0x2d4] = image[roles["copy"]:roles["copy"] + 20]
+        self.assertIsNone(find_linker_layout(bytes(duplicate), required_span=(0x1000116, 3)))
+        self.assertEqual(find_audio_transport(bytes(duplicate))["static_status"], "accepted")
+        self.assertEqual(find_audio_transport(bytes(duplicate))["control_clear_status"], "unavailable")
+
+    def test_sequence_class_requires_same_image_producer_reset_and_consumers(self):
+        for shift in (0, 0x2000):
+            image, roles = _sequence_image(shift)
+            detected = find_audio_transport(bytes(image))
+            self.assertEqual(detected["grammar"], "repeated-bit-sequence-v1")
+            self.assertEqual(detected["static_status"], "accepted")
+            self.assertEqual(detected["begin"], roles["wrapper"] + 6)
+            self.assertEqual(detected["sequence_producer"], roles["sequence"])
+            self.assertEqual(detected["timer_producer"], roles["timer"])
+            self.assertEqual(detected["timer_stop_producer"], roles["timer-stop"])
+            self.assertIn([roles["ready"] + 140, 4], detected["nor_dependencies"])
+            self.assertEqual(detected["ram_dependencies"],
+                             [[0x1000100, 8], [0x1000200, 40], [0x1000300, 1]])
+            for role, literal in (("timer", 172), ("timer-stop", 76)):
+                bad = bytearray(image)
+                struct.pack_into("<I", bad, roles[role] + literal, 0x1000300)
+                self.assertNotEqual(find_audio_transport(bytes(bad))["static_status"], "accepted")
+            self.assertTrue(detected["requires_runtime_reset"])
+            self.assertEqual(detected["renderer_status"], "unavailable")
+            for role in roles:
+                with self.subTest(shift=shift, damaged=role):
+                    bad = bytearray(image)
+                    bad[roles[role]] ^= 1
+                    self.assertNotEqual(find_audio_transport(bytes(bad))["static_status"], "accepted")
+            for site in (roles["timer"] + 156, roles["timer-stop"] + 70,
+                         roles["sequence"] + 76, roles["sender"] + 16,
+                         roles["ready"] + 14, roles["empty"] + 4,
+                         roles["init"] + 2, 0x49a + shift + 12):
+                bad = bytearray(image)
+                bad[site:site + 4] = _thumb_bl(site, 0xb00 + shift)
+                self.assertNotEqual(find_audio_transport(bytes(bad))["static_status"], "accepted")
+            bad = bytearray(image)
+            bad[0x800 + shift] ^= 1
+            self.assertNotEqual(find_audio_transport(bytes(bad))["static_status"], "accepted")
+            bad = bytearray(image)
+            duplicate = 0xd00 + shift
+            bad[duplicate:duplicate + 86] = image[roles["sequence"]:roles["sequence"] + 86]
+            bad[duplicate + 76:duplicate + 80] = _thumb_bl(duplicate + 76, roles["sender"])
+            self.assertNotEqual(find_audio_transport(bytes(bad))["static_status"], "accepted")
+            self.assertNotEqual(find_audio_transport(bytes(image[:roles["ready"] + 136]))["static_status"], "accepted")
+
+    def test_sequence_literal_owners_require_word_alignment(self):
+        image, _ = _sequence_image(2)
+        self.assertNotEqual(find_audio_transport(bytes(image))["static_status"], "accepted")
+
+    def test_sequence_metadata_integrates_with_firmware_detector(self):
+        import tempfile
+        from pathlib import Path
+        from msm5xxx_emulator.detection.firmware import detect
+        image, _ = _sequence_image()
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "protocol.bin"
+            firmware.write_bytes(image)
+            config = detect(firmware)
+        self.assertEqual(config.audio_transport["static_status"], "accepted")
+        self.assertEqual(config.audio_transport["grammar"], "repeated-bit-sequence-v1")
+        self.assertEqual(config.audio_transport["block_write_offsets"], [])
+
     def test_lifecycle_uses_packaged_audio_player(self) -> None:
         self.assertIs(LifecycleAudioPlayer, ApproximateSmafPlayer)
 
@@ -110,6 +333,49 @@ class AudioTransportTests(unittest.TestCase):
             find_audio_transport(bytes(ma5))["reject_reason"],
             "marker-ambiguous",
         )
+
+    def test_repeated_status_requires_closed_accumulator_and_keeps_native_fallback(self) -> None:
+        for immediate in (0x41, 0x49):
+            with self.subTest(base=immediate << 19):
+                image = bytearray(b"\xff" * 0x800)
+                for entry, prefix in (
+                    (0x400, "4121c90400b50870"),
+                    (0x410, "4120c00480b50778"),
+                    (0x424, "4121c90400b58870"),
+                    (0x434, "4120c00480b58778"),
+                ):
+                    code = bytearray.fromhex(prefix)
+                    code[0] = immediate
+                    image[entry:entry + 8] = code
+                    image[entry + 8:entry + 12] = _thumb_bl(entry + 8, 0x700)
+                first = 0x10E
+                struct.pack_into("<H", image, first - 14, 0xB5F0)
+                image[first - 10:first] = bytes.fromhex("00204025802620700027")
+                for offset, tail in zip(
+                    (0, 0xA, 0x16, 0x22, 0x2E, 0x3A, 0x46, 0x50),
+                    ("400800d30127", "400801d302200743",
+                     "400801d304200743", "400801d308200743",
+                     "400801d310200743", "400801d320200743",
+                     "400800d32f43", "400800d33743"),
+                ):
+                    call = first + offset
+                    image[call:call + 4] = _thumb_bl(call, 0x410)
+                    image[call + 4:call + 4 + len(bytes.fromhex(tail))] = bytes.fromhex(tail)
+                struct.pack_into("<H", image, first + 0x74, 0x2FFF)
+                detected = find_audio_transport(bytes(image))
+                self.assertEqual(detected["grammar"], "repeated-bit-status-v1")
+                self.assertEqual(detected["reject_reason"], "protocol-unsupported")
+                self.assertEqual(detected["candidates"][0]["base"], immediate << 19)
+                self.assertEqual(detected["candidates"][0]["status_consumers"], [0x100])
+                self.assertEqual(detected["candidates"][0]["status_mask"], 1)
+                self.assertEqual(detected["candidates"][0]["consecutive_samples"], 8)
+                self.assertNotEqual(detected["static_status"], "accepted")
+                self.assertFalse(AudioTransport(detected).write(0x406, immediate << 19, 1, 2))
+                image[first + 0xA + 8] = 4  # Duplicate accumulator bit; not eight samples.
+                self.assertEqual(find_audio_transport(bytes(image))["reject_reason"], "marker-none")
+                image[first + 0xA + 8] = 2
+                struct.pack_into("<H", image, first + 0x50 + 4, 0x0848)
+                self.assertEqual(find_audio_transport(bytes(image))["reject_reason"], "marker-none")
 
     def test_markerless_command_status_shape_requires_closed_callers(self) -> None:
         image = bytearray(b"\xff" * 0x900)

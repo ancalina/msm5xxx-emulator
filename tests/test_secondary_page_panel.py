@@ -215,6 +215,8 @@ class SecondaryPagePanelTests(unittest.TestCase):
         controller._display_lock = Lock()
         controller._lcd_secondary_panel = PagePanel(0x02000000)
         controller._audio_transport_owns_write = lambda *args: False
+        controller._lcd_observe_shifted_orientation = lambda *args: None
+        controller._lcd_packed_window_observe = lambda *args: None
         controller.lcd_writes = 0
         controller.lcd_port_writes = Counter()
         fallback = []

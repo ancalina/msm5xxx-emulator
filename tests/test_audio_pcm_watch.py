@@ -78,6 +78,7 @@ typedef struct {
     uint8_t audio_packet_init_valid;
     bool audio_packet_fault, audio_packet_reported, audio_packet_gate_reported;
     bool audio_packet_fifo_empty_known;
+    bool audio_packet_ready, audio_packet_reset_armed, audio_packet_clear_armed;
     unsigned audio_packet_trace_count;
     uint8_t audio_stream_status_pending;
     unsigned audio_backend_pcm_length, audio_backend_pcm_offset;
@@ -244,9 +245,11 @@ int main(void) {
     assert(flush() == 1 && !written_length);
 
     setup(); block();
+    s.audio_packet_ready = s.audio_packet_reset_armed = s.audio_packet_clear_armed = true;
     msm5xxx_poc_audio_reset(&s);
     assert(!active_watch && !s.audio_pcm_watch && !s.audio_pcm_length);
     assert(!s.audio_output_started && !s.audio_pcm_failed && !s.audio_stream_rejected);
+    assert(!s.audio_packet_ready && !s.audio_packet_reset_armed && !s.audio_packet_clear_armed);
     assert(!written_length && flush() == 1);
 
     setup(); block();

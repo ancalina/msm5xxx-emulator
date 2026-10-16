@@ -845,19 +845,21 @@ class InputMixin:
 
     def _direct_sideband_producer(
             self, bit: int, event_code: int | None,
+            profile: dict[str, object] | None = None,
     ) -> dict[str, object] | None:
         matches = [producer
-                   for producer in self._validated_direct_sideband_producers()
+                   for producer in self._validated_direct_sideband_producers(profile)
                    if (producer.get("semantic_key") == bit
                        and (event_code is None
                             or producer.get("event") == event_code))]
         return matches[0] if len(matches) == 1 else None
 
     def _validated_direct_sideband_producers(
-            self,
+            self, profile: dict[str, object] | None = None,
     ) -> tuple[dict[str, object], ...]:
         """Reject incomplete or mutually conflicting physical producers."""
-        profile = getattr(self, "direct_input_profile", None)
+        if profile is None:
+            profile = getattr(self, "direct_input_profile", None)
         raw = (profile.get("sideband_producers", ())
                if isinstance(profile, dict) else ())
         matrix_events = (profile.get("event_codes", ())

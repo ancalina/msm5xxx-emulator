@@ -875,6 +875,52 @@ int main(void) {
     assert(bitbang_calls==2 && s.eeprom_gpio_backing[16]==0xd2);
     pc=0; assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xd2);
     s.matrix_input_address=0x3000694;
+    /* Optional independent input pin: legacy GPIO rows and EEPROM stay owned. */
+    MSM5xxxPOCMachineState legacy_gpio = s;
+    const char *sideband_gpio = "3000694:801fc:80442:300066c:62:3000668:6:3000664:80:10";
+    s = (MSM5xxxPOCMachineState){.primary_nor_size=0x800000,.cpu=&cpu_state}; err=NULL;
+    msm5xxx_poc_set_matrix_gpio(&s,sideband_gpio,&err);
+    assert(!err && s.matrix_input_sideband_mask==0x10);
+    property=msm5xxx_poc_get_matrix_gpio(&s,&err);
+    assert(!strcmp(property,sideband_gpio)); free(property);
+    s.eeprom_gpio_enabled=true; s.eeprom_gpio_base=0x3000660;
+    s.eeprom_data_offset=8; s.eeprom_data_mask=8;
+    s.eeprom_clock_offset=12; s.eeprom_clock_mask=1;
+    s.eeprom_direction_offset=28;
+    for(unsigned i=0;i<3;i++) s.eeprom_gpio_backing[ports[i]]=(uint8_t)~masks[i];
+    uint8_t original_port8 = s.eeprom_gpio_backing[8];
+    record[0]=0x80; record[1]=1; record[2]=255; record[3]=0x10;
+    assert(!host_rejected(&s,record));
+    record[3]=0x20; assert(host_rejected(&s,record)); record[3]=0x10;
+    for(unsigned value=0;value<=255;value++) {
+        backing[0x694]=value; pc=0x8016a;
+        s.matrix_input_pressed=false;
+        assert(msm5xxx_poc_matrix_input_read(&s,0,1)==(value|0x10));
+        s.matrix_input_pressed=true; s.matrix_input_row=255; s.matrix_input_sense=0x10;
+        assert(msm5xxx_poc_matrix_input_read(&s,0,1)==(value&~0x10));
+        pc=s.matrix_input_presence_site;
+        assert(msm5xxx_poc_matrix_input_read(&s,0,1)==((value&~0x1f)|15));
+        assert(backing[0x694]==value && s.eeprom_gpio_backing[8]==original_port8);
+    }
+    for(unsigned i=0;i<3;i++) s.eeprom_gpio_backing[ports[i]]=0xff;
+    s.eeprom_gpio_backing[12]&=~2U; pc=s.matrix_input_sense_site;
+    assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xef);
+    record[1]=0; record[2]=0; record[3]=0; assert(!host_rejected(&s,record));
+    s.matrix_input_pressed=false; backing[0x694]=0xa5; pc=0x8016a;
+    assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xb5);
+    vcpu=false; assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xa5); vcpu=true;
+    cpu_state.neg.can_do_io=false; assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xa5); cpu_state.neg.can_do_io=true;
+    assert(msm5xxx_poc_matrix_input_read(&s,0,2)==0xa5);
+    s.eeprom_gpio_base=0x3000680; s.eeprom_data_offset=20;
+    s.eeprom_direction_offset=12; s.eeprom_clock_offset=28;
+    s.eeprom_data_mask=0x10; s.eeprom_clock_mask=1;
+    assert(msm5xxx_poc_matrix_gpio_conflict(&s));
+    s.eeprom_data_mask=0x20; assert(!msm5xxx_poc_matrix_gpio_conflict(&s));
+    s.eeprom_data_mask=0x10; s.eeprom_data_offset=0; s.eeprom_direction_offset=20;
+    assert(msm5xxx_poc_matrix_gpio_conflict(&s));
+    s.eeprom_direction_offset=12; s.eeprom_clock_offset=20; s.eeprom_clock_mask=0x10;
+    assert(msm5xxx_poc_matrix_gpio_conflict(&s));
+    s=legacy_gpio;
     s.eeprom_data_mask=2; assert(msm5xxx_poc_matrix_gpio_conflict(&s));
     s.eeprom_data_mask=8; s.eeprom_clock_mask=2; assert(msm5xxx_poc_matrix_gpio_conflict(&s));
     s.eeprom_clock_mask=1; s.eeprom_direction_offset=4; s.eeprom_data_mask=0x80;
@@ -892,6 +938,11 @@ int main(void) {
     const char *bad_gpio[]={
         "3000694:2:4:300066c:62:3000668:6:3000664",
         "3000694:2:4:300066c:62:3000668:6:3000664:80:1",
+        "3000694:2:4:300066c:62:3000668:6:3000664:80:30",
+        "3000694:2:4:300066c:62:3000668:6:3000664:80:100",
+        "3000694:2:4:300066c:62:3000668:6:3000664:80:10:",
+        "3000694:2:4:300066c:62:3000668:6:3000664:80:-10",
+        "3000694:2:4:300066c:62:3000668:6:3000664:80:10 ",
         "3000694:2:4:300066c:62:3000668:6:3000664:80 ",
         "3000694:2:100000000:300066c:62:3000668:6:3000664:80",
         "3000694:2:4:300066c:62:3000668:6:3000664:0",

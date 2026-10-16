@@ -5,6 +5,221 @@ from pathlib import Path
 
 
 class TestAudioRequestC(unittest.TestCase):
+    def test_sequence_timer0_raw_mirrors(self):
+        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        harness = r'''#include "msm5xxx-audio-request.h"
+#include <assert.h>
+#include <stddef.h>
+static void bytes(MSM5xxxAudioPacketSink *s,const unsigned char *p,size_t n){for(size_t i=0;i<n;i++) assert(msm5xxx_audio_packet_sink_feed_sequence(s,p[i]));}
+static void header(MSM5xxxAudioPacketSink *s,unsigned char a){assert(msm5xxx_audio_packet_sink_feed_sequence(s,a));assert(msm5xxx_audio_packet_sink_feed_sequence(s,0x82));}
+static void unchanged(const MSM5xxxAudioPacketSink *s,const MSM5xxxAudioPacketSink *old){
+ assert(s->timer0_timebase==old->timer0_timebase&&s->timer0_time==old->timer0_time&&s->timer0_control==old->timer0_control&&s->timer0_pending_time==old->timer0_pending_time);
+ assert(s->timer0_timebase_valid==old->timer0_timebase_valid&&s->timer0_time_valid==old->timer0_time_valid&&s->timer0_control_valid==old->timer0_control_valid);
+ assert(s->timer_time==old->timer_time&&s->timer_control==old->timer_control&&s->timer_time_valid==old->timer_time_valid&&s->timer_control_valid==old->timer_control_valid);
+ assert(s->sequence_parameter==old->sequence_parameter&&s->sequence_config==old->sequence_config&&s->sequence_parameter_valid==old->sequence_parameter_valid&&s->sequence_config_valid==old->sequence_config_valid);
+ assert(s->register_writes==old->register_writes&&s->memory_writes==old->memory_writes&&s->sequence_pending_stage==old->sequence_pending_stage);
+}
+int main(void){
+ MSM5xxxAudioPacketSink s;
+ const unsigned char packet[]={0x52,0x82,0x9b,0x54,0x82,0x14,0x80};
+ msm5xxx_audio_packet_sink_reset(&s);bytes(&s,packet,sizeof(packet));
+ assert(s.timer0_timebase_valid&&s.timer0_timebase==0x1b&&s.timer0_time_valid&&s.timer0_time==0x14&&s.timer0_control_valid&&s.timer0_control==0&&s.register_writes==3);
+ for(unsigned t=0;t<128;t++){header(&s,0x54);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,t));assert(!s.timer0_time_valid&&!s.timer0_control_valid);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));assert(s.timer0_time==t&&s.timer0_control==0&&s.timer0_time_valid&&s.timer0_control_valid);}
+ for(unsigned v=0;v<256;v++) if(v!=0x80){msm5xxx_audio_packet_sink_reset(&s);header(&s,0x54);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x14));assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,v));assert(s.reject&&!s.timer0_time_valid&&!s.timer0_control_valid);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));}
+ for(unsigned v=0;v<256;v++) if(v!=0x9b){msm5xxx_audio_packet_sink_reset(&s);header(&s,0x52);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,v));assert(!s.timer0_timebase_valid);}
+ for(unsigned v=128;v<256;v++){msm5xxx_audio_packet_sink_reset(&s);header(&s,0x54);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,v));}
+ for(unsigned a=0x52;a<=0x55;a++){msm5xxx_audio_packet_sink_reset(&s);assert(msm5xxx_audio_packet_sink_feed(&s,a));assert(msm5xxx_audio_packet_sink_feed(&s,0x82));assert(!msm5xxx_audio_packet_sink_feed(&s,a==0x52?0x9b:0x80));}
+ msm5xxx_audio_packet_sink_reset(&s);header(&s,0x55);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));
+ msm5xxx_audio_packet_sink_reset(&s);header(&s,0x53);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));
+ msm5xxx_audio_packet_sink_reset(&s);bytes(&s,packet,sizeof(packet));header(&s,0x54);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x15));assert(s.timer0_time==0x14&&!s.timer0_time_valid);msm5xxx_audio_packet_reset(&s.packet);header(&s,0x55);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));assert(s.timer0_time==0x14&&!s.timer0_time_valid);
+ msm5xxx_audio_packet_sink_reset(&s);header(&s,0x54);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x14));assert(!msm5xxx_audio_packet_sink_feed(&s,0x80));
+ for(unsigned a=0x57;a<=0x5e;a+=7){msm5xxx_audio_packet_sink_reset(&s);header(&s,0x54);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x14));msm5xxx_audio_packet_reset(&s.packet);header(&s,a);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,1));msm5xxx_audio_packet_reset(&s.packet);header(&s,0x55);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));}
+ msm5xxx_audio_packet_sink_reset(&s);assert(!s.timer0_timebase_valid&&!s.timer0_time_valid&&!s.timer0_control_valid&&!s.sequence_pending_stage);
+ /* Nonmutation is measured immediately before the rejected byte, including
+  * prior committed mirrors and validity. Accepted pending high already clears
+  * pair validity; rejection must preserve that exact state too. */
+ for(unsigned a=0x52;a<=0x55;a++) for(unsigned v=0;v<256;v++){
+  if((a==0x52&&v==0x9b)||(a==0x54&&v<128)) continue;
+  msm5xxx_audio_packet_sink_reset(&s);bytes(&s,packet,sizeof(packet));
+  header(&s,(unsigned char)a);MSM5xxxAudioPacketSink old=s;
+  assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,(unsigned char)v));unchanged(&s,&old);
+  assert(s.reject);assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));unchanged(&s,&old);
+ }
+ for(unsigned v=0;v<256;v++) if(v!=0x80){
+  msm5xxx_audio_packet_sink_reset(&s);bytes(&s,packet,sizeof(packet));header(&s,0x54);
+  assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x33));MSM5xxxAudioPacketSink old=s;
+  assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,(unsigned char)v));unchanged(&s,&old);
+ }
+ for(unsigned a=0x52;a<=0x55;a++){
+  msm5xxx_audio_packet_sink_reset(&s);bytes(&s,packet,sizeof(packet));
+  assert(msm5xxx_audio_packet_sink_feed(&s,(unsigned char)a));assert(msm5xxx_audio_packet_sink_feed(&s,0x82));
+  MSM5xxxAudioPacketSink old=s;assert(!msm5xxx_audio_packet_sink_feed(&s,a==0x52?0x9b:0x80));unchanged(&s,&old);
+ }
+ /* The pair and timebase are independently valid raw mirrors. */
+ msm5xxx_audio_packet_sink_reset(&s);header(&s,0x54);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x2a));assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x80));
+ assert(s.timer0_time==0x2a&&s.timer0_time_valid&&s.timer0_control_valid&&!s.timer0_timebase_valid);
+ header(&s,0x52);assert(msm5xxx_audio_packet_sink_feed_sequence(&s,0x9b));assert(s.timer0_timebase==0x1b&&s.timer0_timebase_valid&&s.timer0_time==0x2a&&s.timer0_time_valid&&s.timer0_control_valid);
+ assert(!msm5xxx_audio_packet_sink_feed_sequence(NULL,0));
+ return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "check.c").write_text(harness)
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            "-fsanitize=undefined", "-fno-sanitize-recover=undefined",
+                            "-I", str(core), str(path / "check.c"),
+                            str(core / "msm5xxx-audio-request.c"), "-o", str(path / "check")],
+                           check=True, timeout=30)
+            subprocess.run([str(path / "check")], check=True, timeout=10)
+
+    def test_sequence_timer_pair_raw_mirrors(self):
+        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        harness = r'''#include "msm5xxx-audio-request.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+static void header(MSM5xxxAudioPacketSink *s, unsigned address, bool typed)
+{
+    assert((typed ? msm5xxx_audio_packet_sink_feed_sequence(s, address & 127) :
+                    msm5xxx_audio_packet_sink_feed(s, address & 127)));
+    assert((typed ? msm5xxx_audio_packet_sink_feed_sequence(s, 0x80 | (address >> 7)) :
+                    msm5xxx_audio_packet_sink_feed(s, 0x80 | (address >> 7))));
+}
+
+static void rejected(MSM5xxxAudioPacketSink *s, uint8_t byte, bool typed)
+{
+    MSM5xxxAudioPacketSink before = *s;
+    assert(!(typed ? msm5xxx_audio_packet_sink_feed_sequence(s, byte) :
+                     msm5xxx_audio_packet_sink_feed(s, byte)));
+    assert(s->reject && s->timer_time == before.timer_time &&
+           s->timer_control == before.timer_control &&
+           s->timer_time_valid == before.timer_time_valid &&
+           s->timer_control_valid == before.timer_control_valid);
+    assert(s->register_writes == before.register_writes);
+    assert(!memcmp(s->channel, before.channel, sizeof(s->channel)));
+    assert(!memcmp(s->memory, before.memory, sizeof(s->memory)));
+    before = *s;
+    assert(!msm5xxx_audio_packet_sink_feed_sequence(s, 0x85));
+    assert(!memcmp(s, &before, sizeof(*s)));
+}
+
+int main(void)
+{
+    MSM5xxxAudioPacketSink s;
+    for (unsigned raw = 0; raw < 128; raw++) {
+        msm5xxx_audio_packet_sink_reset(&s);
+        header(&s, 0x157, true);
+        assert(msm5xxx_audio_packet_sink_feed_sequence(&s, raw));
+        assert(!s.timer_time_valid && !s.timer_control_valid);
+        assert(s.sequence_pending_stage == 3 && !s.timer_time && !s.timer_control);
+        assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x85));
+        assert(s.timer_time == raw && s.timer_control == 5 &&
+               s.timer_time_valid && s.timer_control_valid && !s.sequence_pending_stage);
+        assert(s.register_writes == 2);
+        header(&s, 0x158, true);
+        assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x80));
+        assert(s.timer_time == raw && s.timer_time_valid &&
+               !s.timer_control && s.timer_control_valid);
+    }
+    msm5xxx_audio_packet_sink_reset(&s);
+    header(&s, 0x158, true);
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x80));
+    assert(!s.timer_time_valid && s.timer_control_valid && !s.timer_control);
+    header(&s, 0x157, true);
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 100));
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x85));
+    header(&s, 0x157, true);
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 99));
+    assert(s.timer_time == 100 && s.timer_control == 5 &&
+           !s.timer_time_valid && !s.timer_control_valid);
+    rejected(&s, 0x80, true); /* Pending pair cannot become independent rollback. */
+
+    for (unsigned address = 0x157; address <= 0x158; address++) {
+        msm5xxx_audio_packet_sink_reset(&s);
+        header(&s, address, false);
+        rejected(&s, address == 0x157 ? 100 : 0x80, false);
+    }
+    for (unsigned byte = 0; byte < 256; byte++) {
+        if (byte == 0x85) { continue; }
+        msm5xxx_audio_packet_sink_reset(&s);
+        header(&s, 0x157, true);
+        assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 100));
+        rejected(&s, byte, true); /* Wrong/nonterminal config, including pair rollback. */
+    }
+    for (unsigned byte = 128; byte < 256; byte++) {
+        msm5xxx_audio_packet_sink_reset(&s);
+        header(&s, 0x157, true);
+        rejected(&s, byte, true); /* A terminal/non7bit time never starts a pair. */
+    }
+    for (unsigned kind = 0; kind < 4; kind++) {
+        msm5xxx_audio_packet_sink_reset(&s);
+        header(&s, 0x157, true);
+        assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 100));
+        if (kind == 0) {
+            msm5xxx_audio_packet_reset(&s.packet);
+            header(&s, 0x158, true);
+            assert(!s.sequence_pending_stage);
+            rejected(&s, 0x85, true); /* Stale pair after external parser reset/new header. */
+        } else if (kind == 1) {
+            rejected(&s, 0x85, false); /* Cross API cannot complete opt-in state. */
+        } else if (kind == 2) {
+            s.packet.address = 0x159;
+            rejected(&s, 0x85, true); /* Intermediate unknown address. */
+        } else {
+            msm5xxx_audio_packet_sink_reset(&s);
+            header(&s, 0x158, true);
+            rejected(&s, 0x85, true); /* Full reset drops pending dependency. */
+        }
+    }
+    for (unsigned address = 0x15f; address <= 0x160; address++) {
+        msm5xxx_audio_packet_sink_reset(&s);
+        header(&s, 0x157, true);
+        assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 100));
+        msm5xxx_audio_packet_reset(&s.packet);
+        header(&s, address, true);
+        if (address == 0x15f) {
+            rejected(&s, 0, true);
+        } else {
+            assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+            assert(s.sequence_config_valid && s.sequence_config == 4);
+            assert(!s.sequence_parameter_valid && !s.timer_time_valid && !s.timer_control_valid);
+        }
+    }
+    msm5xxx_audio_packet_sink_reset(&s);
+    header(&s, 0x15e, true);
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x1b));
+    msm5xxx_audio_packet_reset(&s.packet);
+    header(&s, 0x158, true);
+    rejected(&s, 0x85, true); /* Sequence parameter pending cannot authorize timer. */
+    msm5xxx_audio_packet_sink_reset(&s);
+    header(&s, 0x15e, true);
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x1b));
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0));
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+    assert(s.sequence_parameter_valid && s.sequence_parameter == 3456 && s.sequence_config == 4);
+    header(&s, 0x157, true);
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 100));
+    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x85));
+    assert(s.sequence_parameter == 3456 && s.sequence_config == 4 && s.timer_time == 100);
+    msm5xxx_audio_packet_sink_reset(&s);
+    assert(!s.timer_time_valid && !s.timer_control_valid && !s.sequence_pending_stage);
+    assert(!msm5xxx_audio_packet_sink_feed_sequence(NULL, 0));
+    puts("timer candidate: atomic pair / rollback / legacy / stale / boundaries PASS");
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "check.c").write_text(harness)
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            "-fsanitize=undefined", "-fno-sanitize-recover=undefined",
+                            "-I", str(core), str(path / "check.c"),
+                            str(core / "msm5xxx-audio-request.c"),
+                            "-o", str(path / "check")], check=True, timeout=30)
+            subprocess.run([str(path / "check")], check=True, timeout=10)
+
     def test_timed_packet_streams(self):
         core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
         harness = r'''
@@ -107,6 +322,181 @@ class TestAudioRequestC(unittest.TestCase):
             MSM5xxxAudioTimedPacket saved = p;
             assert(msm5xxx_audio_timed_packet_feed(&p, 0, NULL) == -1);
             assert(!memcmp(&p, &saved, sizeof(p)));
+            return 0;
+        }
+        '''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "check.c").write_text(harness)
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+                            "-I", str(core), str(path / "check.c"),
+                            str(core / "msm5xxx-audio-request.c"),
+                            "-o", str(path / "check")], check=True, timeout=30)
+            subprocess.run([str(path / "check")], check=True, timeout=10)
+
+    def test_sequence_packet_consumer(self):
+        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        harness = r'''
+        #include <assert.h>
+        #include <string.h>
+        #include "msm5xxx-audio-request.h"
+
+        static void prefix(MSM5xxxAudioPacketSink *s, unsigned high,
+                           unsigned low)
+        {
+            assert(msm5xxx_audio_packet_sink_feed_sequence(s, 0x5e));
+            assert(msm5xxx_audio_packet_sink_feed_sequence(s, 0x82));
+            assert(msm5xxx_audio_packet_sink_feed_sequence(s, high));
+            assert(!s->sequence_parameter_valid && !s->sequence_config_valid);
+            assert(msm5xxx_audio_packet_sink_feed_sequence(s, low));
+        }
+
+        static void unchanged(MSM5xxxAudioPacketSink *s,
+                              const MSM5xxxAudioPacketSink *before)
+        {
+            assert(s->sequence_parameter == before->sequence_parameter);
+            assert(s->sequence_config == before->sequence_config);
+            assert(s->sequence_parameter_valid == before->sequence_parameter_valid);
+            assert(s->sequence_config_valid == before->sequence_config_valid);
+            assert(s->sequence_pending_parameter == before->sequence_pending_parameter);
+            assert(s->sequence_pending_stage == before->sequence_pending_stage);
+            assert(s->register_writes == before->register_writes);
+            assert(!memcmp(s->channel, before->channel, sizeof(s->channel)));
+            assert(!memcmp(s->memory, before->memory, sizeof(s->memory)));
+        }
+
+        int main(void)
+        {
+            MSM5xxxAudioPacketSink s = {0}, saved;
+            /* Every 14-bit value is raw; no timing or IRQ interpretation. */
+            for (unsigned high = 0; high < 128; high++) {
+                for (unsigned low = 0; low < 128; low++) {
+                    prefix(&s, high, low);
+                    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+                    assert(s.sequence_parameter == (high << 7 | low));
+                    assert(s.sequence_config == 4 && s.sequence_parameter_valid);
+                    assert(s.sequence_config_valid && !s.sequence_pending_stage);
+                }
+            }
+            /* Every other config, including nonterminal 04, rejects atomically. */
+            for (unsigned config = 0; config < 256; config++) {
+                if (config == 0x84) continue;
+                msm5xxx_audio_packet_sink_reset(&s);
+                prefix(&s, 0x1b, 0);
+                saved = s;
+                assert(!msm5xxx_audio_packet_sink_feed_sequence(&s, config));
+                assert(s.reject == MSM5XXX_AUDIO_PACKET_REJECT_DEPENDENCY);
+                unchanged(&s, &saved);
+                saved = s;
+                assert(!msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+                assert(!memcmp(&s, &saved, sizeof(s)));
+            }
+            /* Terminal high/low cannot form the required same-packet triple. */
+            for (unsigned which = 0; which < 2; which++) {
+                msm5xxx_audio_packet_sink_reset(&s);
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x5e));
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x82));
+                if (which) assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x1b));
+                saved = s;
+                assert(!msm5xxx_audio_packet_sink_feed_sequence(&s, 0x80));
+                unchanged(&s, &saved);
+            }
+            /* Parser reset and either API's new header invalidate stale latches. */
+            for (unsigned legacy = 0; legacy < 2; legacy++) {
+                for (unsigned address = 0x5f; address <= 0x60; address++) {
+                    msm5xxx_audio_packet_sink_reset(&s);
+                    prefix(&s, 0x1b, 0);
+                    msm5xxx_audio_packet_reset(&s.packet);
+                    bool (*feed)(MSM5xxxAudioPacketSink *, uint8_t) = legacy ?
+                        msm5xxx_audio_packet_sink_feed :
+                        msm5xxx_audio_packet_sink_feed_sequence;
+                    assert(feed(&s, address)); assert(feed(&s, 0x82));
+                    assert(!s.sequence_pending_stage);
+                    saved = s;
+                    if (!legacy && address == 0x60) {
+                        assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+                        assert(s.sequence_config_valid && s.sequence_config == 4);
+                        assert(!s.sequence_parameter_valid && s.sequence_parameter == saved.sequence_parameter);
+                    } else {
+                        assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,
+                                                                      address == 0x60 ? 0x84 : 0));
+                        unchanged(&s, &saved);
+                    }
+                }
+            }
+            /* Independent 0160 preserves a committed or invalid parameter. */
+            for (unsigned committed = 0; committed < 2; committed++) {
+                msm5xxx_audio_packet_sink_reset(&s);
+                if (committed) {
+                    prefix(&s, 0x1b, 0);
+                    assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+                }
+                saved = s;
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x60));
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x82));
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+                assert(s.sequence_config_valid && s.sequence_config == 4);
+                assert(s.sequence_parameter == saved.sequence_parameter);
+                assert(s.sequence_parameter_valid == saved.sequence_parameter_valid);
+                assert(s.register_writes == saved.register_writes + 1);
+                assert(!memcmp(s.channel, saved.channel, sizeof(s.channel)));
+                assert(!memcmp(s.memory, saved.memory, sizeof(s.memory)));
+            }
+            /* Wrong standalone values and partial stages reject without committing. */
+            for (unsigned value = 0; value < 256; value++) {
+                if (value == 0x84) continue;
+                msm5xxx_audio_packet_sink_reset(&s);
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x60));
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x82));
+                saved = s;
+                assert(!msm5xxx_audio_packet_sink_feed_sequence(&s, value));
+                unchanged(&s, &saved);
+            }
+            for (unsigned stage = 1; stage <= 4; stage++) {
+                if (stage == 2) continue;
+                msm5xxx_audio_packet_sink_reset(&s);
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x60));
+                assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x82));
+                s.sequence_pending_stage = stage;
+                saved = s;
+                assert(!msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+                unchanged(&s, &saved);
+            }
+            /* A legacy byte anywhere in a typed header withdraws ownership. */
+            const unsigned addresses[] = {0x52, 0x54, 0x57, 0x60};
+            for (unsigned i = 0; i < sizeof(addresses)/sizeof(addresses[0]); i++) {
+                for (unsigned legacy_first = 0; legacy_first < 2; legacy_first++) {
+                    msm5xxx_audio_packet_sink_reset(&s);
+                    bool (*first)(MSM5xxxAudioPacketSink *, uint8_t) = legacy_first ?
+                        msm5xxx_audio_packet_sink_feed : msm5xxx_audio_packet_sink_feed_sequence;
+                    bool (*second)(MSM5xxxAudioPacketSink *, uint8_t) = legacy_first ?
+                        msm5xxx_audio_packet_sink_feed_sequence : msm5xxx_audio_packet_sink_feed;
+                    assert(first(&s, addresses[i])); assert(second(&s, 0x82));
+                    saved = s;
+                    assert(!msm5xxx_audio_packet_sink_feed_sequence(&s,
+                        addresses[i] == 0x52 ? 0x9b : addresses[i] == 0x60 ? 0x84 : 1));
+                    unchanged(&s, &saved);
+                }
+            }
+            /* Legacy still rejects 015E; smoothing and reset retain their contract. */
+            msm5xxx_audio_packet_sink_reset(&s);
+            assert(msm5xxx_audio_packet_sink_feed(&s, 0x5e));
+            assert(msm5xxx_audio_packet_sink_feed(&s, 0x82));
+            assert(!msm5xxx_audio_packet_sink_feed(&s, 0x1b));
+            assert(s.reject == MSM5XXX_AUDIO_PACKET_REJECT_REGISTER);
+            msm5xxx_audio_packet_sink_reset(&s);
+            prefix(&s, 0x1b, 0);
+            assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x84));
+            assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x63));
+            assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0x82));
+            assert(msm5xxx_audio_packet_sink_feed_sequence(&s, 0xbf));
+            assert(s.smoothing_config_valid && s.smoothing_config == 0x3f);
+            assert(s.sequence_parameter_valid && s.sequence_parameter == 3456);
+            msm5xxx_audio_packet_sink_reset(&s);
+            assert(!s.sequence_parameter_valid && !s.sequence_config_valid);
+            assert(!s.sequence_pending_stage && !s.sequence_pending_parameter);
+            assert(!msm5xxx_audio_packet_sink_feed_sequence(NULL, 0));
             return 0;
         }
         '''

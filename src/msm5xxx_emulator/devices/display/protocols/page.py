@@ -9,9 +9,106 @@ _WINDOW_RAW8_SEPARATE_DATA_PORT = 0x02200002
 _WINDOW_RAW8_SEPARATE_WIDTH = 64
 _WINDOW_RAW8_SEPARATE_HEIGHT = 96
 _RAW_LCD_STREAM_PORT_LIMIT = 32
+_SHIFTED_ORIENTATION_PREFIX = tuple(
+    (address, 2, value)
+    for command, values in ((6, (0x24, 0x60)), (0x88, (0x15E, 0)),
+                            (0x8A, (0x1B6, 0)), (0x42, (0, 0)),
+                            (0x44, ()))
+    for address, value in ((0x02000000, 0), (0x02000000, command),
+                           *((0x02000002, value) for value in values))
+)
+
 
 
 class PageProtocolMixin:
+    def _lcd_observe_shifted_orientation(self, address: int, size: int,
+                                         value: int) -> None:
+        # shortcut: exact captured scanout grammar until independent
+        # direction-register proof; no general register bit interpretation.
+        owner = self._lcd_raw_streams
+        state = getattr(self, "_lcd_shifted_orientation", None)
+        if state is None or state["owner"] is not owner:
+            state = self._lcd_shifted_orientation = {
+                "owner": owner, "prefix": 0, "eligible": False,
+                "qualified": False, "command_zero": False, "mode": None,
+            }
+        if (self.config.width, self.config.height) != (176, 220):
+            state["eligible"] = state["qualified"] = False
+            state["prefix"] = 0
+            state["mode"] = None
+            state["command_zero"] = False
+            return
+        if address != 0x02000000 and state["command_zero"]:
+            state["command_zero"] = False
+        event = (address, size, value)
+        position = state["prefix"]
+        if position < len(_SHIFTED_ORIENTATION_PREFIX):
+            if event == _SHIFTED_ORIENTATION_PREFIX[position]:
+                position += 1
+            else:
+                position = int(event == _SHIFTED_ORIENTATION_PREFIX[0])
+            state["prefix"] = position
+            if position == len(_SHIFTED_ORIENTATION_PREFIX):
+                state["eligible"] = True
+        pending = state["mode"]
+        if pending is not None:
+            expected, values = pending
+            if address != 0x02000002 or size != 2:
+                state["mode"] = None
+                state["eligible"] = state["qualified"] = False
+                state["prefix"] = 0
+                return
+            values.append(value)
+            if len(values) == 2:
+                valid = tuple(values) == expected
+                state["eligible"] = valid
+                state["qualified"] = state["qualified"] and valid
+                state["prefix"] = state["prefix"] if valid else 0
+                state["mode"] = None
+            return
+        if not state["eligible"] and not state["qualified"]:
+            return
+        if address == 0x02000000:
+            if size != 2:
+                state["eligible"] = state["qualified"] = False
+                state["prefix"] = 0
+                return
+            if value == 0:
+                state["command_zero"] = True
+            else:
+                paired = state["command_zero"]
+                state["command_zero"] = False
+                expected = {6: (0x24, 0x60), 0x88: (0x15E, 0),
+                            0x8A: (0x1B6, 0)}.get(value)
+                if expected is not None:
+                    state["eligible"] = False
+                    state["mode"] = (expected, []) if paired else None
+                    if not paired:
+                        state["qualified"] = False
+                        state["prefix"] = 0
+
+    def shifted_orientation_snapshot(self) -> dict[str, object]:
+        state = getattr(self, "_lcd_shifted_orientation", {})
+        qualified = bool(state.get("qualified") and state.get("eligible"))
+        return {"qualified": qualified,
+                "reason": "temporary-ordered-shifted-pair-scanout" if qualified
+                          else "ordered-scanout-grammar-unqualified"}
+
+    def _lcd_publish_shifted_pixels(self, decoded: list[int],
+                                    port: tuple[int, int]) -> None:
+        state = getattr(self, "_lcd_shifted_orientation", None)
+        reverse = bool(state and state["eligible"] and port == (0x02000002, 2)
+                       and (self.config.width, self.config.height) == (176, 220)
+                       and len(decoded) == 176 * 220)
+        if reverse:
+            state["qualified"] = True
+        for index, pixel in enumerate(decoded):
+            destination = index
+            if reverse:
+                y, x = divmod(index, 176)
+                destination = y * 176 + 175 - x
+            self._pixel(destination, pixel)
+
     @staticmethod
     def _lcd_decode_shifted_pair_rgb565(
             values: tuple[int, ...], *, allow_blank: bool = False,
@@ -343,6 +440,41 @@ class PageProtocolMixin:
             self._lcd_lowbyte_page_words.clear()
         return True
 
+    def _lcd_packed_window_observe(self, address: int, size: int, value: int) -> None:
+        """Observe the bounded full-window split18 transfer before raw capture."""
+        if getattr(self, "_lcd_packed_window_streams", None) is not self._lcd_raw_streams:
+            self._lcd_packed_window_streams = self._lcd_raw_streams
+            self._lcd_packed_window_stage = 0
+            self._lcd_packed_window_armed = False
+            self._lcd_packed_window_reject = "reset"
+        if (address, size) == (0x02800080, 2) and self._lcd_packed_window_armed:
+            return
+        # shortcut: full-window only; extend after original rectangle evidence.
+        prefix = (0x0200, 0x0300, 0x0477, 0x059F, 0x0D00, 0x0E00)
+        stage = self._lcd_packed_window_stage
+        self._lcd_packed_window_armed = False
+        if ((address, size) == (0x02800000, 2)
+                and value == prefix[stage]):
+            stage += 1
+            if stage == len(prefix):
+                stage = 0
+                self._lcd_packed_window_armed = True
+                self._lcd_packed_window_reject = None
+                port = (0x02800080, 2)
+                self._lcd_raw_streams.pop(port, None)
+                self._lcd_raw_counts[port] = 0
+            self._lcd_packed_window_stage = stage
+            return
+        self._lcd_packed_window_stage = int(
+            (address, size, value) == (0x02800000, 2, prefix[0])
+        )
+        self._lcd_packed_window_reject = "window-or-interrupted"
+
+    def _lcd_packed_window_telemetry(self) -> dict:
+        return {"stage": getattr(self, "_lcd_packed_window_stage", 0),
+                "armed": getattr(self, "_lcd_packed_window_armed", False),
+                "reject": getattr(self, "_lcd_packed_window_reject", None)}
+
     def _capture_raw_lcd_stream(self, address: int, size: int, value: int,
                                 *, lowbyte_page_sidecar: bool = True) -> None:
         """Render a proven full FIFO stream from an otherwise unknown LCD port.
@@ -383,6 +515,9 @@ class PageProtocolMixin:
             and (self.config.width, self.config.height) == (176, 220)
             and (source == "auto-default" or shifted_pair_qualified)
         )
+        packed_window = (getattr(self, "_lcd_packed_window_streams", None)
+                     is self._lcd_raw_streams
+                     and getattr(self, "_lcd_packed_window_armed", False))
         stream = self._lcd_raw_streams.get(port)
         if stream is None:
             if len(self._lcd_raw_streams) >= _RAW_LCD_STREAM_PORT_LIMIT:
@@ -395,7 +530,8 @@ class PageProtocolMixin:
                 self._lcd_raw_frames.pop(victim, None)
                 self._lcd_raw_segment_streams.pop(victim, None)
                 self._lcd_raw_segment_counts.pop(victim, None)
-            stream = deque(maxlen=2 * pixels if shifted_pair_candidate else pixels)
+            stream = deque(maxlen=(2 * pixels if shifted_pair_candidate
+                                  or (port == (0x02800080, 2) and packed_window) else pixels))
             self._lcd_raw_streams[port] = stream
         stream.append(value & 0xFFFF)
         self._lcd_raw_counts[port] += 1
@@ -410,6 +546,10 @@ class PageProtocolMixin:
             segment.append(value & 0xFFFF)
             self._lcd_raw_segment_counts[port] += 1
         count = self._lcd_raw_counts[port]
+        packed_source = source == "runtime:packed-fifo-rgb666"
+        if packed_source and (port != self._lcd_raw_port
+                              or (port == (0x02800080, 2) and not packed_window)):
+            return
         commands = tuple(self._lcd_recent_commands)
         if (port == (0x02000004, 2) and count == 96
                 and len(commands) >= 3 and 0xB0 <= commands[-3] <= 0xB7
@@ -476,8 +616,7 @@ class PageProtocolMixin:
                     self._set_display_geometry(
                         176, 220, source="runtime:shifted-pair-fifo-rgb565"
                     )
-                    for index, pixel in enumerate(decoded):
-                        self._pixel(index, pixel)
+                    self._lcd_publish_shifted_pixels(decoded, port)
                     self._lcd_raw_frames[port] += 1
                     self._lcd_raw_port = port
                     self._lcd_protocol = "shifted-pair-fifo-rgb565"
@@ -533,22 +672,30 @@ class PageProtocolMixin:
                 return
         packed_rgb666_qualified = (
             source == "runtime:packed-fifo-rgb666"
+            and self._lcd_raw_port == port
             and (self.config.width, self.config.height) == (120, 160)
         )
         # This FIFO stays two-halfword RGB666 after its first full frame.
         # Hold the complete pair stream so the generic RGB565 fallback cannot
         # publish each 19,200-word half as a separate corrupted frame.
-        if (port == (0x02000080, 2)
+        if ((port == (0x02000080, 2)
+                 or (port == (0x02800080, 2) and packed_window))
                 and ((self.frame_sequence == 0 and source == "auto-default")
                      or packed_rgb666_qualified)):
-            if packed_rgb666_qualified and count < 2 * 120 * 160:
+            if (packed_rgb666_qualified or port == (0x02800080, 2)) and count < 2 * 120 * 160:
                 return
             if count == 2 * 120 * 160:
                 values = tuple(stream)
                 packed_rgb666 = (
-                    len(values) == 2 * 120 * 160 and any(values)
+                    len(values) == 2 * 120 * 160
+                    and (packed_rgb666_qualified or any(values))
                     and all(not (first & ~0x3) for first in values[::2])
                 )
+                if port == (0x02800080, 2):
+                    self._lcd_packed_window_armed = False
+                    self._lcd_packed_window_reject = (
+                        None if packed_rgb666 else "packed-shape"
+                    )
                 if packed_rgb666:
                     if not packed_rgb666_qualified:
                         self._set_display_geometry(
@@ -685,8 +832,7 @@ class PageProtocolMixin:
                 self._set_display_geometry(
                     176, 220, source="runtime:shifted-pair-fifo-rgb565"
                 )
-                for index, pixel in enumerate(decoded):
-                    self._pixel(index, pixel)
+                self._lcd_publish_shifted_pixels(decoded, port)
                 self._lcd_raw_frames[port] += 1
                 self._lcd_raw_port = port
                 self._lcd_protocol = "shifted-pair-fifo-rgb565"

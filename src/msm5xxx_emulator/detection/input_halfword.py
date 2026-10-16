@@ -730,6 +730,321 @@ def _loop_functional_confirm(image: bytes, matrix: dict):
     return mapping, {'ok_mapping_status':'accepted-provisional','ok_mapping_reject_reasons':[]}
 
 
+def _mapped_physical_menu(image: bytes, matrix: dict):
+    """Temporary exact queue-to-menu class; unrelated scanners keep numeric input."""
+    # shortcut: one closed local class, promote only after independent peer consumer proof.
+    contracts = {'dequeue': [(0, 28, '1fc8ee03fae7bdaa2c9678aa2e34f72968a6fe31206eead28e9bb853b5ba6710', ())],
+     'forward': [(0, 86, '18a4311723b801a06073250b289e940a51fe03e839f6f53ae0a7651688c39ed6', (38,))],
+     'task': [(0, 28, '9e4e15d23145abe199cecc25fed61d9207ebcfa5d017f759e96764967f71a29f', (2,)),
+              (162, 54, '6b5518d18dda44626d1fb27690a10fa7fe9421f65e6f74a87eedb9e4aa973409', (34, 50))],
+     'poll': [(-52,
+               64,
+               '2649e76223b422e9c695405624c0bdffdcd5ba4f4b79c50f9657442547227645',
+               (2, 48, 52, 60)),
+              (-130, 78, 'eb1e6ea9f4384935055fe9465666a3ae1c30287198ee47d615ddc92bdb891c08', (50,))],
+     'application': [(0, 10, 'ad02919762ca66006a81b99b5bc30eb788fee6101fdf66ead4f2009c17f32de3', ()),
+                     (208,
+                      56,
+                      'b0603e36a177454d0f4859a06ba23b18a59e079b60343588187ec6cd480f5762',
+                      (26, 42)),
+                     (8186, 50, 'f5ff17f36450e7e0582bacd32c200d32e67ab43fd9e8a3e47ac20752244393e7', ()),
+                     (8236,
+                      18,
+                      '089a61b84b4b0a7655e41d3977fa7756b4a1fe2864f992ab94928dff40de77b1',
+                      (0, 6, 12)),
+                     (8480,
+                      20,
+                      'd4aca9220345a3a21d353bfff3761a459f375c3552f6d4c0feeca3f0b2ac044d',
+                      (10,)),
+                     (8542,
+                      20,
+                      'ed4b87b2be488bedb210974acedf1e51dcd2941b30584c724f8780e8856b8479',
+                      (4, 10)),
+                     (8302,
+                      6,
+                      'dc42eb6c417da95a243a7fa8bd1b0ee0b6b3aa8b3c397cb91c30c6b81fcda848',
+                      (0,)),
+                     (72, 6, '65035037b6b707d30cb2ecfb4f6cc838bb1e1a5b59349ddf5f4cc11424d8bf3c', ())],
+     'menu': [(0, 20, '6b0b644c8cdac5b8ec86082acd79c7aaa202374455884f50c0b0e8c7f8da4f2f', (8,)),
+              (4534, 32, '59e55998c9f1bcb88ff0ea65c042b0e55ad01cfd77f9ed14e701519a0aca1a0d', (12, 24)),
+              (4650,
+               40,
+               'deb61d8111134e3a4a32c8309b4619e3c3d355ec964483a245755e144ba36769',
+               (4, 14, 36)),
+              (7694, 124, '26ba3d4b4900870468da2c60368eea8b313efb55450421fd749fe948685fdb92', (18, 76)),
+              (7818, 38, '21f64e23f9f31c1466cbb5ac2459027349999ac0c56d214437387068f7250583', (22,)),
+              (8142, 28, '73e0c2dc99b775d0d80b8af3b2c14328cb17b44998c1e793b34b2df2dda3ff67', (14,)),
+              (8224, 16, '3155a3bf21cb8b1dbf61929b1294fe95291ecd80fda3270bdb9e10e2ccda446c', ()),
+              (11088, 14, '462c01ffc3f440968f56aca7d4203be47386dc8f89346387203e4defd59866cc', ()),
+              (11284, 10, '6d0f6ca64581de890f881a3bd8651e99a37a1c9dbbf7d9457f42e072d6350a21', ()),
+              (438, 4, 'df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119', (0,))],
+     'install': [(0, 68, 'ac6323a2e9a9d9130088c68104f0a2718f37ba6c15b1945ee30ab25413bb73ef', (20,))]}
+    def shape(name, base):
+        return type(base) is int and not base & 1 and all(
+            _normalized_thumb_sha256(image, base+off, size) == (digest, calls)
+            and all(call(base+off+delta) is not None for delta in calls)
+            for off,size,digest,calls in contracts[name])
+    def literal(pc, reg):
+        return thumb_literal_value(image, pc, reg)
+    def call(pc):
+        target = thumb_bl_target(image, pc)
+        return target if target is not None and not target & 1 and 0 <= target <= len(image)-2 else None
+    def reject(reason):
+        return None, {'menu_mapping_status':'rejected',
+                      'menu_mapping_reject_reasons':[reason]}
+    producer = matrix.get('producer', {})
+    if producer.get('family') != 'filtered-byte-ring4-v1':
+        return reject('menu-ring-family')
+    dequeue = int(matrix['queue_sink'], 16)-0x20
+    if not shape('dequeue', dequeue) or literal(dequeue, 2) != producer['ring']:
+        return reject('menu-dequeue-ring')
+    callers = [m.start() for m in re.finditer(rb'(?=.[\xf0-\xf7].[\xf8-\xff])', image, flags=re.S)
+               if not m.start() & 1 and thumb_bl_target(image,m.start()) == dequeue]
+    if len(callers) != 1:
+        return reject('menu-dequeue-callers')
+    poll = callers[0]
+    if not shape('poll', poll):
+        return reject('menu-poll-shape')
+    block = call(poll+8)
+    forward = call(poll-0x32)
+    if (block is None or not shape('forward', forward)
+            or call(poll-4) != forward
+            or call(block+0x338) != poll-0x82
+            or block+0x338 not in _thumb_reachable_preserving_register(image,block,poll+12,7)
+            or poll-0x34 not in _thumb_reachable_preserving_register(image,poll-0x82,poll,7)):
+        return reject('menu-raw-forward-flow')
+    secondary = literal(forward+2,4)
+    tasks = [pc for pc in find_all(image,bytes.fromhex('f8b5'))
+             if shape('task',pc) and literal(pc+0x18,4) == secondary]
+    if len(tasks) != 1:
+        return reject('menu-secondary-consumers')
+    task = tasks[0]
+    if task+0xcc not in _thumb_reachable_preserving_register(image,task+0x1a,task+0xe6,4):
+        return reject('menu-secondary-register-flow')
+    app = call(task+0xd4)
+    if not shape('application', app):
+        return reject('menu-application-shape')
+    menu = call(app+0x2038)
+    if (not shape('menu', menu)
+            or call(menu+0x1b6) != menu+0x2b44):
+        return reject('menu-consumer-shape')
+    outer = literal(app+0x4a,7)
+    reachable = _thumb_reachable_preserving_register(image,app+0x4c,app+0x2172,7)
+    if app+0x1ffa not in reachable or app+0x216c not in reachable:
+        return reject('menu-outer-state-register-flow')
+    global_key = literal(app+0x104,1)
+    if global_key != literal(menu+0x11b6,1):
+        return reject('menu-global-key-mismatch')
+    install = call(menu+0x1ea0)
+    if (not shape('install',install)
+            or call(menu+0x11ce) != menu+0x1e0e
+            or call(menu+0x124e) != menu+0x1e8a):
+        return reject('menu-key-arms-or-descriptor')
+    inner = literal(menu+0x2026,0)
+    if (inner is None or inner-0xc3 != literal(menu+0x2b50,7)
+            or literal(menu+0x1fe2,0) != inner):
+        return reject('menu-state-bridge')
+    descriptor = literal(install+4,0)
+    descriptor_state = literal(install+2,7)
+    spans = [(producer['ring'],6),(secondary,72),(global_key,4),
+             (inner-0xc3,4),(descriptor,8),(descriptor_state,0x20),(outer,0x10)]
+    if any(type(a) is not int or not 0x1000000 <= a <= 0x2000000-n for a,n in spans):
+        return reject('menu-ram-bounds')
+    if any(a < other+n and other < a+size
+           for i,(a,size) in enumerate(spans) for other,n in spans[i+1:]):
+        return reject('menu-ram-alias')
+    # Byte table and owning call/return shapes close state5 -> returned state0B.
+    table = app+0x200c
+    if (app+0x200e+2*image[table+3] != app+0x2038
+            or app+0x200e+2*image[table+9] != app+0x206e):
+        return reject('menu-state-table')
+    event = image[menu+0x124a]
+    events = matrix['event_codes']
+    if event != 0x5b or len(events) != 28 or events.count(event) != 1:
+        return reject('menu-event-cell')
+    cell = events.index(event)
+    mapping = {'event':event,'rule':'same-image-mapped-physical-menu-v1',
+               'semantic_status':'temporary-evidence-gated-provisional','physical_only':True,
+               'queue_consumer':dequeue,'secondary_ring':secondary,'application':app,
+               'global_key':global_key,'consumer':menu,'descriptor':descriptor,
+               'inner_state':inner-0xc3+3,'outer_state':outer+0xf,
+               'row':cell%7,'column':cell//7}
+    return {0:mapping}, {'menu_mapping_status':'accepted-provisional',
+                        'menu_mapping_reject_reasons':[]}
+
+
+_MAPPED_CONFIRM_RULE = 'same-image-mapped-functional-confirm-v1'
+# shortcut: one original selected-action class; helper primitive ABI remains unpromoted.
+_MAPPED_CONFIRM_SHAPES = {
+    'consumer': (0x10,
+        '8ba71a6d6a2b462491ce56afb1d67025e0dae6d1db321c3f87304dc0f8b404b1', ()),
+    'dispatch': (0xe2,
+        '01b2bc53421e62ad1cd13fcf29270e21747f41b84fca10060642b8001f48e455', ()),
+    'activation': (0xba,
+        'cdf26c1647c3c22f9d1172eae077fbbb5611839d85a3a0dbce64dbb0a9163a98', ((10, 158760), (36, 6682), (60, 29122))),
+    'helper': (0x48,
+        '620aa71f725acf732fb9442f16bec1187eb65ce41086af33d2aa3f3850781186', ((38, -1119888),)),
+    'builder': (0x32,
+        '71c55216bdec13303c0503e31180c3f1cc5e5c9de202bab08f9dfe029a4b78a8', ((8, -6136), (26, -6080), (44, 2381174))),
+    'allocator': (0x2a,
+        'e3f82c8c89c03dca27d29d0b086fc11521c7f947b4d029dc5ced284857f26b0a', ((4, 2385252), (16, 537100), (26, 2388456))),
+    'publisher': (0x20,
+        '26efc06d2a8be26244d77e91929ccbbcef81f0995a107f45fdd86c2bcd166d23', ((6, 203854), (14, 2385220), (22, 2385208))),
+    'global104': (0x4,
+        'd5229a21f29eb79f5ac6165fb1ecc8fdce6348ff9c8f2ceb0f527c6e6a728c50', ()),
+    'join': (0x4,
+        'df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119', ((0, 23672),)),
+    'mode_bridge': (0xe,
+        '71acde7918c0a02a005880a23e1528c9eacc4131ed1202fe8e0e73c9b6544b1c', ((0, 1682),)),
+    'mode_commit': (0x6,
+        '00f25fa65b1e5e5c5b973cf6c7ab1579cd404775dc8e0c08b007bf712a88e747', ()),
+    'install': (0x44,
+        'ac6323a2e9a9d9130088c68104f0a2718f37ba6c15b1945ee30ab25413bb73ef', ((20, 165900),)),
+}
+
+def _mapped_functional_confirm(image: bytes, matrix: dict):
+    """Optional selected activation on the already accepted mapped MENU class."""
+    def reject(reason):
+        return {}, {'ok_mapping_status': 'rejected',
+                    'ok_mapping_reject_reasons': ['mapped-confirm-' + reason]}
+
+    mappings = matrix.get('provisional_mappings', {})
+    parent = mappings.get(0) if isinstance(mappings, dict) else None
+    if (matrix.get('grammar') != 'indirect-halfword-mapped-row-v1'
+            or type(matrix.get('rows')) is not int or type(matrix.get('columns')) is not int
+            or (matrix.get('rows'), matrix.get('columns')) != (7, 4)
+            or matrix.get('menu_mapping_status') != 'accepted-provisional'
+            or not isinstance(parent, dict)
+            or parent.get('rule') != 'same-image-mapped-physical-menu-v1'
+            or parent.get('semantic_status') != 'temporary-evidence-gated-provisional'
+            or parent.get('physical_only') is not True or parent.get('event') != 0x5B):
+        return reject('parent-menu-unclosed')
+    events, tokens = matrix.get('event_codes', ()), matrix.get('token_cells', ())
+    if (not isinstance(events, (list, tuple)) or len(events) != 28
+            or events.count(0x53) != 1 or not isinstance(tokens, list)
+            or any(not isinstance(cell, dict) for cell in tokens)
+            or any(cell.get('token') == 'O' or cell.get('event') == 0x53 for cell in tokens)
+            or 5 in mappings):
+        return reject('namespace-conflict')
+    fields = [parent.get(key) for key in ('application', 'consumer', 'global_key',
+                                         'descriptor', 'secondary_ring', 'inner_state', 'outer_state')]
+    producer = matrix.get('producer')
+    if not isinstance(producer, dict) or producer.get('family') != 'filtered-byte-ring4-v1':
+        return reject('parent-producer-unclosed')
+    producer_ring = producer.get('ring')
+    if any(type(value) is not int for value in fields + [producer_ring]):
+        return reject('parent-fields-unclosed')
+    app, menu, global_key, active, secondary, inner, outer = fields
+
+    def call(pc):
+        if type(pc) is not int:
+            return None
+        target = thumb_bl_target(image, pc)
+        return target if target is not None and not target & 1 and 0 <= target <= len(image)-2 else None
+
+    def branch(pc):
+        if type(pc) is not int or not 0 <= pc <= len(image)-2:
+            return None
+        if struct.unpack_from('<H', image, pc)[0] & 0xF800 != 0xE000:
+            return None
+        targets = _thumb_successors(image, pc, len(image))
+        target = targets[0] if len(targets) == 1 else None
+        return target if target is not None and not target & 1 and 0 <= target <= len(image)-2 else None
+
+    def shape(name, pc):
+        size, digest, edges = _MAPPED_CONFIRM_SHAPES[name]
+        if type(pc) is not int or pc & 1 or not 0 <= pc <= len(image)-size:
+            return False
+        normalized = _normalized_thumb_sha256(image, pc, size)
+        if name == 'dispatch':
+            # Only this decoded, parent-global-linked data slot is relocatable.
+            if thumb_literal_value(image, pc, 1) != global_key:
+                return False
+            word = struct.unpack_from('<H', image, pc)[0]
+            pool = ((pc+4) & ~3) + 4*(word & 0xFF)
+            if pool != pc+0x48:
+                return False
+            code = bytearray(image[pc:pc+size])
+            code[pool-pc:pool-pc+4] = b'\0'*4
+            normalized = _normalized_thumb_sha256(bytes(code), 0, size)
+        return (normalized == (digest, tuple(d for d, _ in edges))
+                and all(call(pc+d) == pc+relative for d, relative in edges))
+
+    def literal(pc, register):
+        return thumb_literal_value(image, pc, register)
+
+    consumer, install = call(app+0x206E), call(menu+0x1EA0)
+    if not shape('consumer', consumer) or not shape('install', install):
+        return reject('consumer-or-install-shape')
+    if (not shape('dispatch', consumer+0x394)
+            or literal(consumer+0x394, 1) != global_key):
+        return reject('consumer-global-dispatch')
+    activation = branch(consumer+0x474)
+    if activation != consumer+0x6BC or not shape('activation', activation):
+        return reject('selected-arm-shape')
+    event = image[consumer+0x470]
+    selected = literal(activation, 0)
+    if (event != 0x53 or literal(activation+2, 6) != global_key
+            or literal(activation+0xE, 0) != selected
+            or literal(activation+0x10, 3) != active
+            or literal(install+2, 7) != selected or literal(install+4, 0) != active):
+        return reject('selected-install-global-identity')
+    helper = call(activation+0xA)
+    if not shape('helper', helper) or literal(helper+2, 4) != global_key:
+        return reject('selected-helper-global')
+    builder = call(helper+0x26)
+    if not shape('builder', builder):
+        return reject('type8-builder-shape')
+    allocator, publisher = call(builder+8), call(builder+0x1A)
+    if not shape('allocator', allocator) or not shape('publisher', publisher):
+        return reject('type8-helper-edges')
+    allocation_owner = literal(allocator+2, 0)
+    publication_owner, signal_owner = literal(publisher+0xC, 0), literal(publisher+0x14, 0)
+    # Keep failure-path arguments and primitive call relations exact, without ABI claims.
+    error_text = literal(allocator+0xC, 1)
+    if (type(error_text) is not int or error_text != allocator+0x2EEF72
+            or not 0 <= error_text <= len(image)-2 or literal(allocator+0xE, 0) != 0x405
+            or type(publication_owner) is not int or allocation_owner != publication_owner+0xC
+            or literal(helper+0x30, 1) != 0x6390):
+        return reject('type8-literal-contract')
+    global104 = call(activation+0x24)
+    if not shape('global104', global104):
+        return reject('selected-global104-shape')
+    join = branch(global104+2)
+    if not shape('join', join):
+        return reject('selected-join-shape')
+    mode_entry = call(join)
+    mode_bridge = branch(mode_entry+2) if mode_entry is not None else None
+    if (not shape('mode_bridge', mode_bridge) or mode_entry != mode_bridge+0xA
+            or call(activation+0x3C) != mode_entry
+            or literal(mode_bridge+4, 1) != global_key):
+        return reject('selected-mode-bridge')
+    commit = call(mode_bridge)
+    if (not shape('mode_commit', commit) or literal(commit, 1) != selected
+            or branch(commit+4) != mode_bridge+0x66):
+        return reject('selected-mode-commit')
+    spans = [(producer_ring, 6), (secondary, 72), (global_key, 4),
+             (inner-3, 4), (active, 8), (selected, 0x30), (outer-0xF, 0x10),
+             (allocation_owner, 4), (publication_owner, 4), (signal_owner, 4),
+             (literal(helper+0x2A, 1), 8), (literal(helper+0x10, 0), 1),
+             (literal(helper+0x18, 0), 1), (global_key+0x160, 4), (global_key+0x6390, 4)]
+    if (any(type(address) is not int or not 0x1000000 <= address <= 0x2000000-size
+            for address, size in spans)
+            or any(address & 3 for address, _ in spans[:11])):
+        return reject('ram-bounds-or-alignment')
+    if any(address < other+length and other < address+size
+           for index, (address, size) in enumerate(spans) for other, length in spans[index+1:]):
+        return reject('ram-alias')
+    cell = events.index(event)
+    return {5: {'event': event, 'rule': _MAPPED_CONFIRM_RULE,
+                'semantic_status': 'temporary-evidence-gated-provisional', 'functional_only': True,
+                'physical_keycap_proven': False, 'context': 'MENU-selected-activation',
+                'evidence': 'parent-menu+same-global+selected-install+exact-helper-edges+original-mode-commit',
+                'consumer': consumer, 'selection': selected, 'descriptor': active,
+                'global_key': global_key, 'row': cell%7, 'column': cell//7}}, {
+                    'ok_mapping_status': 'accepted-provisional', 'ok_mapping_reject_reasons': []}
+
+
 def resolve_indirect_matrix_input(image: bytes, load_address: int=0):
     """Return only a unique linked scanner with unambiguous semantic cells."""
     if load_address != 0:
@@ -742,6 +1057,21 @@ def resolve_indirect_matrix_input(image: bytes, load_address: int=0):
     candidate = candidates[0]
     if not candidate['token_cells']:
         return (None, 'no-exact-semantic-cells', candidates)
+    if candidate['grammar'] == 'indirect-halfword-mapped-row-v1':
+        mappings, metadata = _mapped_physical_menu(image, candidate)
+        candidate.update(metadata)
+        if mappings:
+            candidate['provisional_mappings'] = mappings
+            mapping = mappings[0]
+            candidate['token_cells'].append({'token':'M','event':mapping['event'],
+                                             'row':mapping['row'],'column':mapping['column']})
+            confirm, metadata = _mapped_functional_confirm(image, candidate)
+            candidate.update(metadata)
+            if confirm:
+                candidate['provisional_mappings'].update(confirm)
+                mapping = confirm[5]
+                candidate['token_cells'].append({'token':'O','event':mapping['event'],
+                                                 'row':mapping['row'],'column':mapping['column']})
     if candidate['grammar'] == 'indirect-halfword-loop-six-row-v1':
         mappings, metadata = _loop_functional_confirm(image, candidate)
         candidate.update(metadata)

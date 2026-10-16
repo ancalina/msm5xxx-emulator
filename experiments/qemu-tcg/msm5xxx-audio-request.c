@@ -173,22 +173,65 @@ void msm5xxx_audio_packet_sink_reset(MSM5xxxAudioPacketSink *s)
     }
 }
 
-bool msm5xxx_audio_packet_sink_feed(MSM5xxxAudioPacketSink *s, uint8_t value)
+static bool audio_packet_sink_feed(MSM5xxxAudioPacketSink *s, uint8_t value,
+                                   bool sequence)
 {
     MSM5xxxAudioPacketWrite write;
     MSM5xxxAudioPacketResult kind;
     MSM5xxxAudioPacketReject reject = MSM5XXX_AUDIO_PACKET_REJECT_NONE;
     unsigned slot = 0, offset = 0;
+    bool new_packet, sequence_write = false, timer_write = false;
+    bool timer0_write = false;
 
     if (s == NULL || s->reject != MSM5XXX_AUDIO_PACKET_REJECT_NONE) {
         return false;
     }
+    new_packet = s->packet.phase == PACKET_ADDRESS_FIRST;
+    if (new_packet) {
+        s->sequence_packet = sequence;
+    } else if (!sequence) {
+        s->sequence_packet = false;
+    }
     kind = msm5xxx_audio_packet_feed(&s->packet, value, &write);
     if (kind == MSM5XXX_AUDIO_PACKET_PARTIAL) {
+        if (new_packet) {
+            s->sequence_pending_stage = 0;
+        }
         return true;
     }
     if (kind == MSM5XXX_AUDIO_PACKET_REGISTER) {
-        if (write.address == 0x163) {
+        if (sequence && (write.address == 0x152 || write.address == 0x154 ||
+                         write.address == 0x155)) {
+            timer0_write = true;
+            if (!s->sequence_packet ||
+                (write.address == 0x152 && value != 0x9b) ||
+                (write.address == 0x154 && write.last) ||
+                (write.address == 0x155 &&
+                 (value != 0x80 || s->sequence_pending_stage != 4))) {
+                reject = MSM5XXX_AUDIO_PACKET_REJECT_DEPENDENCY;
+            }
+        } else if (sequence && (write.address == 0x157 || write.address == 0x158)) {
+            timer_write = true;
+            if (!s->sequence_packet ||
+                (write.address == 0x157 && write.last) ||
+                (write.address == 0x158 &&
+                 !((value == 0x85 && s->sequence_pending_stage == 3) ||
+                   (value == 0x80 && s->sequence_pending_stage == 0)))) {
+                reject = MSM5XXX_AUDIO_PACKET_REJECT_DEPENDENCY;
+            }
+        } else if (sequence && write.address >= 0x15e && write.address <= 0x160) {
+            sequence_write = true;
+            if (!s->sequence_packet ||
+                (write.address == 0x15e && write.last) ||
+                (write.address == 0x15f &&
+                 (write.last || s->sequence_pending_stage != 1)) ||
+                (write.address == 0x160 &&
+                 (value != 0x84 ||
+                  (s->sequence_pending_stage != 0 &&
+                   s->sequence_pending_stage != 2)))) {
+                reject = MSM5XXX_AUDIO_PACKET_REJECT_DEPENDENCY;
+            }
+        } else if (write.address == 0x163) {
             if (value & 0x40) {
                 reject = MSM5XXX_AUDIO_PACKET_REJECT_REGISTER;
             }
@@ -202,7 +245,7 @@ bool msm5xxx_audio_packet_sink_feed(MSM5xxxAudioPacketSink *s, uint8_t value)
             reject = MSM5XXX_AUDIO_PACKET_REJECT_REGISTER;
         }
         if (reject == MSM5XXX_AUDIO_PACKET_REJECT_NONE &&
-            write.address != 0x163) {
+            write.address != 0x163 && !sequence_write && !timer_write && !timer0_write) {
             if (offset == 1 && !s->channel[slot].high_valid) {
                 reject = MSM5XXX_AUDIO_PACKET_REJECT_POINTER;
             } else if (offset == 4 && !s->channel[slot].pitch_high_valid) {
@@ -225,7 +268,53 @@ bool msm5xxx_audio_packet_sink_feed(MSM5xxxAudioPacketSink *s, uint8_t value)
     }
     if (kind == MSM5XXX_AUDIO_PACKET_REGISTER) {
         MSM5xxxAudioPacketChannel *channel = &s->channel[slot];
-        if (write.address == 0x163) {
+        if (timer0_write) {
+            if (write.address == 0x152) {
+                s->timer0_timebase = value & 0x7f;
+                s->timer0_timebase_valid = true;
+            } else if (write.address == 0x154) {
+                s->timer0_pending_time = value;
+                s->sequence_pending_stage = 4;
+                s->timer0_time_valid = s->timer0_control_valid = false;
+            } else {
+                s->timer0_time = s->timer0_pending_time;
+                s->timer0_control = value & 0x7f;
+                s->timer0_time_valid = s->timer0_control_valid = true;
+                s->sequence_pending_stage = 0;
+            }
+        } else if (timer_write) {
+            if (write.address == 0x157) {
+                s->timer_pending_time = value;
+                s->sequence_pending_stage = 3;
+                s->timer_time_valid = s->timer_control_valid = false;
+            } else {
+                if (value == 0x85) {
+                    s->timer_time = s->timer_pending_time;
+                    s->timer_time_valid = true;
+                }
+                s->timer_control = value & 0x7f;
+                s->timer_control_valid = true;
+                s->sequence_pending_stage = 0;
+            }
+        } else if (sequence_write) {
+            if (write.address == 0x15e) {
+                s->sequence_pending_parameter = (uint16_t)value << 7;
+                s->sequence_pending_stage = 1;
+                s->sequence_parameter_valid = false;
+                s->sequence_config_valid = false;
+            } else if (write.address == 0x15f) {
+                s->sequence_pending_parameter |= value;
+                s->sequence_pending_stage = 2;
+            } else {
+                if (s->sequence_pending_stage == 2) {
+                    s->sequence_parameter = s->sequence_pending_parameter;
+                    s->sequence_parameter_valid = true;
+                }
+                s->sequence_config = value & 0x7f;
+                s->sequence_config_valid = true;
+                s->sequence_pending_stage = 0;
+            }
+        } else if (write.address == 0x163) {
             s->smoothing_config = value & 0x3f;
             s->smoothing_config_valid = true;
         } else if (offset == 0) {
@@ -259,6 +348,17 @@ bool msm5xxx_audio_packet_sink_feed(MSM5xxxAudioPacketSink *s, uint8_t value)
         }
     }
     return true;
+}
+
+bool msm5xxx_audio_packet_sink_feed(MSM5xxxAudioPacketSink *s, uint8_t value)
+{
+    return audio_packet_sink_feed(s, value, false);
+}
+
+bool msm5xxx_audio_packet_sink_feed_sequence(MSM5xxxAudioPacketSink *s,
+                                            uint8_t value)
+{
+    return audio_packet_sink_feed(s, value, true);
 }
 
 void msm5xxx_audio_readback_index(MSM5xxxAudioReadback *s, uint8_t value)

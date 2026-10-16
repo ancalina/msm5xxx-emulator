@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 from pathlib import Path
 import queue
 import struct
@@ -30,6 +31,60 @@ SPEC.loader.exec_module(MODULE)
 
 
 class QEMUInputTransportTests(unittest.TestCase):
+    def test_distributed_sideband_source_admission_and_release(self):
+        from copy import deepcopy
+        from msm5xxx_emulator.devices.input import InputMixin
+        root = os.environ.get("MSM5XXX_TEST_FIRMWARE_ROOT")
+        if root is None:
+            self.skipTest("firmware corpus unavailable")
+        image = (Path(root) / "SPH-X4500.bin").read_bytes()
+        profile, status, _ = MODULE.resolve_distributed_matrix_input(image)
+        self.assertEqual(status, "static-candidate")
+        config = SimpleNamespace(load_address=0, flash_size=0x400000,
+                                 ram_base=0x1000000, ram_size=0x800000,
+                                 board_status_input=None)
+        prop, reject = MODULE.qemu_distributed_matrix_property(image, config, profile)
+        self.assertIsNone(reject)
+        self.assertTrue(prop.endswith(":80:10"))
+        producer, reject = MODULE.qemu_distributed_sideband_producer(image, config, profile)
+        self.assertIsNone(reject)
+        for key, value in (("mask", 0x20), ("register_width", True),
+                           ("event", 0x52), ("press_callsite", 0x80666)):
+            with self.subTest(key=key):
+                changed = deepcopy(profile)
+                changed["sideband_producers"][0][key] = value
+                fallback, reject = MODULE.qemu_distributed_matrix_property(image, config, changed)
+                self.assertIsNotNone(reject)
+                self.assertEqual(fallback, prop.rsplit(":", 1)[0])
+        limited = SimpleNamespace(**vars(config))
+        for boundary in (profile["sense_site"] + 4, 0x80668):
+            limited.flash_size = boundary
+            self.assertIsNone(MODULE.qemu_distributed_sideband_producer(image, limited, profile)[0])
+            fallback, reject = MODULE.qemu_distributed_matrix_property(image, limited, profile)
+            self.assertIsNotNone(reject)
+            self.assertEqual(fallback, prop.rsplit(":", 1)[0])
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_input_sideband_producer = producer
+        transport.matrix_held, transport.sideband_held = {}, set()
+        transport.decoder = InputMixin()
+        transport.decoder.direct_input_profile = None
+        transport.decoder.input_error = ""
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        self.assertTrue(transport.can_set_key(7))
+        self.assertTrue(transport.set_key(7, True))
+        self.assertFalse(transport.set_key(15, True))
+        transport.matrix_input_profile = None
+        transport.matrix_input_sideband_producer = None
+        transport.input_socket = SimpleNamespace(sendall=mock.Mock(side_effect=OSError("send")))
+        self.assertFalse(transport.set_key(7, False))
+        self.assertEqual(transport.sideband_held, {7})
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        self.assertTrue(transport.set_key(7, False))
+        self.assertEqual(packets, [bytes.fromhex("8001ff10"), bytes.fromhex("80000000")])
+        self.assertEqual(transport.sideband_held, set())
+
     def test_gdb_remote_tcp_nodelay_preserves_stream_contract(self):
         from gdb_remote import Remote
 
@@ -196,6 +251,307 @@ class QEMUInputTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'distributed matrix setting'):
             MODULE.Transport(None, None, experimental_distributed=1)
 
+    def test_distributed_functional_controls_require_paired_evidence_and_six_row_cells(self):
+        from copy import deepcopy
+
+        events = [99,102,49,52,55,42,91,83,50,53,56,48,101,80,51,54,57,35,135,100,82,0,84,85]
+        profile = dict(
+            grammar='distributed-six-byte-numeric-v1', rows=6, columns=4, no_key=15,
+            single_key_column_sense=[14,13,11,7], event_codes=events,
+            menu_mapping_status='accepted-provisional', ok_mapping_status='accepted-provisional',
+            provisional_mappings={
+                0: dict(event=0x5B, rule='same-image-distributed-functional-menu-v1',
+                        semantic_status='temporary-evidence-gated-provisional', functional_only=True),
+                5: dict(event=0x53, rule='same-image-distributed-functional-confirm-v1',
+                        semantic_status='temporary-evidence-gated-provisional', functional_only=True)},
+            token_cells=[dict(token=chr(v),event=v,row=events.index(v)%6,column=events.index(v)//6)
+                         for v in b'123456789*0#']
+                        + [dict(token='M',event=0x5B,row=0,column=1),
+                           dict(token='O',event=0x53,row=1,column=1)],
+        )
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_held, transport.sideband_held = {}, set()
+        transport.decoder = SimpleNamespace(input_error='')
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        for bit,row in ((0,0),(5,1)):
+            self.assertTrue(transport.can_set_key(bit))
+            self.assertTrue(transport.set_key(bit,True))
+            self.assertFalse(transport.set_key(5 if bit==0 else 0,True))
+            self.assertTrue(transport.set_key(bit,False))
+            self.assertEqual(packets[-2:],[bytes((0x80,1,row,13)),bytes((0x80,0,0,0))])
+        self.assertTrue(transport.can_set_key(15))
+        self.assertTrue(transport.can_set_key(5,0x35))  # Preserve explicit numeric override.
+        for bit,event in ((True,0x53),(False,0x5B),(0,0x53),(5,0x5B),(1,0x53)):
+            self.assertFalse(transport.can_set_key(bit,event))
+        variants = []
+        for field,value in (('rows',7),('rows',6.0),('columns',3),
+                            ('menu_mapping_status','rejected'),('ok_mapping_status','rejected')):
+            changed=deepcopy(profile);changed[field]=value;variants.append(changed)
+        for key in (0,5):
+            for field,value in (('event',True),('semantic_status','unverified'),
+                                ('functional_only',False),('rule','same-image-mapped-functional-confirm-v1')):
+                changed=deepcopy(profile);changed['provisional_mappings'][key][field]=value;variants.append(changed)
+            changed=deepcopy(profile);del changed['provisional_mappings'][key];variants.append(changed)
+        for token_index in (-1,-2):
+            for field,value in (('event',float(profile['token_cells'][token_index]['event'])),
+                                ('row',0.0),('column',2)):
+                changed=deepcopy(profile);changed['token_cells'][token_index][field]=value;variants.append(changed)
+            changed=deepcopy(profile);changed['token_cells'].append(changed['token_cells'][token_index].copy());variants.append(changed)
+            changed=deepcopy(profile);changed['token_cells'].pop(token_index);variants.append(changed)
+        changed=deepcopy(profile);changed['event_codes'][0]=0x53;variants.append(changed)
+        changed=deepcopy(profile);changed['event_codes'][0]=99.0;variants.append(changed)
+        changed=deepcopy(profile);changed['event_codes'].pop();variants.append(changed)
+        for changed in variants:
+            with self.subTest(profile=changed):
+                transport.matrix_input_profile=changed
+                self.assertFalse(transport.can_set_key(0))
+                self.assertFalse(transport.can_set_key(5))
+                self.assertTrue(transport.can_set_key(15))
+        for cells in (None, [None], profile['token_cells'] + [None],
+                      profile['token_cells'] + [{}]):
+            transport.matrix_input_profile=dict(profile,token_cells=cells)
+            self.assertFalse(transport.can_set_key(0))
+            self.assertFalse(transport.can_set_key(5))
+            self.assertEqual(transport.can_set_key(15), isinstance(cells,list) and len(cells)>1)
+        transport.matrix_input_profile=profile
+        transport.input_socket=SimpleNamespace(sendall=lambda packet: (_ for _ in ()).throw(OSError('send-failed')))
+        self.assertFalse(transport.set_key(0,True))
+        self.assertEqual(transport.matrix_held,{})
+
+    def distributed_navigation_profile(self):
+        events = [99,102,49,52,55,42,91,83,50,53,56,48,101,80,51,54,57,35,135,100,82,0,84,85]
+        controls = ((0, 'M', 91, 'menu'), (5, 'O', 83, 'confirm'))
+        directions = ((1, 'U', 99), (9, 'D', 100), (4, 'L', 101), (6, 'R', 102))
+        mappings = {bit: dict(event=raw, rule=f'same-image-distributed-functional-{role}-v1',
+                             semantic_status='temporary-evidence-gated-provisional', functional_only=True)
+                    for bit, _, raw, role in controls}
+        mappings.update({bit: dict(event=raw, rule='same-image-distributed-functional-navigation-v1',
+                                  semantic_status='temporary-evidence-gated-provisional', functional_only=True)
+                         for bit, _, raw in directions})
+        tokens = [(chr(v), v) for v in b'123456789*0#']
+        tokens += [(token, raw) for _, token, raw, _ in controls]
+        tokens += [(token, raw) for _, token, raw in directions]
+        profile = dict(grammar='distributed-six-byte-numeric-v1', rows=6, columns=4, no_key=15,
+                       single_key_column_sense=[14,13,11,7], event_codes=events,
+                       menu_mapping_status='accepted-provisional', ok_mapping_status='accepted-provisional',
+                       navigation_mapping_status='accepted-provisional', provisional_mappings=mappings,
+                       control_consumer=dict(grammar='distributed-queued-direct-word-controls-v1',
+                                             confirm_handler=0x6400, confirm_status=0x1003500,
+                                             global_word=0x1003100),
+                       navigation_consumer=dict(grammar='distributed-menu-grid-navigation-v1',
+                                                handler=0x6400, status=0x1003500,
+                                                global_word=0x1003100, grid_stride=3),
+                       token_cells=[dict(token=t,event=v,row=events.index(v)%6,column=events.index(v)//6)
+                                    for t,v in tokens])
+        return profile, events, directions
+
+    def test_distributed_navigation_pair_preserves_controls_and_numeric_fallback(self):
+        from copy import deepcopy
+
+        profile, events, directions = self.distributed_navigation_profile()
+        t = object.__new__(MODULE.Transport)
+        t.matrix_input_profile = profile
+        t.matrix_held, t.sideband_held = {}, set()
+        t.decoder = SimpleNamespace(input_error='')
+        packets = []
+        t.input_socket = SimpleNamespace(sendall=packets.append)
+        for bit, _, raw in directions:
+            index = events.index(raw)
+            self.assertEqual(t._matrix_input_position(bit, None), (raw,index%6,index//6))
+            self.assertTrue(t.set_key(bit, True))
+            self.assertFalse(t.set_key(0, True))
+            self.assertTrue(t.set_key(bit, False))
+            self.assertEqual(packets[-2:], [bytes((0x80,1,index%6,[14,13,11,7][index//6])),
+                                           bytes((0x80,0,0,0))])
+        for bit in (2,3,7,True,False):
+            self.assertFalse(t.can_set_key(bit))
+        self.assertFalse(t.can_set_key(4,102))
+        self.assertTrue(t.can_set_key(4,53))  # Explicit numeric override stays numeric.
+        variants = []
+        for field, value in (('navigation_mapping_status','rejected'), ('navigation_consumer',None)):
+            changed=deepcopy(profile);changed[field]=value;variants.append(changed)
+        for field, value in (('handler',0x6500), ('status',0x1003504), ('global_word',None),
+                             ('grid_stride',3.0), ('grammar','unknown')):
+            changed=deepcopy(profile);changed['navigation_consumer'][field]=value;variants.append(changed)
+        for bit, token, raw in directions:
+            changed=deepcopy(profile);del changed['provisional_mappings'][bit];variants.append(changed)
+            for field, value in (('event',float(raw)), ('functional_only',1), ('rule','unknown')):
+                changed=deepcopy(profile);changed['provisional_mappings'][bit][field]=value;variants.append(changed)
+            changed=deepcopy(profile)
+            cell=next(c for c in changed['token_cells'] if c['token']==token)
+            changed['token_cells'].append(cell.copy());variants.append(changed)
+            for field, value in (('row',0.0), ('column',False), ('event',float(raw)),
+                                 ('event',53), ('event',83)):
+                changed=deepcopy(profile)
+                next(c for c in changed['token_cells'] if c['token']==token)[field]=value
+                variants.append(changed)
+            changed=deepcopy(profile)
+            cell=next(c for c in changed['token_cells'] if c['token']==token)
+            changed['token_cells'].append(dict(cell,token='junk'));variants.append(changed)
+            for field, value in (('row',0.0), ('column',False), ('event',float(raw))):
+                changed=deepcopy(profile)
+                cell=next(c for c in changed['token_cells'] if c['token']==token)
+                changed['token_cells'].append(dict(cell,**{field:value}));variants.append(changed)
+        changed=deepcopy(profile);changed['provisional_mappings'][True]=changed['provisional_mappings'].pop(1)
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(profile=changed):
+                t.matrix_input_profile=changed
+                self.assertTrue(all(not t.can_set_key(bit) for bit,_,_ in directions))
+                self.assertTrue(all(t.can_set_key(bit) for bit in (0,5,15)))
+        t.matrix_input_profile=profile
+        self.assertTrue(t.set_key(4,True))
+        t.matrix_input_profile=variants[0]
+        self.assertTrue(t.set_key(4,False))  # Always release the original held cell.
+        t.matrix_input_profile=profile
+        t.input_socket=SimpleNamespace(sendall=lambda packet: (_ for _ in ()).throw(OSError('send-failed')))
+        self.assertFalse(t.set_key(6,True))
+        self.assertEqual(t.matrix_held,{})
+
+    def test_distributed_back_rejection_preserves_other_keys_and_release(self):
+        from copy import deepcopy
+
+        profile, events, _ = self.distributed_navigation_profile()
+        profile.update(back_mapping_status='accepted-provisional',
+                       back_consumer=dict(grammar='distributed-saved-menu-back-v1',
+                                          handler=0x6400, status=0x1003500,
+                                          global_word=0x1003100, history=0x1004000,
+                                          comparison_descriptor=0x1005000, saved_menu_comparison=0x1006000))
+        profile['provisional_mappings'][2] = dict(
+            event=82, rule='same-image-distributed-functional-back-v1',
+            semantic_status='temporary-evidence-gated-provisional', functional_only=True)
+        cell = dict(token='C',event=82,row=2,column=3)
+        profile['token_cells'].append(cell)
+        t = object.__new__(MODULE.Transport)
+        t.matrix_input_profile = profile
+        t.matrix_held, t.sideband_held = {}, set()
+        t.decoder = SimpleNamespace(input_error='')
+        packets = []
+        t.input_socket = SimpleNamespace(sendall=packets.append)
+        self.assertEqual(t._matrix_input_position(2,None), (82,2,3))
+        self.assertTrue(t.set_key(2,True))
+        self.assertTrue(t.set_key(2,False))
+        self.assertEqual(packets, [bytes((0x80,1,2,7)),bytes((0x80,0,0,0))])
+        self.assertFalse(t.can_set_key(2,83))
+        self.assertTrue(t.can_set_key(2,53))
+        variants = []
+        for field,value in (('back_mapping_status','rejected'),('back_consumer',None)):
+            changed=deepcopy(profile); changed[field]=value; variants.append(changed)
+        for field,value in (('handler',0x6500),('status',True),('global_word',0),
+                            ('history',0),('history',0x1004002),('comparison_descriptor',4.0),
+                            ('saved_menu_comparison',None),('grammar','unknown')):
+            changed=deepcopy(profile); changed['back_consumer'][field]=value; variants.append(changed)
+        for field,value in (('event',82.0),('functional_only',1),('rule','unknown')):
+            changed=deepcopy(profile); changed['provisional_mappings'][2][field]=value; variants.append(changed)
+        changed=deepcopy(profile); del changed['provisional_mappings'][2]; variants.append(changed)
+        changed=deepcopy(profile); changed['token_cells'].pop(); variants.append(changed)
+        for field,value in (('row',2.0),('column',True),('event',82.0),
+                            ('event',53),('event',83),('event',99)):
+            changed=deepcopy(profile); changed['token_cells'][-1][field]=value; variants.append(changed)
+            changed=deepcopy(profile); changed['token_cells'].append(dict(cell,**{field:value})); variants.append(changed)
+        changed=deepcopy(profile); changed['token_cells'].append(cell.copy()); variants.append(changed)
+        changed=deepcopy(profile); changed['token_cells'].append(dict(cell,token='junk')); variants.append(changed)
+        for changed in variants:
+            with self.subTest(profile=changed):
+                t.matrix_input_profile=changed
+                self.assertFalse(t.can_set_key(2))
+                self.assertTrue(all(t.can_set_key(bit) for bit in (0,5,15,1,9,4,6)))
+        changed=deepcopy(profile); changed['navigation_mapping_status']='rejected'
+        t.matrix_input_profile=changed
+        self.assertFalse(t.can_set_key(2))
+        self.assertTrue(all(t.can_set_key(bit) for bit in (0,5,15)))
+        t.matrix_input_profile=profile
+        self.assertTrue(t.set_key(2,True))
+        t.matrix_input_profile=variants[0]
+        self.assertTrue(t.set_key(2,False))
+        t.matrix_input_profile=profile
+        t.input_socket=SimpleNamespace(sendall=lambda packet: (_ for _ in ()).throw(OSError('send-failed')))
+        self.assertFalse(t.set_key(2,True))
+        self.assertEqual(t.matrix_held,{})
+
+    def test_distributed_call_is_independent_optional_context_exit(self):
+        from copy import deepcopy
+
+        profile, events, _ = self.distributed_navigation_profile()
+        profile.update(back_mapping_status='accepted-provisional',
+                       back_consumer=dict(grammar='distributed-saved-menu-back-v1',
+                                          handler=0x6400, status=0x1003500,
+                                          global_word=0x1003100, history=0x1004000,
+                                          comparison_descriptor=0x1005000, saved_menu_comparison=0x1006000),
+                       call_mapping_status='accepted-provisional',
+                       call_consumer=dict(grammar='distributed-queued-context-exit-v1',
+                                          handler=0x6400, status=0x1003500,
+                                          global_word=0x1003100, event=0x50, request_code=0x32))
+        profile['provisional_mappings'][2] = dict(event=82,
+            rule='same-image-distributed-functional-back-v1',
+            semantic_status='temporary-evidence-gated-provisional', functional_only=True)
+        profile['token_cells'].append(dict(token='C', event=82, row=2, column=3))
+        profile['provisional_mappings'][3] = dict(event=80,
+            rule='same-image-distributed-functional-call-v1',
+            semantic_status='temporary-evidence-gated-provisional', functional_only=True)
+        cell = dict(token='S', event=80, row=1, column=2)
+        profile['token_cells'].append(cell)
+        t = object.__new__(MODULE.Transport)
+        t.matrix_input_profile = profile
+        t.matrix_held, t.sideband_held = {}, set()
+        sideband = dict(semantic_key=7, event=81)
+        t.matrix_input_sideband_producer = sideband
+        t.decoder = SimpleNamespace(input_error='',
+            _direct_sideband_producer=lambda bit, event, selected: sideband if bit == 7 else None)
+        packets = []
+        t.input_socket = SimpleNamespace(sendall=packets.append)
+        self.assertEqual(t._matrix_input_position(3,None), (80,1,2))
+        self.assertTrue(t.can_set_key(3,80))
+        self.assertTrue(t.set_key(3,True))
+        self.assertTrue(t.set_key(3,False))
+        self.assertEqual(packets, [bytes((0x80,1,1,11)), bytes((0x80,0,0,0))])
+        for bit, event in ((0,80),(5,80),(2,80),(1,80),(True,80),(3,83)):
+            self.assertFalse(t.can_set_key(bit,event))
+        variants = []
+        for field, value in (('call_mapping_status','rejected'),('call_consumer',None)):
+            changed=deepcopy(profile);changed[field]=value;variants.append(changed)
+        for field, value in (('handler',0x6500),('handler',True),('status',0),
+                             ('global_word',0x1003104),('request_code',0x31),
+                             ('request_code',50.0),('event',True),('event',83),
+                             ('grammar','unknown')):
+            changed=deepcopy(profile);changed['call_consumer'][field]=value;variants.append(changed)
+        for field, value in (('event',80.0),('event',True),('functional_only',1),
+                             ('rule','unknown'),('semantic_status','unknown')):
+            changed=deepcopy(profile);changed['provisional_mappings'][3][field]=value;variants.append(changed)
+        changed=deepcopy(profile);del changed['provisional_mappings'][3];variants.append(changed)
+        changed=deepcopy(profile);changed['token_cells'].pop();variants.append(changed)
+        changed=deepcopy(profile);changed['token_cells'].append(cell.copy());variants.append(changed)
+        changed=deepcopy(profile);changed['token_cells'].append(dict(cell,token='junk'));variants.append(changed)
+        changed=deepcopy(profile);changed['event_codes'][21]=80;variants.append(changed)
+        for field, value in (('row',6),('column',4),('row',1.0),('column',False),
+                             ('row',2),('event',80.0),('event',83),('event',82),('event',99)):
+            changed=deepcopy(profile);changed['token_cells'][-1][field]=value;variants.append(changed)
+            changed=deepcopy(profile);changed['token_cells'].append(dict(cell,**{field:value}));variants.append(changed)
+        for changed in variants:
+            with self.subTest(profile=changed):
+                t.matrix_input_profile=changed
+                self.assertFalse(t.can_set_key(3))
+                self.assertFalse(t.can_set_key(3,80))
+                self.assertTrue(all(t.can_set_key(bit) for bit in (0,5,15,1,9,4,6,2,7)))
+        for field,value in (('rows',7),('columns',3)):
+            t.matrix_input_profile=dict(profile,**{field:value})
+            self.assertFalse(t.can_set_key(3))
+            self.assertTrue(t.can_set_key(15))
+        # Call depends on controls, not optional navigation/BACK admission.
+        t.matrix_input_profile=dict(profile,navigation_mapping_status='rejected',back_mapping_status='rejected')
+        self.assertTrue(t.can_set_key(3))
+        t.matrix_input_profile=profile
+        self.assertTrue(t.set_key(3,True))
+        t.matrix_input_profile=variants[0]
+        self.assertTrue(t.set_key(3,False))  # Release cached original physical cell.
+        self.assertEqual(t.matrix_held,{})
+        t.matrix_input_profile=profile
+        t.input_socket=SimpleNamespace(sendall=lambda packet: (_ for _ in ()).throw(OSError('send-failed')))
+        self.assertFalse(t.set_key(3,True))
+        self.assertEqual(t.matrix_held,{})
+
     def test_low5_matrix_uses_actual_load_sites_and_scoped_packets(self):
         image = bytearray(0x100)
         image[0x10:0x14] = bytes.fromhex('416b0988')
@@ -340,6 +696,126 @@ class QEMUInputTransportTests(unittest.TestCase):
         transport.config = SimpleNamespace(board_status_input=None)
         transport.board_status_snapshot = None
         self.assertFalse(transport.can_set_fold())
+
+    def test_mapped_physical_menu_requires_closed_mapping_and_unique_cell(self):
+        from copy import deepcopy
+
+        events = [0, 0, 0, 103, 84, 85, 100, 42, 55, 52, 49, 80, 101, 91,
+                  48, 56, 53, 50, 82, 138, 99, 35, 57, 54, 51, 0, 102, 83]
+        profile = dict(
+            grammar='indirect-halfword-mapped-row-v1', rows=7, columns=4,
+            no_key=15, single_key_column_sense=[14, 13, 11, 7], event_codes=events,
+            menu_mapping_status='accepted-provisional',
+            provisional_mappings={0: dict(
+                event=0x5B, rule='same-image-mapped-physical-menu-v1',
+                semantic_status='temporary-evidence-gated-provisional',
+                physical_only=True)},
+            token_cells=[dict(token=chr(event), event=event,
+                              row=events.index(event) % 7,
+                              column=events.index(event) // 7)
+                         for event in b'123456789*0#']
+                        + [dict(token='M', event=0x5B, row=6, column=1)],
+        )
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_held, transport.sideband_held = {}, set()
+        transport.decoder = SimpleNamespace(input_error='')
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        self.assertTrue(transport.can_set_key(0))
+        self.assertTrue(transport.can_set_key(0, 0x5B))
+        self.assertTrue(transport.set_key(0, True))
+        self.assertTrue(transport.set_key(0, False))
+        self.assertEqual(packets, [bytes((0x80, 1, 6, 13)), bytes((0x80, 0, 0, 0))])
+        self.assertEqual(transport.matrix_held, {})
+        for bit in range(1, 11):
+            self.assertFalse(transport.can_set_key(bit))
+        self.assertFalse(transport.can_set_key(False))
+        self.assertFalse(transport.can_set_key(0, 0x53))
+        mutations = []
+        for field, value in (('menu_mapping_status', 'rejected'),
+                             ('provisional_mappings', {}),
+                             ('grammar', 'distributed-six-byte-numeric-v1')):
+            changed = deepcopy(profile); changed[field] = value; mutations.append(changed)
+        for field, value in (('event', 0x53), ('event', True), ('rule', 'unknown'),
+                             ('semantic_status', 'unverified'), ('physical_only', False)):
+            changed = deepcopy(profile)
+            changed['provisional_mappings'][0][field] = value; mutations.append(changed)
+        changed = deepcopy(profile); changed['event_codes'][0] = 0x5B; mutations.append(changed)
+        changed = deepcopy(profile); changed['event_codes'].pop(); mutations.append(changed)
+        changed = deepcopy(profile); changed['token_cells'][-1]['row'] = 5; mutations.append(changed)
+        changed = deepcopy(profile); changed['token_cells'].append(dict(changed['token_cells'][-1])); mutations.append(changed)
+        changed = deepcopy(profile); changed['token_cells'].pop(); mutations.append(changed)
+        for changed in mutations:
+            with self.subTest(profile=changed):
+                transport.matrix_input_profile = changed
+                self.assertFalse(transport.can_set_key(0))
+                self.assertFalse(transport.can_set_key(0, 0x5B))
+                self.assertTrue(transport.can_set_key(15))
+
+    def test_mapped_functional_confirm_keeps_seven_row_namespace_and_fallback(self):
+        from copy import deepcopy
+
+        events = [0, 0, 0, 103, 84, 85, 100, 42, 55, 52, 49, 80, 101, 91,
+                  48, 56, 53, 50, 82, 138, 99, 35, 57, 54, 51, 0, 102, 83]
+        profile = dict(
+            grammar='indirect-halfword-mapped-row-v1', rows=7, columns=4,
+            no_key=15, single_key_column_sense=[14, 13, 11, 7], event_codes=events,
+            menu_mapping_status='accepted-provisional',
+            ok_mapping_status='accepted-provisional',
+            provisional_mappings={
+                0: dict(event=0x5B, rule='same-image-mapped-physical-menu-v1',
+                        semantic_status='temporary-evidence-gated-provisional',
+                        physical_only=True),
+                5: dict(event=0x53, rule='same-image-mapped-functional-confirm-v1',
+                        semantic_status='temporary-evidence-gated-provisional',
+                        functional_only=True)},
+            token_cells=[dict(token=chr(event), event=event,
+                              row=events.index(event) % 7,
+                              column=events.index(event) // 7)
+                         for event in b'123456789*0#']
+                        + [dict(token='M', event=0x5B, row=6, column=1),
+                           dict(token='O', event=0x53, row=6, column=3)],
+        )
+        transport = object.__new__(MODULE.Transport)
+        transport.matrix_input_profile = profile
+        transport.matrix_held, transport.sideband_held = {}, set()
+        transport.decoder = SimpleNamespace(input_error='')
+        packets = []
+        transport.input_socket = SimpleNamespace(sendall=packets.append)
+        self.assertTrue(transport.can_set_key(5))
+        self.assertTrue(transport.can_set_key(5, 0x53))
+        self.assertTrue(transport.set_key(5, True))
+        self.assertTrue(transport.set_key(5, False))
+        self.assertEqual(packets, [bytes((0x80, 1, 6, 7)), bytes((0x80, 0, 0, 0))])
+        self.assertEqual(transport.matrix_held, {})
+        for bit, event in ((0, 0x53), (5, 0x5B), (1, 0x53), (True, 0x53)):
+            self.assertFalse(transport.can_set_key(bit, event))
+
+        variants = []
+        for field, value in (('ok_mapping_status', 'rejected'), ('rows', 6),
+                             ('columns', 3)):
+            changed = deepcopy(profile); changed[field] = value; variants.append(changed)
+        for field, value in (('event', True), ('event', 0x54), ('rule', 'unknown'),
+                             ('rule', 'same-image-loop-functional-confirm-v1'),
+                             ('semantic_status', 'unverified'), ('functional_only', False)):
+            changed = deepcopy(profile)
+            changed['provisional_mappings'][5][field] = value; variants.append(changed)
+        changed = deepcopy(profile); del changed['provisional_mappings'][5]; variants.append(changed)
+        changed = deepcopy(profile); changed['event_codes'][0] = 0x53; variants.append(changed)
+        changed = deepcopy(profile); changed['event_codes'].pop(); variants.append(changed)
+        changed = deepcopy(profile); changed['token_cells'][-1]['row'] = 3; variants.append(changed)
+        changed = deepcopy(profile); changed['token_cells'][-1]['column'] = 2; variants.append(changed)
+        changed = deepcopy(profile); changed['token_cells'].append(changed['token_cells'][-1].copy()); variants.append(changed)
+        changed = deepcopy(profile); changed['token_cells'].pop(); variants.append(changed)
+        for changed in variants:
+            with self.subTest(profile=changed):
+                transport.matrix_input_profile = changed
+                self.assertFalse(transport.can_set_key(5))
+                self.assertFalse(transport.can_set_key(5, 0x53))
+                self.assertTrue(transport.can_set_key(15))
+                if len(changed['event_codes']) == 28:
+                    self.assertTrue(transport.can_set_key(0))
 
     def test_loop_functional_confirm_requires_matching_evidence_and_unique_cell(self):
         from copy import deepcopy

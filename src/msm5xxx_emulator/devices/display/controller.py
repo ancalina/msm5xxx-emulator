@@ -340,6 +340,13 @@ class DisplayControllerMixin:
                 and 0 < self._lcd_expected
                 < self.config.width * self.config.height):
             return
+        if (source == "runtime:shifted-pair-fifo-rgb565"
+                and self._lcd_raw_port == (address, size)
+                and self._lcd_command in LCD_MEMORY_WRITE_COMMANDS
+                and self.shifted_orientation_snapshot()["qualified"]):
+            # This doubled-command dialect's control words are not GRAM pixels.
+            self._capture_raw_lcd_stream(address, size, value)
+            return
         if (self._lcd_protocol == "parallel-2" and self._lcd_command == 0x22
                 and self._lcd_gram_addressed):
             self._lcd_write_gram_pixel(value)
@@ -447,6 +454,8 @@ class DisplayControllerMixin:
             return
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        self._lcd_observe_shifted_orientation(address, size, value)
+        self._lcd_packed_window_observe(address, size, value)
         indexed = getattr(self, "_lcd_indexed_byte_panel", None)
         if indexed is not None:
             with self._display_lock:

@@ -26,6 +26,7 @@ from qemu_transport import (  # noqa: E402
     AUDIO_STATUS_RESET, AUDIO_TIMING_TELEMETRY,
     AUDIO_WRITE, LCD_WRITE, TELEMETRY, Transport,
     bounded_audio_socket_pair, qemu_audio_sites, qemu_audio_irq_property,
+    qemu_audio_packet_property,
 )
 
 ANDROID_RUNTIME = (
@@ -35,6 +36,133 @@ ANDROID_RUNTIME = (
 
 
 class QEMUAudioTransportTests(unittest.TestCase):
+    def test_sequence_receiver_property_rechecks_same_image_and_primary_nor(self):
+        from copy import deepcopy
+        from test_audio_transport import _sequence_image
+        from msm5xxx_emulator.detection.audio import find_audio_transport
+        image, roles = _sequence_image(0x2000)
+        image = bytes(image)
+        audio = find_audio_transport(image)
+        config = SimpleNamespace(load_address=0, flash_size=0x4000,
+                                 ram_base=0x1000000, ram_size=0x4000)
+        prop, reason = qemu_audio_packet_property(image, config, audio)
+        self.assertIsNone(reason)
+        self.assertEqual(prop, 'experimental-audio-packet-bus=2606,audio-packet-sequence=on')
+        for field, value in (("static_status", "rejected"), ("begin", 0x2608),
+                             ("requires_runtime_reset", False),
+                             ("protocol_status", "accepted"),
+                             ("sequence_producer", roles["sequence"] + 2),
+                             ("timer_producer", roles["timer"] + 2),
+                             ("timer_stop_producer", roles["timer-stop"] + 2),
+                             ("status_consumers", [roles["ready"] + 2])):
+            bad = deepcopy(audio); bad[field] = value
+            self.assertIsNone(qemu_audio_packet_property(image, config, bad)[0])
+        changed = bytearray(image); changed[roles["sender"]] ^= 1
+        self.assertIsNone(qemu_audio_packet_property(bytes(changed), config, audio)[0])
+        config.load_address = 0x400000
+        self.assertIsNone(qemu_audio_packet_property(image, config, audio)[0])
+        config.load_address = 0; config.flash_size = roles["ready"] + 2
+        self.assertIsNone(qemu_audio_packet_property(image, config, audio)[0])
+        self.assertIsNone(qemu_audio_packet_property(image, config, None)[0])
+        config.flash_size = 0x4000; config.ram_size = 0x200
+        self.assertEqual(qemu_audio_packet_property(image, config, audio)[1],
+                         "consumer-state-unmapped")
+        # The shared return target is valid image code but outside primary NOR.
+        image, roles = _sequence_image()
+        image.extend(b"\xff" * 0x1800)
+        image[0x2000:0x2002] = b"\x70\x47"
+        from test_audio_transport import _thumb_bl
+        for site in [roles["wrapper"] + n for n in (8, 24, 44, 60)] + [0x43c + 12, 0x49a + 12]:
+            image[site:site + 4] = _thumb_bl(site, 0x2000)
+        audio = find_audio_transport(bytes(image))
+        self.assertEqual(audio["static_status"], "accepted")
+        config.flash_size = 0x1000; config.ram_size = 0x4000
+        self.assertEqual(qemu_audio_packet_property(bytes(image), config, audio)[1],
+                         "primary-nor-out-of-bounds")
+        # Both raw state pointers and their full consumer word windows must map.
+        image, roles = _sequence_image()
+        for role, literal in (("sender", 112), ("sequence", 88)):
+            bad = bytearray(image)
+            struct.pack_into("<I", bad, roles[role] + literal, 0x1003ffc)
+            if role == "sequence":
+                for name, pool in (("timer", 172), ("timer-stop", 76)):
+                    struct.pack_into("<I", bad, roles[name] + pool, 0x1003ffc)
+            audio = find_audio_transport(bytes(bad))
+            self.assertEqual(qemu_audio_packet_property(bytes(bad), config, audio)[1],
+                             "consumer-state-unmapped")
+
+    def test_optional_clear_property_same_image_and_dependency_bounds(self):
+        from copy import deepcopy
+        from test_audio_transport import _sequence_clear_image
+        from msm5xxx_emulator.detection.audio import find_audio_transport
+        for shift in (0, 0x2000):
+            image, roles = _sequence_clear_image(shift)
+            image = bytes(image)
+            audio = find_audio_transport(image)
+            config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                     ram_base=0x1000000, ram_size=0x4000)
+            old = f"experimental-audio-packet-bus={roles['wrapper'] + 6:x},audio-packet-sequence=on"
+            self.assertEqual(audio["control_clear_status"], "accepted")
+            self.assertEqual(qemu_audio_packet_property(image, config, audio),
+                             (old + ",audio-packet-clear-pulse=on", None))
+            for field, value in (("control_clear_status", "unavailable"),
+                                 ("control_clear_producer", roles["clear"] + 2),
+                                 ("control_clear_payload", 0x1000117),
+                                 ("nor_dependencies", audio["nor_dependencies"][:-1]),
+                                 ("ram_dependencies", audio["ram_dependencies"][:-1])):
+                with self.subTest(shift=shift, field=field):
+                    forged = deepcopy(audio); forged[field] = value
+                    self.assertEqual(qemu_audio_packet_property(image, config, forged),
+                                     (None, "same-image-contract-mismatch"))
+            config.flash_size = roles["payload_rom"] + 2
+            reason = ("primary-nor-unmapped" if config.flash_size < 0x1000
+                      else "primary-nor-out-of-bounds")
+            self.assertEqual(qemu_audio_packet_property(image, config, audio),
+                             (None, reason))
+            config.flash_size = len(image)
+            config.ram_base = 0x1000117
+            self.assertEqual(qemu_audio_packet_property(image, config, audio),
+                             (None, "consumer-state-unmapped"))
+
+    def test_missing_or_rejected_clear_keeps_old_sequence_property(self):
+        from copy import deepcopy
+        from test_audio_transport import _sequence_image, _sequence_clear_image
+        from msm5xxx_emulator.detection.audio import find_audio_transport
+        config = SimpleNamespace(load_address=0, flash_size=0x4000,
+                                 ram_base=0x1000000, ram_size=0x4000)
+        images = [_sequence_image()[0]]
+        image, roles = _sequence_clear_image()
+        image[roles["payload_rom"] + 2] ^= 1
+        images.append(image)
+        for image in images:
+            image = bytes(image); audio = find_audio_transport(image)
+            self.assertEqual(audio["static_status"], "accepted")
+            self.assertEqual(audio["control_clear_status"], "unavailable")
+            self.assertEqual(qemu_audio_packet_property(image, config, audio),
+                             ("experimental-audio-packet-bus=606,audio-packet-sequence=on", None))
+            forged = deepcopy(audio); forged["control_clear_status"] = "accepted"
+            self.assertEqual(qemu_audio_packet_property(image, config, forged),
+                             (None, "same-image-contract-mismatch"))
+
+    def test_sequence_ready_byte_window_accepts_last_byte_and_rejects_unmapped(self):
+        from test_audio_transport import _sequence_image
+        from msm5xxx_emulator.detection.audio import find_audio_transport
+        image, roles = _sequence_image()
+        config = SimpleNamespace(load_address=0, flash_size=0x1000,
+                                 ram_base=0x1000000, ram_size=0x4000)
+        for pointer, accepted in ((0x1003fff, True), (0x1004000, False),
+                                  (0xffffff, False), (0xffffffff, False)):
+            with self.subTest(pointer=pointer):
+                struct.pack_into("<I", image, roles["ready"] + 140, pointer)
+                audio = find_audio_transport(bytes(image))
+                prop, reason = qemu_audio_packet_property(bytes(image), config, audio)
+                if accepted:
+                    self.assertIsNotNone(prop)
+                    self.assertIsNone(reason)
+                else:
+                    self.assertIsNone(prop)
+                    self.assertEqual(reason, "consumer-state-unmapped")
+
     def test_irq_route_requires_owned_read_and_mapped_descriptor(self):
         from copy import deepcopy
         audio = dict(static_status='accepted', family='ma2', grammar='ma2-command-v1',

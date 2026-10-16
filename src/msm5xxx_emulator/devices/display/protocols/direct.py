@@ -218,6 +218,10 @@ class DirectProtocolMixin:
 
         held = tuple(events)
         events.clear()
+        if command == 0x22:
+            # Pixel lanes pack the upper green bits one position lower.
+            high = held[-2][2]
+            data = (high & 0xF800) | ((high & 0x0380) << 1) | (data & 0xFF)
         if self._lcd_028_split16_emit(command, data):
             return True
         self._lcd_028_split16_disabled = True

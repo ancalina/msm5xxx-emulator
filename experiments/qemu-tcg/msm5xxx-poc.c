@@ -463,6 +463,8 @@ struct MSM5xxxPOCMachineState {
     uint8_t audio_packet_init_valid;
     bool audio_packet_fault, audio_packet_reported, audio_packet_gate_reported;
     bool audio_packet_fifo_empty_known;
+    bool audio_packet_sequence, audio_packet_reset_armed, audio_packet_ready;
+    bool audio_packet_clear_pulse, audio_packet_clear_armed;
     unsigned audio_packet_trace_count;
     uint32_t audio_base;
     uint8_t audio_data_offset;
@@ -1916,7 +1918,8 @@ static bool msm5xxx_poc_matrix_gpio_conflict(MSM5xxxPOCMachineState *s)
     for (unsigned i = 0; i < 4; i++) {
         uint32_t address = i == 3 ? s->matrix_input_address :
             s->matrix_input_gpio_port[i];
-        unsigned mask = i == 3 ? 0xf : s->matrix_input_gpio_mask[i];
+        unsigned mask = i == 3 ? (0xf | s->matrix_input_sideband_mask) :
+                                s->matrix_input_gpio_mask[i];
 
         if (s->board_status_input_enabled &&
             s->board_status_input_address == address) {
@@ -1960,6 +1963,14 @@ static uint64_t msm5xxx_poc_matrix_gpio_read(void *opaque, hwaddr offset,
         return backing;
     }
     pc = CPU_GET_CLASS(cpu)->get_pc(cpu) & ~1U;
+    if (s->matrix_input_sideband_mask) {
+        backing |= s->matrix_input_sideband_mask;
+        if (s->matrix_input_pressed &&
+            s->matrix_input_row == MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW) {
+            backing &= ~s->matrix_input_sideband_mask;
+            s->matrix_input_active_reads++;
+        }
+    }
     if (pc != s->matrix_input_presence_site &&
         pc != s->matrix_input_sense_site) {
         return backing;
@@ -1978,12 +1989,16 @@ static uint64_t msm5xxx_poc_matrix_gpio_read(void *opaque, hwaddr offset,
         }
     }
     if (!msm5xxx_poc_mapped_halfword_sense(backing, output, 0x3f,
-            pc == s->matrix_input_presence_site, s->matrix_input_pressed,
+            pc == s->matrix_input_presence_site,
+            s->matrix_input_pressed &&
+                s->matrix_input_row != MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW,
             s->matrix_input_row, s->matrix_input_sense, &result)) {
         s->matrix_input_rejections++;
         return backing;
     }
-    if (s->matrix_input_pressed && (result & 0xf) != 0xf) {
+    if (s->matrix_input_pressed &&
+        s->matrix_input_row != MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW &&
+        (result & 0xf) != 0xf) {
         s->matrix_input_active_reads++;
     }
     return result;
@@ -3892,9 +3907,11 @@ static bool msm5xxx_poc_audio_packet_gate(MSM5xxxPOCMachineState *s,
     uint32_t entry, pc, expected, target = 0;
     unsigned i;
 
-    if (s->audio_packet_begin < 6 || s->primary_nor_size < sizeof(shape) ||
-        s->audio_packet_begin - 6 > s->primary_nor_size - sizeof(shape) ||
-        (s->audio_packet_begin & 1) || size != 1 ||
+    if (!s->audio_packet_begin ||
+        (!s->audio_packet_sequence &&
+         (s->audio_packet_begin < 6 || s->primary_nor_size < sizeof(shape) ||
+          s->audio_packet_begin - 6 > s->primary_nor_size - sizeof(shape) ||
+          (s->audio_packet_begin & 1))) || size != 1 ||
         (address != 0x02080000 && address != 0x02080002) ||
         !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
         !cpu->neg.can_do_io || !s->cpu->env.thumb) {
@@ -3905,6 +3922,11 @@ static bool msm5xxx_poc_audio_packet_gate(MSM5xxxPOCMachineState *s,
     pc = CPU_GET_CLASS(cpu)->get_pc(cpu);
     if ((pc & ~1U) != expected) {
         return false;
+    }
+    if (s->audio_packet_begin < 6 || s->primary_nor_size < sizeof(shape) ||
+        s->audio_packet_begin - 6 > s->primary_nor_size - sizeof(shape) ||
+        (s->audio_packet_begin & 1)) {
+        goto reject;
     }
     entry = s->audio_packet_begin - 6;
     if (!msm5xxx_poc_audio_packet_nor(s, entry, code, sizeof(code))) {
@@ -3938,6 +3960,12 @@ static bool msm5xxx_poc_audio_packet_gate(MSM5xxxPOCMachineState *s,
     }
     return true;
 reject:
+    if (s->audio_packet_sequence) {
+        s->audio_packet_fault = true;
+        s->audio_packet_ready = s->audio_packet_reset_armed = false;
+        s->audio_packet_clear_armed = false;
+        s->audio_packet_fifo_empty_known = false;
+    }
     if (!s->audio_packet_gate_reported) {
         warn_report("experimental audio packet gate rejected: mapped wrapper "
                     "or delay mismatch; LCD fallback retained");
@@ -3950,6 +3978,8 @@ static void msm5xxx_poc_audio_packet_reject(MSM5xxxPOCMachineState *s,
                                            uint8_t value)
 {
     s->audio_packet_fault = true;
+    s->audio_packet_ready = s->audio_packet_reset_armed = false;
+    s->audio_packet_clear_armed = false;
     s->audio_packet_fifo_empty_known = false;
     if (!s->audio_packet_reported) {
         warn_report("experimental audio packet rejected: index=%02x value=%02x "
@@ -3977,6 +4007,7 @@ static bool msm5xxx_poc_audio_packet_read(MSM5xxxPOCMachineState *s,
     }
     /* Synchronous sink capacity, not FIFO timing or a completed query/result. */
     *value = !s->audio_packet_fault && !s->audio_packet_sink.reject &&
+             (!s->audio_packet_sequence || s->audio_packet_ready) &&
              !(s->audio_packet_control & 0x80) ?
              1 | (s->audio_packet_fifo_empty_known ? 2 : 0) : 0;
     return true;
@@ -3994,16 +4025,36 @@ static bool msm5xxx_poc_audio_packet_write(MSM5xxxPOCMachineState *s,
         return false;
     }
     if (!(address & 2)) {
+        if (s->audio_packet_clear_armed && (byte & 0x3f) != 4) {
+            msm5xxx_poc_audio_packet_reject(s, byte);
+            return true;
+        }
         s->audio_packet_index = byte & 0x3f;
         return true; /* Selecting/restoring a command never resets framing. */
     }
     if (s->audio_packet_index == 4) {
         rising = byte & ~s->audio_packet_control;
+        if (byte == 0x28 && s->audio_packet_clear_pulse) {
+            if (!s->audio_packet_sequence || !s->audio_packet_ready ||
+                s->audio_packet_clear_armed || s->audio_packet_reset_armed ||
+                s->audio_packet_fault || s->audio_packet_sink.reject ||
+                s->audio_packet_control || s->audio_packet_sink.packet.phase ||
+                s->audio_packet_sink.sequence_pending_stage) {
+                msm5xxx_poc_audio_packet_reject(s, byte);
+                return true;
+            }
+            /* Closed aggregate pulse; no parser, timer or new empty knowledge. */
+            s->audio_packet_clear_armed = true;
+            s->audio_packet_ready = false;
+            s->audio_packet_control = byte;
+            return true;
+        }
         if (byte & ~0xd3) {
             msm5xxx_poc_audio_packet_reject(s, byte);
             return true;
         }
         if (rising & 0x80) {
+            s->audio_packet_clear_armed = false;
             msm5xxx_audio_packet_sink_reset(&s->audio_packet_sink);
             s->audio_packet_fault = false;
             /* Reset establishes empty; unsupported FIFO writes invalidate it. */
@@ -4014,9 +4065,45 @@ static bool msm5xxx_poc_audio_packet_write(MSM5xxxPOCMachineState *s,
             memset(s->audio_packet_init, 0, sizeof(s->audio_packet_init));
             /* Reset defaults are unknown; invalid mirrors provide no readback. */
             s->audio_packet_control = byte;
+            if (s->audio_packet_sequence) {
+                s->audio_packet_reset_armed = true;
+                s->audio_packet_ready = false;
+            }
             return true; /* Full reset skips the new byte's low-bit mode. */
-        } else if (rising & 0x50) {
+        }
+        if (s->audio_packet_clear_armed) {
+            if (byte || s->audio_packet_fault || s->audio_packet_sink.reject ||
+                s->audio_packet_reset_armed || s->audio_packet_control != 0x28 ||
+                s->audio_packet_sink.packet.phase ||
+                s->audio_packet_sink.sequence_pending_stage) {
+                msm5xxx_poc_audio_packet_reject(s, byte);
+                return true;
+            }
+            s->audio_packet_clear_armed = false;
+            s->audio_packet_control = 0;
+            s->audio_packet_ready = true;
+            return true;
+        }
+        if (s->audio_packet_sequence && (byte & 0x80)) {
+            /* A repeated assertion is not a release edge. */
+            s->audio_packet_control = byte;
+            s->audio_packet_ready = false;
+            return true;
+        }
+        if (s->audio_packet_sequence && s->audio_packet_reset_armed) {
+            if (byte != 0) {
+                msm5xxx_poc_audio_packet_reject(s, byte);
+                return true;
+            }
+            s->audio_packet_reset_armed = false;
+            s->audio_packet_ready = true;
+        }
+        if (rising & 0x50) {
             msm5xxx_audio_packet_reset(&s->audio_packet_sink.packet);
+            if (s->audio_packet_sequence) {
+                s->audio_packet_sink.sequence_pending_stage = 0;
+                s->audio_packet_sink.sequence_pending_parameter = 0;
+            }
         }
         s->audio_packet_mode = byte & 3;
         /* Repeated high control bits clear in the retained control mirror. */
@@ -4039,8 +4126,14 @@ static bool msm5xxx_poc_audio_packet_write(MSM5xxxPOCMachineState *s,
         msm5xxx_poc_audio_packet_reject(s, byte);
         return true;
     }
+    if (s->audio_packet_sequence && !s->audio_packet_ready) {
+        msm5xxx_poc_audio_packet_reject(s, byte);
+        return true;
+    }
     writes = s->audio_packet_sink.register_writes;
-    if (!msm5xxx_audio_packet_sink_feed(&s->audio_packet_sink, byte)) {
+    if (!(s->audio_packet_sequence ?
+          msm5xxx_audio_packet_sink_feed_sequence(&s->audio_packet_sink, byte) :
+          msm5xxx_audio_packet_sink_feed(&s->audio_packet_sink, byte))) {
         msm5xxx_poc_audio_packet_reject(s, byte);
     } else if (writes != s->audio_packet_sink.register_writes &&
                s->audio_packet_trace_count < 16) {
@@ -4425,6 +4518,8 @@ static void msm5xxx_poc_audio_reset(void *opaque)
     memset(s->audio_packet_init, 0, sizeof(s->audio_packet_init));
     s->audio_packet_fault = s->audio_packet_reported = false;
     s->audio_packet_fifo_empty_known = false;
+    s->audio_packet_ready = s->audio_packet_reset_armed = false;
+    s->audio_packet_clear_armed = false;
     s->audio_packet_gate_reported = false;
     s->audio_packet_trace_count = 0;
     s->audio_readback_rejection_reported = false;
@@ -5529,6 +5624,14 @@ static void msm5xxx_poc_init(MachineState *machine)
             &s->matrix_input, 1
         );
     }
+    if (s->audio_packet_clear_pulse && !s->audio_packet_sequence) {
+        error_report("audio-packet-clear-pulse requires audio-packet-sequence");
+        exit(EXIT_FAILURE);
+    }
+    if (s->audio_packet_sequence && !s->audio_packet_begin) {
+        error_report("audio-packet-sequence requires experimental-audio-packet-bus");
+        exit(EXIT_FAILURE);
+    }
     if (s->audio_packet_begin) {
         if (!s->memory_profile_enabled || s->audio_enabled ||
             s->audio_packet_begin < 6 || (s->audio_packet_begin & 1) ||
@@ -5689,6 +5792,35 @@ static void msm5xxx_poc_set_audio_packet_bus(Object *obj, const char *value,
         return;
     }
     MSM5XXX_POC_MACHINE(obj)->audio_packet_begin = begin;
+}
+
+static bool msm5xxx_poc_get_audio_packet_sequence(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->audio_packet_sequence;
+}
+
+static void msm5xxx_poc_set_audio_packet_sequence(Object *obj, bool value,
+                                                Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    s->audio_packet_sequence = value;
+    s->audio_packet_ready = s->audio_packet_reset_armed = false;
+    s->audio_packet_clear_armed = false;
+}
+
+static bool msm5xxx_poc_get_audio_packet_clear_pulse(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->audio_packet_clear_pulse;
+}
+
+static void msm5xxx_poc_set_audio_packet_clear_pulse(Object *obj, bool value,
+                                                   Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    s->audio_packet_clear_pulse = value;
+    s->audio_packet_clear_armed = false;
 }
 
 static void msm5xxx_poc_set_sbi(Object *obj, bool value, Error **errp)
@@ -7040,6 +7172,14 @@ static char *msm5xxx_poc_get_matrix_gpio(Object *obj, Error **errp)
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
     (void)errp;
+    if (s->matrix_input_gpio && s->matrix_input_sideband_mask) {
+        return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x:%x",
+            s->matrix_input_address, s->matrix_input_presence_site,
+            s->matrix_input_sense_site, s->matrix_input_gpio_port[0],
+            s->matrix_input_gpio_mask[0], s->matrix_input_gpio_port[1],
+            s->matrix_input_gpio_mask[1], s->matrix_input_gpio_port[2],
+            s->matrix_input_gpio_mask[2], s->matrix_input_sideband_mask);
+    }
     return s->matrix_input_gpio ? g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x",
         s->matrix_input_address, s->matrix_input_presence_site,
         s->matrix_input_sense_site, s->matrix_input_gpio_port[0],
@@ -7052,7 +7192,7 @@ static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
                                        Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    uint64_t fields[9];
+    uint64_t fields[10] = { 0 };
     const char *field = value;
     unsigned rows = 0;
 
@@ -7064,10 +7204,22 @@ static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
 
         if (!field || !g_ascii_isxdigit(*field) ||
             qemu_strtou64(field, &end, 16, &fields[i]) < 0 ||
-            fields[i] > UINT32_MAX || (i == 8 ? *end != 0 : *end != ':')) {
+            fields[i] > UINT32_MAX ||
+            (i == 8 ? (*end != 0 && *end != ':') : *end != ':')) {
             goto invalid;
         }
         field = end + (i != 8);
+    }
+    if (*field == ':') {
+        const char *end;
+
+        field++;
+        if (!g_ascii_isxdigit(*field) ||
+            qemu_strtou64(field, &end, 16, &fields[9]) < 0 || *end ||
+            fields[9] > UINT8_MAX || (fields[9] & 0xf) ||
+            (fields[9] && (fields[9] & (fields[9] - 1)))) {
+            goto invalid;
+        }
     }
     if (fields[0] < MSM5XXX_POC_MSM_BASE ||
         fields[0] >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
@@ -7111,7 +7263,7 @@ static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
     s->matrix_input_gpio = true;
     s->matrix_input_rows = 6;
     s->matrix_input_no_key = 0xf;
-    s->matrix_input_sideband_mask = 0;
+    s->matrix_input_sideband_mask = fields[9];
     s->matrix_input_sense_bitmap = (1U << 14) | (1U << 13) |
         (1U << 11) | (1U << 7);
     s->matrix_input_host_enabled = true;
@@ -7120,7 +7272,8 @@ static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
 
 invalid:
     error_setg(errp, "matrix-gpio requires exclusive "
-               "ADDRESS:PRESENCE_PC:ROW_PC:PORT0:MASK0:PORT1:MASK1:PORT2:MASK2");
+               "ADDRESS:PRESENCE_PC:ROW_PC:PORT0:MASK0:PORT1:MASK1:PORT2:MASK2"
+               "[:SIDEBAND_MASK]");
 }
 
 static void msm5xxx_poc_set_fujitsu_x16_nor(Object *obj, const char *value,
@@ -7929,6 +8082,18 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "experimental-audio-packet-bus",
         "Opt-in primary-NOR wrapper for partial command-2 state; no renderer");
+    object_class_property_add_bool(oc, "audio-packet-sequence",
+                                  msm5xxx_poc_get_audio_packet_sequence,
+                                  msm5xxx_poc_set_audio_packet_sequence);
+    object_class_property_set_description(
+        oc, "audio-packet-sequence",
+        "Opt-in raw sequence packet receiver after executed reset; no timing or renderer");
+    object_class_property_add_bool(oc, "audio-packet-clear-pulse",
+                                  msm5xxx_poc_get_audio_packet_clear_pulse,
+                                  msm5xxx_poc_set_audio_packet_clear_pulse);
+    object_class_property_set_description(
+        oc, "audio-packet-clear-pulse",
+        "Opt-in bounded aggregate control pulse; no FIFO timing or renderer");
     object_class_property_add_str(oc, "primary-x16-nor",
                                   msm5xxx_poc_get_primary_x16_nor,
                                   msm5xxx_poc_set_primary_x16_nor);

@@ -218,6 +218,109 @@ def _samsung_sideband_51_metadata(
     )
 
 
+# shortcut: exact flags-driven sideband producer until independent peer proof.
+_SAMSUNG_FLAG_SIDEBAND_CONTRACTS = (
+    (0x0, 0x24, "d5ae96781ff473beefc005db98a2b3b8457c53b083c844b9a8b82f98595a981d",
+     ((6, 1587208), (10, -652), (20, -300), (30, 1587008))),
+    (0x24, 0xa6, "3a39ae77e743c6c359591246c5226d2a956fd0da627c93796f4142aba0961bcd",
+     ()),
+    (0xe4, 0xe, "76f10e3c8c1c70f1871a60a026777e6908eb4747f9a1f55bd9a5c9e23afaab5d",
+     ((10, -1112),)),
+    (0x27e, 0xa6, "022984a41c17de11a4f99a945b710899908a83d4c7a47510e22b7075e4401551",
+     ((4, 1586394), (52, -1522), (134, 399606), (146, -1522))),
+)
+_SAMSUNG_FLAG_SIDEBAND_SINK = (0xc6, "8c94142d0256a9ff66c4ef0dce00f7d728ac7fa6f96f4232ce07226cbc16e68f",
+                               ((26, 219948), (154, -45292), (188, 1588080)))
+
+
+def _samsung_flags_sideband_51_metadata(
+        image: bytes, profile: dict[str, object], load_address: int,
+) -> dict[str, object]:
+    """Separate exact producer; preserve rejection outside this opcode class."""
+    fields = [profile.get(key) for key in
+              ("function", "sense_site", "event_sink", "raw_dequeue", "raw_ring")]
+    if (profile.get("grammar") != "direct-low-nibble-6-row-v1"
+            or profile.get("event_sink_family") != SAMSUNG_RING32
+            or profile.get("raw_consumer_evidence") != SAMSUNG_RAW_SAVED_CONSUMER_EVIDENCE
+            or type(profile.get("raw_task_register")) is not int
+            or profile.get("raw_task_register") != 7
+            or not isinstance(profile.get("event_codes"), (list, tuple))
+            or any(type(value) is not int for value in fields)):
+        return {}
+    scanner, sense, sink, dequeue, ring = fields
+    scanner, sense, sink, dequeue = (value - load_address
+                                    for value in (scanner, sense, sink, dequeue))
+    if (not 0 <= scanner <= len(image) - 0x324 or scanner & 1
+            or sense != scanner + 0x252):
+        return {}
+    # ANDS flags survive only these three literal LDRs, then original BNE.
+    if image[scanner + 0x26:scanner + 0x2C] != bytes.fromhex("007910220240"):
+        return {}
+
+    def reject(reason):
+        return {"sideband_detection_status": "rejected",
+                "sideband_detection_reject_reasons": ["flags-sideband-" + reason]}
+
+    def shape(at, size, digest, calls):
+        if at & 1 or not 0 <= at <= len(image) - size:
+            return False
+        for offset, delta in calls:
+            target = thumb_bl_target(image, at + offset)
+            if target != at + delta or target is None or not 0 <= target <= len(image) - 2:
+                return False
+        code = bytearray(image[at:at + size])
+        for offset in range(0, size - 3, 2):
+            first, second = struct.unpack_from("<HH", code, offset)
+            if first & 0xF800 == 0xF000 and second & 0xF800 == 0xF800:
+                code[offset:offset + 4] = bytes.fromhex("00f000f8")
+        return hashlib.sha256(code).hexdigest() == digest
+
+    if (any(not shape(scanner + offset, size, digest, calls)
+            for offset, size, digest, calls in _SAMSUNG_FLAG_SIDEBAND_CONTRACTS)
+            or not shape(sink, *_SAMSUNG_FLAG_SIDEBAND_SINK)):
+        return reject("opcode-call-contract")
+    def literal(offset, register):
+        return thumb_literal_value(image, scanner + offset, register)
+
+    owner, flag = literal(0x30, 5), literal(0x2C, 0)
+    if (any(type(value) is not int or value & 3
+            or not 0x01000020 <= value <= 0x04000000 - 0xC
+            for value in (owner, flag, ring)) or len({owner, flag, ring}) != 3
+            or ring > 0x04000000 - 0x24):
+        return reject("ram-owner-bounds")
+    touched = ((owner - 0x20, owner + 0xC),
+               (flag - 0x20, flag + 4), (ring, ring + 0x24))
+    if any(max(left[0], right[0]) < min(left[1], right[1])
+           for index, left in enumerate(touched) for right in touched[:index]):
+        return reject("ram-owner-overlap")
+    if (literal(0x24, 0) != 0x03000690
+            or any(literal(offset, register) != owner for offset, register in
+                   ((0x5C, 4), (0x74, 4), (0x9C, 4), (0x292, 0)))
+            or any(literal(offset, register) != flag for offset, register in
+                   ((0x5E, 3), (0xA8, 2)))
+            or thumb_literal_value(image, sink + 0x58, 2) != ring
+            or thumb_literal_value(image, dequeue, 2) != ring):
+        return reject("flag-state-ring-identity")
+    # These contextual byte loads may suppress an event; never invent their state.
+    if any(type(value) is not int or not 0x01000000 <= value < 0x04000000 - 5
+           for value in (literal(0x2E, 1), literal(0xBA, 1), literal(0x286, 0))):
+        return reject("context-pointer-bounds")
+    if any(thumb_bl_target(image, scanner + offset) != sink
+           for offset in (0xEE, 0x2B2, 0x310)):
+        return reject("shared-sinks")
+    before = _thumb_reachable(image, scanner, sense)
+    direct_releases = [site + 2 for site in before
+                       if site + 6 <= sense and image[site:site + 2] == b"\xff\x20"
+                       and thumb_bl_target(image, site + 2) == sink]
+    events = [site for site in before if image[site:site + 2] == b"\x51\x27"]
+    if direct_releases != [scanner + 0xEE] or events != [scanner + 0xC6]:
+        return reject("producer-release-ambiguity")
+    if 0x51 in profile.get("event_codes", ()):
+        return reject("matrix-event-collision")
+    return _accepted_samsung_sideband_51(
+        scanner + 0x310, scanner + 0x2B2, sink, load_address)
+
+
 def _thumb_immediate_byte_stores(
         image: bytes, path: set[int], end: int, value: int
 ) -> set[tuple[int, int, int]]:
@@ -286,7 +389,7 @@ def _samsung_sideband_51_family_metadata(
             ],
         }
 
-    chains: list[tuple[int, int, int, int, int, int]] = []
+    chains: list[tuple[int, int, int, int, int | None, int]] = []
     for read, value_register, load in base_reads:
         for mask_site in range(read + 2, min(read + 0x10, sense_site), 2):
             mask_word = struct.unpack_from("<H", image, mask_site)[0]
@@ -314,6 +417,21 @@ def _samsung_sideband_51_family_metadata(
                         )):
                     continue
                 result_register = and_word & 7
+                # Literal LDRs preserve the ANDS flags used by this compiler variant.
+                for flag_branch in range(
+                        and_site + 2, min(and_site + 0x10, sense_site), 2):
+                    flag_word = struct.unpack_from("<H", image, flag_branch)[0]
+                    if flag_branch not in reachable:
+                        break
+                    if flag_word & 0xFF00 == 0xD100:
+                        chains.append((load, read, mask_site, and_site,
+                                       None, flag_branch))
+                        break
+                    if (flag_word & 0xF800 != 0x4800
+                            or thumb_literal_value(
+                                image, flag_branch, flag_word >> 8 & 7
+                            ) is None):
+                        break
                 for compare in range(
                         and_site + 2, min(and_site + 0x20, sense_site), 2):
                     if (compare in reachable
@@ -486,8 +604,12 @@ def _samsung_sideband_51_family_metadata(
             state_sources.append((site, address))
     if len(press_calls) != 1:
         reasons.append("press-sink-not-unique")
-    if len(release_calls) != 1:
+    if len(release_calls) not in (1, 2):
         reasons.append("release-sink-not-unique")
+    all_common_sink_calls = {site for site in common
+                             if thumb_bl_target(image, site) == event_sink}
+    if all_common_sink_calls != set(press_calls + release_calls):
+        reasons.append("unclassified-common-sink-call")
     if len(direct_release_calls) != 1:
         reasons.append("direct-release-sink-not-unique")
     if (len(candidate_compares) != 1 or len(state_sources) != 1
@@ -498,9 +620,13 @@ def _samsung_sideband_51_family_metadata(
             "sideband_detection_status": "rejected",
             "sideband_detection_reject_reasons": reasons,
         }
-    return _accepted_samsung_sideband_51(
-        press_calls[0], release_calls[0], event_sink, load_address
-    )
+    metadata = _accepted_samsung_sideband_51(
+        press_calls[0], min(release_calls), event_sink, load_address)
+    if len(release_calls) == 2:
+        metadata["sideband_producers"][0]["release_callsites"] = [
+            load_address + site for site in sorted(release_calls)
+        ]
+    return metadata
 
 
 def _same_image_keyemu_ok_mapping(
@@ -825,6 +951,318 @@ def _same_image_ring32_confirm_mapping(
         "ok_mapping_status": "accepted-provisional",
         "ok_mapping_reject_reasons": [],
     }
+
+
+
+# shortcut: exact selection-activation classes until independent key-name proof.
+_SAMSUNG_SELECTED_CONFIRM_CONTRACTS = {
+    "forward": (0x22, "a82a693082c37767e527ac1df24d750dc40815274f994d7e43903c9a15772c39"),
+    "producer": (0x56, "09a173fa9dd25688356d81a519adf2c8b617f1d57d2abb4ca30afebe41f854e5"),
+    "secondary": (0x48, "a47287de448513c662e1ac63fa5e3ec7d2f9535a4f8f2eb7d3ee9fefee362bca"),
+    "app_entry": (0xa, "ccdcc5ee91d181ce899800e591373fffd5343c5de39a96256c7da02f77a09143"),
+    "publication": (0x20, "581dea6532be030c7209cddb7b32e3be90b7720985576e00c2c2ad9da870bf90"),
+    "global_read": (0x6, "7397c36f60ea6cc51accecc3a8ba91bf7749ab0af2d290d872f8088f84c7a815"),
+    "outer_state": (0x3e, "5e65b75af7973fedf6c5e0db52b3dd4b7bd8ff0df3a632dea2bbd8eebdffcf67"),
+    "outer_switch": (0x10, "900b91635772354d9306a1ea8110f6c36b8e8d138fdb33087affd0d2817e1e2d"),
+    "selected_call": (0x6, "b66c8ed91a4020eaec181945b26894b4f3a2db40b912cb11e85ef95abc43048d"),
+    "handler_entry": (0x176, "6ba42eae5c8c331857328c00db03feb74b891c434e35932716d319ad2024d7b8"),
+    "raw_arm": (0x6c, "18d6524c531bf14a34a53358b33318be95a31a18d8d78d17a3e71d34e4a6e2d3"),
+    "selection": (0x76, "6c43208e6c0aa4b60053e00d2c9cae4608738d43d21be9bf7bd0c0769723eddb"),
+    "tail": (0x4, "4675585148c0fb1462e06481e2d1b0af350d646c8f72a3667e90cfa6987b707b"),
+    "tail_return": (0x14, "d9911698f6ab57051a34c8f10416968e9620c51bfd36cd7beb731f16e0d04a25"),
+    "state_bridge": (0x22, "03345c7c07e1e841d9d9221facf9524a4815f84677c0f6a5d2c2d94d9f5ead36"),
+    "selected_entry": (0x70, "fbc78c769cde05a0d034efe7d9c987dcb51f6a0a83f1304d6a7390d0d7acf884"),
+    "child": (0x1b6, "d0289a434aa3bf903d0a4e568e7dbb13ea0384487431e050efa9cad1d72b896f"),
+}
+
+# Decoded class-relative targets close every BL erased by the opcode hash.
+_SAMSUNG_SELECTED_CONFIRM_CALLS = {
+    'selected_entry': ((20, 184492), (76, -100084), (100, -720), (108, 91880)),
+    'handler_entry': ((60, -5692), (370, 31610)),
+    'outer_state': ((4, 11486), (16, 793034), (22, 3990), (34, 793034)),
+    'forward': ((30, -16860),),
+    'producer': ((38, -266836),),
+    'secondary': ((42, 288614), (54, 198054)),
+    'publication': ((6, 538862), (22, 7294)),
+    'selected_call': ((0, -103832),),
+    'raw_arm': ((8, 3226), (18, 1860), (90, 29718)),
+    'selection': ((28, 5300), (114, 30150)),
+    'tail_return': ((6, -31236),),
+    'state_bridge': ((28, 31214),),
+    'child': ((0, -87088), (116, 11596), (158, -87088), (214, -36672), (372, -36408), (414, -843540)),
+}
+
+
+_SAMSUNG_SELECTED_CONFIRM_R7_CONTRACTS = {
+    "forward": (0xe, "da9d79d109f0c671b2046c34cff9d24a958f9dbae15e6bef145518cec1578282"),
+    "producer": (0x56, "d662f2637720591872248a9c5caa11c30fa4a85d0029ef6994d61d48e89ac7d0"),
+    "secondary": (0x48, "d18fec36b09b8112a88fffd688dc8c68d6447ceae40257c4378c275cf5892b99"),
+    "app_entry": (0xc, "18e4e0a4812bef75cb9a4cd963b0edd98c1874927a064e0b9ec1788d11cb5061"),
+    "app_global": (0x52, "ab431ddae520ae2001acd7045bb3ea7f14859628f4f56e4d8b579f12ebdec0c1"),
+    "publication": (0x24, "5014d8f335d44c9bc6c59ad2c6840fa1a021b11c6b8ed2f29d3d4dd0ff38e3a3"),
+    "global_read": (0x8, "05e12fb1e0c6013e95fc8ab523e344af782ee15562d1d5fffb4ea30a16309822"),
+    "outer_state": (0x18, "c38bb314d9f9cf349e4928e1fb8471297c1505a73f5da8b63895cc0f1590a267"),
+    "selected_call": (0x6, "9654c47d0ebf7cfcf984272cc39e85a6aa18be447ee7398387b0a93a8d05cb16"),
+    "handler_entry": (0x144, "36117dd5d08324edbf15fbbee6c670712111a0bc70b5f5ff80bc9bba1fa55f9b"),
+    "raw_arm": (0x6a, "369b7934df1c1341ac2d625f1e65cb70bd1949274cacd465d107247769313b53"),
+    "selection": (0x9e, "24ca207bd734c98b28ac8b86445496d2e50063c5c380a4a57adf9651175263a8"),
+    "tail_return": (0x14, "9ed889db0586d19de2470b8cbbb2f0d8598bb6be4fe3d94571b1130a113c9e8b"),
+    "state_bridge": (0x20, "6929f319ffdad8ba5828b88adcf80e5052debb2e3906685a64581362f0957a7a"),
+    "selected_entry": (0x64, "d234c08652ef27d94c9f5f9ecbc81bcdc5e3c7b6acb8931e35f7a94d6b00a36d"),
+    "child": (0x206, "e07e4b74ddfa1ebe1c7c39f4d2a5c48a3c5836201f3e754dee9652cfc926f9c0"),
+}
+
+_SAMSUNG_SELECTED_CONFIRM_R7_CALLS = {
+    "forward": ((10, -16104),),
+    "producer": ((38, -259788),),
+    "secondary": ((42, 248016), (54, 188048)),
+    "app_global": ((12, -813002), (46, -166444), (68, 498846)),
+    "publication": ((14, 488656), (28, 8028)),
+    "selected_call": ((0, -102116),),
+    "handler_entry": ((56, -5904), (320, 33884)),
+    "raw_arm": ((16, 1914), (64, 30214)),
+    "selection": ((28, 18232), (154, 29898)),
+    "tail_return": ((6, -33560),),
+    "state_bridge": ((28, 33548),),
+    "selected_entry": ((64, -91922), (88, -618), (96, 90182)),
+    "child": ((0, -73500), (130, 26664), (224, -73500), (286, -31224), (296, 18812), (438, -30960), (482, -811088)),
+}
+
+
+def _same_image_selected_confirm_mapping(
+        image: bytes, profile: dict[str, object], load_address: int,
+) -> tuple[dict[int, dict[str, object]], dict[str, object]]:
+    """Temporary functional activation, with no physical OK name claim."""
+    def reject(reason: str):
+        return {}, {"ok_mapping_status": "rejected",
+                    "ok_mapping_reject_reasons": ["selected-confirm-" + reason]}
+
+    register = profile.get("raw_task_register")
+    contracts = (_SAMSUNG_SELECTED_CONFIRM_R7_CONTRACTS if register == 7
+                 else _SAMSUNG_SELECTED_CONFIRM_CONTRACTS)
+    calls = (_SAMSUNG_SELECTED_CONFIRM_R7_CALLS if register == 7
+             else _SAMSUNG_SELECTED_CONFIRM_CALLS)
+
+    def shape(at: int | None, name: str) -> bool:
+        size, digest = contracts[name]
+        if at is None or at & 1 or not 0 <= at <= len(image) - size:
+            return False
+        for offset, target in calls.get(name, ()):
+            decoded = thumb_bl_target(image, at + offset)
+            if (decoded != at + target or decoded is None
+                    or not 0 <= decoded <= len(image) - 2):
+                return False
+        code = bytearray(image[at:at + size])
+        for offset in range(0, size - 3, 2):
+            first, second = struct.unpack_from("<HH", code, offset)
+            if first & 0xF800 == 0xF000 and second & 0xF800 == 0xF800:
+                code[offset:offset + 4] = bytes.fromhex("00f000f8")
+        return hashlib.sha256(code).hexdigest() == digest
+
+    def ram(value: int | None, size: int = 4) -> bool:
+        return (type(value) is int and not value & 3
+                and 0x01000000 <= value <= 0x04000000 - size)
+
+    def literal(at: int, register: int) -> int | None:
+        return thumb_literal_value(image, at, register)
+
+    if (profile.get("grammar") != "direct-low-nibble-6-row-v1"
+            or (profile.get("rows"), profile.get("columns")) != (6, 4)
+            or profile.get("event_sink_family") != SAMSUNG_RING32
+            or profile.get("raw_consumer_evidence") != SAMSUNG_RAW_SAVED_CONSUMER_EVIDENCE
+            or type(register) is not int or register not in (4, 7)):
+        return reject("scanner-consumer-unclosed")
+    events = profile.get("event_codes", ())
+    if not isinstance(events, (list, tuple)) or events.count(0x53) != 1:
+        return reject("namespace-not-unique")
+    fields = [profile.get(key) for key in
+              ("raw_dequeue", "raw_dequeue_return", "raw_task_entry", "raw_ring")]
+    if any(type(value) is not int for value in fields):
+        return reject("raw-task-unclosed")
+    dequeue, returned, task, raw_ring = fields
+    dequeue, returned, task = (value - load_address
+                              for value in (dequeue, returned, task))
+    # Saved-task metadata binds dequeue to the preserved event register and task.
+    # Its loop forwards that same register to the class-qualified producer.
+    if not ram(raw_ring, 0x24) or literal(dequeue, 2) != raw_ring:
+        return reject("scanner-ring-mismatch")
+    if (not shape(returned - (0x12 if register == 7 else 0x26), "forward")
+            or thumb_bl_target(image, returned - 4) != dequeue
+            or thumb_bl_target(image, returned + 4) != task
+            or returned - 0xA not in _thumb_reachable_preserving_register(
+                image, task, min(len(image), task + 0x1000), register)):
+        return reject("saved-raw-forward-unclosed")
+    producer = thumb_bl_target(image, returned - 8)
+    if not shape(producer, "producer"):
+        return reject("secondary-producer-unclosed")
+    ring = literal(producer + 2, 4)
+    if not ram(ring, 0x48) or ring == raw_ring:
+        return reject("secondary-ring-unclosed")
+    anchor = "164c683c19e0" if register == 7 else "184c683c19e0"
+    secondary = [at for at in find_all(image, bytes.fromhex(anchor))
+                 if shape(at, "secondary") and literal(at, 4) == ring + 0x68]
+    if len(secondary) != 1:
+        return reject("secondary-consumer-missing-or-ambiguous")
+    secondary = secondary[0]
+    app = thumb_bl_target(image, secondary + 0x36)
+    if not shape(app, "app_entry"):
+        return reject("application-entry-unclosed")
+    if register == 7:
+        publication = app + 0x78
+        if (not shape(app + 0x26, "app_global")
+                or not shape(publication, "publication")
+                or not shape(app + 0xC6, "global_read")):
+            return reject("publication-unclosed")
+        global_key = literal(app + 0x26, 5)
+        if (not ram(global_key) or literal(app + 0xC6, 5) != global_key
+                or literal(app + 0xC8, 1) != global_key):
+            return reject("application-global-mismatch")
+        epilogue = thumb_bl_target(image, publication + 0x1C)
+        if epilogue is None or not shape(epilogue - 0x158, "outer_state"):
+            return reject("outer-dispatch-unclosed")
+        table = epilogue - 0x140
+        if (table < 0 or table + 30 > len(image)
+                or image[table:table + 30] != bytes.fromhex(
+                    "0f1245151821242d69303669393c693f272a33484b4e515c5f5462576542")
+                or not ram(literal(epilogue - 0x158, 6), 0x10)):
+            return reject("outer-state-table-unclosed")
+        selected_call = table + 2 * image[table + 9]
+        handler = thumb_bl_target(image, selected_call)
+        if not shape(selected_call, "selected_call") or not shape(handler, "handler_entry"):
+            return reject("selected-handler-unclosed")
+        raw_arm, selection, bridge = handler + 0x29A, handler + 0x4A8, handler + 0x144
+        if (not shape(raw_arm, "raw_arm") or not shape(selection, "selection")
+                or not shape(bridge, "state_bridge")):
+            return reject("selected-event-arm-unclosed")
+        event = struct.unpack_from("<H", image, raw_arm + 0x5E)[0] & 0xFF
+        owner, local, ui = literal(selection, 0), literal(handler + 2, 7), literal(bridge, 1)
+        if (event != 0x53 or not ram(owner, 0x4C) or local != owner + 0x30
+                or not ram(ui, 0x14) or literal(raw_arm, 0) != global_key
+                or literal(selection + 2, 2) != global_key):
+            return reject("selected-owner-global-mismatch")
+        descriptors = [literal(selection + offset, 3) for offset in
+                       (6, 0x38, 0x44, 0x54, 0x60, 0x6E, 0x7A)]
+        if any(not ram(value, 0x1C) for value in descriptors) or len(set(descriptors)) != 7:
+            return reject("selected-descriptor-unclosed")
+        if (bridge + 0x26 > len(image)
+                or struct.unpack_from("<H", image, bridge + 0x24)[0] != 0x6A):
+            return reject("selected-state-table-unclosed")
+        selected_entry = bridge + 0x1E + 2 * 0x6A
+        if (not shape(selected_entry, "selected_entry")
+                or literal(selected_entry + 0x44, 6) != local
+                or literal(selected_entry + 2, 1) != ui):
+            return reject("selected-state-entry-unclosed")
+        tail = thumb_bl_target(image, selection + 0x9A)
+        if (tail is None or tail < 0 or tail + 4 > len(image)
+                or image[tail:tail + 2] != bytes.fromhex("3872")):
+            return reject("selected-state-tail-unclosed")
+        # Eight exact original branches join this class's shared return path.
+        links = ((2, -0x734), (-0x734, -0xECE), (-0xECE, -0x14B6),
+                 (-0x14B6, -0x17C4), (-0x17C4, -0x1F86),
+                 (-0x1F86, -0x2706), (-0x2706, -0x2EFA), (-0x2EFA, -0x2F98))
+        for site_offset, target_offset in links:
+            site, target = tail + site_offset, tail + target_offset
+            if not (0 <= site <= len(image) - 2 and 0 <= target <= len(image) - 2):
+                return reject("selected-state-tail-unclosed")
+            word = struct.unpack_from("<H", image, site)[0]
+            displacement = word & 0x7FF
+            if displacement & 0x400:
+                displacement -= 0x800
+            if word & 0xF800 != 0xE000 or site + 4 + 2 * displacement != target:
+                return reject("selected-state-tail-unclosed")
+        returned_tail = thumb_bl_target(image, tail - 0x2F98)
+        if (returned_tail is None or not shape(returned_tail, "tail_return")
+                or thumb_bl_target(image, returned_tail + 6) != bridge):
+            return reject("selected-state-bridge-mismatch")
+        child = thumb_bl_target(image, raw_arm + 0x10)
+        if not shape(child, "child"):
+            return reject("selected-child-install-unclosed")
+        if [literal(child + offset, register) for offset, register in
+                ((0x86, 1), (0x14, 6), (0x2E, 1), (0x48, 1),
+                 (0x68, 1), (0x58, 1), (0xAC, 1))] != descriptors:
+            return reject("selected-descriptor-mismatch")
+        if any(literal(child + offset, register) != value for offset, register, value in
+               ((8, 1, global_key), (0x12, 2, owner),
+                (0x132, 2, owner), (0x1E6, 1, owner))):
+            return reject("selected-child-owner-global-mismatch")
+        return {5: {"event": event,
+                    "semantic_status": "temporary-evidence-gated-provisional",
+                    "functional_only": True,
+                    "rule": "same-image-selected-functional-confirm-v1",
+                    "evidence": "saved-raw-forward+secondary-ring+global-state-dispatch+selected-child-install",
+                    "raw_dequeue": load_address + dequeue,
+                    "application": load_address + app,
+                    "consumer": load_address + handler}}, {
+                        "ok_mapping_status": "accepted-provisional",
+                        "ok_mapping_reject_reasons": []}
+    publication = app + 0x4E
+    if not shape(publication, "publication") or not shape(app + 0x9A, "global_read"):
+        return reject("publication-unclosed")
+    global_key = literal(publication + 0xA, 1)
+    if (not ram(global_key) or literal(publication + 0x1C, 1) != global_key
+            or literal(app + 0x9A, 1) != global_key):
+        return reject("application-global-mismatch")
+    outer = thumb_bl_target(image, publication + 0x16)
+    if outer is None or not shape(outer + 0x2E, "outer_state"):
+        return reject("outer-dispatch-unclosed")
+    switch, table = outer + 0xEC, outer + 0xFC
+    if (not shape(switch, "outer_switch") or table + 34 > len(image)
+            or image[table:table + 34] != bytes.fromhex(
+                "111447171a1d2029732c3573383b73413e23262f324a4d505b5e53675661646a6f44")
+            or not ram(literal(outer + 0x2E, 5), 0x10)):
+        return reject("outer-state-table-unclosed")
+    selected_call = table + 2 * image[table + 9]  # state 0x0B, table index 9
+    handler = thumb_bl_target(image, selected_call)
+    if not shape(selected_call, "selected_call") or not shape(handler, "handler_entry"):
+        return reject("selected-handler-unclosed")
+    raw_arm, selection = handler + 0x310, handler + 0x544
+    if not shape(raw_arm, "raw_arm") or not shape(selection, "selection"):
+        return reject("selected-event-arm-unclosed")
+    event = struct.unpack_from("<H", image, raw_arm + 0x5E)[0] & 0xFF
+    owner, local, ui = literal(selection, 2), literal(handler + 2, 7), literal(handler + 6, 6)
+    if (event != 0x53 or not ram(owner, 0x44) or not ram(local, 0x10)
+            or local != owner + 0x20 or not ram(ui, 0x14)
+            or literal(raw_arm, 0) != global_key
+            or literal(selection + 2, 6) != global_key):
+        return reject("selected-owner-global-mismatch")
+    descriptors = [literal(selection + offset, register) for offset, register in
+                   ((6, 3), (0x38, 2), (0x44, 2), (0x54, 2), (0x60, 2))]
+    if any(not ram(value, 0x1C) for value in descriptors) or len(set(descriptors)) != 5:
+        return reject("selected-descriptor-unclosed")
+    tail = thumb_bl_target(image, selection + 0x72)
+    if not shape(tail, "tail") or not shape(tail + 0x70, "tail_return"):
+        return reject("selected-state-tail-unclosed")
+    bridge = thumb_bl_target(image, tail + 0x76)
+    if (bridge != handler + 0x176 or not shape(bridge, "state_bridge")
+            or literal(bridge, 2) != ui):
+        return reject("selected-state-bridge-mismatch")
+    inner_table = bridge + 0x22
+    if (inner_table + 6 > len(image)
+            or struct.unpack_from("<H", image, inner_table + 4)[0] != 0x86):
+        return reject("selected-state-table-unclosed")
+    selected_entry = bridge + 0x1E + 2 * 0x86
+    if not shape(selected_entry, "selected_entry") or literal(selected_entry, 6) != local:
+        return reject("selected-state-entry-unclosed")
+    child = thumb_bl_target(image, raw_arm + 0x12)
+    if not shape(child, "child"):
+        return reject("selected-child-install-unclosed")
+    if [literal(child + offset, register) for offset, register in
+            ((0x78, 1), (0x14, 6), (0x30, 1), (0x4A, 1), (0x5A, 1))] != descriptors:
+        return reject("selected-descriptor-mismatch")
+    if any(literal(child + offset, register) != value for offset, register, value in
+           ((0x12, 2, owner), (0x1C, 0, global_key),
+            (0xF6, 2, owner), (0x1A2, 2, owner))):
+        return reject("selected-child-owner-global-mismatch")
+    return {5: {"event": event,
+                "semantic_status": "temporary-evidence-gated-provisional",
+                "functional_only": True,
+                "rule": "same-image-selected-functional-confirm-v1",
+                "evidence": "saved-raw-forward+secondary-ring+global-state-dispatch+selected-child-install",
+                "raw_dequeue": load_address + dequeue,
+                "application": load_address + app,
+                "consumer": load_address + handler}}, {
+                    "ok_mapping_status": "accepted-provisional",
+                    "ok_mapping_reject_reasons": []}
 
 
 def _producer_feature_names(word: int) -> tuple[str, ...]:
@@ -1627,6 +2065,11 @@ def resolve_direct_matrix_input(
                     scanner.update(_samsung_consumer_route_metadata(
                         image, metadata, load_address,
                     ))
+                    if scanner.get("sideband_detection_status") != "accepted":
+                        sideband = _samsung_flags_sideband_51_metadata(
+                            image, scanner, load_address)
+                        if sideband:
+                            scanner.update(sideband)
                 else:
                     scanner["consumer_route_status"] = "raw-consumer-not-closed"
             accepted.append(scanner)
@@ -1639,6 +2082,16 @@ def resolve_direct_matrix_input(
             mappings, ok_metadata = _same_image_ring32_confirm_mapping(
                 image, profile, load_address,
             )
+            if not mappings:
+                original_reasons = ok_metadata.get("ok_mapping_reject_reasons", [])
+                mappings, selected_metadata = _same_image_selected_confirm_mapping(
+                    image, profile, load_address,
+                )
+                if not mappings:
+                    selected_metadata["ok_mapping_reject_reasons"] = (
+                        original_reasons + selected_metadata["ok_mapping_reject_reasons"]
+                    )
+                ok_metadata = selected_metadata
             profile.update(ok_metadata)
         if mappings:
             profile["provisional_mappings"] = mappings
@@ -1819,8 +2272,436 @@ def _distributed_ring32(image: bytes, sink: int, lock: int, unlock: int):
             'write_index_store': sink + 92, 'read_index_store': dequeues[0] + 24}
 
 
+def _distributed_control_profile(image: bytes, parent: dict):
+    """Optional compiled queue/dispatch class; functional labels remain provisional."""
+    def require(condition, reason):
+        if not condition:
+            raise ValueError(reason)
+
+    def code(pc, body):
+        return pc >= 0 and image[pc:pc + len(bytes.fromhex(body))] == bytes.fromhex(body)
+
+    try:
+        events = parent['event_codes']
+        require(len(events) == 24 and all(type(v) is int for v in events)
+                and all(events.count(v) == 1 for v in (0x5B, 0x53)), 'control-events-not-unique')
+        producer = parent['producer']
+        dequeue, raw_ring = producer['dequeue'], producer['ring']
+        require(thumb_literal_value(image, dequeue, 2) == raw_ring
+                and _distributed_ram(raw_ring, 34), 'control-parent-ring-mismatch')
+        callers = [pc for pc in find_all(image, bytes.fromhex('071c'))
+                   if pc >= 4 and not pc & 1 and thumb_bl_target(image, pc - 4) == dequeue
+                   and _distributed_branch(image, pc + 2, len(image), 0) == pc + 6
+                   and _distributed_branch(image, pc + 4, len(image)) is not None]
+        require(len(callers) == 1, 'control-raw-caller-not-unique')
+        returned = callers[0]
+        task = _distributed_branch(image, returned + 4, len(image))
+        require(0 <= task < returned and returned + 6 - task <= 0x800,
+                'control-task-bounds')
+        forwards = [returned - 0x60, returned - 0x3E]
+        sinks = [thumb_bl_target(image, pc + 2) for pc in forwards]
+        require(all(task <= pc < returned and code(pc, '381c')
+                    and _thumb_path_preserves_register(image, task, pc, returned + 6, 7)
+                    for pc in forwards) and sinks[0] is not None and sinks[0] == sinks[1],
+                'control-forward-link-unclosed')
+        sink = sinks[0]
+        require(0 <= sink <= len(image) - 80 and code(sink, '90b5')
+                and code(sink + 4, '071c')
+                and code(sink + 6, '2068033004d54042c006c00e404201e0c006c00e6168884203d1')
+                and code(sink + 0x28, '20680130011c002804da4042c006c00e404201e0c006c00e6268904203d0206040000019078190bd'),
+                'control-secondary-producer-unclosed')
+        ring = thumb_literal_value(image, sink + 2, 4)
+        require(_distributed_ram(ring, 72), 'control-secondary-ring-outside-ram')
+        consumers = []
+        for pc in find_all(image, bytes.fromhex('5060400080180089')):
+            if (pc < 0x12 or pc & 1 or pc + 0x1C > len(image)
+                    or not code(pc - 0x12, '013004d54042c006c00e404201e0c006c00e')
+                    or thumb_literal_value(image, pc + 0x12, 2) != ring
+                    or not code(pc + 0x14, '506811688842')
+                    or _distributed_branch(image, pc + 0x1A, len(image), 1) != pc - 0x12):
+                continue
+            app = thumb_bl_target(image, pc + 8)
+            if app is not None and code(app, 'f0b598b000210191') and code(app + 10, '071c'):
+                consumers.append((pc, app))
+        require(len(consumers) == 1, 'control-secondary-consumer-not-unique')
+        consumer, app = consumers[0]
+        require(app + 0x1638 <= len(image), 'control-application-bounds')
+        mode = thumb_literal_value(image, app + 0x6A, 1)
+        global_word = thumb_literal_value(image, app + 0x92, 0)
+        owner = thumb_literal_value(image, app + 0xF4, 7)
+        require(code(app + 0x6C, '0879303116910028')
+                and _distributed_branch(image, app + 0x74, len(image), 0) == app + 0x92
+                and code(app + 0x76, '1699087a0028')
+                and _distributed_branch(image, app + 0x7C, len(image), 1) == app + 0x92
+                and code(app + 0x7E, '381c') and code(app + 0x8C, '0860')
+                and code(app + 0x94, '0760') and code(app + 0x9A, '0168')
+                and thumb_literal_value(image, app + 0x84, 1) == global_word
+                and thumb_literal_value(image, app + 0x96, 0) == global_word,
+                'control-direct-global-link-unclosed')
+        dispatch = app + 0x14FC
+        require(code(dispatch, '7878b87002381d28')
+                and _distributed_branch(image, dispatch + 8, len(image), 2) == dispatch + 0x86
+                and code(dispatch + 10, '02a31b5c5b009f44001c')
+                and _thumb_path_preserves_register(image, app + 0xF6, dispatch, dispatch + 0x140, 7),
+                'control-state-dispatch-unclosed')
+        table = dispatch + 0x14
+        menu_call, ok_call = [table + 2 * image[table + state - 2] for state in (5, 12)]
+        menu, confirm = [thumb_bl_target(image, pc) for pc in (menu_call, ok_call)]
+        join = dispatch + 0x10C
+        require(menu_call != ok_call and menu is not None and confirm is not None
+                and _distributed_branch(image, menu_call + 4, len(image)) == join
+                and _distributed_branch(image, ok_call + 4, len(image)) == join
+                and code(join, '041c0128')
+                and _distributed_branch(image, join + 4, len(image), 1) == join + 0x1C
+                and code(join + 10, '7870041c') and code(join + 0x20, '7878')
+                and code(join + 0x26, '7c70002c')
+                and _distributed_branch(image, join + 0x2C, len(image)) == dispatch,
+                'control-return-state-loop-unclosed')
+        require(0 <= menu <= len(image) - 0xDA and code(menu, 'f0b5beb0')
+                and code(menu + 0x1A, 'a178e170')
+                and code(menu + 0xD0, '0026e078') and code(menu + 0xD6, 'a070e670'),
+                'control-menu-status-return-unclosed')
+        menu_status = thumb_literal_value(image, menu + 0xE, 4)
+        require(thumb_literal_value(image, menu + 0xCE, 4) == menu_status,
+                'control-menu-status-owner-mismatch')
+        require(0 <= confirm <= len(image) - 0x292 and code(confirm, 'f0b5b2b0')
+                and code(confirm + 6, '0026e71d1937be73387b')
+                and code(confirm + 0x22E, '08685428')
+                and code(confirm + 0x280, '5328')
+                and _distributed_branch(image, confirm + 0x282, len(image), 1) == confirm + 0x31C
+                and code(confirm + 0x288, '486bc21d29323260496d')
+                and code(confirm + 0x19A, '0020c8650121f973')
+                and code(confirm + 0x1A4, '5521316002217973269a'),
+                'control-confirm-or-internal-request-unclosed')
+        status = thumb_literal_value(image, confirm + 4, 4)
+        require(all(thumb_literal_value(image, pc, register) == global_word
+                    for pc, register in ((confirm + 0x10, 5), (confirm + 0x22C, 1),
+                                         (confirm + 0x286, 6), (confirm + 0x1A2, 6)))
+                and all(thumb_literal_value(image, pc, 1) == status
+                        for pc in (confirm + 0x15E, confirm + 0x284)),
+                'control-handler-global-or-status-owner-mismatch')
+        objects = [(raw_ring,34),(ring,72),(global_word,4),(owner,3),
+                   (menu_status,0x60),(status,0x60),(mode,0x3C)]
+        require(all(_distributed_ram(pointer, size) for pointer,size in objects),
+                'control-owner-outside-ram')
+        require(all(not pointer & 3 for pointer in (ring, global_word, status)),
+                'control-word-owner-unaligned')
+        require(all(a + na <= b or b + nb <= a
+                    for i,(a,na) in enumerate(objects) for b,nb in objects[i+1:]),
+                'control-owner-alias')
+        roots = [(parent['scanner_state'], parent['scanner_state_size']),
+                 (parent['batch_state'], parent['batch_state_size']),
+                 (producer['state'], producer['state_size'])]
+        roots.extend((port['shadow'], 1) for port in parent['gpio_ports'])
+        require(all(a + na <= b or b + nb <= a
+                    for a,na in objects[1:] for b,nb in roots), 'control-parent-state-alias')
+        mappings = {bit: dict(event=event, rule=rule,
+                             semantic_status='temporary-evidence-gated-provisional', functional_only=True)
+                    for bit,event,rule in ((0,0x5B,'same-image-distributed-functional-menu-v1'),
+                                          (5,0x53,'same-image-distributed-functional-confirm-v1'))}
+        return mappings, dict(menu_mapping_status='accepted-provisional', ok_mapping_status='accepted-provisional',
+            control_consumer=dict(grammar='distributed-queued-direct-word-controls-v1', raw_dequeue=dequeue,
+                raw_return=returned, raw_task=task, forwards=forwards, secondary_producer=sink,
+                secondary_consumer=consumer, secondary_ring=ring, application=app, global_word=global_word,
+                state_owner=owner, dispatcher=dispatch, menu_handler=menu, confirm_handler=confirm,
+                menu_status=menu_status, confirm_status=status),
+            control_mapping_limits='Temporary compiled queue class with functional MENU/confirm evidence; physical legends and other boot contexts unverified.')
+    except (ValueError, KeyError, IndexError, TypeError) as error:
+        return {}, dict(menu_mapping_status='rejected', ok_mapping_status='rejected',
+                        control_mapping_reject_reasons=[str(error)])
+
+
+# Exact compiled arithmetic/control spans. Only proven LDR pools and BL edges
+# below are normalized; the conditional mode/wrap instructions remain exact.
+_DISTRIBUTED_NAVIGATION_SPANS = (
+    (0x22C, '00490868542836d036dc362835d013dc322832d009dc23282fd02a282dd030282bd0312864d11ae191e0332825d0342823d035285cd112e150281ed006dc37281bd0382819d0392852d108e1512850d052284fd053284bd10049004e486bc21d29323260496d004a914244d1002843d1ff2005301fe369e000e03be3ff230233984236d039dc642838d038dc552837d05b2836d060282cd0632829d1004a004e516d004ee160506bb142106344d1c11e51631991106d0068002813d01999004800290fda806bc11c061c03200000000043001999181840180049b042486301dd00484663ff20004e013030600048bfe1b7e02ee003e1e1e0d6e01ee0dce201e004e03fe3652821d0662820d1ff2000490130004a0860566de660506b411c10635163106d0068002812d0906b013000000000004a516393e192e2ff231933984207d007dcff230533984245e0dae19be07ee14ae05ee0'),
+    (0x67C, '00480139806b00000000481c00494863'),
+    (0x730, '004aff21506b004e10630131316001385063116d0968002902d0002804da01e0002801d1906b5063'),
+    (0x88C, '004b994225d12799497a002921d10049033848631890086d0069002813d01899004801290fda806bc11c061c03200000000043001899181840180049b042486301dd00484663ff20004e013030600048e3e6'),
+    (0x8E4, '0049004a486d904228d1486bc61c08634e63086d0068002817d0886b1790864213dd1798c11c03200000000043001818b04204dd00491798486306e04be00320311c0000000000484163ff200049013008600049486b000000001ee1004a904232d1279b587a00282fd10049486bc61c08634e63086d0069002817d0886b1690864213dd1698c11c032000000000430018180130b04203dd00491698486305e00320311c0000000000484163ff20004901300860'),
+)
+_DISTRIBUTED_NAVIGATION_DIVISION = bytes.fromhex(
+    'cb175940c91ac2175040801a0cb44b08021c02d10000000052009a42fcd90023914205d2db18824206d052089142f9d35b41891a8242f8d1181c0cbc5a405040801a5940c91a7047')
+
+
+def _distributed_navigation_profile(image: bytes, parent: dict):
+    """Optional menu-grid consumer; rejection never removes existing controls."""
+    def require(condition, reason):
+        if not condition:
+            raise ValueError(reason)
+
+    try:
+        require(parent.get('menu_mapping_status') == parent.get('ok_mapping_status') == 'accepted-provisional',
+                'navigation-parent-controls-rejected')
+        control = parent['control_consumer']
+        require(control['grammar'] == 'distributed-queued-direct-word-controls-v1', 'navigation-parent-grammar')
+        handler, status, global_word = [control[key] for key in ('confirm_handler', 'confirm_status', 'global_word')]
+        events = parent['event_codes']
+        require(len(events) == 24 and all(type(v) is int and 0 <= v <= 255 for v in events)
+                and all(events.count(v) == 1 for v in (0x63, 0x64, 0x65, 0x66)), 'navigation-events-not-unique')
+        require(type(handler) is int and not handler & 1, 'navigation-handler-invalid')
+        # Descriptor comparisons in both +/-3 mode arms must share the same
+        # respective owner. Neither pointer is a guessed global layout default.
+        grid = thumb_literal_value(image, handler + 0x2CE, 6)
+        alternate = thumb_literal_value(image, handler + 0x88C, 3)
+        owners = {**{offset: status for offset in
+                     (0x284,0x2C8,0x2EA,0x304,0x30C,0x318,0x33E,0x35E,0x67C,0x688,
+                      0x730,0x89A,0x8AC,0x8C6,0x8CE,0x8DA,0x8E4,0x918,0x92A,0x936,0x94E,0x97C,0x98C)},
+                  **{offset: global_word for offset in (0x22C,0x286,0x2CA,0x312,0x33A,0x736,0x8D4,0x930,0x992)},
+                  **{offset: grid for offset in (0x292,0x2CE,0x8E6)},
+                  **{offset: alternate for offset in (0x88C,0x940)}}
+        require(all(type(v) is int and not v & 3 and _distributed_ram(v, 4) for v in (grid, alternate))
+                and grid != alternate, 'navigation-grid-owner-invalid')
+        owned = [(control['secondary_ring'],72),(global_word,4),(control['state_owner'],3),
+                 (control['menu_status'],0x60),(status,0x60),(parent['producer']['ring'],34),
+                 (parent['scanner_state'],parent['scanner_state_size']),
+                 (parent['batch_state'],parent['batch_state_size']),
+                 (parent['producer']['state'],parent['producer']['state_size'])]
+        owned += [(port['shadow'],1) for port in parent['gpio_ports']]
+        owned.append((thumb_literal_value(image, control['application'] + 0x6A, 1),0x3C))
+        require(all(a + 4 <= b or b + size <= a for a in (grid, alternate) for b,size in owned)
+                and (grid + 4 <= alternate or alternate + 4 <= grid), 'navigation-grid-owner-alias')
+        division_sites = (0x2F8,0x35A,0x682,0x8BA,0x90C,0x926,0x96E,0x988)
+        division = thumb_bl_target(image, handler + division_sites[0])
+        require(division is not None and 0 <= division <= len(image) - len(_DISTRIBUTED_NAVIGATION_DIVISION),
+                'navigation-division-outside-image')
+        for offset, body in _DISTRIBUTED_NAVIGATION_SPANS:
+            template = bytes.fromhex(body)
+            start = handler + offset
+            require(0 <= start <= len(image) - len(template), 'navigation-span-outside-image')
+            actual = bytearray(image[start:start + len(template)])
+            cursor = 0
+            while cursor < len(template):
+                expected = int.from_bytes(template[cursor:cursor + 2], 'little')
+                pc, relative = start + cursor, offset + cursor
+                if expected & 0xF800 == 0x4800:
+                    value = thumb_literal_value(image, pc, (expected >> 8) & 7)
+                    require(relative in owners and value == owners[relative], 'navigation-literal-owner-mismatch')
+                    actual[cursor] = 0
+                elif template[cursor:cursor + 4] == b'\0\0\0\0':
+                    target = thumb_bl_target(image, pc)
+                    require(target is not None and 0 <= target <= len(image) - 2, 'navigation-call-outside-image')
+                    require(target == (division if relative in division_sites else handler - 0x2870),
+                            'navigation-call-link-mismatch')
+                    actual[cursor:cursor + 4] = b'\0\0\0\0'
+                    cursor += 2
+                elif expected & 0xF800 == 0xE000 or expected & 0xF000 == 0xD000:
+                    condition = (expected >> 8) & 15 if expected & 0xF000 == 0xD000 else None
+                    require(_distributed_branch(image, pc, len(image), condition) is not None,
+                            'navigation-branch-outside-image')
+                cursor += 2
+            require(bytes(actual) == template, 'navigation-opcode-mismatch')
+        arithmetic = bytearray(image[division:division + len(_DISTRIBUTED_NAVIGATION_DIVISION)])
+        zero_error = thumb_bl_target(image, division + 0x14)
+        require(zero_error is not None and 0 <= zero_error <= len(image) - 2, 'navigation-zero-error-outside-image')
+        arithmetic[0x14:0x18] = b'\0\0\0\0'
+        require(bytes(arithmetic) == _DISTRIBUTED_NAVIGATION_DIVISION, 'navigation-division-opcode-mismatch')
+        mappings = {bit: dict(event=event, rule='same-image-distributed-functional-navigation-v1',
+                             semantic_status='temporary-evidence-gated-provisional', functional_only=True)
+                    for bit,event in ((1,0x63),(9,0x64),(4,0x65),(6,0x66))}
+        return mappings, dict(navigation_mapping_status='accepted-provisional',
+            navigation_consumer=dict(grammar='distributed-menu-grid-navigation-v1',handler=handler,status=status,
+                global_word=global_word,grid_stride=3,grid_descriptor=grid,alternate_grid_descriptor=alternate,
+                division=division,previous=handler+0x730,next=handler+0x338,
+                up=handler+0x2C8,down=handler+0x8E4),
+            navigation_mapping_limits='Temporary functional menu-grid class; physical legends and other contexts unverified.')
+    except (ValueError, KeyError, IndexError, TypeError) as error:
+        return {}, dict(navigation_mapping_status='rejected',navigation_mapping_reject_reasons=[str(error)])
+
+
+# Optional compiled saved-menu restoration; navigation already owns reprocessing/math.
+_DISTRIBUTED_BACK_SPAN = bytes.fromhex('004a0049506d884201d101209070906d002803d1ff200130004930e300490868002802dd0138086005e0ff20004e0130306032207873506d004b984206d1279b587a002802d0279b00205872906d004950654369161c13650968002905dc0022b265ff22e272a27208e0004bca00d2181268b265e27aa2720022e272004ac90089184968321c01397163007e02210138b0630120f8737973004e55213160')
+
+
+def _distributed_back_profile(image: bytes, parent: dict):
+    """Back rejection is independent of numeric/MENU/confirm/navigation admission."""
+    def require(condition, reason):
+        if not condition:
+            raise ValueError(reason)
+    try:
+        require(parent.get('navigation_mapping_status') == 'accepted-provisional'
+                and parent.get('menu_mapping_status') == parent.get('ok_mapping_status') == 'accepted-provisional',
+                'back-parent-rejected')
+        control, nav = parent['control_consumer'], parent['navigation_consumer']
+        require(control['grammar'] == 'distributed-queued-direct-word-controls-v1'
+                and nav['grammar'] == 'distributed-menu-grid-navigation-v1', 'back-parent-grammar')
+        handler, status, global_word = [control[k] for k in ('confirm_handler', 'confirm_status', 'global_word')]
+        require(all(type(v) is int for v in (handler,status,global_word))
+                and (nav['handler'],nav['status'],nav['global_word']) == (handler,status,global_word), 'back-parent-owner-mismatch')
+        events = parent['event_codes']
+        require(len(events) == 24 and all(type(v) is int and 0 <= v <= 255 for v in events)
+                and events.count(0x52) == 1, 'back-event-not-unique')
+        history = thumb_literal_value(image, handler + 0x546, 1)
+        comparison = thumb_literal_value(image, handler + 0x52C, 1)
+        require(all(type(v) is int and not v & 3 and _distributed_ram(v,8 if v == history else 4)
+                    for v in (history,comparison)), 'back-history-or-comparison-invalid')
+        producer = parent['producer']
+        owned = [(control['secondary_ring'],72),(global_word,4),(control['state_owner'],3),
+                 (control['menu_status'],0x60),(status,0x60),(producer['ring'],34),
+                 (parent['scanner_state'],parent['scanner_state_size']),
+                 (parent['batch_state'],parent['batch_state_size']), (producer['state'],producer['state_size']),
+                 (nav['grid_descriptor'],4),(nav['alternate_grid_descriptor'],4),
+                 (thumb_literal_value(image, control['application'] + 0x6A,1),0x3C)]
+        owned.extend((port['shadow'],1) for port in parent['gpio_ports'])
+        require(history + 8 <= comparison or comparison + 4 <= history, 'back-history-comparison-alias')
+        require(all(a + size <= b or b + extent <= a for a,size in ((history,8),(comparison,4))
+                    for b,extent in owned), 'back-owned-span-alias')
+        # The existing event tree must select this local restoration block.
+        require(_distributed_branch(image, handler + 0x27E, len(image),0) == handler + 0x320
+                and _distributed_branch(image,handler + 0x320,len(image)) == handler + 0x52A, 'back-event-branch-link')
+        start = handler + 0x52A
+        require(not handler & 1 and 0 <= start <= len(image)-len(_DISTRIBUTED_BACK_SPAN), 'back-span-outside-image')
+        owners = {0x52A:status,0x52C:comparison,0x542:global_word,
+                  0x546:history,0x556:global_word,0x562:nav['alternate_grid_descriptor'],0x578:history,
+                  0x594:history,0x5A6:history,0x5C2:global_word}
+        actual = bytearray(image[start:start+len(_DISTRIBUTED_BACK_SPAN)])
+        for relative,value in owners.items():
+            offset=relative-0x52A;word=int.from_bytes(_DISTRIBUTED_BACK_SPAN[offset:offset+2],'little')
+            require(thumb_literal_value(image,handler+relative,(word>>8)&7) == value, 'back-literal-owner-mismatch')
+            actual[offset]=0
+        require(bytes(actual) == _DISTRIBUTED_BACK_SPAN, 'back-restoration-opcode-mismatch')
+        for offset in range(0,len(_DISTRIBUTED_BACK_SPAN),2):
+            word=int.from_bytes(_DISTRIBUTED_BACK_SPAN[offset:offset+2],'little')
+            if word & 0xF800 == 0xE000 or word & 0xF000 == 0xD000:
+                condition=(word>>8)&15 if word & 0xF000 == 0xD000 else None
+                require(_distributed_branch(image,start+offset,len(image),condition) is not None,'back-branch-outside-image')
+        return {2:dict(event=0x52,rule='same-image-distributed-functional-back-v1',
+                       semantic_status='temporary-evidence-gated-provisional',functional_only=True)}, dict(
+            back_mapping_status='accepted-provisional',back_consumer=dict(grammar='distributed-saved-menu-back-v1',
+                handler=handler,status=status,global_word=global_word,history=history,comparison_descriptor=nav['alternate_grid_descriptor'],saved_menu_comparison=comparison),
+            back_mapping_limits='Temporary saved-menu restoration class, observed one-level history1-to0 path only; physical legends and other contexts unverified; no indexed history capacity/runtime default.')
+    except (ValueError,KeyError,IndexError,TypeError) as error:
+        return {},dict(back_mapping_status='rejected',back_mapping_reject_reasons=[str(error)])
+
+
+# Temporary compiled context-exit class; normalize only decoded owned pools/BLs.
+_DISTRIBUTED_CALL_SPANS = (
+    (-0x11cc8, '08b5011c004806d100000000004800490000000008bd', ((4, 0, 'cleanup_node'), (12, 0, 'cleanup_flags'), (14, 1, 'mask_constant')), ((8, -723096), (16, -74426))),
+    (-0xf3e0, '00b500480423c056002805d000000000002801d1012000e000200006000e00bd', ((2, 0, 'gate_state'),), ((12, -62464),)),
+    (0x0, 'f0b5b2b0004c0026e71d1937be73387b004d', ((4, 4, 'status'), (16, 5, 'global_word')), ()),
+    (0xe0, '387300207873387b332801d243009f44', (), ()),
+    (0x156, '39e3', (), ()),
+    (0x22c, '00490868542836d036dc362835d013dc322832d009dc23282fd02a282dd030282bd0312864d11ae191e0332825d0342823d035285cd112e150281ed0', ((0, 1, 'global_word'),), ()),
+    (0x2a6, '3be3', (), ()),
+    (0x43c, '322039e3', (), ()),
+    (0x7cc, '77e3', (), ()),
+    (0x920, '4be0', (), ()),
+    (0x9ba, '00000000002804d100490868502800d137e5', ((8, 1, 'global_word'),), ((0, -62432),)),
+    (0xab4, '4be3', (), ()),
+    (0xebe, '43e3', (), ()),
+    (0x114e, '21e3', (), ()),
+    (0x1548, '46e3', (), ()),
+    (0x1794, '1ce2', (), ()),
+    (0x1bd0, '7ee3', (), ()),
+    (0x1bd8, '7ee3', (), ()),
+    (0x22d0, '40e3', (), ()),
+    (0x22d8, '40e3', (), ()),
+    (0x2954, '60e2', (), ()),
+    (0x295c, '46e3', (), ()),
+    (0x2e18, '47e3', (), ()),
+    (0x2fec, '6ee3', (), ()),
+    (0x34aa, '05e1', (), ()),
+    (0x36b8, '7873', (), ()),
+    (0x36ba, '76e0', (), ()),
+    (0x36cc, '4ae3', (), ()),
+    (0x37aa, '18e2', (), ()),
+    (0x3bde, 'ebe2', (), ()),
+    (0x3d64, '45e3', (), ()),
+    (0x41b8, '3ce3', (), ()),
+    (0x43f2, '03e3', (), ()),
+    (0x4834, '1be2', (), ()),
+    (0x49fc, '67e3', (), ()),
+    (0x4c6e, '15e1', (), ()),
+    (0x4e9c, 'c8e2', (), ()),
+    (0x50ce, '6ee3', (), ()),
+    (0x5430, 'd5e1', (), ()),
+    (0x57ae, '2ce0', (), ()),
+    (0x57de, '2ee0', (), ()),
+    (0x580a, '0026ff22e660e272a272002000000000269800490671279b01205e723873b873', ((18, 1, 'exit_status'),), ((12, -72904),)),
+    (0x582a, '259846738e70ce701d99887b002801d01d998e73787b002801d000000000b87b32b0f0bd', (), ((26, 224),)),
+    (0x583e, '787b', (), ()),
+)
+
+
+def _distributed_call_profile(image: bytes, parent: dict):
+    """Optional compiled context exit; does not alter other input admission."""
+    def require(condition, reason):
+        if not condition:
+            raise ValueError(reason)
+    try:
+        require(parent.get('menu_mapping_status') == parent.get('ok_mapping_status') == 'accepted-provisional',
+                'call-parent-rejected')
+        control = parent['control_consumer']
+        require(control['grammar'] == 'distributed-queued-direct-word-controls-v1', 'call-parent-grammar')
+        handler, status, global_word = [control[k] for k in ('confirm_handler','confirm_status','global_word')]
+        require(all(type(v) is int for v in (handler,status,global_word))
+                and not handler & 1 and 0 <= handler <= len(image)-0x5850
+                and status % 4 == global_word % 4 == 0
+                and _distributed_ram(status,0x60) and _distributed_ram(global_word,4)
+                and (status+0x60 <= global_word or global_word+4 <= status), 'call-parent-owner-invalid')
+        events = parent['event_codes']
+        require(isinstance(events,(list,tuple)) and len(events)==24
+                and all(type(v) is int and 0 <= v <= 255 for v in events)
+                and events.count(0x50)==1, 'call-event-not-unique')
+        owners = dict(status=status,global_word=global_word,mask_constant=0xFFF7)
+        for role,relative,register,size,alignment in (
+                ('gate_state',-0xF3DE,0,5,4),('cleanup_node',-0x11CC4,0,4,4),
+                ('cleanup_flags',-0x11CBC,0,2,2),('exit_status',0x581C,1,4,4)):
+            value=thumb_literal_value(image,handler+relative,register)
+            require(type(value) is int and value % alignment == 0 and _distributed_ram(value,size),
+                    'call-literal-owner-invalid')
+            owners[role]=value
+        application = control['application']
+        require(type(application) is int and not application & 1
+                and 0 <= application <= len(image)-0x6C, 'call-application-outside-image')
+        mode = thumb_literal_value(image,application+0x6A,1)
+        require(type(mode) is int and _distributed_ram(mode,0x3C), 'call-mode-owner-invalid')
+        producer=parent['producer']
+        roots=[(status,0x60),(global_word,4),(control['menu_status'],0x60),
+               (control['state_owner'],3),(control['secondary_ring'],72),(mode,0x3C),
+               (producer['ring'],34),(producer['state'],producer['state_size']),
+               (parent['scanner_state'],parent['scanner_state_size']),
+               (parent['batch_state'],parent['batch_state_size'])]
+        roots.extend((port['shadow'],1) for port in parent['gpio_ports'])
+        extra=[(owners[k],size) for k,size in (('gate_state',5),('cleanup_node',4),('cleanup_flags',2),('exit_status',4))]
+        require(all(type(a) is int and type(size) is int and size>0 for a,size in roots),'call-owned-span-invalid')
+        require(all(a+size<=b or b+extent<=a for a,size in extra for b,extent in roots)
+                and all(a+size<=b or b+extent<=a for i,(a,size) in enumerate(extra) for b,extent in extra[:i]),
+                'call-owned-span-alias')
+        for relative,body,literals,calls in _DISTRIBUTED_CALL_SPANS:
+            pc=handler+relative;expected=bytes.fromhex(body)
+            require(pc>=0 and pc+len(expected)<=len(image),'call-code-outside-image')
+            actual=bytearray(image[pc:pc+len(expected)])
+            for offset,register,role in literals:
+                require(thumb_literal_value(image,pc+offset,register)==owners[role], 'call-literal-owner-mismatch')
+                actual[offset]=0
+            for offset,target_relative in calls:
+                target=handler+target_relative
+                require(0<=target<=len(image)-4 and thumb_bl_target(image,pc+offset)==target,'call-relative-call-mismatch')
+                actual[offset:offset+4]=bytes(4)
+            require(bytes(actual)==expected,'call-context-exit-opcode-mismatch')
+            for offset in range(0,len(expected),2):
+                word=int.from_bytes(expected[offset:offset+2],'little')
+                if word & 0xF800 == 0xE000 or word & 0xF000 == 0xD000:
+                    condition=(word>>8)&15 if word & 0xF000 == 0xD000 else None
+                    require(_distributed_branch(image,pc+offset,len(image),condition) is not None,'call-branch-outside-image')
+        return {3:dict(event=0x50,rule='same-image-distributed-functional-call-v1',
+                       semantic_status='temporary-evidence-gated-provisional',functional_only=True)},dict(
+            call_mapping_status='accepted-provisional',call_consumer=dict(
+                grammar='distributed-queued-context-exit-v1',handler=handler,status=status,global_word=global_word,
+                event=0x50,request_code=0x32,global_reader=handler+0x22E,event_compare=handler+0x264,
+                gate_call=handler+0x9BA,gate=handler-0xF3E0,global_reread=handler+0x9C4,
+                request_store=handler+0x36B8,request_dispatch=handler+0xE0,
+                request_table_slot=handler+0x156,cleanup=handler-0x11CC8,normal_return=handler+0x584C,
+                gate_state=owners['gate_state'],cleanup_node=owners['cleanup_node'],
+                cleanup_flags=owners['cleanup_flags'],exit_status=owners['exit_status']),
+            call_mapping_limits='Temporary compiled context-exit class; request32/context exit verified. Physical Call meaning is cross-class inference; dialer/call effects and other contexts remain unverified.')
+    except (ValueError,KeyError,IndexError,TypeError) as error:
+        return {},dict(call_mapping_status='rejected',call_mapping_reject_reasons=[str(error)])
+
+
 def resolve_distributed_matrix_input(image: bytes, load_address: int = 0):
-    """Opt-in temporary distributed GPIO byte scanner; numeric tokens only."""
+    """Opt-in distributed GPIO scanner, with optional queued functional controls."""
     if load_address != 0:
         return None, 'unsupported-load-address', []
     candidates, rejected = [], []
@@ -1927,4 +2808,38 @@ def resolve_distributed_matrix_input(image: bytes, load_address: int = 0):
             'limits': 'Temporary opt-in numeric-only static class; GPIO owner/readback and natural input consumption require runtime validation.'})
     if len(candidates) > 1:
         return None, 'ambiguous-scanners', candidates
+    if candidates:
+        parent = candidates[0]
+        parent.update(_samsung_sideband_51_family_metadata(
+            image, parent['function'], parent['sense_site'],
+            parent['producer']['enqueue'], load_address))
+        mappings, metadata = _distributed_control_profile(image, parent)
+        parent.update(metadata)
+        if mappings:
+            parent['provisional_mappings'] = mappings
+            parent['limits'] = ('Temporary opt-in GPIO class; functional MENU/confirm labels are provisional, '
+                                'and input handling remains firmware-owned.')
+            events = parent['event_codes']
+            parent['token_cells'].extend({'token': token, 'event': event,
+                                         'row': events.index(event) % 6, 'column': events.index(event) // 6}
+                                        for token,event in (('M',0x5B),('O',0x53)))
+            call, call_metadata = _distributed_call_profile(image,parent)
+            parent.update(call_metadata)
+            if call:
+                parent['provisional_mappings'].update(call)
+                parent['token_cells'].append({'token':'S','event':0x50,
+                    'row':events.index(0x50)%6,'column':events.index(0x50)//6})
+            navigation, nav_metadata = _distributed_navigation_profile(image, parent)
+            parent.update(nav_metadata)
+            if navigation:
+                parent['provisional_mappings'].update(navigation)
+                parent['token_cells'].extend({'token': token,'event': event,
+                                             'row':events.index(event)%6,'column':events.index(event)//6}
+                                            for token,event in (('U',0x63),('D',0x64),('L',0x65),('R',0x66)))
+                back, back_metadata = _distributed_back_profile(image,parent)
+                parent.update(back_metadata)
+                if back:
+                    parent['provisional_mappings'].update(back)
+                    parent['token_cells'].append({'token':'C','event':0x52,
+                        'row':events.index(0x52)%6,'column':events.index(0x52)//6})
     return (candidates[0], 'static-candidate', rejected) if candidates else (None, 'rejected' if rejected else 'not-found', rejected)

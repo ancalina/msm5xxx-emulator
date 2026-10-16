@@ -520,9 +520,11 @@ class LCDGeometryTests(unittest.TestCase):
     def _write_028_split16_packet(emulator: GenericMSMEmulator,
                                   command: int, value: int,
                                   high_lane_low: int = 0) -> None:
+        high = ((value & 0xF800) | ((value & 0x07FF) >> 1)
+                if command == 0x22 else value & 0xFF00 | high_lane_low)
         for address, packed in (
                 (0x02800000, 0), (0x02800000, command << 8),
-                (0x02800080, value & 0xFF00 | high_lane_low),
+                (0x02800080, high),
                 (0x02800080, value << 8 & 0xFF00)):
             emulator._lcd_write(None, 0, address, 2, packed, None)
 
@@ -541,8 +543,7 @@ class LCDGeometryTests(unittest.TestCase):
         for index in range(120 * 160 - 1):
             self._write_028_split16_packet(
                 emulator, 0x22,
-                (0xF800, 0x07E0, 0x001F)[index] if index < 3 else 0,
-                high_lane_low=0xFF,
+                (0xF800, 0x07E0, 0x001F, 0xFFFF)[index] if index < 4 else 0,
             )
 
         self.assertEqual(emulator.frame_sequence, 7)
@@ -552,8 +553,16 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
         self.assertEqual(emulator._lcd_frame_protocol, "split-halfword-rgb565")
         self.assertEqual(emulator.frame_sequence, 8)
-        self.assertEqual(emulator.display_frame[:9],
-                         bytes((255, 0, 0, 0, 255, 0, 0, 0, 255)))
+        colors = bytes((255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255))
+        self.assertEqual(emulator.display_frame[:12], colors)
+
+        # Later rectangle updates use the pixel transform, not control packing.
+        for command, value in ((0x44, 0x0704), (0x45, 0x0101), (0x21, 0x0004)):
+            self._write_028_split16_packet(emulator, command, value)
+        for value in (0xF800, 0x07E0, 0x001F, 0xFFFF):
+            self._write_028_split16_packet(emulator, 0x22, value)
+        self.assertEqual(emulator.display_frame[120 * 3:120 * 3 + 12], colors)
+        self.assertEqual(emulator.display_frame[:12], colors)
 
         near_miss = self._routing_emulator(width=176, height=220)
         self._write_028_split16_packet(near_miss, 0x00, 0x0002)

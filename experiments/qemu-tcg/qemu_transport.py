@@ -18,7 +18,10 @@ from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO
 from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
-from msm5xxx_emulator.detection.input_matrix import resolve_distributed_matrix_input
+from msm5xxx_emulator.detection.input_matrix import (
+    _samsung_sideband_51_family_metadata,
+    resolve_distributed_matrix_input,
+)
 from msm5xxx_emulator.devices.input import SAMSUNG_RING32_KEY_EVENTS
 from msm5xxx_emulator.detection.arm import (
     thumb_bl_target,
@@ -32,6 +35,7 @@ from msm5xxx_emulator.detection.boot import (
 )
 from msm5xxx_emulator.detection.firmware_image import load_firmware_image
 from msm5xxx_emulator.detection.memory_layout import restore_sparse_nor_gap
+from msm5xxx_emulator.detection.audio import find_audio_transport
 from msm5xxx_emulator.detection.rex import UIS_IDLE_BODY_DELTAS
 from msm5xxx_emulator.detection.storage import (
     EEPROM_24LCXX_READ_SIGNATURE,
@@ -375,6 +379,37 @@ def qemu_audio_irq_property(audio: object, config: FirmwareConfig) -> tuple[str 
     return 'audio-irq-route=' + ':'.join(f'{value:x}' for value in fields), None
 
 
+def qemu_audio_packet_property(image: bytes, config: object,
+                               audio: object) -> tuple[str | None, str | None]:
+    if (not isinstance(audio, dict)
+            or audio.get("grammar") != "repeated-bit-sequence-v1"):
+        return None, "protocol-unmatched"
+    if (getattr(config, "load_address", None) != 0
+            or type(getattr(config, "flash_size", None)) is not int
+            or config.flash_size < 0x1000):
+        return None, "primary-nor-unmapped"
+    if (audio.get("static_status") != "accepted"
+            or find_audio_transport(image) != audio):
+        return None, "same-image-contract-mismatch"
+    spans = [(audio["begin"] - 6, 72), (audio["sequence_producer"], 86),
+             (audio["timer_producer"], 170), (audio["timer_stop_producer"], 76),
+             (audio["immediate_sender"], 112), (audio["reset_producer"], 0xb0),
+             (audio["status_consumers"][0] - 0x112, 0x112 + 138)]
+    spans += audio["nor_dependencies"]
+    if any(type(offset) is not int or not 0 <= offset <= config.flash_size - length
+           for offset, length in spans):
+        return None, "primary-nor-out-of-bounds"
+    ram_base = getattr(config, "ram_base", None)
+    ram_size = getattr(config, "ram_size", None)
+    if (type(ram_base) is not int or type(ram_size) is not int or ram_size < 8
+            or any((size > 1 and address & 3) or not ram_base <= address <= ram_base + ram_size - size
+                   for address, size in audio["ram_dependencies"])):
+        return None, "consumer-state-unmapped"
+    clear = ",audio-packet-clear-pulse=on" if audio.get("control_clear_status") == "accepted" else ""
+    return (f"experimental-audio-packet-bus={audio['begin']:x},"
+            "audio-packet-sequence=on" + clear), None
+
+
 def qemu_audio_sites(audio: object) -> str | None:
     """Serialize detector-owned audio bus PCs for the native QEMU gate."""
     if not isinstance(audio, dict):
@@ -633,6 +668,49 @@ def qemu_halfword_matrix_property(image: bytes, config: object,
     return value, None
 
 
+def qemu_distributed_sideband_producer(image: bytes, config: object,
+                                     profile: dict) -> tuple[dict | None, str | None]:
+    """Optional electrical producer must agree with the same source queue."""
+    raw = profile.get("sideband_producers")
+    if raw is None:
+        reasons = profile.get("sideband_detection_reject_reasons", ())
+        if not isinstance(reasons, (list, tuple)):
+            return None, "invalid-sideband-rejection-reasons"
+        return None, (";".join(map(str, reasons)) if reasons else None)
+    if (profile.get("grammar") != "distributed-six-byte-numeric-v1"
+            or config.load_address != 0
+            or profile.get("sideband_detection_status") != "accepted"
+            or not isinstance(raw, list) or len(raw) != 1
+            or not isinstance(raw[0], dict)):
+        return None, "invalid-distributed-sideband"
+    producer = raw[0]
+    integers = ("semantic_key", "event", "event_register", "register",
+                "register_width", "mask", "press_callsite", "release_event",
+                "release_callsite", "event_sink")
+    queue = profile.get("producer")
+    sites = (profile.get("function"), profile.get("sense_site"),
+             queue.get("enqueue") if isinstance(queue, dict) else None)
+    if (any(type(site) is not int or site & 1 or not 0 <= site
+            <= min(len(image), config.flash_size) - 4 for site in sites)
+            or any(type(producer.get(key)) is not int for key in integers)):
+        return None, "invalid-sideband-source-bounds"
+    expected = _samsung_sideband_51_family_metadata(
+        image[:min(len(image), config.flash_size)], *sites, 0)
+    if expected.get("sideband_producers") != raw:
+        return None, "sideband-source-contract-mismatch"
+    release_sites = producer.get("release_callsites", [producer["release_callsite"]])
+    events = profile.get("event_codes")
+    if (not isinstance(release_sites, list)
+            or not isinstance(events, (list, tuple))
+            or any(type(site) is not int or site & 1 or not 0 <= site
+                   <= min(len(image), config.flash_size) - 4
+                   for site in [producer["press_callsite"], *release_sites])
+            or producer["register"] != profile.get("register")
+            or producer["event"] in events):
+        return None, "sideband-source-ownership-conflict"
+    return dict(producer), None
+
+
 def qemu_distributed_matrix_property(image: bytes, config: object,
                                      profile: dict) -> tuple[str | None, str | None]:
     """Temporary numeric-only byte class; GPIO ownership stays with native devices."""
@@ -694,7 +772,10 @@ def qemu_distributed_matrix_property(image: bytes, config: object,
     fields = [address, *sites]
     for port in ports:
         fields.extend((port["address"], port["mask"]))
-    return "matrix-gpio=" + ":".join(f"{value:x}" for value in fields), None
+    sideband, reject = qemu_distributed_sideband_producer(image, config, profile)
+    if sideband is not None:
+        fields.append(sideband["mask"])
+    return "matrix-gpio=" + ":".join(f"{value:x}" for value in fields), reject
 
 
 def qemu_halfword_status_property(image: bytes, load_address: int,
@@ -2265,6 +2346,11 @@ class Transport:
                 if distributed_property is not None:
                     machine += f",{distributed_property}"
                     self.matrix_input_profile = distributed
+                    self.matrix_input_sideband_producer, _ = qemu_distributed_sideband_producer(
+                        detector_image, self.config, distributed)
+                    if status is not None:
+                        self.config.detection_notes.append(
+                            f"QEMU distributed sideband rejected: {status}; native fallback retained")
                     self.config.detection_notes.append(
                         "QEMU distributed matrix temporary: numeric-only; live GPIO selectors"
                     )
@@ -2347,6 +2433,19 @@ class Transport:
                     "QEMU command/status/data boot aperture enabled with "
                     "inactive zero readback"
                 )
+        elif (audio is not None
+              and audio_grammar == "repeated-bit-sequence-v1"
+              and not upper_nor_present):
+            packet_property, packet_reject = qemu_audio_packet_property(
+                detector_image, self.config, audio)
+            if packet_property is not None:
+                machine += "," + packet_property
+                self.config.detection_notes.append(
+                    "QEMU temporary sequence receiver: actual reset/release required; "
+                    "raw register/RAM consumption only, no renderer or FIFO timing")
+            else:
+                self.config.detection_notes.append(
+                    f"QEMU sequence receiver rejected: {packet_reject}; native fallback retained")
         if audio is not None and not self.audio_stream_enabled:
             static_status = audio.get("static_status")
             if static_status == "accepted":
@@ -3743,33 +3842,231 @@ class Transport:
             return self.decoder._direct_matrix_position(bit, event_code)
         mappings = profile.get("provisional_mappings")
         confirm = mappings.get(5) if isinstance(mappings, dict) else None
+        menu = mappings.get(0) if isinstance(mappings, dict) else None
+        token_cells = profile.get("token_cells")
+        complete_distributed_cells = True
+        complete_navigation_cells = True
+        back_cells, complete_back_cells = [], True
+        call_cells, complete_call_cells = [], True
+        if profile["grammar"] == "distributed-six-byte-numeric-v1":
+            if not isinstance(token_cells, (list, tuple)):
+                return None
+            valid_cells = [cell for cell in token_cells if isinstance(cell, dict)
+                           and type(cell.get("event")) is int
+                           and type(cell.get("row")) is int and 0 <= cell["row"] < 6
+                           and type(cell.get("column")) is int and 0 <= cell["column"] < 4]
+            original_back = [cell for cell in token_cells
+                             if isinstance(cell, dict) and cell.get("token") == "C"]
+            back_cells = [cell for cell in valid_cells if cell.get("token") == "C"]
+            original_call = [cell for cell in token_cells
+                             if isinstance(cell, dict) and cell.get("token") == "S"]
+            call_cells = [cell for cell in valid_cells if cell.get("token") == "S"]
+            complete_call_cells = len(original_call) == len(call_cells)
+            complete_back_cells = len(original_back) == len(back_cells)
+            token_cells = [cell for cell in token_cells if cell not in original_back + original_call]
+            valid_cells = [cell for cell in valid_cells if cell.get("token") not in ("C", "S")]
+            base_cells = [cell for cell in token_cells
+                          if not (isinstance(cell, dict) and cell.get("token") in ("U", "D", "L", "R"))]
+            complete_distributed_cells = len(base_cells) == sum(
+                cell.get("token") not in ("U", "D", "L", "R") for cell in valid_cells)
+            complete_navigation_cells = len(token_cells) - len(base_cells) == sum(
+                cell.get("token") in ("U", "D", "L", "R") for cell in valid_cells)
+            token_cells = valid_cells
+        distributed_controls = (
+            profile["grammar"] == "distributed-six-byte-numeric-v1"
+            and type(profile.get("rows")) is int and profile["rows"] == 6
+            and type(profile.get("columns")) is int and profile["columns"] == 4
+            and complete_distributed_cells
+            and profile.get("menu_mapping_status") == "accepted-provisional"
+            and profile.get("ok_mapping_status") == "accepted-provisional"
+            and isinstance(menu, dict) and isinstance(confirm, dict)
+            and menu.get("rule") == "same-image-distributed-functional-menu-v1"
+            and confirm.get("rule") == "same-image-distributed-functional-confirm-v1"
+            and all(mapping.get("semantic_status") == "temporary-evidence-gated-provisional"
+                    and mapping.get("functional_only") is True
+                    and type(mapping.get("event")) is int and mapping["event"] == event
+                    for mapping, event in ((menu, 0x5B), (confirm, 0x53)))
+        )
+        if distributed_controls:
+            events = profile.get("event_codes")
+            if (not isinstance(events, (list, tuple)) or len(events) != 24
+                    or any(type(event) is not int or not 0 <= event <= 255 for event in events)):
+                distributed_controls = False
+            else:
+                for token, event in (("M", 0x5B), ("O", 0x53)):
+                    cells = [cell for cell in token_cells if cell.get("token") == token]
+                    if (events.count(event) != 1 or len(cells) != 1
+                            or type(cells[0].get("event")) is not int
+                            or type(cells[0].get("row")) is not int
+                            or type(cells[0].get("column")) is not int
+                            or cells[0] != {"token": token, "event": event,
+                                            "row": events.index(event) % 6,
+                                            "column": events.index(event) // 6}):
+                        distributed_controls = False
+                        break
+        navigation, navigation_token = None, None
+        navigation_cells = ((1, "U", 0x63), (9, "D", 0x64),
+                            (4, "L", 0x65), (6, "R", 0x66))
+        consumer = profile.get("navigation_consumer")
+        control = profile.get("control_consumer")
+        navigation_valid = (
+            distributed_controls
+            and complete_navigation_cells
+            and profile.get("navigation_mapping_status") == "accepted-provisional"
+            and isinstance(consumer, dict) and isinstance(control, dict)
+            and consumer.get("grammar") == "distributed-menu-grid-navigation-v1"
+            and control.get("grammar") == "distributed-queued-direct-word-controls-v1"
+            and type(consumer.get("grid_stride")) is int and consumer["grid_stride"] == 3
+            and all(type(consumer.get(field)) is int and consumer[field] > 0
+                    and type(control.get(root)) is int
+                    and consumer[field] == control.get(root)
+                    for field, root in (("handler", "confirm_handler"),
+                                        ("status", "confirm_status"),
+                                        ("global_word", "global_word")))
+        )
+        if navigation_valid:
+            for key, token, raw in navigation_cells:
+                mapping = mappings.get(key)
+                cells = [cell for cell in token_cells if cell.get("token") == token]
+                if (not any(type(k) is int and k == key for k in mappings)
+                        or not isinstance(mapping, dict)
+                        or mapping.get("rule") != "same-image-distributed-functional-navigation-v1"
+                        or mapping.get("semantic_status") != "temporary-evidence-gated-provisional"
+                        or mapping.get("functional_only") is not True
+                        or type(mapping.get("event")) is not int or mapping["event"] != raw
+                        or events.count(raw) != 1 or len(cells) != 1
+                        or sum(cell["event"] == raw for cell in token_cells) != 1
+                        or cells[0] != {"token": token, "event": raw,
+                                        "row": events.index(raw) % 6,
+                                        "column": events.index(raw) // 6}):
+                    navigation_valid = False
+                    break
+            if navigation_valid and type(bit) is int:
+                for key, token, _ in navigation_cells:
+                    if bit == key:
+                        navigation, navigation_token = mappings[key], token
+                        break
+        back = mappings.get(2) if isinstance(mappings, dict) else None
+        back_consumer = profile.get("back_consumer")
+        back_valid = (
+            navigation_valid and complete_back_cells
+            and profile.get("back_mapping_status") == "accepted-provisional"
+            and isinstance(back_consumer, dict)
+            and back_consumer.get("grammar") == "distributed-saved-menu-back-v1"
+            and all(type(back_consumer.get(field)) is int
+                    and back_consumer[field] == consumer[field]
+                    for field in ("handler", "status", "global_word"))
+            and all(type(back_consumer.get(field)) is int
+                    and back_consumer[field] > 0 and back_consumer[field] % 4 == 0
+                    for field in ("history", "comparison_descriptor", "saved_menu_comparison"))
+            and any(type(key) is int and key == 2 for key in mappings)
+            and isinstance(back, dict)
+            and back.get("rule") == "same-image-distributed-functional-back-v1"
+            and back.get("semantic_status") == "temporary-evidence-gated-provisional"
+            and back.get("functional_only") is True
+            and type(back.get("event")) is int and back["event"] == 0x52
+            and events.count(0x52) == 1 and len(back_cells) == 1
+            and sum(cell["event"] == 0x52 for cell in token_cells) == 0
+            and back_cells[0] == {"token": "C", "event": 0x52,
+                                  "row": events.index(0x52) % 6,
+                                  "column": events.index(0x52) // 6}
+        )
+        call_mapping = mappings.get(3) if isinstance(mappings, dict) else None
+        call_consumer = profile.get("call_consumer")
+        call_valid = (
+            distributed_controls and complete_call_cells
+            and profile.get("call_mapping_status") == "accepted-provisional"
+            and isinstance(call_consumer, dict) and isinstance(control, dict)
+            and call_consumer.get("grammar") == "distributed-queued-context-exit-v1"
+            and control.get("grammar") == "distributed-queued-direct-word-controls-v1"
+            and all(type(call_consumer.get(field)) is int
+                    and 0 < call_consumer[field] <= 0xFFFFFFFF
+                    and type(control.get(root)) is int
+                    and call_consumer[field] == control[root]
+                    for field, root in (("handler", "confirm_handler"),
+                                        ("status", "confirm_status"),
+                                        ("global_word", "global_word")))
+            and type(call_consumer.get("event")) is int and call_consumer["event"] == 0x50
+            and type(call_consumer.get("request_code")) is int and call_consumer["request_code"] == 0x32
+            and any(type(key) is int and key == 3 for key in mappings)
+            and isinstance(call_mapping, dict)
+            and call_mapping.get("rule") == "same-image-distributed-functional-call-v1"
+            and call_mapping.get("semantic_status") == "temporary-evidence-gated-provisional"
+            and call_mapping.get("functional_only") is True
+            and type(call_mapping.get("event")) is int and call_mapping["event"] == 0x50
+            and events.count(0x50) == 1 and len(call_cells) == 1
+            and sum(cell["event"] == 0x50 for cell in token_cells) == 0
+            and call_cells[0] == {"token": "S", "event": 0x50,
+                                  "row": events.index(0x50) % 6,
+                                  "column": events.index(0x50) // 6}
+        )
+        functional_call = call_valid and type(bit) is int and bit == 3
+        if call_valid:
+            token_cells = token_cells + call_cells
+        functional_back = back_valid and type(bit) is int and bit == 2
+        if back_valid:
+            token_cells = token_cells + back_cells
+        if profile["grammar"] == "distributed-six-byte-numeric-v1" and not navigation_valid:
+            token_cells = [cell for cell in token_cells if cell.get("token") not in ("U", "D", "L", "R")]
+        functional_menu = distributed_controls and type(bit) is int and bit == 0
         functional_confirm = (
-            profile["grammar"] == "indirect-halfword-loop-six-row-v1"
-            and type(bit) is int and bit == 5
+            type(bit) is int and bit == 5
             and profile.get("ok_mapping_status") == "accepted-provisional"
             and isinstance(confirm, dict)
-            and confirm.get("rule") == "same-image-loop-functional-confirm-v1"
+            and ((profile["grammar"] == "indirect-halfword-loop-six-row-v1"
+                  and confirm.get("rule") == "same-image-loop-functional-confirm-v1")
+                 or (profile["grammar"] == "indirect-halfword-mapped-row-v1"
+                     and type(profile.get("rows")) is int and type(profile.get("columns")) is int
+                     and (profile.get("rows"), profile.get("columns")) == (7, 4)
+                     and profile.get("menu_mapping_status") == "accepted-provisional"
+                     and isinstance(menu, dict)
+                     and menu.get("rule") == "same-image-mapped-physical-menu-v1"
+                     and menu.get("semantic_status") == "temporary-evidence-gated-provisional"
+                     and menu.get("physical_only") is True
+                     and type(menu.get("event")) is int and menu["event"] == 0x5B
+                     and confirm.get("rule") == "same-image-mapped-functional-confirm-v1")
+                 or distributed_controls)
             and confirm.get("semantic_status") == "temporary-evidence-gated-provisional"
             and confirm.get("functional_only") is True
             and type(confirm.get("event")) is int and confirm["event"] == 0x53
         )
-        event = (confirm["event"] if functional_confirm else
+        physical_menu = (
+            profile["grammar"] == "indirect-halfword-mapped-row-v1"
+            and type(bit) is int and bit == 0
+            and profile.get("menu_mapping_status") == "accepted-provisional"
+            and isinstance(menu, dict)
+            and menu.get("rule") == "same-image-mapped-physical-menu-v1"
+            and menu.get("semantic_status") == "temporary-evidence-gated-provisional"
+            and menu.get("physical_only") is True
+            and type(menu.get("event")) is int and menu["event"] == 0x5B
+        )
+        event = (call_mapping["event"] if functional_call else
+                 back["event"] if functional_back else
+                 navigation["event"] if navigation is not None else
+                 confirm["event"] if functional_confirm else
+                 menu["event"] if physical_menu or functional_menu else
                  SAMSUNG_RING32_KEY_EVENTS.get(bit)) if event_code is None else event_code
         if (profile["grammar"] in ("indirect-halfword-mapped-row-v1", "distributed-six-byte-numeric-v1",
                                   "indirect-halfword-loop-six-row-v1")
                 and (type(event) is not int or event not in b"123456789*0#")):
-            if type(event) is not int or not functional_confirm or event != confirm["event"]:
+            mapping = (call_mapping if functional_call else back if functional_back else navigation if navigation is not None else confirm if functional_confirm
+                       else menu if physical_menu or functional_menu else None)
+            if type(event) is not int or mapping is None or event != mapping["event"]:
                 return None
             events = profile.get("event_codes", ())
-            tokens = [cell for cell in profile["token_cells"] if cell.get("token") == "O"]
-            if (not isinstance(events, (list, tuple)) or len(events) != 24
+            token, rows = (("S", 6) if functional_call else ("C", 6) if functional_back else
+                          (navigation_token, 6) if navigation is not None else
+                          ("O", 7 if profile["grammar"] == "indirect-halfword-mapped-row-v1" else 6)
+                           if functional_confirm else ("M", 6 if functional_menu else 7))
+            tokens = [cell for cell in token_cells if cell.get("token") == token]
+            if (not isinstance(events, (list, tuple)) or len(events) != rows * 4
                     or events.count(event) != 1 or len(tokens) != 1):
                 return None
             index = events.index(event)
-            if tokens[0] != {"token": "O", "event": event,
-                             "row": index % 6, "column": index // 6}:
+            if tokens[0] != {"token": token, "event": event,
+                             "row": index % rows, "column": index // rows}:
                 return None
-        cells = [cell for cell in profile["token_cells"] if cell["event"] == event]
+        cells = [cell for cell in token_cells if cell["event"] == event]
         # No table-order fallback or ambiguous semantic aliases.
         if len(cells) != 1:
             return None
@@ -3779,11 +4076,18 @@ class Transport:
     def _sideband_input_producer(
             self, bit: int, event_code: int | None,
     ) -> dict[str, object] | None:
+        if (self.matrix_input_profile is not None
+                and self.matrix_input_profile.get("grammar") == "distributed-six-byte-numeric-v1"):
+            if getattr(self, "matrix_input_sideband_producer", None) is None:
+                return None
+            producer = self.decoder._direct_sideband_producer(
+                bit, event_code, self.matrix_input_profile)
+            return (producer if producer == self.matrix_input_sideband_producer else None)
         if (self.matrix_input_profile is not None and
                 self.matrix_input_profile.get("grammar") in (
                     "indirect-halfword-six-row-v1", "indirect-halfword-mapped-row-v1",
                 "indirect-halfword-loop-six-row-v1",
-                    "distributed-six-byte-numeric-v1")):
+                )):
             return None
         producer = self.decoder._direct_sideband_producer(bit, event_code)
         return (producer if producer == self.matrix_input_sideband_producer
@@ -3822,7 +4126,7 @@ class Transport:
     def set_key(self, bit: int, pressed: bool,
                 event_code: int | None = None) -> bool:
         profile = self.matrix_input_profile
-        if profile is None:
+        if profile is None and (pressed or bit not in self.sideband_held):
             return False
         if pressed:
             if bit in self.matrix_held or bit in self.sideband_held:
@@ -3841,10 +4145,10 @@ class Transport:
             else:
                 return False
         else:
-            sideband = self._sideband_input_producer(bit, event_code)
             position = self.matrix_held.get(bit)
-            if bit in self.sideband_held and sideband is not None:
-                packet = sideband_input_command(sideband, False)
+            if bit in self.sideband_held:
+                # Release the approved physical contact even if metadata changed.
+                packet = sideband_input_command({}, False)
             elif position is not None:
                 packet = matrix_input_command(profile, position, False)
             else:
