@@ -662,14 +662,17 @@ class AudioTransportTests(unittest.TestCase):
                       "msm5xxx_emulator.e170_gm_audio.render_notes",
                       wraps=render_notes) as renderer):
                 self.assertTrue(player.play_ma2_snapshot(snapshots[0]))
+                # Timeline publication precedes desktop playback; wait for both.
                 deadline = time.monotonic() + 2
-                while player._pcm_sequence < 1 and time.monotonic() < deadline:
+                while ((player._pcm_sequence < 1 or playback.call_count < 1)
+                       and time.monotonic() < deadline):
                     time.sleep(0.01)
                 first = player.take_latest_pcm()
 
                 self.assertTrue(player.play_ma2_snapshot(snapshots[1]))
                 deadline = time.monotonic() + 2
-                while player._pcm_sequence < 2 and time.monotonic() < deadline:
+                while ((player._pcm_sequence < 2 or playback.call_count < 2)
+                       and time.monotonic() < deadline):
                     time.sleep(0.01)
                 second = player.take_latest_pcm()
 

@@ -179,7 +179,7 @@ final class BackendBridge {
 
     static synchronized Session open(Context context, File firmware,
                         String profileJson, boolean persistentState,
-                        boolean experimentalRex)
+                        boolean experimentalRex, boolean virtualNetwork)
             throws IOException {
         File qemu = resolveQemu(context);
         File state = persistentState
@@ -198,7 +198,7 @@ final class BackendBridge {
         try {
             JSONObject result = new JSONObject(PythonRuntime.start(
                     context, firmware, qemu, state, profileJson,
-                    experimentalRex));
+                    experimentalRex, virtualNetwork));
             int width = result.getInt("width");
             int height = result.getInt("height");
             boolean[] inputBits = parseInputBits(result.getJSONArray("input_bits"));
@@ -336,7 +336,8 @@ final class BackendBridge {
                         result.getBoolean("secondary_available"),
                         result.optBoolean("secondary_preview", false),
                         result.getBoolean("fold_supported"),
-                        result.getBoolean("fold_open"));
+                        result.getBoolean("fold_open"),
+                        result.optString("virtual_cell_status", "native"));
             } catch (JSONException | RuntimeException | LinkageError error) {
                 throw new IOException("Backend status read failed.", error);
             }
@@ -462,6 +463,7 @@ final class BackendBridge {
         final boolean secondaryPreview;
         final boolean foldSupported;
         final boolean foldOpen;
+        final String virtualCellStatus;
 
         private Status(boolean processRunning, long instructions, long pc,
                        long lcdWrites, long frameSequence, long inputHostEvents,
@@ -470,7 +472,7 @@ final class BackendBridge {
                        String audioStatus, String audioRejectReason,
                        boolean secondaryAvailable, boolean secondaryPreview,
                        boolean foldSupported,
-                       boolean foldOpen) {
+                       boolean foldOpen, String virtualCellStatus) {
             this.processRunning = processRunning;
             this.instructions = instructions;
             this.pc = pc;
@@ -487,6 +489,7 @@ final class BackendBridge {
             this.secondaryPreview = secondaryPreview;
             this.foldSupported = foldSupported;
             this.foldOpen = foldOpen;
+            this.virtualCellStatus = virtualCellStatus;
         }
     }
 

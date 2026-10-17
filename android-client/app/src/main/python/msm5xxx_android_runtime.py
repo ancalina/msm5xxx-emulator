@@ -79,14 +79,19 @@ def start_session(request_json):
     global _scanout_sent
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
     from msm5xxx_emulator.detection.firmware import detect
+    from msm5xxx_emulator.virtual_cell import virtual_cell_scenario
     from qemu_transport import Transport
 
     if _session is not None:
         raise RuntimeError("session already running")
     request = json.loads(request_json)
-    if set(request) != {
-            "experimental_rex", "firmware", "profile", "qemu", "state"}:
+    required = {"experimental_rex", "firmware", "profile", "qemu", "state"}
+    if (not isinstance(request, dict) or not required <= request.keys()
+            or request.keys() - required - {"virtual_network"}):
         raise ValueError("invalid session request")
+    virtual_network = request.get("virtual_network", False)
+    if type(virtual_network) is not bool:
+        raise ValueError("invalid virtual network setting")
     firmware = Path(request["firmware"])
     qemu = Path(request["qemu"])
     state_value = request["state"]
@@ -104,7 +109,7 @@ def start_session(request_json):
         state.mkdir(parents=True, exist_ok=True)
     transport = Transport(
         qemu, firmware, state, experimental_rex, config=config,
-        audio_stream=True,
+        audio_stream=True, virtual_cell=virtual_cell_scenario(virtual_network),
     )
     input_bits = [
         bit for bit in range(HANDSET_KEY_COUNT)
@@ -193,6 +198,7 @@ def session_status():
     fold_supported = _session.can_set_fold()
     return _json({
         "frame_sequence": int(_session.decoder.frame_sequence),
+        "virtual_cell_status": str(_session.virtual_cell_status),
         "secondary_available": bool(secondary and secondary["qualified"]),
         "secondary_preview": bool(secondary and secondary["qualified"]
                                   and secondary.get("encoding") == "unverified-byte-preview"),

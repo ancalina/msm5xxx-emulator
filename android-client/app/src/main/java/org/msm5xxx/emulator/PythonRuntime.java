@@ -50,7 +50,7 @@ final class PythonRuntime {
 
     static synchronized String start(Context context, File firmware, File qemu,
                                      File stateDirectory, String profileJson,
-                                     boolean experimentalRex)
+                                     boolean experimentalRex, boolean virtualNetwork)
             throws IOException {
         AUDIO_GATE.lock();
         try {
@@ -64,7 +64,8 @@ final class PythonRuntime {
                         .put("qemu", qemu.getPath())
                         .put("state", stateDirectory == null
                                 ? JSONObject.NULL : stateDirectory.getPath())
-                        .put("experimental_rex", experimentalRex);
+                        .put("experimental_rex", experimentalRex)
+                        .put("virtual_network", virtualNetwork);
                 return nativeStart(request.toString());
             } catch (JSONException error) {
                 throw new IOException("session request is invalid", error);

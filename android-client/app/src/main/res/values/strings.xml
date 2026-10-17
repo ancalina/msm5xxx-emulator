@@ -82,6 +82,9 @@
     <string name="settings_title">Session settings</string>
     <string name="persistent_state">Persistent device state (firmware SHA-isolated)</string>
     <string name="experimental_rex">Experimental static REX controller</string>
+    <string name="virtual_network">Virtual network (calls unavailable)</string>
+    <string name="virtual_network_active">Virtual network</string>
+    <string name="virtual_network_unavailable">Virtual network unavailable for this firmware</string>
     <string name="save">Save</string>
     <string name="cancel">Cancel</string>
 

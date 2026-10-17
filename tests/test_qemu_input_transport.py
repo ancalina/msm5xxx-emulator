@@ -1399,6 +1399,24 @@ class QEMUInputTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r'status 2.*\(LCD\)'):
             transport._accept_qemu(listener, 'LCD')
 
+    def test_startup_failure_reaps_qemu_before_reading_stderr(self) -> None:
+        for failure in (ConnectionResetError(10054, "connection reset"),
+                        TimeoutError("waiting for LCD connection")):
+            for status in (None, 1):
+                with self.subTest(failure=failure, status=status):
+                    transport = object.__new__(MODULE.Transport)
+                    transport.process = SimpleNamespace(poll=lambda: status)
+                    transport.stderr = io.StringIO()
+                    def terminate():
+                        transport.stderr.write("device initialization failed")
+                    transport._terminate_process = mock.Mock(side_effect=terminate)
+                    result = transport._startup_error(failure)
+                    transport._terminate_process.assert_called_once_with()
+                    self.assertIsInstance(result, RuntimeError)
+                    self.assertIn(str(failure), str(result))
+                    self.assertIn("QEMU stderr:\ndevice initialization failed", str(result))
+                    self.assertEqual("QEMU exit status 1" in str(result), status == 1)
+
     def test_qemu_state_directory_is_firmware_scoped(self) -> None:
         first = SimpleNamespace(firmware_sha256="a" * 64)
         second = SimpleNamespace(firmware_sha256="b" * 64)
@@ -1562,6 +1580,9 @@ class QEMUInputTransportTests(unittest.TestCase):
         window.qemu = Path("/tmp/qemu-system-arm")
         window.state_dir = Path("/tmp/qemu-state")
         window.experimental_c80 = True
+        window.virtual_network_enabled = False
+        window._active_virtual_network = False
+        window.virtual_network_var = mock.Mock()
         window.ui_language = "en"
         window.model = mock.Mock()
         window.device_details = mock.Mock()
@@ -1583,7 +1604,8 @@ class QEMUInputTransportTests(unittest.TestCase):
 
         detect.assert_called_once_with(firmware, {"width": 128})
         transport.assert_called_once_with(
-            window.qemu, firmware, window.state_dir, True, config=config
+            window.qemu, firmware, window.state_dir, True, config=config,
+            virtual_cell=None,
         )
         self.assertEqual(
             events, ["interrupt", "join", "close", "create", "start"]
@@ -1642,6 +1664,9 @@ class QEMUInputTransportTests(unittest.TestCase):
         window.qemu = Path("/tmp/qemu-system-arm")
         window.state_dir = Path("/tmp/qemu-state")
         window.experimental_c80 = False
+        window.virtual_network_enabled = True
+        window._active_virtual_network = False
+        window.virtual_network_var = mock.Mock()
         window.ui_language = "en"
         window.model = mock.Mock()
         window.device_details = mock.Mock()
@@ -1665,8 +1690,30 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertEqual(window.overrides, {"width": 96})
         self.assertIs(window.transport, restored)
         self.assertEqual(transport.call_count, 2)
+        self.assertEqual(transport.call_args_list[0].kwargs['virtual_cell'],
+                         MODULE.virtual_cell_scenario(True))
+        self.assertIsNone(transport.call_args_list[1].kwargs['virtual_cell'])
+        self.assertFalse(window.virtual_network_enabled)
+        window.virtual_network_var.set.assert_called_with(False)
         window._save_config.assert_called_once_with()
         showerror.assert_called_once()
+
+    def test_virtual_network_toggle_saves_only_the_active_mode(self) -> None:
+        window = MODULE.LiveWindow.__new__(MODULE.LiveWindow)
+        window.virtual_network_enabled = False
+        window.virtual_network_var = mock.Mock()
+        window.virtual_network_var.get.return_value = True
+        window._save_config = mock.Mock()
+        window._restart = mock.Mock(side_effect=lambda: setattr(
+            window, 'virtual_network_enabled', False))
+        window._set_virtual_network()
+        window._save_config.assert_not_called()
+        window.virtual_network_var.set.assert_called_with(False)
+        window._restart = mock.Mock()
+        window._set_virtual_network()
+        self.assertTrue(window.virtual_network_enabled)
+        window._save_config.assert_called_once_with()
+        window.virtual_network_var.set.assert_called_with(True)
 
     def test_memory_profile_fails_closed_outside_native_shape(self) -> None:
         config = SimpleNamespace(flash_size=0x01800000,

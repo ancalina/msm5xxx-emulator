@@ -13,6 +13,7 @@ ARCHIVE=$1
 OUTPUT=$2
 PATCH="$ROOT/qemu-10.2.1-icount-advance.patch"
 CFI02_PATCH="$ROOT/qemu-10.2.1-cfi02-write-while-suspended.patch"
+DSOUND_PATCH="$ROOT/qemu-10.2.1-dsound-playback-only.patch"
 MACHINE="$ROOT/msm5xxx-poc.c"
 AUDIO_REQUEST_CORE="$ROOT/msm5xxx-audio-request.c"
 AUDIO_REQUEST_HEADER="$ROOT/msm5xxx-audio-request.h"
@@ -22,6 +23,8 @@ AUDIO_SYNTH_CORE="$ROOT/msm5xxx-audio-synth.c"
 AUDIO_SYNTH_HEADER="$ROOT/msm5xxx-audio-synth.h"
 MA5_CORE="$ROOT/msm5xxx-ma5-audio.c"
 MA5_HEADER="$ROOT/msm5xxx-ma5-audio.h"
+SEARCH2_CORE="$ROOT/msm5xxx-search2.c"
+SEARCH2_HEADER="$ROOT/msm5xxx-search2.h"
 TRANSPORT="$ROOT/qemu_transport.py"
 
 sha256() {
@@ -42,11 +45,11 @@ check_sha256() {
     fi
 }
 
-for file in "$ARCHIVE" "$PATCH" "$CFI02_PATCH" "$MACHINE" \
+for file in "$ARCHIVE" "$PATCH" "$CFI02_PATCH" "$DSOUND_PATCH" "$MACHINE" \
         "$AUDIO_REQUEST_CORE" "$AUDIO_REQUEST_HEADER" \
         "$MA2_CORE" "$MA2_HEADER" \
         "$AUDIO_SYNTH_CORE" "$AUDIO_SYNTH_HEADER" \
-        "$MA5_CORE" "$MA5_HEADER" "$TRANSPORT"; do
+        "$MA5_CORE" "$MA5_HEADER" "$SEARCH2_CORE" "$SEARCH2_HEADER" "$TRANSPORT"; do
     if [ ! -f "$file" ]; then
         echo "missing build input: $file" >&2
         exit 1
@@ -60,6 +63,7 @@ fi
 check_sha256 "$QEMU_ARCHIVE_SHA256" "$ARCHIVE"
 check_sha256 "$MSM5XXX_ICOUNT_PATCH_SHA256" "$PATCH"
 check_sha256 "$MSM5XXX_CFI02_PATCH_SHA256" "$CFI02_PATCH"
+check_sha256 "$MSM5XXX_DSOUND_PATCH_SHA256" "$DSOUND_PATCH"
 check_sha256 "$MSM5XXX_MACHINE_SHA256" "$MACHINE"
 check_sha256 "$MSM5XXX_AUDIO_REQUEST_CORE_SHA256" "$AUDIO_REQUEST_CORE"
 check_sha256 "$MSM5XXX_MA2_CORE_SHA256" "$MA2_CORE"
@@ -69,6 +73,8 @@ check_sha256 "$MSM5XXX_AUDIO_SYNTH_CORE_SHA256" "$AUDIO_SYNTH_CORE"
 check_sha256 "$MSM5XXX_AUDIO_SYNTH_HEADER_SHA256" "$AUDIO_SYNTH_HEADER"
 check_sha256 "$MSM5XXX_MA5_CORE_SHA256" "$MA5_CORE"
 check_sha256 "$MSM5XXX_MA5_HEADER_SHA256" "$MA5_HEADER"
+check_sha256 "$MSM5XXX_SEARCH2_CORE_SHA256" "$SEARCH2_CORE"
+check_sha256 "$MSM5XXX_SEARCH2_HEADER_SHA256" "$SEARCH2_HEADER"
 check_sha256 "$MSM5XXX_TRANSPORT_SHA256" "$TRANSPORT"
 
 mkdir -p "$OUTPUT"
@@ -83,6 +89,7 @@ if [ "$(sed -n 's/^revision = //p' "$OUTPUT/subprojects/dtc.wrap")" != "$QEMU_DT
 fi
 patch -p1 -d "$OUTPUT" < "$PATCH"
 patch -p1 -d "$OUTPUT" < "$CFI02_PATCH"
+patch -p1 -d "$OUTPUT" < "$DSOUND_PATCH"
 cp "$MACHINE" "$OUTPUT/hw/arm/msm5xxx-poc.c"
 cp "$AUDIO_REQUEST_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 cp "$MA2_CORE" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
@@ -92,14 +99,16 @@ cp "$AUDIO_SYNTH_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-synth.c"
 cp "$AUDIO_SYNTH_HEADER" "$OUTPUT/hw/arm/msm5xxx-audio-synth.h"
 cp "$MA5_CORE" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.c"
 cp "$MA5_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.h"
+cp "$SEARCH2_CORE" "$OUTPUT/hw/arm/msm5xxx-search2.c"
+cp "$SEARCH2_HEADER" "$OUTPUT/hw/arm/msm5xxx-search2.h"
 {
     printf '%s\n' '# Modified by MSM5xxx emulator contributors, 2026-10-02: register the MSM5xxx machine and audio sources.'
     cat "$OUTPUT/hw/arm/meson.build"
 } > "$OUTPUT/hw/arm/meson.build.msm5xxx"
 mv "$OUTPUT/hw/arm/meson.build.msm5xxx" "$OUTPUT/hw/arm/meson.build"
-printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
+printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-search2.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
 
-test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
+test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-search2.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
 cmp "$MACHINE" "$OUTPUT/hw/arm/msm5xxx-poc.c"
 cmp "$AUDIO_REQUEST_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 cmp "$MA2_CORE" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
@@ -109,6 +118,8 @@ cmp "$AUDIO_SYNTH_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-synth.c"
 cmp "$AUDIO_SYNTH_HEADER" "$OUTPUT/hw/arm/msm5xxx-audio-synth.h"
 cmp "$MA5_CORE" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.c"
 cmp "$MA5_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.h"
+cmp "$SEARCH2_CORE" "$OUTPUT/hw/arm/msm5xxx-search2.c"
+cmp "$SEARCH2_HEADER" "$OUTPUT/hw/arm/msm5xxx-search2.h"
 check_sha256 "$MSM5XXX_MACHINE_SHA256" "$OUTPUT/hw/arm/msm5xxx-poc.c"
 check_sha256 "$MSM5XXX_AUDIO_REQUEST_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 check_sha256 "$MSM5XXX_MA2_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
@@ -118,6 +129,8 @@ check_sha256 "$MSM5XXX_AUDIO_SYNTH_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-sy
 check_sha256 "$MSM5XXX_AUDIO_SYNTH_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-synth.h"
 check_sha256 "$MSM5XXX_MA5_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.c"
 check_sha256 "$MSM5XXX_MA5_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.h"
+check_sha256 "$MSM5XXX_SEARCH2_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-search2.c"
+check_sha256 "$MSM5XXX_SEARCH2_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-search2.h"
 
 cat > "$OUTPUT/MSM5XXX_STAGING_INFO" <<EOF
 QEMU_VERSION=$QEMU_VERSION
@@ -126,6 +139,7 @@ QEMU_DTC_URL=$QEMU_DTC_URL
 QEMU_DTC_REVISION=$QEMU_DTC_REVISION
 MSM5XXX_ICOUNT_PATCH_SHA256=$MSM5XXX_ICOUNT_PATCH_SHA256
 MSM5XXX_CFI02_PATCH_SHA256=$MSM5XXX_CFI02_PATCH_SHA256
+MSM5XXX_DSOUND_PATCH_SHA256=$MSM5XXX_DSOUND_PATCH_SHA256
 MSM5XXX_ANDROID_PATCH_SHA256=$MSM5XXX_ANDROID_PATCH_SHA256
 MSM5XXX_MACHINE_SHA256=$MSM5XXX_MACHINE_SHA256
 MSM5XXX_AUDIO_REQUEST_CORE_SHA256=$MSM5XXX_AUDIO_REQUEST_CORE_SHA256
@@ -136,5 +150,7 @@ MSM5XXX_AUDIO_SYNTH_CORE_SHA256=$MSM5XXX_AUDIO_SYNTH_CORE_SHA256
 MSM5XXX_AUDIO_SYNTH_HEADER_SHA256=$MSM5XXX_AUDIO_SYNTH_HEADER_SHA256
 MSM5XXX_MA5_CORE_SHA256=$MSM5XXX_MA5_CORE_SHA256
 MSM5XXX_MA5_HEADER_SHA256=$MSM5XXX_MA5_HEADER_SHA256
+MSM5XXX_SEARCH2_CORE_SHA256=$MSM5XXX_SEARCH2_CORE_SHA256
+MSM5XXX_SEARCH2_HEADER_SHA256=$MSM5XXX_SEARCH2_HEADER_SHA256
 MSM5XXX_TRANSPORT_SHA256=$MSM5XXX_TRANSPORT_SHA256
 EOF

@@ -173,6 +173,26 @@ class GuiLocaleTests(unittest.TestCase):
         }
         self.assertEqual(manual_keymap(data, firmware_sha256), {5: 0x53})
 
+    def test_virtual_network_preference_is_global_and_preserved_by_other_saves(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'last_config.json'
+            window = Window.__new__(Window)
+            window.firmware = Path(directory) / 'phone.bin'
+            window.overrides = {'width': 128}
+            window.ui_language_preference = 'en'
+            with mock.patch('msm5xxx_emulator.gui.controls.LAST_CONFIG', path):
+                self.assertFalse(window._load_virtual_network())
+                window.virtual_network_enabled = True
+                window._save_config()
+                self.assertTrue(window._load_virtual_network())
+                self.assertEqual(window._load_config(), {'width': 128})
+                del window.virtual_network_enabled
+                window._save_config()
+                self.assertTrue(window._load_virtual_network())
+                for value in ('true', 1, None):
+                    path.write_text(json.dumps({'virtual_network': value}))
+                    self.assertFalse(window._load_virtual_network())
+
     def test_manual_keymap_save_preserves_regular_preferences(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "last_config.json"

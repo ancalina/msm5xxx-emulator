@@ -90,6 +90,7 @@ public final class MainActivity extends Activity {
     private static final String KEY_REJECT = "reject";
     private static final String KEY_PERSISTENT_STATE = "persistent_state";
     private static final String KEY_EXPERIMENTAL_REX = "experimental_rex";
+    private static final String KEY_VIRTUAL_NETWORK = "virtual_network";
     private static final String KEY_SECONDARY_DESTINATION = "secondary_destination";
     private static final String SECONDARY_INTERNAL = "internal";
     private static final String SECONDARY_AUTO = "auto";
@@ -941,6 +942,8 @@ public final class MainActivity extends Activity {
                 KEY_PERSISTENT_STATE, true);
         boolean experimentalRex = preferences.getBoolean(
                 KEY_EXPERIMENTAL_REX, false);
+        boolean virtualNetwork = preferences.getBoolean(
+                KEY_VIRTUAL_NETWORK, false);
         int generation = ++sessionGeneration;
         sessionStarting = true;
         latestStatus = null;
@@ -957,12 +960,13 @@ public final class MainActivity extends Activity {
         sessionView.setText(R.string.starting_session);
         Context application = getApplicationContext();
         new Thread(() -> runSession(application, new File(path), profile,
-                persistentState, experimentalRex, generation),
+                persistentState, experimentalRex, virtualNetwork, generation),
                 "qemu-session").start();
     }
 
     private void runSession(Context context, File firmware, String profile,
                             boolean persistentState, boolean experimentalRex,
+                            boolean virtualNetwork,
                             int generation) {
         BackendBridge.Session opened = null;
         FramePacket latestFrame = null;
@@ -973,7 +977,7 @@ public final class MainActivity extends Activity {
         boolean failed = false;
         try {
             opened = BackendBridge.open(context, firmware, profile,
-                    persistentState, experimentalRex);
+                    persistentState, experimentalRex, virtualNetwork);
             if (generation != sessionGeneration) {
                 return;
             }
@@ -1171,6 +1175,10 @@ public final class MainActivity extends Activity {
             secondaryFrameView.clear();
             secondaryPanel.setVisibility(View.GONE);
         }
+        setTextIfChanged(sessionView, "configured".equals(status.virtualCellStatus)
+                ? getString(R.string.virtual_network_active)
+                : "rejected".equals(status.virtualCellStatus)
+                        ? getString(R.string.virtual_network_unavailable) : "");
         setTextIfChanged(pcView, getString(R.string.metric_pc, status.pc));
         setTextIfChanged(runView, getString(
                 R.string.metric_run, status.instructions));
@@ -1643,8 +1651,13 @@ public final class MainActivity extends Activity {
         experimental.setText(R.string.experimental_rex);
         experimental.setChecked(preferences.getBoolean(
                 KEY_EXPERIMENTAL_REX, false));
+        Switch virtualNetwork = new Switch(this);
+        virtualNetwork.setText(R.string.virtual_network);
+        virtualNetwork.setChecked(preferences.getBoolean(
+                KEY_VIRTUAL_NETWORK, false));
         body.addView(persistent, matchWidth());
         body.addView(experimental, matchWidth());
+        body.addView(virtualNetwork, matchWidth());
         new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_title)
                 .setView(body)
@@ -1655,6 +1668,8 @@ public final class MainActivity extends Activity {
                                         persistent.isChecked())
                                 .putBoolean(KEY_EXPERIMENTAL_REX,
                                         experimental.isChecked())
+                                .putBoolean(KEY_VIRTUAL_NETWORK,
+                                        virtualNetwork.isChecked())
                                 .apply())
                 .show();
     }

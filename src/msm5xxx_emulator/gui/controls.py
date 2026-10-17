@@ -688,6 +688,13 @@ class ControlsMixin:
         except (AttributeError, OSError, ValueError):
             return "auto"
 
+    def _load_virtual_network(self) -> bool:
+        try:
+            data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
+            return data.get("virtual_network") is True
+        except (AttributeError, OSError, ValueError):
+            return False
+
     def _load_config(self) -> dict[str, object]:
         try:
             data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
@@ -715,13 +722,15 @@ class ControlsMixin:
             manual_keymaps = data.get("manual_keymaps")
             if not isinstance(manual_keymaps, dict):
                 manual_keymaps = {}
-            atomic_write_text(
-                path,
-                json.dumps({
-                    "ui_language": self.ui_language_preference,
-                    "profiles": profiles,
-                    "manual_keymaps": manual_keymaps,
-                }, ensure_ascii=False, indent=2) + "\n",
-            )
+            settings = {
+                "ui_language": self.ui_language_preference,
+                "profiles": profiles,
+                "manual_keymaps": manual_keymaps,
+            }
+            if hasattr(self, "virtual_network_enabled") or "virtual_network" in data:
+                settings["virtual_network"] = getattr(
+                    self, "virtual_network_enabled", data.get("virtual_network") is True)
+            atomic_write_text(path, json.dumps(
+                settings, ensure_ascii=False, indent=2) + "\n")
             LOGGER.info("GUI profile saved firmware=%s override_keys=%s",
                         self.firmware.name, sorted(self.overrides))

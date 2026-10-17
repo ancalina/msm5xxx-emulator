@@ -82,6 +82,9 @@
     <string name="settings_title">세션 설정</string>
     <string name="persistent_state">기기 상태 영속 저장 (펌웨어 SHA 격리)</string>
     <string name="experimental_rex">실험적 static REX controller</string>
+    <string name="virtual_network">가상 통신망 (통화 미지원)</string>
+    <string name="virtual_network_active">가상 통신망</string>
+    <string name="virtual_network_unavailable">이 펌웨어는 가상 통신망 미지원</string>
     <string name="save">저장</string>
     <string name="cancel">취소</string>
 

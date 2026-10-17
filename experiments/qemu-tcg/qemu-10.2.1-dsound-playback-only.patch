@@ -1,0 +1,52 @@
+--- a/audio/dsoundaudio.c
++++ b/audio/dsoundaudio.c
+@@ -1,3 +1,4 @@
++/* Modified by MSM5xxx emulator contributors, 2026-10-17: honor disabled capture for playback-only audio. */
+ /*
+  * QEMU DirectSound audio driver
+  *
+@@ -632,24 +633,26 @@
+         return NULL;
+     }
+ 
+-    hr = CoCreateInstance (
+-        &CLSID_DirectSoundCapture,
+-        NULL,
+-        CLSCTX_ALL,
+-        &IID_IDirectSoundCapture,
+-        (void **) &s->dsound_capture
+-        );
+-    if (FAILED (hr)) {
+-        dserror_set(errp, hr, "Could not create DirectSoundCapture instance");
+-        dsound_audio_fini(s);
+-        return NULL;
+-    }
+-
+-    hr = IDirectSoundCapture_Initialize (s->dsound_capture, NULL);
+-    if (FAILED(hr)) {
+-        dserror_set(errp, hr, "Could not initialize DirectSoundCapture");
+-        dsound_audio_fini(s);
+-        return NULL;
++    if (dso->in->voices) {
++        hr = CoCreateInstance (
++            &CLSID_DirectSoundCapture,
++            NULL,
++            CLSCTX_ALL,
++            &IID_IDirectSoundCapture,
++            (void **) &s->dsound_capture
++            );
++        if (FAILED (hr)) {
++            dserror_set(errp, hr, "Could not create DirectSoundCapture instance");
++            dsound_audio_fini(s);
++            return NULL;
++        }
++
++        hr = IDirectSoundCapture_Initialize (s->dsound_capture, NULL);
++        if (FAILED(hr)) {
++            dserror_set(errp, hr, "Could not initialize DirectSoundCapture");
++            dsound_audio_fini(s);
++            return NULL;
++        }
+     }
+ 
+     hr = IDirectSound_SetCooperativeLevel (

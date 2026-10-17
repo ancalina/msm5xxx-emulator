@@ -21,6 +21,7 @@ from msm5xxx_emulator.gui.app import Window, choose_firmware  # noqa: E402
 from msm5xxx_emulator.gui.controls import detect_profile  # noqa: E402
 from msm5xxx_emulator.gui.locale import display_model_name  # noqa: E402
 from msm5xxx_emulator.gui.worker import _prepared_profile_matches  # noqa: E402
+from msm5xxx_emulator.virtual_cell import virtual_cell_scenario  # noqa: E402
 
 
 class LiveWindow(Window):
@@ -30,6 +31,8 @@ class LiveWindow(Window):
         self.qemu = qemu
         self.state_dir = state_dir
         self.experimental_c80 = experimental_c80
+        self.virtual_network_enabled = self._load_virtual_network()
+        self._active_virtual_network = self.virtual_network_enabled
         self.transport: Transport | None = None
         self._active_firmware: Path | None = None
         self._active_overrides: dict[str, object] = {}
@@ -51,6 +54,13 @@ class LiveWindow(Window):
             self.settings_button.master, text="ROM 재부팅", command=self._restart,
         )
         self.reboot_button.grid(row=1, column=1, pady=2)
+        self.virtual_network_var = tk.BooleanVar(
+            master=self.root, value=self.virtual_network_enabled)
+        self.virtual_network_button = ttk.Checkbutton(
+            self.settings_button.master, text=self._text("virtual_network"),
+            variable=self.virtual_network_var, command=self._set_virtual_network,
+        )
+        self.virtual_network_button.grid(row=2, column=0, columnspan=2, pady=2)
         self.secondary_window = tk.Toplevel(self.root)
         self.secondary_window.withdraw()
         self.secondary_window.title("Additional display (experimental)")
@@ -75,6 +85,34 @@ class LiveWindow(Window):
                                       command=self._show_secondary_display,
                                       state="disabled")
         self.screen.bind("<Button-3>", self._display_popup)
+
+    def _apply_ui_language(self) -> None:
+        super()._apply_ui_language()
+        if hasattr(self, "virtual_network_button"):
+            self.virtual_network_button.configure(text=self._text("virtual_network"))
+
+    def _set_virtual_network(self) -> None:
+        requested = self.virtual_network_var.get()
+        if requested == self.virtual_network_enabled:
+            return
+        self.virtual_network_enabled = requested
+        try:
+            self._restart()
+        finally:
+            self.virtual_network_var.set(self.virtual_network_enabled)
+        if self.virtual_network_enabled == requested:
+            try:
+                self._save_config()
+            except (OSError, TimeoutError) as error:
+                messagebox.showerror(
+                    self._text("settings_save_error"), str(error), parent=self.root)
+
+    def _virtual_network_notice(self, transport: Transport) -> str:
+        if not self.virtual_network_enabled:
+            return ""
+        key = ("virtual_network_active" if transport.virtual_cell_status == "configured"
+               else "virtual_network_unavailable")
+        return " · " + self._text(key)
 
     def _display_popup(self, event) -> None:
         try:
@@ -167,6 +205,8 @@ class LiveWindow(Window):
                 raise
             self.firmware = self._active_firmware
             self.overrides = dict(self._active_overrides)
+            self.virtual_network_enabled = self._active_virtual_network
+            self.virtual_network_var.set(self.virtual_network_enabled)
             self.status.set(str(error))
             messagebox.showerror(
                 self._text("settings_error"), str(error), parent=self.root
@@ -189,12 +229,15 @@ class LiveWindow(Window):
             transport = Transport(
                 self.qemu, requested_firmware, self.state_dir,
                 self.experimental_c80, config=config,
+                virtual_cell=virtual_cell_scenario(self.virtual_network_enabled),
             )
         except Exception as error:
             if self._active_firmware is None:
                 raise
             self.firmware = self._active_firmware
             self.overrides = dict(self._active_overrides)
+            self.virtual_network_enabled = self._active_virtual_network
+            self.virtual_network_var.set(self.virtual_network_enabled)
             save_error = None
             try:
                 self._save_config()
@@ -207,6 +250,7 @@ class LiveWindow(Window):
                 transport = Transport(
                     self.qemu, self.firmware, self.state_dir,
                     self.experimental_c80, config=rollback,
+                    virtual_cell=virtual_cell_scenario(self.virtual_network_enabled),
                 )
             except Exception as rollback_error:
                 detail = f"{error}; restore failed: {rollback_error}"
@@ -241,12 +285,14 @@ class LiveWindow(Window):
         self.overrides = dict(overrides)
         self._active_firmware = firmware
         self._active_overrides = dict(overrides)
+        self._active_virtual_network = self.virtual_network_enabled
         config = transport.config
         self.model.set(display_model_name(
             config.model, config.verified_model, self.ui_language
         ))
         self.device_details.set(
             f"QEMU TCG · {config.chipset} · {config.width}×{config.height}"
+            + self._virtual_network_notice(transport)
         )
         self.status.set("QEMU TCG real-time LCD transport")
         self.worker = threading.Thread(
@@ -324,6 +370,7 @@ class LiveWindow(Window):
         width, height, _frame = emulator.display_snapshot()
         self.device_details.set(
             f"QEMU TCG · {emulator.config.chipset} · {width}×{height}"
+            + self._virtual_network_notice(transport)
         )
         self.metric_values["run"].set(f"{transport.instructions:,}")
         self.metric_values["pc"].set(f"0x{transport.pc:08X}")

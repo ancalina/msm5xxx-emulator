@@ -71,6 +71,21 @@ typedef struct {
     QemuMutex audio_core_lock, audio_synth_lock;
     MSM5xxxAudioSynth audio_synth;
     void *ma2_audio_timer, *audio_voice;
+    void *search1_timer;
+    char *search1_description;
+    char *finger_description;
+    void *decoder_init_timer;
+    void *tx_init_timer;
+    char *tx_init_description;
+    char *decoder_init_description;
+    char *decoder_sync_description;
+    char *decoder_paging_description;
+    char *decoder_traffic_description;
+    char *decoder_traffic_frame_description;
+    char *traffic_service_description;
+    void *search2_timer;
+    char *search2_probe_description;
+    char *search2_virtual_description;
     uint8_t audio_index, audio_backing[4], audio_readback[4];
     MSM5xxxAudioPacketSink audio_packet_sink;
     uint8_t audio_packet_index, audio_packet_control;
@@ -94,6 +109,7 @@ static MSM5xxxPOCMachineState s;
 static unsigned core_held, synth_held;
 static guint active_watch, next_watch;
 static unsigned additions, removals, write_calls;
+static unsigned timer_frees, description_frees;
 static bool watch_supported = true;
 static FEWatchFunc callback;
 static void *callback_data;
@@ -133,6 +149,12 @@ static int qemu_chr_fe_write(CharFrontend *chr, const uint8_t *buf, int len) {
     return result;
 }
 static void timer_del(void *timer) { (void)timer; assert(core_held); }
+static void timer_free(void *timer) {
+    assert(timer == s.search2_timer || timer == s.search1_timer || timer == s.decoder_init_timer || timer == s.tx_init_timer); timer_frees++;
+}
+static void g_free(void *value) {
+    if (value) { assert(value == s.search2_probe_description || value == s.search2_virtual_description || value == s.search1_description || value == s.finger_description || value == s.decoder_init_description || value == s.decoder_sync_description || value == s.decoder_paging_description || value == s.decoder_traffic_description || value == s.decoder_traffic_frame_description || value == s.tx_init_description || value == s.traffic_service_description); description_frees++; }
+}
 static void AUD_set_active_out(void *voice, bool active) {
     (void)voice; assert(!active && core_held);
 }
@@ -170,6 +192,7 @@ static void setup(void) {
     }
     response_index = response_count = 0;
     written_length = write_calls = additions = removals = 0;
+    timer_frees = description_frees = 0;
     watch_supported = true;
 }
 static int flush(void) {
@@ -253,8 +276,24 @@ int main(void) {
     assert(!written_length && flush() == 1);
 
     setup(); block();
+    s.search1_timer = &s.search1_timer;
+    s.search1_description = "legacy";
+    s.finger_description = "finger";
+    s.decoder_init_timer = &s.decoder_init_timer;
+    s.decoder_init_description = "decoder";
+    s.decoder_sync_description = "sync";
+    s.decoder_paging_description = "paging";
+    s.decoder_traffic_description = "traffic";
+    s.decoder_traffic_frame_description = "decoded-frame";
+    s.traffic_service_description = "service";
+    s.tx_init_timer = &s.tx_init_timer;
+    s.tx_init_description = "tx-init";
+    s.search2_timer = &s;
+    s.search2_probe_description = "probe";
+    s.search2_virtual_description = "virtual";
     msm5xxx_poc_instance_finalize(&s);
     assert(!active_watch && !s.audio_pcm_watch && removals == 1);
+    assert(timer_frees == 4 && description_frees == 11);
 
     const GIOCondition errors[] = {G_IO_HUP, G_IO_ERR, G_IO_NVAL};
     for (unsigned i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {

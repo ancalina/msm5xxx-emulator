@@ -11,8 +11,8 @@ android {
         applicationId "org.msm5xxx.emulator"
         minSdk 28
         targetSdk 35
-        versionCode 15
-        versionName "r15"
+        versionCode 16
+        versionName "r16"
         ndk {
             abiFilters "arm64-v8a"
         }

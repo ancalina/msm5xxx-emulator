@@ -39,8 +39,49 @@ class AndroidFrameTransportTests(unittest.TestCase):
                     runtime.start_session(json.dumps(request))
                     self.assertNotIn('icount_shift', constructor.call_args.kwargs)
                     self.assertTrue(constructor.call_args.kwargs['audio_stream'])
+                    self.assertIsNone(constructor.call_args.kwargs['virtual_cell'])
                 finally:
                     runtime.stop_session()
+
+    def test_android_virtual_network_is_explicit_and_keeps_native_fallback(self) -> None:
+        path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
+        spec = importlib.util.spec_from_file_location('android_virtual_runtime', path)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        from msm5xxx_emulator.virtual_cell import virtual_cell_scenario
+        profile = {'test': 'virtual-network'}
+        config = SimpleNamespace(diagnostic_config=lambda: profile, width=128,
+                                 height=128, model='test', firmware_sha256='test')
+        transport = SimpleNamespace(can_set_key=lambda bit: False,
+                                    process=SimpleNamespace(poll=lambda: None),
+                                    replay=lambda stop: stop.wait(),
+                                    interrupt=lambda: None, close=lambda: None,
+                                    virtual_cell_status='rejected')
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'input.bin'
+            binary.write_bytes(b'input')
+            request = dict(experimental_rex=False, firmware=str(binary),
+                           profile=profile, qemu=str(binary), state=None,
+                           virtual_network=True)
+            with mock.patch('msm5xxx_emulator.detection.firmware.detect',
+                            return_value=config), mock.patch(
+                                'qemu_transport.Transport', return_value=transport) as constructor:
+                try:
+                    result = json.loads(runtime.start_session(json.dumps(request)))
+                    self.assertTrue(result['process_running'])
+                    self.assertIs(runtime._session, transport)
+                    self.assertEqual(constructor.call_args.kwargs['virtual_cell'],
+                                     virtual_cell_scenario(True))
+                finally:
+                    runtime.stop_session()
+        request = dict(experimental_rex=False, firmware='unused',
+                       profile={}, qemu='unused', state=None)
+        for value in (None, 0, 1, 'true', {}, []):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    ValueError, 'invalid virtual network setting'):
+                runtime.start_session(json.dumps({**request, 'virtual_network': value}))
+        with self.assertRaisesRegex(ValueError, 'invalid session request'):
+            runtime.start_session(json.dumps({**request, 'unexpected': True}))
 
     def test_android_uses_selected_scanout_and_detects_power_without_sequence(self) -> None:
         path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
@@ -111,7 +152,13 @@ class AndroidFrameTransportTests(unittest.TestCase):
             audio_pcm_snapshot=lambda: (0, 0, 0), audio_stream_reject_reason='',
             audio_stream_status='disabled', input_host_events=0,
             input_rejections=0, instructions=0, pc=0)
+        runtime._session.virtual_cell_status = 'rejected'
         self.assertTrue(json.loads(runtime.session_status())['secondary_preview'])
+        self.assertEqual(json.loads(runtime.session_status())['virtual_cell_status'],
+                         'rejected')
+        runtime._session.virtual_cell_status = 'configured'
+        self.assertEqual(json.loads(runtime.session_status())['virtual_cell_status'],
+                         'configured')
         snapshot['qualified'] = False
         self.assertFalse(json.loads(runtime.session_status())['secondary_preview'])
         snapshot['qualified'] = True

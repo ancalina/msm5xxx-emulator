@@ -448,6 +448,11 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertIn("u%2$d/o%3$d/e%4$d/l%5$d", korean)
         self.assertIn('"coreaudio,id=msm5xxx"', source)
         self.assertIn('"out.buffer-length=40000"', source)
+        self.assertIn('"in.voices=0," if desktop_audio_driver == "dsound"', source)
+        stage = (EXPERIMENT / 'stage_qemu_source.sh').read_text()
+        self.assertIn('patch -p1 -d "$OUTPUT" < "$DSOUND_PATCH"', stage)
+        patch = EXPERIMENT / 'qemu-10.2.1-dsound-playback-only.patch'
+        self.assertIn('if (dso->in->voices)', patch.read_text())
         replay = source[source.index("    def replay("):
                         source.index("    def _queue_native_audio(")]
         self.assertIn('name="msm5xxx-qemu-audio-replay"', replay)
@@ -828,6 +833,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
             audio_stream_reject_reason=None,
             audio_stream_enabled=True,
             audio_stream_status="active",
+            virtual_cell_status="native",
             input_host_events=4,
             input_rejections=5,
             instructions=6,
@@ -836,6 +842,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
         )
         try:
             status = json.loads(runtime.session_status())
+            self.assertEqual(status["virtual_cell_status"], "native")
             self.assertEqual(
                 (status["audio_underflow_frames"],
                  status["audio_overflow_frames"], status["audio_epoch"],
