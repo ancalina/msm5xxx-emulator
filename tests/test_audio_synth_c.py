@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import textwrap
@@ -83,9 +84,11 @@ int main(void) {
             source = folder / "test.c"
             source.write_text(harness)
             binary = folder / "test"
+            # MinGW does not ship libubsan; keep the same state/PCM oracle.
+            sanitizers = ([] if os.name == "nt" else
+                          ["-fsanitize=undefined", "-fno-sanitize-recover=all"])
             subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra",
-                            "-Werror", "-fsanitize=undefined",
-                            "-fno-sanitize-recover=all", "-I", str(core.parent),
+                            "-Werror", *sanitizers, "-I", str(core.parent),
                             str(source), str(core), str(baseline),
                             "-o", str(binary)], check=True, timeout=30)
             subprocess.run([str(binary)], check=True, timeout=10)

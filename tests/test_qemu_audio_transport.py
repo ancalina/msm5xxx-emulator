@@ -616,8 +616,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
             self.assertTrue(worker.is_alive())
             self.assertEqual(terminated, [])
             audio_peer.settimeout(1)
-            with self.assertRaises(OSError):
-                audio_peer.send(b"x")
+            # TCP may accept a final write after peer shutdown on Windows.
+            self.assertEqual(audio_peer.recv(1), b"")
         finally:
             stop.set()
             worker.join(1)

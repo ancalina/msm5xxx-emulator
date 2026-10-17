@@ -201,16 +201,21 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:PYTHONPATH = "src;."
-          python -m unittest discover -s tests -p "test_audio_synth_c.py" -v
-          python -m unittest discover -s tests -p "test_ma2_c_audio_core.py" -v
-          python -m unittest discover -s tests -p "test_ma5_c_audio_core.py" -v
-          python -m unittest discover -s tests -p "test_qemu_input_transport.py" -v
-          python -m unittest discover -s tests -p "test_qemu_audio_transport.py" -v
-          python -m unittest discover -s tests -p "test_gui_locale.py" -v
+          $suites = @(
+            "test_audio_synth_c.py", "test_ma2_c_audio_core.py",
+            "test_ma5_c_audio_core.py", "test_qemu_input_transport.py",
+            "test_qemu_audio_transport.py", "test_gui_locale.py"
+          )
+          foreach ($suite in $suites) {
+            python -m unittest discover -s tests -p $suite -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           $bundle = (Resolve-Path "dist/$env:BUNDLE_NAME").Path
           $env:PYTHONPATH = "$bundle/src;$bundle"
           python "$bundle/experiments/qemu-tcg/live-display.py" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Finalize and verify runtime bundle
         run: |
