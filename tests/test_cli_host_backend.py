@@ -10,18 +10,12 @@ import sys
 import unittest
 from unittest import mock
 
-from msm5xxx_emulator import legacy_api as msm5xxx
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator, HostBackendFault
+from msm5xxx_emulator import cli
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.core.errors import HostBackendFault
 
 
 class CLIHostBackendFaultTests(unittest.TestCase):
-    def test_legacy_module_uses_explicit_facade(self) -> None:
-        self.assertEqual(msm5xxx.__name__, "msm5xxx_emulator.legacy_api")
-        self.assertIn("GenericMSMEmulator", msm5xxx.__all__)
-        self.assertIn("detect", msm5xxx.__all__)
-        self.assertIn("parser", msm5xxx.__all__)
-        self.assertIn("main", msm5xxx.__all__)
-
     def _close_harness(self, host_fault: HostBackendFault | None) -> GenericMSMEmulator:
         emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
         emulator.config = SimpleNamespace(model="close-harness")
@@ -86,17 +80,17 @@ class CLIHostBackendFaultTests(unittest.TestCase):
         stdout = io.StringIO()
 
         with (mock.patch.object(sys, "argv", [
-                    "msm5xxx.py", "SCH-X350.bin", "--steps", "1",
+                    "cli.py", "SCH-X350.bin", "--steps", "1",
                 ]),
-              mock.patch("msm5xxx_emulator.diagnostics.runtime_log.install_runtime_logging",
+              mock.patch("msm5xxx_emulator.runtime_log.install_runtime_logging",
                          return_value=Path("logs/cli-session.log")),
-              mock.patch("msm5xxx_emulator.diagnostics.runtime_log.record_diagnostic",
+              mock.patch("msm5xxx_emulator.runtime_log.record_diagnostic",
                          return_value=Path("logs/diagnostic-host.json")) as record,
-              mock.patch.object(msm5xxx, "detect", return_value=config),
-              mock.patch.object(msm5xxx, "GenericMSMEmulator",
+              mock.patch.object(cli, "detect", return_value=config),
+              mock.patch.object(cli, "GenericMSMEmulator",
                                 return_value=emulator),
               redirect_stdout(stdout)):
-            self.assertEqual(msm5xxx.main(), 1)
+            self.assertEqual(cli.main(), 1)
 
         record.assert_called_once()
         kind, payload = record.call_args.args

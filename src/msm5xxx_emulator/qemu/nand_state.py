@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import zlib
 
-from .state_io import atomic_write_bytes
+from ..state_io import atomic_write_bytes
 
 
 RAW_BYTES = 65536 * 528

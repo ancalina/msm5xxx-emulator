@@ -2,7 +2,7 @@
 
 The parser and decoder operate on the MMF bytes passed by the original E170
 firmware.  Melodic MTR tracks are rendered through the bundled GM SoundFont;
-Mwa/Awa audio tracks are decoded by :mod:`smaf_audio`, including Yamaha
+Mwa/Awa audio tracks are decoded by :mod:`wave`, including Yamaha
 4-bit ADPCM used by the stock key and UI sounds.
 """
 from __future__ import annotations
@@ -19,9 +19,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .ma7_runtime.smaf import parse_mtsq_handy
-from .sf2_renderer import SoundFont, render_notes
-from .smaf_audio import OUTPUT_RATE, render_mmf_bytes, write_wav
+from .smaf import parse_mtsq_handy
+from .sf2 import SoundFont, render_notes
+from .wave import OUTPUT_RATE, render_mmf_bytes, write_wav
 
 
 LOGGER = logging.getLogger("audio")

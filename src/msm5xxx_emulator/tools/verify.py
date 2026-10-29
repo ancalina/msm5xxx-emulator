@@ -6,7 +6,7 @@ import tempfile
 
 from ..core.emulator import GenericMSMEmulator
 from ..detection.firmware import detect
-from ..diagnostics.runtime_log import install_runtime_logging
+from ..runtime_log import install_runtime_logging
 
 
 LOGGER = logging.getLogger("verify")

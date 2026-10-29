@@ -20,7 +20,7 @@
   license. CPython's bundled third-party license notices are included.
 - Pillow (`Pillow>=10,<13`) uses the MIT-CMU License.
 - NumPy (`numpy>=1.26,<3`) uses the BSD 3-Clause License.
-- `src/msm5xxx_emulator/gm.sf2` is TimGM6mb, copyright 2004 Tim
+- `src/msm5xxx_emulator/audio/gm.sf2` is TimGM6mb, copyright 2004 Tim
   Brechbill and 2010 David Bolton, distributed under GPL-2.0-only. The
   unmodified file comes from Debian source package `timgm6mb-soundfont`
   1.3-5:

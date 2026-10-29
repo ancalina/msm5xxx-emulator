@@ -17,7 +17,7 @@ from ..gui.app import Window, choose_firmware
 from ..gui.controls import detect_profile
 from ..gui.locale import display_model_name
 from ..gui.worker import _prepared_profile_matches
-from ..virtual_cell import virtual_cell_scenario
+from .virtual_cell import virtual_cell_scenario
 
 
 class LiveWindow(Window):

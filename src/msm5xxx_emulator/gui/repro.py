@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 import shutil
 
-from ..diagnostics.runtime_log import current_session_log
+from ..runtime_log import current_session_log
 from ..state_io import atomic_write_text
 
 LOGGER = logging.getLogger("gui")

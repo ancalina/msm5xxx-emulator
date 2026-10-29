@@ -11,7 +11,8 @@ from unittest.mock import Mock, call, patch
 from unicorn import Uc, UC_ARCH_ARM, UC_MEM_READ_UNMAPPED, UC_MODE_ARM
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2
 
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator, qualcomm_efs_seed
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.detection.storage import qualcomm_efs_seed
 from msm5xxx_emulator.devices.storage.nor import FUJITSU_MB84VD2219X_IDS, NORFlash
 
 

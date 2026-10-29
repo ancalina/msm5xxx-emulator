@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import threading
 import unittest
 
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator, detect_lcd_width_hint
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.detection.display import detect_lcd_width_hint
 from msm5xxx_emulator.detection.display import (find_dual_page_ports,
                                               find_paired_display_state_ports,
                                               find_packed_cursor_port,

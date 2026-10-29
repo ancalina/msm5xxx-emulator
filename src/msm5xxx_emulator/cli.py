@@ -105,7 +105,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    from .diagnostics.runtime_log import install_runtime_logging, record_diagnostic
+    from .runtime_log import install_runtime_logging, record_diagnostic
 
     session_log = install_runtime_logging("cli")
     args = parser().parse_args()

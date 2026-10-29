@@ -1,1 +1,1 @@
-"""Corpus and condition-report command modules."""
+"""Command-line probes, corpus checks and condition reports."""

@@ -10,7 +10,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator, detect
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.input_descriptor import LG_DESCRIPTOR_RAW
 from unicorn.arm_const import (
     UC_ARM_REG_CPSR,

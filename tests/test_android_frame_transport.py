@@ -48,7 +48,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('android_virtual_runtime', path)
         runtime = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(runtime)
-        from msm5xxx_emulator.virtual_cell import virtual_cell_scenario
+        from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
         profile = {'test': 'virtual-network'}
         config = SimpleNamespace(diagnostic_config=lambda: profile, width=128,
                                  height=128, model='test', firmware_sha256='test')

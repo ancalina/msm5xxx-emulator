@@ -7,10 +7,10 @@ import queue
 import threading
 import time
 
-from ..probe.boot import visible_pixels
+from ..tools.boot_probe import visible_pixels
 from ..core.emulator import GenericMSMEmulator
 from ..core.errors import HostBackendFault
-from ..diagnostics.runtime_log import record_exception
+from ..runtime_log import record_exception
 
 from .controls import detect_profile
 from .locale import display_model_name

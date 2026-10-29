@@ -7,7 +7,9 @@ import unittest
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 
-from msm5xxx_emulator.legacy_api import BoardStatusInput, GenericMSMEmulator, find_board_status_input
+from msm5xxx_emulator.core.config import BoardStatusInput
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.detection.input import find_board_status_input
 
 
 class BoardStatusInputTests(unittest.TestCase):

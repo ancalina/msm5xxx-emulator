@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 import msm5xxx_emulator
 
-from msm5xxx_emulator.virtual_cell import virtual_cell_scenario
+from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
 
 
 class VirtualCellModesTests(unittest.TestCase):

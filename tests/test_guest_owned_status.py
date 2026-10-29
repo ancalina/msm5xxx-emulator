@@ -9,7 +9,7 @@ import unittest
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_R0,
                                UC_ARM_REG_R1, UC_ARM_REG_R2)
 
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from msm5xxx_emulator.detection.boot import (
     GUEST_OWNED_STATUS_72C_CONSUMER,
     GUEST_OWNED_STATUS_72C_POWERDOWN_TAIL,

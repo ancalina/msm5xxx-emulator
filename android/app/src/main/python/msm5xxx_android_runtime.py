@@ -25,7 +25,7 @@ def probe():
     from msm5xxx_emulator.qemu.transport import Transport
     from unicorn import UC_ARCH_ARM, UC_MODE_ARM, Uc
     from msm5xxx_emulator.detection.firmware import detect
-    from msm5xxx_emulator.e170_gm_audio import ApproximateSmafPlayer
+    from msm5xxx_emulator.audio.player import ApproximateSmafPlayer
 
     engine = Uc(UC_ARCH_ARM, UC_MODE_ARM)
     engine.mem_map(0x1000, 0x1000)
@@ -79,7 +79,7 @@ def start_session(request_json):
     global _scanout_sent
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
     from msm5xxx_emulator.detection.firmware import detect
-    from msm5xxx_emulator.virtual_cell import virtual_cell_scenario
+    from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
     from msm5xxx_emulator.qemu.transport import Transport
 
     if _session is not None:

@@ -73,7 +73,7 @@ import logging
 LOGGER = logging.getLogger("msm5xxx")
 
 try:
-    from ..e170_gm_audio import ApproximateSmafPlayer
+    from ..audio.player import ApproximateSmafPlayer
 except ImportError:
     ApproximateSmafPlayer = None
 

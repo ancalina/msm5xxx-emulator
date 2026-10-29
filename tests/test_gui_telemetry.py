@@ -115,7 +115,7 @@ class GuiTelemetryTests(unittest.TestCase):
         self.assertEqual(nonblack, 1)
 
     def test_visible_pixels_preserves_partial_rgb_chunk_semantics(self) -> None:
-        from msm5xxx_emulator.probe.boot import visible_pixels
+        from msm5xxx_emulator.tools.boot_probe import visible_pixels
 
         self.assertEqual(visible_pixels(b""), 0)
         self.assertEqual(visible_pixels(b"\0\0\0\xff\0\0\0\xff\0\0\0\xff"), 3)

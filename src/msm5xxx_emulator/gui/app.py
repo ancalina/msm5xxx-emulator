@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from ..probe.boot import boot_event, boot_phase, visible_pixels
+from ..tools.boot_probe import boot_event, boot_phase, visible_pixels
 from ..core.constants import (BUILD_CODENAME, MAX_NAND_BACKING_SIZE,
                               MAX_NAND_DATA_SIZE, MAX_RAM_SIZE, PAGE)
 from ..core.emulator import GenericMSMEmulator
@@ -28,7 +28,7 @@ from ..core.errors import HostBackendFault
 from ..detection.firmware import (DEFAULT_STATE_ROOT, DISABLEABLE_ADDRESS_FIELDS,
                                   MAX_FLASH_SIZE, detect)
 from ..state_io import atomic_write_text, exclusive_path_lock
-from ..diagnostics.runtime_log import install_runtime_logging, record_exception
+from ..runtime_log import install_runtime_logging, record_exception
 from .controls import (
     ControlsMixin, LAYOUT, METRIC_TEXT,
     SETTINGS_ENGLISH, can_apply_live_framebuffer_format,

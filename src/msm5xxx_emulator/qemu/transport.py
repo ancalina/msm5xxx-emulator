@@ -24,7 +24,7 @@ from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
 from msm5xxx_emulator.detection.boot_keysense import find_boot_keysense_release
 from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
-from msm5xxx_emulator import native_nand_state
+from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
 from msm5xxx_emulator.detection.input_matrix import (

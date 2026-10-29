@@ -7,8 +7,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..probe.boot import boot_event, boot_phase, visible_pixels
-from ..diagnostics.runtime_log import record_diagnostic
+from ..tools.boot_probe import boot_event, boot_phase, visible_pixels
+from ..runtime_log import record_diagnostic
 
 LOGGER = logging.getLogger("gui")
 from .repro import (_diagnostic_directory, _diagnostic_session_token,

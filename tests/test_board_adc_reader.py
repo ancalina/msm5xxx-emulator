@@ -12,9 +12,10 @@ from unittest.mock import patch
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_PROT_ALL
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_PC, UC_ARM_REG_R0
 
-from msm5xxx_emulator.legacy_api import (BOARD_ADC_READER_DATA_ADDRESS,
-                     BOARD_ADC_READER_READ_OFFSET, GenericMSMEmulator,
-                     detect, find_board_adc_reader)
+from msm5xxx_emulator.detection.input import BOARD_ADC_READER_DATA_ADDRESS, find_board_adc_reader
+from msm5xxx_emulator.detection.boot import BOARD_ADC_READER_READ_OFFSET
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.input import (
     BOARD_ADC_READER_EXTENDED_FIXED,
     BOARD_ADC_READER_EXTENDED_SIZE,

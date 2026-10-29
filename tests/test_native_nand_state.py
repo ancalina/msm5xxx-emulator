@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import zlib
 
-from msm5xxx_emulator import native_nand_state as state
+from msm5xxx_emulator.qemu import nand_state as state
 
 
 class NativeNandStateTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class NativeNandStateTests(unittest.TestCase):
         code = (
             'import hashlib,sys;sys.path.insert(0,sys.argv[1]);'
             'from pathlib import Path;'
-            'from msm5xxx_emulator.native_nand_state import load_state;'
+            'from msm5xxx_emulator.qemu.nand_state import load_state;'
             'raw=load_state(Path(sys.argv[2]),sys.argv[3],sys.argv[4]);'
             'assert hashlib.sha256(raw).hexdigest()==sys.argv[5]'
         )

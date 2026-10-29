@@ -26,12 +26,12 @@ _NATIVE_FILE = None
 
 _PATH_KEYS = frozenset({"argv", "cwd", "path", "paths", "session"})
 _ABSOLUTE_PATH_TOKEN = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|/)[^\s'\"<>]+")
-_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = Path(__file__).resolve().parent
 _SOURCE_FILES = (
     ("msm5xxx.py", Path("cli.py")),
     ("gui.py", Path("gui/app.py")),
-    ("boot_probe.py", Path("probe/boot.py")),
-    ("runtime_log.py", Path("diagnostics/runtime_log.py")),
+    ("boot_probe.py", Path("tools/boot_probe.py")),
+    ("runtime_log.py", Path("runtime_log.py")),
 )
 
 
@@ -132,7 +132,7 @@ def _safe_diagnostic(value: object, key: str = "") -> object:
 def _log_root() -> Path:
     configured = os.environ.get("MSM5XXX_LOG_DIR")
     preferred = (Path(configured).expanduser() if configured
-                 else Path(__file__).resolve().parents[3] / "logs")
+                 else Path(__file__).resolve().parents[2] / "logs")
     state = Path(os.environ.get(
         "MSM5XXX_STATE_DIR", Path.home() / ".msm5xxx-emulator"
     )).expanduser() / "logs"

@@ -18,9 +18,9 @@ from msm5xxx_emulator.detection.memory_layout import find_linker_layout
 from msm5xxx_emulator.core.lifecycle import ApproximateSmafPlayer as LifecycleAudioPlayer
 from msm5xxx_emulator.devices.audio import AudioMixin
 from msm5xxx_emulator.devices.audio_lle import AudioTransport
-from msm5xxx_emulator.e170_gm_audio import ApproximateSmafPlayer
-from msm5xxx_emulator.e170_gm_audio import _Ma2SnapshotDecoder
-from msm5xxx_emulator.sf2_renderer import render_notes
+from msm5xxx_emulator.audio.player import ApproximateSmafPlayer
+from msm5xxx_emulator.audio.player import _Ma2SnapshotDecoder
+from msm5xxx_emulator.audio.sf2 import render_notes
 
 
 def _access(image: bytearray, offset: int, base: int,
@@ -795,7 +795,7 @@ class AudioTransportTests(unittest.TestCase):
         player.set_muted(True)
         try:
             with patch(
-                    "msm5xxx_emulator.e170_gm_audio.render_notes",
+                    "msm5xxx_emulator.audio.player.render_notes",
                     wraps=render_notes) as renderer:
                 self.assertTrue(player.play_ma2_snapshots(snapshots))
                 deadline = time.monotonic() + 2
@@ -828,7 +828,7 @@ class AudioTransportTests(unittest.TestCase):
         try:
             with (patch.object(player, "_play_pcm") as playback,
                   patch(
-                      "msm5xxx_emulator.e170_gm_audio.render_notes",
+                      "msm5xxx_emulator.audio.player.render_notes",
                       wraps=render_notes) as renderer):
                 self.assertTrue(player.play_ma2_snapshot(snapshots[0]))
                 # Timeline publication precedes desktop playback; wait for both.
@@ -909,7 +909,7 @@ class AudioTransportTests(unittest.TestCase):
             with (patch.object(player, "render_now", side_effect=render_mmf),
                   patch.object(player, "_play_pcm"),
                   patch(
-                      "msm5xxx_emulator.e170_gm_audio.render_notes",
+                      "msm5xxx_emulator.audio.player.render_notes",
                       return_value=np.ones((2, 2), dtype="<i2"),
                   ) as renderer):
                 player.play_mmf(first_mmf)
@@ -973,7 +973,7 @@ class AudioTransportTests(unittest.TestCase):
 
     def test_player_uses_macos_native_audio_fallback(self) -> None:
         with patch(
-                "msm5xxx_emulator.e170_gm_audio.shutil.which",
+                "msm5xxx_emulator.audio.player.shutil.which",
                 side_effect=lambda name: "/usr/bin/afplay"
                 if name == "afplay" else None):
             player = ApproximateSmafPlayer()
@@ -984,7 +984,7 @@ class AudioTransportTests(unittest.TestCase):
 
     def test_player_uses_linux_native_audio_fallback(self) -> None:
         with patch(
-                "msm5xxx_emulator.e170_gm_audio.shutil.which",
+                "msm5xxx_emulator.audio.player.shutil.which",
                 side_effect=lambda name: "/usr/bin/aplay"
                 if name == "aplay" else None):
             player = ApproximateSmafPlayer()

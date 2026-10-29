@@ -14,7 +14,7 @@ from msm5xxx_emulator.detection.upper_nor import (
     find_upper_amd_x16_nor,
     find_upper_nor,
 )
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1
 
 

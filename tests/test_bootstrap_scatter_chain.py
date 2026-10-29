@@ -6,7 +6,7 @@ import unittest
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 
 
 class BootstrapScatterChainTests(unittest.TestCase):

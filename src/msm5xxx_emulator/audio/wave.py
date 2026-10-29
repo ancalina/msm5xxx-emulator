@@ -1,6 +1,6 @@
 """SMAF audio-wave decoding and host PCM mixing.
 
-This module complements the clean-room SMAF parser in :mod:`ma7_runtime.smaf`.
+This module complements the clean-room SMAF parser in :mod:`smaf`.
 It handles the audio-track payloads that are common in Korean feature-phone
 firmware: Yamaha 4-bit ADPCM, signed/unsigned 8-bit PCM, and signed 16-bit PCM.
 The mixer intentionally stays independent of GUI and Unicorn state so it can
@@ -15,14 +15,14 @@ import wave
 
 import numpy as np
 
-from .ma7_runtime.smaf import (
+from .smaf import (
     AudioEvent,
     AudioWaveData,
     TICK_SEC,
     load_mmf_full_with_controls,
     stream_wave_codec,
 )
-from .sf2_renderer import SoundFont, render_notes
+from .sf2 import SoundFont, render_notes
 
 OUTPUT_RATE = 44_100
 _YAMAHA_STEP_SCALE = np.asarray((230, 230, 230, 230, 307, 409, 512, 614),

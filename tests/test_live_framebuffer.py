@@ -6,7 +6,7 @@ import threading
 import unittest
 
 from msm5xxx_emulator.gui.app import can_apply_live_framebuffer_format
-from msm5xxx_emulator.legacy_api import GenericMSMEmulator
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 
 
 class LiveFramebufferTests(unittest.TestCase):

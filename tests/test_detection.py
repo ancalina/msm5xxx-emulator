@@ -52,13 +52,17 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
                                UC_ARM_REG_R0)
 
-from msm5xxx_emulator.legacy_api import (
+from msm5xxx_emulator.detection.boot import (
     BUSY_DELAY_SIGNATURE,
     BUSY_DELAY_REGISTER_SIGNATURE,
     OPTIONAL_RAM_CALLER_PATTERN,
     OPTIONAL_RAM_PROBE_SIGNATURE,
-    CopyLayout,
     DMD_DOWNLOAD_510X_SIGNATURE,
+    absent_optional_ram_probe_addresses,
+    busy_delay_addresses,
+)
+from msm5xxx_emulator.core.config import CopyLayout
+from msm5xxx_emulator.detection.storage import (
     EEPROM_24LC64_CLASS_A_READ_PREFIX,
     EEPROM_24LC64_CLASS_A_SENTINEL,
     EEPROM_24LC64_CLASS_A_WRITE_PREFIX,
@@ -73,28 +77,27 @@ from msm5xxx_emulator.legacy_api import (
     EEPROM_24LCXX_X7700_INIT_SIGNATURE,
     EEPROM_24LCXX_X7700_READ_PREFIX,
     EEPROM_24LCXX_X7700_WRITE_PREFIX,
-    chipset_confidence,
-    arm_vector_score,
-    absent_optional_ram_probe_addresses,
-    busy_delay_addresses,
-    detect,
-    detect_chipset,
-    detect_model,
-    GenericMSMEmulator,
     find_24lcxx_driver,
     find_compound_fujitsu_layout,
     find_fujitsu_x16_bulk_write,
+    fujitsu_x16_flash_ids,
+)
+from msm5xxx_emulator.detection.chipset import chipset_confidence, detect_chipset
+from msm5xxx_emulator.detection.arm import arm_vector_score, thumb_bl_target, thumb_literal_value
+from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.model import detect_model
+from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.detection.memory_layout import (
     find_arm_vector_offset,
     find_missing_overlays,
+    restore_sparse_nor_gap,
+)
+from msm5xxx_emulator.detection.rex import (
     find_rex_5ms_irq_arm,
     find_rex_5ms_irq_route,
     find_rex_5ms_sleep_timer,
     find_trampm5_consumer,
-    fujitsu_x16_flash_ids,
     trampm5_consumer_at,
-    thumb_bl_target,
-    thumb_literal_value,
-    restore_sparse_nor_gap,
 )
 from msm5xxx_emulator.detection.boot import DELAY_SIGNATURE
 from msm5xxx_emulator.detection.rex import (
