@@ -86,6 +86,7 @@ public final class MainActivity extends Activity {
     private static final String KEY_ERROR = "error";
     private static final String KEY_DETECTION = "detection";
     private static final String KEY_DETECTION_TOKEN = "detection_token";
+    private static final String KEY_DETECTION_REVISION = "detection_revision";
     private static final String KEY_PROFILE = "profile";
     private static final String KEY_REJECT = "reject";
     private static final String KEY_PERSISTENT_STATE = "persistent_state";
@@ -850,9 +851,17 @@ public final class MainActivity extends Activity {
             return;
         }
         SharedPreferences preferences = preferences();
+        final long revision;
+        try {
+            revision = getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
+        } catch (android.content.pm.PackageManager.NameNotFoundException error) {
+            throw new IllegalStateException("installed package unavailable", error);
+        }
         String resultToken = preferences.getString(KEY_DETECTION_TOKEN, null);
         String state = preferences.getString(KEY_DETECTION, DETECTION_NONE);
-        if (token.equals(resultToken) && (DETECTION_ACCEPTED.equals(state)
+        if (token.equals(resultToken)
+                && preferences.getLong(KEY_DETECTION_REVISION, -1) == revision
+                && (DETECTION_ACCEPTED.equals(state)
                 || DETECTION_REJECTED.equals(state)
                 || DETECTION_ERROR.equals(state))) {
             return;
@@ -863,6 +872,7 @@ public final class MainActivity extends Activity {
         preferences.edit()
                 .putString(KEY_DETECTION, DETECTION_RUNNING)
                 .putString(KEY_DETECTION_TOKEN, token)
+                .putLong(KEY_DETECTION_REVISION, revision)
                 .remove(KEY_PROFILE)
                 .remove(KEY_REJECT)
                 .commit();
