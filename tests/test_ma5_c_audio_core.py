@@ -1,4 +1,5 @@
 import subprocess
+import os
 import tempfile
 import textwrap
 import unittest
@@ -630,7 +631,8 @@ class TestMA5CAudioCore(unittest.TestCase):
             source.write_text(textwrap.dedent(harness), encoding="utf-8")
             result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
-                "-fsanitize=undefined", "-fno-sanitize-recover=all", "-O1",
+                *([] if os.name == "nt" else
+                  ["-fsanitize=undefined", "-fno-sanitize-recover=all"]), "-O1",
                 f"-I{core}", str(source), str(core / "msm5xxx-ma2-audio.c"),
                 str(core / "msm5xxx-ma5-gain.c"),
                 str(core / "msm5xxx-ma5-fm-voice.c"),
