@@ -115,7 +115,9 @@ class TestMA2CAudioCore(unittest.TestCase):
         self.assertNotIn("pcm_partial", reset)
         self.assertIn("qemu_mutex_lock(&s->audio_core_lock);", reset)
         self.assertIn("msm5xxx_poc_audio_stream_status(s);", reset)
-        self.assertIn("s->audio_stream_reset_epoch = s->audio_synth.epoch;",
+        self.assertIn("s->audio_stream_reset_epoch = s->ma5_pcm_initialized ?",
+                      reset)
+        self.assertIn("s->ma5_pcm_output.queue.epoch : s->audio_synth.epoch;",
                       reset)
         prepare_start = source.index("static void msm5xxx_poc_audio_pcm_prepare")
         prepare_end = source.index("\nstatic ", prepare_start + 1)

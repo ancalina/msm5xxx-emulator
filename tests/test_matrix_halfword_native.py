@@ -58,6 +58,11 @@ int main(void) {
                              "/* Temporary electrical approximation")
         owner = section("static uint64_t msm5xxx_poc_eeprom_gpio_read(",
                         "static uint64_t msm5xxx_poc_matrix_halfword_read")
+        # This legacy harness does not exercise the new reset phase; its
+        # dedicated row734 harness extracts/tests that actual helper separately.
+        reset_start = owner.index("static void msm5xxx_poc_matrix_row734_reset(")
+        reset_end = owner.index("static uint16_t msm5xxx_poc_matrix_row734_read(", reset_start)
+        owner = owner[:reset_start] + owner[reset_end:]
         read = section("static uint64_t msm5xxx_poc_matrix_halfword_read(",
                        "static const MemoryRegionOps msm5xxx_poc_matrix_halfword_ops")
         gpio = section("static bool msm5xxx_poc_matrix_gpio_conflict(",
@@ -102,9 +107,10 @@ int main(void) {
 #define MSM5XXX_POC_MSM_SIZE 0x1000
 #define MSM5XXX_POC_EEPROM_GPIO_SIZE 0x20
 #define MSM5XXX_POC_HOST_INPUT 0x80
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW UINT8_MAX
 typedef uint64_t hwaddr;
-typedef struct { bool running; struct { bool can_do_io; } neg; struct { uint32_t regs[16]; } env; } CPUState;
+typedef struct { bool running; struct { bool can_do_io; } neg; struct { bool thumb; uint32_t regs[16]; } env; } CPUState;
 static CPUState cpu_state = { .running = true, .neg = { true } };
 static CPUState *current_cpu = &cpu_state;
 static bool vcpu = true;
@@ -143,6 +149,12 @@ typedef struct {
     uint32_t board_status_input_address, board_status_input_mask;
     uint32_t board_status_input_default, board_status_input_level, board_status_input_rejections;
     bool matrix_input_halfword, matrix_input_low5, matrix_input_loop, matrix_input_enabled;
+    bool matrix_input_row734, matrix_row734_boot_seen;
+    uint32_t matrix_row734_presence2, matrix_row734_sense2, matrix_row734_boot_site;
+    uint32_t matrix_row734_row_tables[2];
+    uint32_t ram_base;
+    uint64_t matrix_row734_boot_reads, matrix_row734_normal_reads;
+    uint8_t matrix_row734_reason;
     uint32_t matrix_input_contact_site;
     bool experimental_matrix_contact_enabled;
     uint32_t experimental_matrix_contact_site;
@@ -167,6 +179,9 @@ typedef struct {
     uint8_t eeprom_gpio_backing[MSM5XXX_POC_EEPROM_GPIO_SIZE];
     int eeprom_i2c;
 } MSM5xxxPOCMachineState;
+typedef struct { uint64_t ram_size; } MachineState;
+static MachineState machine_state={.ram_size=0x800000};
+static MachineState *machine=&machine_state;
 typedef MSM5xxxPOCMachineState Object;
 typedef int Error;
 #define MSM5XXX_POC_MACHINE(obj) (obj)

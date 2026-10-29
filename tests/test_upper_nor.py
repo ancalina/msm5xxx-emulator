@@ -145,6 +145,80 @@ class UpperNorTests(unittest.TestCase):
             raw[material + 0x1A:material + 0x1E] = b"\0" * 4
             self.assertIsNone(find_upper_amd_x16_nor(raw))
 
+    @classmethod
+    def _mapped_variant(cls, shift=0):
+        raw = bytearray(b"\xff" * (0x14000 + shift))
+        positions = {}
+        for index, (name, (mask, calls)) in enumerate(upper_nor._MAPPED_UPPER_X16.items()):
+            start = 0x1000 * (index+1) + shift
+            if name in ("program", "boot"):
+                start += 2
+            positions[name] = start
+            for index in range(0, len(mask), 2):
+                token = mask[index:index+2]
+                if token != "??":
+                    raw[start+index//2] = int(token, 16)
+            for offset in calls:
+                cls._bl(raw,start+offset,0x13000+shift)
+        links = (("maps",8,"init"),("maps",0x14,"init"),("maps",0x20,"init"),
+                 ("maps",0x42,"enum"),("maps",0x7a,"material"),
+                 ("material",0x54,"translate"),("write",0x3c,"program"),
+                 ("boot",0xa,"erase"),("boot",0x1a,"erase"),("boot",0x28,"erase"),
+                 ("scan",0x24,"lookup"),("scan",0x46,"header"),("scan",0x60,"header"))
+        for left,offset,right in links:
+            cls._bl(raw,positions[left]+offset,positions[right])
+        literals = (("init",2,0x1801000),("translate",4,0x1801000),
+                    ("material",0x10,0x1802000),("lookup",2,0x1802000),
+                    ("header",6,0x1803000),("scan",4,0x1803000),
+                    ("program",0xe,0x1804000),("erase",0x22,0x1804000))
+        for name,offset,value in literals:
+            site=positions[name]+offset
+            opcode=int.from_bytes(raw[site:site+2],"little")
+            literal=((site+4)&~3)+(opcode&255)*4
+            raw[literal:literal+4]=value.to_bytes(4,"little")
+        return raw,positions
+
+    def test_mapped_variant_relocation_and_truncation(self):
+        expected=(0x02800000,0x800000,0x10000)
+        for shift in (0,0x204):
+            raw,positions=self._mapped_variant(shift)
+            self.assertEqual(find_upper_amd_x16_nor(raw),expected)
+            self.assertIsNone(find_upper_amd_x16_nor(raw[:positions['lookup']+0x30]))
+        raw,_=self._mapped_variant()
+        self.assertIsNone(find_upper_amd_x16_nor(raw+raw))
+
+    def test_mapped_variant_each_consumer_mutation(self):
+        raw,positions=self._mapped_variant()
+        # Independent closure stages, including geometry and x16 status/array exit.
+        mutations={"maps":(0,0x1c),"init":(0x3e,),"translate":(0x2e,),
+                   "enum":(0xb6,0xc0,0xd0,0x100),"material":(0x64,0x80),
+                   "program":(0x38,0x4c,0x6c,0xca,0x18a),"write":(0x28,),
+                   "boot":(0x20,),"erase":(0x64,0x82,0xaa),
+                   "header":(0x3e,),"scan":(0x2a,),"lookup":(0x14,)}
+        for name,offsets in mutations.items():
+            for offset in offsets:
+                with self.subTest(name=name,offset=offset):
+                    changed=raw.copy()
+                    changed[positions[name]+offset]^=1
+                    self.assertIsNone(find_upper_amd_x16_nor(changed))
+        for name,offset in (("maps",8),("material",0x54),("write",0x3c),
+                            ("boot",0x28),("scan",0x46)):
+            changed=raw.copy()
+            self._bl(changed,positions[name]+offset,0x13000)
+            self.assertIsNone(find_upper_amd_x16_nor(changed))
+
+    def test_mapped_variant_global_ownership_and_old_branch_conflict(self):
+        raw,positions=self._mapped_variant()
+        for name,offset in (("translate",4),("lookup",2),("scan",4),("erase",0x22)):
+            changed=raw.copy()
+            site=positions[name]+offset
+            word=int.from_bytes(raw[site:site+2],"little")
+            literal=((site+4)&~3)+(word&255)*4
+            changed[literal:literal+4]=(0x1807000).to_bytes(4,"little")
+            self.assertIsNone(find_upper_amd_x16_nor(changed))
+        with mock.patch.object(upper_nor,"_legacy_upper_amd_x16_nor",return_value=(0x2800000,0x800000,0x10000)):
+            self.assertIsNone(find_upper_amd_x16_nor(raw))
+
     def test_reject_reason_is_preserved_for_native_fallback(self) -> None:
         config = SimpleNamespace(detection_notes=[])
         _infer_upper_nor(config, b"\xff" * 0x1000)

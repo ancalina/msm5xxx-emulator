@@ -48,6 +48,7 @@ class BoardADCReaderTests(unittest.TestCase):
         "SPH-X5900.bin": 0x1005C,
         "X4209.bin": 0x1005C,
         "x4000.bin": 0x605C,
+        "X700_Kor_Eng.bin": 0x10050,
     }
 
     def test_dc0_battery_policy_is_complete_and_fail_closed(self) -> None:
@@ -128,7 +129,7 @@ class BoardADCReaderTests(unittest.TestCase):
         for name, expected in self.readers.items():
             image = (ROOT / "firmwares" / name).read_bytes()
             self.assertEqual(find_board_adc_reader(image), expected, name)
-            expected_offset = (0x7E if name in {
+            expected_offset = (0x88 if name == "X700_Kor_Eng.bin" else 0x7E if name in {
                 "schx150.bin", "x350_VC22.bin", "SCH-X350_UJ08_JTAG.bin",
                 "SCH-X250.bin", "SCH-x127.bin", "SPH-X4500.bin",
             } else 0x7C)
@@ -142,6 +143,9 @@ class BoardADCReaderTests(unittest.TestCase):
             and (address := find_board_adc_reader(firmware.read_bytes())) is not None
         }
         self.assertEqual(detected, self.readers)
+        extended = bytearray((ROOT / "firmwares" / "X700_Kor_Eng.bin").read_bytes())
+        extended[self.readers["X700_Kor_Eng.bin"] + 0x70] = 0
+        self.assertIsNone(find_board_adc_reader(extended))
         self.assertEqual(
             detect(ROOT / "firmwares" / "SCH-X250.bin").board_adc_reader_address,
             self.readers["SCH-X250.bin"],

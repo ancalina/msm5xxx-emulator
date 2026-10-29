@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 from collections import deque
 import importlib.util
 import json
@@ -12,6 +13,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 from msm5xxx_emulator.devices.audio import AudioMixin
 from msm5xxx_emulator.devices.audio_lle import AudioTransport
@@ -26,7 +28,8 @@ from qemu_transport import (  # noqa: E402
     AUDIO_STATUS_RESET, AUDIO_TIMING_TELEMETRY,
     AUDIO_WRITE, LCD_WRITE, TELEMETRY, Transport,
     bounded_audio_socket_pair, qemu_audio_sites, qemu_audio_irq_property,
-    qemu_audio_packet_property,
+    qemu_audio_packet_property, qemu_ma5_readback_property, qemu_ma5_gpio_irq_property,
+    qemu_ma5_temporary_auto_property,
 )
 
 ANDROID_RUNTIME = (
@@ -36,6 +39,392 @@ ANDROID_RUNTIME = (
 
 
 class QEMUAudioTransportTests(unittest.TestCase):
+    def test_ma5_gpio_irq_serializes_exact_eighteen_field_abi(self):
+        from test_ma5_gpio_irq import _fixture
+        for witness in (0, 1):
+            with self.subTest(witness=witness):
+                image, fixture = _fixture(witness)
+                config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                         ram_base=0x1000000, ram_size=0x1000000,
+                                         rex_irq_status_address=0x03000C80,
+                                         rex_irq_enable_address=0x03000C94)
+                prop, reason = qemu_ma5_gpio_irq_property(image, config)
+                self.assertIsNone(reason)
+                entries = fixture['entries']
+                expected = ([0x1819D18, 0x18CEEEC, 5, 0x1819CB0, 0x03000C84,
+                             0x03000C98, 0x2000, 0x181997A, 0x1819980,
+                             entries['gpio_dispatch'] | 1, entries['soc_dispatch'] | 1,
+                             0x18BD314, entries['chip_isr'] | 1, entries['deferred'] | 1,
+                             0x1816558, 0x1816575, 0x181C8E0, 0x18212D0]
+                            if witness == 0 else
+                            [0x1009114, 0x12DF36C, 2, 0x10090B0, 0x03000C84,
+                             0x03000C98, 0x2000, 0x1008D7A, 0x1008D80,
+                             entries['gpio_dispatch'] | 1, entries['soc_dispatch'] | 1,
+                             0x12CEBB0, entries['chip_isr'] | 1, 0,
+                             0x14E1C90, 0, 0, 0x1010C88])
+                self.assertEqual(prop, 'experimental-ma5-irq-route=' +
+                                 ':'.join(f'{value:x}' for value in expected))
+                changed = bytearray(image)
+                changed[fixture['entries']['gpio_dispatch'] + 8] ^= 1
+                self.assertIsNone(qemu_ma5_gpio_irq_property(bytes(changed), config)[0])
+                config.rex_irq_enable_address = 0x03000628
+                self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1],
+                                 'ma5-irq-controller-unverified')
+
+    def test_ma5_gpio_irq_direct_registration_without_synthetic_flag(self):
+        from copy import deepcopy
+        from test_ma5_gpio_irq import _fixture
+        from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
+        image, _ = _fixture(1)
+        from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
+        route = find_ma5_gpio_irq_candidate(image, find_ma5_readback_candidate(image))
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x1000000,
+                                 rex_irq_status_address=0x03000C80,
+                                 rex_irq_enable_address=0x03000C94)
+        route['installation'].update(profile='direct-install-no-flag-v1',
+                                     installed_flag=None, installed_value=None)
+        with patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=route):
+            prop, reason = qemu_ma5_gpio_irq_property(image, config)
+        self.assertIsNone(reason)
+        fields = [int(value, 16) for value in prop.split('=')[1].split(':')]
+        self.assertEqual(fields[13:17], [0, 0, 0, 0])
+        for key, value in [('installed_flag', 0), ('installed_flag', 0x1000000),
+                           ('installed_value', 1), ('deferred_callback', 0x3001),
+                           ('direct_gate', {}), ('deferred_gate', {}),
+                           ('trigger_argument', 1), ('polarity_argument', 1),
+                           ('profile', 'explicit-sense-direct-install-v1')]:
+            bad = deepcopy(route)
+            bad['installation'][key] = value
+            with self.subTest(key=key, value=value), patch(
+                    'qemu_transport.find_ma5_gpio_irq_candidate', return_value=bad):
+                self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1],
+                                 'ma5-irq-installation-unverified')
+
+    def test_ma5_gpio_irq_static_controller_is_fresh_and_same_route(self):
+        from copy import deepcopy
+        from test_ma5_gpio_irq import _fixture
+        from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
+        from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
+        image, _ = _fixture(1)
+        route = find_ma5_gpio_irq_candidate(image, find_ma5_readback_candidate(image))
+        controller = dict(signature='static-c80-controller-callback-v1',
+                          status=0x03000C80, enable=0x03000C94,
+                          handler_slot=route['parent']['exception_callback_slot'],
+                          handler_file_offset=route['parent']['dispatcher'])
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x1000000,
+                                 rex_static_controller_candidate=controller)
+        def check(fresh, profile='verified'):
+            with patch('qemu_transport.find_rex_static_controller_callback_candidate',
+                       return_value=fresh) as finder, patch(
+                       'qemu_transport.c80_rex_irq_profile', return_value=profile):
+                result = qemu_ma5_gpio_irq_property(image, config)
+                finder.assert_called_once_with(image, ram_base=config.ram_base,
+                                               ram_size=config.ram_size)
+                return result
+        self.assertIsNotNone(check(controller)[0])
+        self.assertIsNone(check(None)[0])
+        self.assertIsNone(check(controller, None)[0])
+        for key, value in [('signature', 'static-fb0-controller-callback-v1'),
+                           ('status', 0x03000620), ('enable', 0x03000628),
+                           ('handler_slot', controller['handler_slot']+4),
+                           ('handler_file_offset', controller['handler_file_offset']+2)]:
+            changed = deepcopy(controller)
+            changed[key] = value
+            config.rex_static_controller_candidate = changed
+            with self.subTest(key=key):
+                self.assertIsNone(check(controller)[0])
+                self.assertIsNone(check(changed)[0])
+            config.rex_static_controller_candidate = controller
+
+    def test_ma5_gpio_irq_bounds_and_fresh_image_are_required(self):
+        from copy import deepcopy
+        from test_ma5_gpio_irq import _fixture
+        from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
+        from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
+        image, _ = _fixture(0)
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x1000000,
+                                 rex_irq_status_address=0x03000C80,
+                                 rex_irq_enable_address=0x03000C94)
+        audio = find_ma5_readback_candidate(image)
+        route = find_ma5_gpio_irq_candidate(image, audio)
+        with patch('qemu_transport.find_ma5_gpio_irq_candidate', wraps=find_ma5_gpio_irq_candidate) as finder:
+            first, reason = qemu_ma5_gpio_irq_property(image, config)
+            self.assertIsNone(reason)
+            finder.assert_called_once_with(image, audio)
+        other, _ = _fixture(1)
+        second, reason = qemu_ma5_gpio_irq_property(other, config)
+        self.assertIsNone(reason)
+        self.assertNotEqual(first, second)
+        config.flash_size = 0x1000
+        self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1], 'primary-nor-out-of-bounds')
+        config.flash_size = len(image)
+        config.ram_size = 0x800000
+        self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1], 'consumer-state-unmapped')
+        config.ram_size = 0x1000000
+        config.load_address = 4
+        self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1], 'primary-nor-unmapped')
+        config.load_address = 0
+        for field, value, reason in (
+            ('nor_dependencies', [[len(image) - 1, 2]], 'primary-nor-out-of-bounds'),
+            ('ram_dependencies', [[0x2000000, 1]], 'consumer-state-unmapped'),
+            ('aux_addresses', [{'address': 0x2000000, 'width': None}], 'auxiliary-state-unmapped'),
+            ('source_profile', 'unknown', 'ma5-irq-class-unavailable'),
+            ('runtime_admitted', True, 'ma5-irq-class-unavailable'),
+        ):
+            bad = deepcopy(route)
+            bad[field] = value
+            with self.subTest(field=field), patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=bad):
+                self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1], reason)
+        bad = deepcopy(route)
+        bad['installation']['direct_gate']['any'][0]['address'] += 1
+        with patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=bad):
+            self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1],
+                             'ma5-irq-installation-unverified')
+        # Unknown auxiliary object extent stays unknown; require only its address byte.
+        minimal = deepcopy(route)
+        minimal['aux_addresses'] = [{'address': 0x1FFFFFF, 'width': None}]
+        with patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=minimal):
+            self.assertIsNotNone(qemu_ma5_gpio_irq_property(image, config)[0])
+
+    def test_ma5_gpio_irq_opt_in_and_coupling_validate_before_io(self):
+        import inspect
+        self.assertIs(inspect.signature(Transport).parameters['experimental_ma5_irq'].default, False)
+        cases = [{'experimental_ma5_irq': value} for value in (None, 0, 1, 'false')]
+        cases.extend([
+            {'experimental_ma5_irq': True},
+            {'experimental_ma5_irq': True, 'experimental_ma5_byte_ns': 1000},
+            {'experimental_ma5_irq': True, 'experimental_ma5_clki_hz': 19660800},
+            {'experimental_ma5_irq': True, 'experimental_ma5_byte_ns': 1000,
+             'experimental_ma5_clki_hz': True},
+        ])
+        with patch('qemu_transport.detect') as detector, patch('qemu_transport.tempfile.TemporaryDirectory') as temporary:
+            for kwargs in cases:
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    Transport(Path('/unused-qemu'), Path('/unused-firmware'), **kwargs)
+            detector.assert_not_called()
+            temporary.assert_not_called()
+
+    def test_ma5_pcm_output_requires_explicit_transport_and_host_pcm(self):
+        import inspect
+        self.assertIs(
+            inspect.signature(Transport).parameters[
+                'experimental_ma5_pcm_output'].default, False)
+        cases = [
+            {'experimental_ma5_pcm_output': value}
+            for value in (None, 0, 1, 'false')
+        ]
+        cases.extend((
+            {'experimental_ma5_pcm_output': True},
+            {'experimental_ma5_pcm_output': True,
+             'experimental_ma5_byte_ns': 1000, 'audio_pcm': False},
+        ))
+        with patch('qemu_transport.detect') as detector, patch(
+                'qemu_transport.tempfile.TemporaryDirectory') as temporary:
+            for kwargs in cases:
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    Transport(Path('/unused-qemu'), Path('/unused-firmware'), **kwargs)
+            detector.assert_not_called()
+            temporary.assert_not_called()
+
+    def test_ma5_target_rate_opt_in_validates_before_io(self):
+        import inspect
+        self.assertIsNone(
+            inspect.signature(Transport).parameters[
+                'experimental_ma5_target_rate_hz'].default)
+        cases = [
+            {'experimental_ma5_target_rate_hz': value,
+             'experimental_ma5_byte_ns': 1000}
+            for value in (True, 0, 7999, 96001, '48000')
+        ]
+        cases.extend((
+            {'experimental_ma5_target_rate_hz': 48000},
+            {'experimental_ma5_target_rate_hz': 48000,
+             'experimental_ma5_byte_ns': 1000,
+             'experimental_ma5_clki_hz': 19660800},
+        ))
+        with patch('qemu_transport.detect') as detector, patch(
+                'qemu_transport.tempfile.TemporaryDirectory') as temporary:
+            for kwargs in cases:
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    Transport(Path('/unused-qemu'), Path('/unused-firmware'), **kwargs)
+            detector.assert_not_called()
+            temporary.assert_not_called()
+
+    def test_native_ma5_pcm_ignores_unclassified_mmio_write_replay(self):
+        transport = self.native_transport()
+        transport.decoder = SimpleNamespace(audio_transport=None)
+        transport.audio_native = True
+        transport.audio_native_ma5_pcm = True
+        record = bytearray(16)
+        record[0:2] = bytes((AUDIO_WRITE, 1))
+        struct.pack_into('<III', record, 4, 0x1234, 0x0080, 1)
+        transport._replay_audio_write(record)
+        self.assertEqual(transport.audio_stream_status, 'native')
+        self.assertIsNone(transport.audio_stream_reject_reason)
+        self.assertTrue(transport.audio_stream_seen)
+        self.assertEqual(transport.audio_stream_order, 1)
+        record[12:16] = (3).to_bytes(4, 'little')
+        transport._replay_audio_write(record)
+        self.assertEqual(transport.audio_stream_status, 'rejected')
+        self.assertEqual(transport.audio_stream_reject_reason, 'qemu-audio-order-gap')
+
+    def test_ma5_cold_property_requires_explicit_period_and_same_image_graph(self):
+        from test_audio_transport import _ma5_readback_image
+        image = _ma5_readback_image(0x2000)
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x800000)
+        self.assertEqual(qemu_ma5_readback_property(image, config, None), (None, None))
+        for value in (True, 0, -1, 1_000_000_001, "10"):
+            with self.subTest(period=value), self.assertRaises(ValueError):
+                qemu_ma5_readback_property(image, config, value)
+        prop, reason = qemu_ma5_readback_property(image, config, 1000)
+        self.assertIsNone(reason)
+        self.assertIn("audio-aperture=2a00000:2:ma5", prop)
+        self.assertIn("experimental-ma5-byte-ns=1000", prop)
+        target_rate, reason = qemu_ma5_readback_property(
+            image, config, 1000, target_rate_hz=48000)
+        self.assertIsNone(reason)
+        self.assertIn("experimental-ma5-target-rate-hz=48000", target_rate)
+        self.assertEqual(qemu_ma5_readback_property(
+            image, config, 1000, upper_nor_present=True)[1],
+            "aperture-unmapped-or-conflicting")
+        self.assertEqual(len(prop.split("audio-sites=")[1].split(",")[0].split(";")), 5)
+        changed = bytearray(image)
+        # Break the reset-checker C default, preserving unrelated instruction graph.
+        changed[0x2000 + 0x100 + 0x34] ^= 1
+        self.assertEqual(qemu_ma5_readback_property(bytes(changed), config, 1000),
+                         (None, "structural-none"))
+        config.flash_size = 0x1000
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000)[1],
+                         "primary-nor-out-of-bounds")
+        # Matched bodies fit, but an erased external BL dependency does not.
+        short_image = _ma5_readback_image()
+        config.flash_size = 0x1000
+        self.assertEqual(qemu_ma5_readback_property(short_image, config, 1000)[1],
+                         "primary-nor-out-of-bounds")
+        config.flash_size = len(image); config.ram_size = 0x1000
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000)[1],
+                         "consumer-state-unmapped")
+        config.ram_size = 0x2000000
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000)[1],
+                         "aperture-unmapped-or-conflicting")
+        config.ram_size = 0x800000; config.load_address = 0x400000
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000)[1],
+                         "primary-nor-unmapped")
+
+    def test_ma5_timed_stride_shared_lcd_requires_closed_graph(self):
+        from test_ma5_timed_transport import fixture
+        image, entries = fixture()
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x800000)
+        self.assertEqual(qemu_ma5_readback_property(image, config, None), (None, None))
+        prop, reason = qemu_ma5_readback_property(image, config, 1000)
+        self.assertIsNone(reason)
+        self.assertIn("audio-aperture=2c00000:4:ma5", prop)
+        from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
+        candidate = find_ma5_readback_candidate(image)
+        config.audio_transport = {"family": "ma5", "grammar": "indexed-rw-v1",
+                                  "static_status": "accepted", "base": candidate['base'],
+                                  "data_offset": 4, "sites": candidate['sites']}
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000), (prop, None))
+        config.audio_transport = {**config.audio_transport, "family": "ma2"}
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000)[1],
+                         "conflicting-audio-profile")
+        config.audio_transport = None
+        sites = prop.split("audio-sites=")[1].split(",")[0].split(";")
+        self.assertEqual(len(sites), 5)
+        self.assertEqual(sum(site.startswith("w4/") for site in sites), 2)
+        self.assertEqual(qemu_ma5_readback_property(
+            image, config, 1000, upper_nor_present=True)[1],
+            "aperture-unmapped-or-conflicting")
+        changed = bytearray(image)
+        changed[entries['timed_block'] + 36] ^= 1
+        self.assertEqual(qemu_ma5_readback_property(bytes(changed), config, 1000)[1],
+                         "structural-none")
+        config.ram_size = 0x2000000
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000)[1],
+                         "aperture-unmapped-or-conflicting")
+
+    def test_ma5_counter_clock_requires_explicit_period_and_validated_aperture(self):
+        from test_audio_transport import _ma5_readback_image
+        image = _ma5_readback_image(0x2000)
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x800000)
+        for clock in (True, 0, -1, 1_000_000_001, "19660800"):
+            with self.subTest(clock=clock), self.assertRaises(ValueError):
+                qemu_ma5_readback_property(image, config, 1000, clki_hz=clock)
+        with self.assertRaises(ValueError):
+            qemu_ma5_readback_property(image, config, None, clki_hz=19660800)
+        prop, reason = qemu_ma5_readback_property(image, config, 1000,
+                                                 clki_hz=19660800)
+        self.assertIsNone(reason)
+        self.assertTrue(prop.endswith(",experimental-ma5-clki-hz=19660800"))
+        self.assertEqual(qemu_ma5_readback_property(bytes(len(image)), config,
+                                                  1000, clki_hz=19660800),
+                         (None, "structural-none"))
+
+    def test_ma5_temporary_auto_profile_is_signature_and_pcm_gated(self):
+        from test_audio_transport import (
+            _ma5_literal_readback_image, _ma5_readback_image,
+        )
+        image = _ma5_readback_image()
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x1000000)
+        prop, reason = qemu_ma5_temporary_auto_property(
+            image, config, audio_pcm=True)
+        self.assertIsNone(reason)
+        self.assertIn("experimental-ma5-byte-ns=1000", prop)
+        self.assertIn("experimental-ma5-target-rate-hz=48000", prop)
+        self.assertNotIn("experimental-ma5-clki-hz=", prop)
+        self.assertEqual(qemu_ma5_temporary_auto_property(
+            image, config, audio_pcm=False), (None, None))
+        literal = _ma5_literal_readback_image()
+        literal_prop, reason = qemu_ma5_temporary_auto_property(
+            literal, config, audio_pcm=True)
+        self.assertIsNone(reason)
+        self.assertIn("audio-aperture=2400000:80:ma5", literal_prop)
+        self.assertIn("experimental-ma5-target-rate-hz=48000", literal_prop)
+        self.assertEqual(qemu_ma5_temporary_auto_property(
+            image, config, audio_pcm=True, upper_nor_present=True),
+            (None, "aperture-unmapped-or-conflicting"))
+
+    def test_ma5_direction_timed_transport_can_use_temporary_auto_profile(self):
+        from test_ma5_timed_transport import fixture
+        from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
+        image, _ = fixture()
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1000000, ram_size=0x1000000)
+        candidate = find_ma5_readback_candidate(image)
+        self.assertEqual(candidate["static_status"], "candidate")
+        self.assertEqual(candidate["structural_evidence"]["transport_class"],
+                         "local-counter-direction-timing-v1")
+        prop, reason = qemu_ma5_temporary_auto_property(
+            image, config, audio_pcm=True)
+        self.assertIsNone(reason)
+        self.assertIn("audio-aperture=2c00000:4:ma5", prop)
+        self.assertIn("experimental-ma5-target-rate-hz=48000", prop)
+
+    def test_ma5_literal_stride_property_maps_every_ram_dependency(self):
+        from test_audio_transport import _ma5_literal_readback_image
+        image = _ma5_literal_readback_image(0x1000)
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1800000, ram_size=0x800000)
+        prop, reason = qemu_ma5_readback_property(image, config, 1000)
+        self.assertIsNone(reason)
+        self.assertIn("audio-aperture=2400000:80:ma5", prop)
+        self.assertEqual(qemu_ma5_readback_property(
+            image, config, 1000, upper_nor_present=True), (prop, None))
+        sites = prop.split("audio-sites=")[1].split(",")[0].split(";")
+        self.assertEqual(len(sites), 5)
+        self.assertEqual(sum(site.startswith("w80/") for site in sites), 2)
+        self.assertEqual(sum(site.startswith("r80/") for site in sites), 1)
+        config.ram_size = 0x360000
+        self.assertEqual(qemu_ma5_readback_property(image, config, 1000)[1],
+                         "consumer-state-unmapped")
+
     def test_sequence_receiver_property_rechecks_same_image_and_primary_nor(self):
         from copy import deepcopy
         from test_audio_transport import _sequence_image
@@ -207,6 +596,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
         transport.audio_timing_max_lateness_ns = 0
         transport.audio_reject_witness = None
         transport.audio_native = True
+        transport.audio_native_ma5_pcm = False
         transport.audio_stream_seen = False
         transport.audio_stream_order = 0
         transport._audio_lock = threading.RLock()
@@ -223,13 +613,25 @@ class QEMUAudioTransportTests(unittest.TestCase):
         return struct.pack("<4sIQQQ", b"M5P2", 2, epoch, sequence,
                            start_frame) + bytes(441 * 4)
 
+    def test_native_ma5_sink_stop_has_specific_failure_reason(self):
+        record = bytes((AUDIO_STATUS, AUDIO_STATUS_REJECTED)) + bytes(14)
+        for ma5, reason in ((True, "qemu-ma5-pcm-output-stopped"),
+                            (False, "qemu-audio-status-shape")):
+            with self.subTest(ma5=ma5):
+                transport = self.native_transport()
+                transport.audio_native_ma5_pcm = ma5
+                transport._replay_audio_status(record)
+                self.assertEqual(transport.audio_stream_status, "rejected")
+                self.assertEqual(transport.audio_stream_reject_reason, reason)
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux socket bound")
     def test_audio_socket_pair_bounds_qemu_sender(self) -> None:
         host, qemu = bounded_audio_socket_pair()
         try:
-            self.assertEqual(AUDIO_SOCKET_SEND_BUFFER, 4096)
+            self.assertEqual(AUDIO_SOCKET_SEND_BUFFER, 1048576)
+            send_bound = qemu.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
             self.assertLessEqual(
-                qemu.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF), 8192
+                send_bound, AUDIO_SOCKET_SEND_BUFFER * 2
             )
             qemu.setblocking(False)
             accepted = 0
@@ -241,7 +643,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
                     break
                 self.assertGreater(written, 0)
                 accepted += written
-            self.assertLessEqual(accepted, AUDIO_PACKET_BYTES * 2)
+            self.assertLessEqual(accepted, send_bound + AUDIO_PACKET_BYTES)
         finally:
             host.close()
             qemu.close()
@@ -371,8 +773,30 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertIn('"qemu-audio-adapter-unsupported"', audio_block)
         self.assertIn('"qemu-audio-detector-"', audio_block)
         self.assertIn('machine += ",audio-pcm=off"', audio_block)
+        self.assertIn('machine += ",experimental-ma5-pcm-output=on"', audio_block)
+        self.assertIn('if experimental_ma5_pcm_output or ma5_auto_profile:', audio_block)
         self.assertIn("if audio_stream and audio_pcm:", source)
-        self.assertIn("self.config, approximate_audio=False", source)
+        constructor = next(node for node in ast.walk(ast.parse(source))
+                           if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+                           and any(isinstance(item, ast.Assign)
+                                   and any(isinstance(target, ast.Name)
+                                           and target.id == "decoder_options"
+                                           for target in item.targets)
+                                   for item in node.body))
+        start = next(i for i, node in enumerate(constructor.body)
+                     if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "decoder_options"
+                             for target in node.targets))
+        setup = ast.Module(body=constructor.body[start:start + 3], type_ignores=[])
+        for profile in (None, {"experimental": True}):
+            config = SimpleNamespace(native_nand_profile=profile)
+            decoder = Mock()
+            exec(compile(setup, str(EXPERIMENT / "qemu_transport.py"), "exec"),
+                 {"self": SimpleNamespace(config=config), "GenericMSMEmulator": decoder})
+            expected = {"approximate_audio": False}
+            if profile is not None:
+                expected["native_nand"] = True
+            decoder.assert_called_once_with(config, **expected)
         self.assertIn("bounded_audio_socket_pair()", source)
         self.assertIn('"pass_fds": (audio_qemu_socket.fileno(),)', source)
         self.assertIn("AUDIO_PACKET_BYTES - len(pending)", source)
@@ -554,6 +978,68 @@ class QEMUAudioTransportTests(unittest.TestCase):
                            transport.audio_socket, audio_peer):
                 stream.close()
         self.assertFalse(worker.is_alive())
+
+    def test_replay_yields_once_per_complete_batch_only_with_audio(self) -> None:
+        records = [bytes((index,)) * 16 for index in range(1, 7)]
+        for audio_enabled in (False, True):
+            with self.subTest(audio_enabled=audio_enabled):
+                transport = self.native_transport()
+                transport.input_socket = Mock()
+                transport.lcd_socket = Mock()
+                transport.input_socket.recv.side_effect = [
+                    records[0][:5], records[0][5:] + records[1], records[2]]
+                transport.lcd_socket.recv.side_effect = [
+                    records[3][:7], records[3][7:] + records[4] + records[5][:4],
+                    records[5][4:]]
+                transport.audio_socket = Mock() if audio_enabled else None
+                transport.process = SimpleNamespace(poll=lambda: None)
+                transport._terminate_process = Mock()
+                replayed = []
+                transport._replay_record = replayed.append
+                stop = threading.Event()
+                batches = iter(((transport.input_socket, transport.lcd_socket),
+                                (transport.input_socket,),
+                                (transport.input_socket, transport.lcd_socket),
+                                (transport.lcd_socket,)))
+                completed = []
+                yields = []
+
+                def select_batch(readers, _writers, _errors, timeout):
+                    self.assertEqual(readers, (transport.input_socket, transport.lcd_socket))
+                    self.assertEqual(timeout, 0.02)
+                    readable = next(batches, None)
+                    if readable is None:
+                        completed.append(True)
+                        stop.set()
+                        return [], [], []
+                    return readable, [], []
+
+                def yield_to_audio(delay):
+                    self.assertEqual(delay, 0)
+                    yields.append(len(replayed))
+
+                audio_worker = Mock()
+                audio_worker.is_alive.return_value = False
+                with patch('qemu_transport.select.select', side_effect=select_batch) as select_mock, \
+                        patch('qemu_transport.threading.Thread', return_value=audio_worker) as start_worker, \
+                        patch('qemu_transport.time', SimpleNamespace(sleep=yield_to_audio), create=True):
+                    transport.replay(stop)
+                self.assertEqual(replayed, records)
+                self.assertEqual(completed, [True])
+                self.assertEqual(select_mock.call_count, 5)
+                self.assertEqual(transport.input_socket.recv.call_count, 3)
+                self.assertEqual(transport.lcd_socket.recv.call_count, 3)
+                self.assertTrue(stop.is_set())
+                transport._terminate_process.assert_not_called()
+                if audio_enabled:
+                    start_worker.assert_called_once()
+                    audio_worker.start.assert_called_once()
+                    audio_worker.join.assert_called_once_with(1)
+                    transport.audio_socket.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+                    transport.audio_socket.close.assert_called_once()
+                else:
+                    start_worker.assert_not_called()
+                self.assertEqual(yields, [2, 3, 5, 6] if audio_enabled else [])
 
     def test_audio_channel_close_rejects_only_audio(self) -> None:
         transport = self.native_transport()
@@ -762,6 +1248,79 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertEqual(recovered.audio_stream_status, "native")
         self.assertIsNone(recovered.audio_stream_reject_reason)
 
+    def test_native_ma5_desktop_status_preserves_strict_admission(self) -> None:
+        def status(kind, order=0, dropped=0, detail=0):
+            return struct.pack("<BB2xIII", AUDIO_STATUS, kind,
+                               order, dropped, detail)
+
+        def desktop():
+            transport = self.native_transport()
+            transport.audio_stream_enabled = False
+            transport.audio_native_ma5_pcm = True
+            return transport
+
+        native = status(AUDIO_STATUS_NATIVE)
+        reset = status(AUDIO_STATUS_RESET, 7, 1)
+        transport = desktop()
+        player = Mock()
+        transport.decoder.audio_player = player
+        transport._replay_record(native)
+        self.assertEqual(transport.audio_stream_status, "native")
+        self.assertIsNone(transport.audio_stream_reject_reason)
+        self.assertTrue(transport.audio_native)
+        player.close.assert_called_once_with()
+        self.assertIsNone(transport.decoder.audio_player)
+
+        transport.audio_pcm_underflow_frames = 441
+        transport._replay_record(status(AUDIO_STATUS_REJECTED))
+        self.assertEqual(transport.audio_stream_status, "rejected")
+        self.assertEqual(transport.audio_stream_reject_reason,
+                         "qemu-ma5-pcm-output-stopped")
+        self.assertFalse(transport.audio_native)
+        transport._replay_record(native)
+        self.assertEqual(transport.audio_stream_status, "rejected")
+        transport._replay_record(reset)
+        self.assertEqual(transport.audio_stream_status, "native")
+        self.assertIsNone(transport.audio_stream_reject_reason)
+        self.assertTrue(transport.audio_native)
+        self.assertEqual(transport.audio_pcm_snapshot(), (0, 0, 0))
+        self.assertEqual(transport.native_audio_reset_epoch, (1 << 32) | 7)
+        self.assertEqual(list(transport.native_audio_packets), [])
+        self.assertFalse(transport.audio_stream_enabled)
+        self.assertFalse(hasattr(transport, "audio_socket"))
+
+        reserved = bytearray(native)
+        reserved[2] = 1
+        for record in (reserved, status(AUDIO_STATUS_NATIVE, detail=1),
+                       status(AUDIO_STATUS_RESET),
+                       status(AUDIO_STATUS_RESET, 7, detail=1),
+                       status(AUDIO_STATUS_REJECTED, detail=1),
+                       status(AUDIO_STATUS_OVERFLOW), status(255)):
+            with self.subTest(malformed=bytes(record)):
+                rejected = desktop()
+                rejected._replay_record(record)
+                self.assertEqual(rejected.audio_stream_status, "rejected")
+                self.assertEqual(rejected.audio_stream_reject_reason,
+                                 "qemu-audio-status-shape")
+
+        for flag in (False, None, 1, "ma5"):
+            for record in (native, reset):
+                with self.subTest(unadmitted=flag, record=record):
+                    disabled = desktop()
+                    disabled.audio_native_ma5_pcm = flag
+                    disabled.audio_stream_status = "disabled"
+                    disabled._replay_record(record)
+                    self.assertEqual(disabled.audio_stream_status, "rejected")
+                    self.assertEqual(disabled.audio_stream_reject_reason,
+                                     "qemu-audio-status-shape")
+
+        ma2 = self.native_transport()
+        ma2._replay_record(native)
+        ma2._replay_record(reset)
+        self.assertEqual(ma2.audio_stream_status, "native")
+        self.assertTrue(ma2.audio_stream_enabled)
+        self.assertFalse(ma2.audio_native_ma5_pcm)
+
     def test_disabled_audio_ignores_only_canonical_reset_status(self) -> None:
         reset = bytearray(16)
         reset[0:2] = bytes((AUDIO_STATUS, AUDIO_STATUS_RESET))
@@ -878,6 +1437,79 @@ class QEMUAudioTransportTests(unittest.TestCase):
             runtime._session_error = None
             process.poll = lambda: 1
             self.assertEqual(runtime.session_audio(), b"")
+        finally:
+            runtime._session = None
+            runtime._session_error = None
+
+    def test_android_audio_exposes_only_admitted_native_ma5_pcm(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            'msm5xxx_android_native_ma5_audio_test', ANDROID_RUNTIME)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        packet = self.pcm_packet(1, 1, 0)
+        receiver = Mock(return_value=packet)
+        session = SimpleNamespace(
+            config=SimpleNamespace(audio_transport=None),
+            decoder=SimpleNamespace(audio_transport=None),
+            process=SimpleNamespace(poll=lambda: None),
+            audio_stream_enabled=True, audio_stream_status='native',
+            audio_native=True, audio_native_ma5_pcm=True,
+            take_native_audio=receiver,
+        )
+        runtime._session = session
+        try:
+            self.assertEqual(runtime.session_audio(), packet)
+            receiver.assert_called_once_with(0.02)
+            del session.config.audio_transport
+            del session.decoder.audio_transport
+            self.assertEqual(runtime.session_audio(), packet)
+            for field in ('audio_native', 'audio_native_ma5_pcm'):
+                for invalid in (False, None, 0, 1, 'true'):
+                    setattr(session, field, invalid)
+                    receiver.reset_mock()
+                    with self.subTest(field=field, value=invalid):
+                        self.assertEqual(runtime.session_audio(), b'')
+                        receiver.assert_not_called()
+                setattr(session, field, True)
+            for status in ('pending', 'active', 'rejected', 'disabled'):
+                session.audio_stream_status = status
+                receiver.reset_mock()
+                with self.subTest(status=status):
+                    self.assertEqual(runtime.session_audio(), b'')
+                    receiver.assert_not_called()
+            session.audio_stream_status = 'native'
+            session.config.audio_transport = {'family': 'ma5', 'static_status': 'accepted'}
+            session.decoder.audio_transport = SimpleNamespace(family='ma5', static_status='accepted')
+            session.audio_native = session.audio_native_ma5_pcm = False
+            self.assertEqual(runtime.session_audio(), b'')
+            session.audio_native = session.audio_native_ma5_pcm = True
+            self.assertEqual(runtime.session_audio(), packet)
+            invalid_packets = [b'bad', packet[:32], packet + b'\0', bytearray(packet)]
+            invalid_packets += [struct.pack('<4sIQQQ', *header) + packet[32:] for header in (
+                (b'BAD!', 2, 1, 1, 0), (b'M5P2', 1, 1, 1, 0),
+                (b'M5P2', 2, 0, 1, 0), (b'M5P2', 2, 1, 0, 0),
+                (b'M5P2', 2, 1, 1, (1 << 63) - 1))]
+            for invalid in invalid_packets:
+                receiver.return_value = invalid
+                with self.subTest(packet_length=len(invalid)):
+                    self.assertEqual(runtime.session_audio(), b'')
+            boundary = self.pcm_packet(1, 1, (1 << 63) - 1 - 441)
+            receiver.return_value = boundary
+            self.assertEqual(runtime.session_audio(), boundary)
+            receiver.return_value = packet
+            for failure in ('backend', 'session', 'disabled'):
+                session.process.poll = lambda: 1 if failure == 'backend' else None
+                runtime._session_error = 'own replay failure' if failure == 'session' else None
+                session.audio_stream_enabled = failure != 'disabled'
+                receiver.reset_mock()
+                with self.subTest(failure=failure):
+                    self.assertEqual(runtime.session_audio(), b'')
+                    receiver.assert_not_called()
+            session.process.poll = lambda: None
+            runtime._session_error = None
+            session.audio_stream_enabled = True
+            session.take_native_audio = None
+            self.assertEqual(runtime.session_audio(), b'')
         finally:
             runtime._session = None
             runtime._session_error = None

@@ -6,7 +6,7 @@ import hashlib
 import re
 import struct
 
-from .arm import thumb_bl_target
+from .arm import _thumb_writes_register, thumb_bl_target, thumb_literal_value
 from .audio_irq import find_audio_irq_candidate
 from .memory_layout import find_linker_layout
 
@@ -80,14 +80,14 @@ def _synthesized_base_accesses(
         for access_offset in range(offset + 4, stop, 2):
             instruction = struct.unpack_from("<H", image, access_offset)[0]
             opcode = instruction & 0xF800
-            if opcode not in (0x7000, 0x7800):
-                continue
-            if instruction >> 3 & 7 != register:
-                continue
-            accesses.add((
-                access_offset, base, instruction >> 6 & 0x1F,
-                "write" if opcode == 0x7000 else "read",
-            ))
+            if (opcode in (0x7000, 0x7800)
+                    and instruction >> 3 & 7 == register):
+                accesses.add((
+                    access_offset, base, instruction >> 6 & 0x1F,
+                    "write" if opcode == 0x7000 else "read",
+                ))
+            if _thumb_writes_register(instruction, register):
+                break
     return [
         {"offset": offset, "base": base, "port_offset": port, "kind": kind}
         for offset, base, port, kind in sorted(accesses)
@@ -423,6 +423,271 @@ def _sequence_status_profile(image: bytes,
     return profile
 
 
+# shortcut: one closed producer shape; widen only after independent linkage proof.
+_MA5_READBACK_SPANS = {
+    'check': ('90b5c0270024e443381c00000000002811db0006000e60280cd10137d02ff3d3d027381c00000000002804db0006000e3c2803d0201c90bc08bc18470137e02fefd30020f7e7', (10, 36), (), None),
+    'read': ('f0b5071c004809260068f601801981780131817003200000000000000000041c002805da00000000201cf0bc08bc18478025802f02d22f43381c13e0fc097806400e01239b039f4204d2000000002c43201c07e0000000006006400e00000000b80b28430006000e00000000802000000000402000000000071c002802da0000000011e041200000000000000000071c004800688119887801380006000e887002d1802000000000381cbee7', (22, 26, 36, 74, 84, 92, 104, 110, 116, 126, 134, 138, 164), (4, 144), None),
+    'select': ('004a80b511680923db01c9180f7808701168c9184978012901d14006400e00000000381c80bc08bc1847', (30,), (0,), None),
+    'wait': ('f0b5004d041c00262e8000000000071c2888004b013028802888984209dd0420c0432e80000000000420c043f0bc08bc1847000000002740e7d00020f6e7', (10, 36, 50), (2, 18), None),
+    'empty': ('b0b5004c0025258000000000071c2088004b013020802088984209dd0420c0432580000000000420c043b0bc08bc1847000000007808e7d30020f6e7', (8, 34, 48), (2, 16), None),
+    'index': ('80b5071c0000000000490020486000000000077080bc08bc1847', (4,), (8,), 14),
+    'status': ('00b50000000000490120486000000000007808bc1847', (2,), (6,), 12),
+    'write': ('80b5071c0000000000490020486000000000877080bc08bc1847', (4,), (8,), 14),
+    'block': ('b0b5041c0f1c0ed0000000000020004900000000486004e020780134a87000000000013ff8d2b0bc08bc1847', (8, 30), (14,), 16),
+    'dataread': ('00b50000000000490120486000000000807808bc1847', (2,), (6,), 12),
+    "local_wait": ('90b5041c002700000000ff231a339f4208dd0420c043000000000420c04390bc08bc184701372040edd00020f7e7', (6, 22), (), None),
+    "local_empty": ('80b5002700000000004b9f4208dd0420c043000000000420c04380bc08bc184701374008eed30020f7e7', (4, 18), (8,), None),
+    "local_index": ('004b80b41f680121002f004a00d1117011700021196000000000087080bc7047', (), (0, 10), 22),
+    "local_status": ('004a012013680049002b03d10870087008700870087010600000000000787047', (), (0, 6), 24),
+    "local_write": ('004b80b41f680121002f004a00d111701170002119600049087080bc7047', (), (0, 10, 22), None),
+    "local_dataread": ('004a012013680049002b03d1087008700870087008701060004800787047', (), (0, 6, 24), None),
+    "local_block": ('002906d0004a02e00378013013700139fad27047', (), (4,), None),
+    'timed_wait': ('90b5041c002700000000391cff232d330137994208dd0420c043000000000420c04390bc08bc18472040ecd00020f8e7', (6, 26), (), None),
+    'timed_empty': ('80b5002700000000391cff232d330137994208dd0420c043000000000420c04380bc08bc18474008ecd30020f8e7', (4, 24), (), None),
+    'timed_index': ('90b5004c071c2068004980000858000000000020206000000000077090bc08bc1847', (14,), (2, 8), 22),
+    'timed_status': ('80b5004f0049386880000858000000000120386000000000007880bc08bc1847', (12,), (2, 4), 20),
+    'timed_write': ('90b5004c071c2068004980000858000000000020206000000000077190bc08bc1847', (14,), (2, 8), 22),
+    'timed_block': ('b0b5071c0c1c13d0004d004928688000085800000000002028600000000005e0387801372871e62000000000013cf7d2b0bc08bc1847', (18, 40), (8, 10), 26),
+    'timed_dataread': ('80b5004f0049386880000858000000000120386000000000007980bc08bc1847', (12,), (2, 4), 20),
+    'timed_delay': ('004b00b5984208d3011c7d20c00000000000012803d80000000008bc1847022802d800000000f6e700000000f5e7', (14, 22, 34, 40), (0,), None),
+}
+
+
+def _ma5_readback_span(image: bytes, start: int, role: str) -> dict | None:
+    encoded, calls, literals, base_offset = _MA5_READBACK_SPANS[role]
+    expected = bytes.fromhex(encoded)
+    if start & 1 or not 0 <= start <= len(image) - len(expected):
+        return None
+    code = bytearray(image[start:start + len(expected)])
+    targets = []
+    dependencies = [[start, len(expected)]]
+    for offset in calls:
+        target = thumb_bl_target(image, start + offset)
+        if target is None or target & 1 or not 0 <= target < len(image) - 1:
+            return None
+        targets.append(target)
+        dependencies.append([target, 2])
+        code[offset:offset + 4] = b"\0" * 4
+    values = []
+    for offset in literals:
+        word = struct.unpack_from("<H", code, offset)[0]
+        if word & 0xF800 != 0x4800:
+            return None
+        value = thumb_literal_value(image, start + offset, word >> 8 & 7)
+        if value is None:
+            return None
+        values.append(value)
+        dependencies.append([((start + offset + 4) & ~3) + (word & 255) * 4, 4])
+        code[offset] = 0
+    base = None
+    if base_offset is not None:
+        move, shift = struct.unpack_from("<HH", code, base_offset)
+        register = move >> 8 & 7
+        template_register = 5 if role in ("block", "timed_block") else 1 if role == "local_index" else 0
+        if (move & 0xF800 != 0x2000 or register != template_register
+                or shift & 0xF800 or shift & 7 != register
+                or shift >> 3 & 7 != register):
+            return None
+        base = (move & 255) << (shift >> 6 & 31)
+        if not _MMIO_MIN <= base <= _MMIO_MAX - 3 or base & 3:
+            return None
+        code[base_offset:base_offset + 4] = b"\0" * 4
+    if code != expected:
+        return None
+    return {"calls": targets, "literals": values, "base": base,
+            "dependencies": dependencies}
+
+
+def _ma5_readback_transport(image: bytes, common: dict, entries: dict,
+                            local: bool) -> dict | None:
+    entries = dict(entries)
+    spans = dict(common)
+    prefix = "local_" if local else ""
+    for role in ("empty", "write", "wait", "dataread"):
+        spans[role] = _ma5_readback_span(image, entries[role], prefix + role)
+    if any(span is None for span in spans.values()):
+        return None
+    entries["index"] = spans["select"]["calls"][0]
+    entries["status"] = spans["wait"]["calls"][0]
+    entries["block"] = entries["write"] + (0x58 if local else 0x20)
+    for role in ("index", "status", "block"):
+        spans[role] = _ma5_readback_span(image, entries[role], prefix + role)
+    if (any(span is None for span in spans.values())
+            or len(set(entries.values())) != len(entries)
+            or spans["empty"]["calls"] != spans["wait"]["calls"]):
+        return None
+    context = spans["read"]["literals"][0]
+    ram = [[context, 4]]
+    evidence = {"entries": entries, "context_pointer": context,
+                "default_ranges": [[0xC0, 0xD0, 0x60], [0xD0, 0xE0, 0x3C]]}
+    if local:
+        if any(entries[role] != entries["index"] + delta for role, delta in
+               (("status", 0x2A), ("write", 0x52), ("dataread", 0x7E), ("block", 0xAA))):
+            return None
+        base = spans["index"]["base"]
+        direction, dummy = spans["index"]["literals"]
+        data = spans["write"]["literals"][2]
+        limit = spans["empty"]["literals"][0]
+        error = spans["wait"]["calls"][1]
+        if (spans["status"]["base"] != base or data != base + 128
+                or not _MMIO_MIN <= data < _MMIO_MAX
+                or spans["status"]["literals"] != [direction, dummy]
+                or spans["write"]["literals"] != [direction, dummy, data]
+                or spans["dataread"]["literals"] != [direction, dummy, data]
+                or spans["block"]["literals"] != [data]
+                or direction <= dummy < direction + 4
+                or not 0 < limit <= 0xFFFF
+                or image[error:error + 2] != b"\x70\x47"):
+            return None
+        ram.extend([[direction, 4], [dummy, 1]])
+        evidence.update(transport_class="local-counter-literal-data-v1",
+                        direction_state=direction, delay_dummy=dummy,
+                        wait_limit=281, empty_poll_limit=limit)
+        stride, index_site, status_site, write_site, block_site, read_site = 128, 26, 28, 24, 12, 26
+    else:
+        wrappers = ("index", "status", "write", "block", "dataread")
+        bases = {spans[role]["base"] for role in wrappers}
+        delays = {target for role in wrappers for target in spans[role]["calls"]}
+        poll, limit = spans["wait"]["literals"]
+        if (len(bases) != 1 or len(delays) != 1
+                or spans["empty"]["literals"] != [poll, limit]
+                or any(spans[role]["literals"] != [poll] for role in wrappers)
+                or not 0 < limit <= 0xFFFF):
+            return None
+        base = bases.pop()
+        ram.append([poll, 8])
+        evidence.update(transport_class="ram-counter-synthesized-data-v1",
+                        poll_state=poll, poll_limit=limit)
+        stride, index_site, status_site, write_site, block_site, read_site = 2, 18, 16, 18, 28, 16
+    if any(not 0x01000000 <= address <= 0x02000000 - size
+           or size > 1 and address & 3 for address, size in ram):
+        return None
+    return {
+        "family": "ma5", "grammar": "ma5-readback-v1",
+        "static_status": "candidate", "reject_reason": None,
+        "protocol_status": "temporary-evidence-gated", "base": base,
+        "data_offset": stride,
+        "sites": {"write_0": [entries["index"] + index_site],
+                  "read_0": [entries["status"] + status_site],
+                  f"write_{stride}": [entries["write"] + write_site,
+                                      entries["block"] + block_site],
+                  f"read_{stride}": [entries["dataread"] + read_site]},
+        "block_write_offsets": [entries["block"] + block_site],
+        "structural_evidence": evidence, "ram_dependencies": ram,
+        "nor_dependencies": [dependency for span in spans.values()
+                             for dependency in span["dependencies"]],
+    }
+
+
+def _ma5_timed_transport(image: bytes, common: dict, entries: dict) -> dict | None:
+    entries = dict(entries)
+    spans = dict(common)
+    for role in ("wait", "empty", "write", "dataread"):
+        spans[role] = _ma5_readback_span(image, entries[role], "timed_" + role)
+    if any(span is None for span in spans.values()):
+        return None
+    entries["index"] = spans["select"]["calls"][0]
+    entries["status"] = spans["wait"]["calls"][0]
+    entries["block"] = entries["write"] + 0x2C
+    for role in ("index", "status", "block"):
+        spans[role] = _ma5_readback_span(image, entries[role], "timed_" + role)
+    if (any(span is None for span in spans.values())
+            or len(set(entries.values())) != len(entries)
+            or spans["wait"]["calls"] != spans["empty"]["calls"]):
+        return None
+    error = spans["wait"]["calls"][1]
+    wrappers = ("index", "status", "write", "block", "dataread")
+    bases = {spans[role]["base"] for role in wrappers}
+    delays = {target for role in wrappers for target in spans[role]["calls"]}
+    direction, write_table = spans["index"]["literals"]
+    if (len(bases) != 1 or len(delays) != 1
+            or image[error:error + 2] != b"\x70\x47"
+            or any(spans[role]["literals"] != [direction, write_table]
+                   for role in ("write", "block"))
+            or any(spans[role]["literals"] != [direction, write_table + 8]
+                   for role in ("status", "dataread"))
+            or write_table & 3 or not 0 <= write_table <= len(image) - 16):
+        return None
+    entries["delay"] = delays.pop()
+    spans["delay"] = _ma5_readback_span(image, entries["delay"], "timed_delay")
+    if spans["delay"] is None:
+        return None
+    calls = spans["delay"]["calls"]
+    threshold = spans["delay"]["literals"][0]
+    timing = list(struct.unpack_from("<4I", image, write_table))
+    if (calls[1] != calls[2] or len(set((calls[0], calls[1], calls[3]))) != 3
+            or not 0 < threshold <= 0xFFFFFFFF
+            or any(not 0 < value < threshold for value in timing)):
+        return None
+    context = spans["read"]["literals"][0]
+    ram = [[context, 4], [direction, 4]]
+    if (context == direction or any(address & 3 or
+            not 0x01000000 <= address <= 0x02000000 - size
+            for address, size in ram)):
+        return None
+    base = bases.pop()
+    if base + 4 >= _MMIO_MAX:
+        return None
+    return {
+        "family": "ma5", "grammar": "ma5-readback-v1",
+        "static_status": "candidate", "reject_reason": None,
+        "protocol_status": "temporary-evidence-gated", "base": base,
+        "data_offset": 4,
+        "sites": {"write_0": [entries["index"] + 26],
+                  "read_0": [entries["status"] + 24],
+                  "write_4": [entries["write"] + 26, entries["block"] + 36],
+                  "read_4": [entries["dataread"] + 24]},
+        "block_write_offsets": [entries["block"] + 36],
+        "structural_evidence": {
+            "transport_class": "local-counter-direction-timing-v1",
+            "entries": entries, "context_pointer": context,
+            "direction_state": direction, "timing_table": write_table,
+            "timing_values": timing, "wait_limit": 300,
+            "default_ranges": [[0xC0, 0xD0, 0x60], [0xD0, 0xE0, 0x3C]]},
+        "ram_dependencies": ram,
+        "nor_dependencies": [[write_table, 16]] + [dependency
+            for span in spans.values() for dependency in span["dependencies"]],
+    }
+
+
+def find_ma5_readback_candidate(image: bytes) -> dict[str, object]:
+    """Find a closed reset/readback producer; never enable default admission."""
+    rejected = {"family": "ma5", "grammar": "ma5-readback-v1",
+                "static_status": "rejected", "reject_reason": "structural-none"}
+    anchor = bytes.fromhex(_MA5_READBACK_SPANS["check"][0])[:10]
+    accepted = []
+    position = 0
+    while (start := image.find(anchor, position)) >= 0:
+        position = start + 1
+        check = _ma5_readback_span(image, start, "check")
+        if check is None or len(set(check["calls"])) != 1:
+            continue
+        entries = {"check": start, "read": check["calls"][0]}
+        read = _ma5_readback_span(image, entries["read"], "read")
+        if read is None:
+            continue
+        calls = read["calls"]
+        entries.update(select=calls[0], empty=calls[1], write=calls[3],
+                       wait=calls[8], dataread=calls[11])
+        if (calls[2] != calls[9] or calls[3:8] != [entries["write"]] * 5
+                or calls[10] != entries["select"] or calls[12] != entries["select"]):
+            continue
+        select = _ma5_readback_span(image, entries["select"], "select")
+        context = read["literals"][0]
+        if (select is None or read["literals"] != [context, context]
+                or select["literals"] != [context]):
+            continue
+        common = {"check": check, "read": read, "select": select}
+        for candidate in (_ma5_readback_transport(image, common, entries, False),
+                          _ma5_readback_transport(image, common, entries, True),
+                          _ma5_timed_transport(image, common, entries)):
+            if candidate is not None:
+                accepted.append(candidate)
+            if len(accepted) > 1:
+                return {**rejected, "reject_reason": "structural-ambiguous"}
+    return accepted[0] if accepted else rejected
+
+
 def find_audio_transport(image: bytes) -> dict[str, object]:
     """Return static ownership evidence; rejected classes stay fail-closed."""
     families = _marker_families(image)
@@ -444,6 +709,9 @@ def find_audio_transport(image: bytes) -> dict[str, object]:
                                       else "transport-ambiguous"),
                     "candidates": repeated,
                 }
+            ma5 = find_ma5_readback_candidate(image)
+            if ma5["static_status"] == "candidate":
+                return ma5
             return {
                 "family": "unknown", "grammar": None,
                 "static_status": "not-detected", "reject_reason": "marker-none",
@@ -501,4 +769,4 @@ def find_audio_transport(image: bytes) -> dict[str, object]:
     }
 
 
-__all__ = ("find_audio_transport",)
+__all__ = ("find_audio_transport", "find_ma5_readback_candidate")

@@ -225,15 +225,19 @@ def session_audio():
         raise RuntimeError("session is not running")
     if _session_error is not None or _session.process.poll() is not None:
         return b""
-    metadata = _session.config.audio_transport
+    metadata = getattr(_session.config, "audio_transport", None)
     transport = getattr(_session.decoder, "audio_transport", None)
-    if (not isinstance(metadata, dict)
-            or metadata.get("family") != "ma2"
-            or metadata.get("static_status") != "accepted"
+    accepted_ma2 = (isinstance(metadata, dict)
+                    and metadata.get("family") == "ma2"
+                    and metadata.get("static_status") == "accepted"
+                    and getattr(transport, "family", None) == "ma2"
+                    and getattr(transport, "static_status", None) == "accepted")
+    native_ma5 = (getattr(_session, "audio_native", False) is True
+                  and getattr(_session, "audio_native_ma5_pcm", False) is True
+                  and _session.audio_stream_status == "native")
+    if (not (accepted_ma2 or native_ma5)
             or not _session.audio_stream_enabled
             or _session.audio_stream_status == "rejected"
-            or getattr(transport, "family", None) != "ma2"
-            or getattr(transport, "static_status", None) != "accepted"
             or not callable(getattr(_session, "take_native_audio", None))):
         return b""
     raw = _session.take_native_audio(0.02)

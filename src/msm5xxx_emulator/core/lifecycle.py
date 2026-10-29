@@ -28,6 +28,11 @@ from ..devices.display.indexed_byte_panel import IndexedBytePanel, find_indexed_
 from ..devices.display.cursor_panel import PackedCursorPanel
 from ..devices.display.packed12_panel import Packed12Panel
 from ..devices.display.window_panel import WindowPanel
+from ..devices.display.packed_cursor12_panel import PackedCursor12Panel, find_packed_cursor12_port
+from ..devices.display.packed2_panel import Packed2Panel, find_packed2_port
+from ..devices.display.split18_panel import Split18Panel, find_split18_port
+from ..devices.display.split565_panel import Split565Panel, find_split565_port
+from ..devices.display.fa_direct_panel import FaDirectPanel, find_fa_direct_port
 from ..devices.display.segmented_panel import SegmentedPanel
 from ..detection.segmented import detect_segmented_panel
 from ..detection.firmware import ADDRESS_SPACE
@@ -74,7 +79,11 @@ except ImportError:
 
 
 class LifecycleMixin:
-    def __init__(self, config: FirmwareConfig, *, approximate_audio: bool = True) -> None:
+    def __init__(self, config: FirmwareConfig, *, approximate_audio: bool = True,
+                 native_nand: bool = False) -> None:
+        if type(native_nand) is not bool:
+            raise ValueError("invalid native NAND ownership")
+        self._legacy_nand_enabled = config.nand_enabled and not native_nand
         self.config = config
         LOGGER.info("emulator init config=%s",
                     json.dumps(config.diagnostic_config(), ensure_ascii=False,
@@ -149,7 +158,7 @@ class LifecycleMixin:
                 raise ValueError(f"{label} overlaps fixed alternate LCD MMIO")
             if max(start, 0x03000000) < min(end, 0x04000000):
                 raise ValueError(f"{label} overlaps fixed MSM MMIO/internal RAM")
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             for start, end, label in configured:
                 if any(max(start, port_start) < min(end, port_end)
                        for port_start, port_end in NAND_MMIO_RANGES):
@@ -233,7 +242,7 @@ class LifecycleMixin:
             ))
         if eeprom_enabled:
             persistent_outputs.append(("EEPROM state", eeprom_state_path))
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             persistent_outputs.extend((
                 ("NAND state", resolved_path(config.flash_state + ".nand.bin")),
                 ("NAND metadata", resolved_path(config.flash_state + ".nand.json")),
@@ -342,7 +351,7 @@ class LifecycleMixin:
             overlaps_image = (max(secondary_base, config.load_address)
                               < min(secondary_end, image_end))
             overlaps_ram = max(secondary_base, config.ram_base) < min(secondary_end, ram_end)
-            overlaps_nand = (config.nand_enabled
+            overlaps_nand = (self._legacy_nand_enabled
                              and any(max(secondary_base, port_start)
                                      < min(secondary_end, port_end)
                                      for port_start, port_end in NAND_MMIO_RANGES))
@@ -379,7 +388,7 @@ class LifecycleMixin:
             if (max(self.upper_base, config.load_address) < min(upper_end, config.load_address + len(self.image))
                     or max(self.upper_base, config.ram_base) < min(upper_end, ram_end)
                     or secondary_base is not None and max(self.upper_base, secondary_base) < min(upper_end, secondary_base + config.secondary_flash_size)
-                    or config.nand_enabled and any(max(self.upper_base, start) < min(upper_end, end)
+                    or self._legacy_nand_enabled and any(max(self.upper_base, start) < min(upper_end, end)
                                                    for start, end in NAND_MMIO_RANGES)):
                 raise ValueError("upper flash overlaps configured storage")
             self.upper_flash = NORFlash(b"\xff" * config.upper_flash_size,
@@ -439,7 +448,7 @@ class LifecycleMixin:
             *((overlay.target, overlay.target + overlay.size, "executable overlay")
               for overlay in config.overlays),
         ]
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             register_reserved.extend(
                 (start, end, "NAND MMIO") for start, end in NAND_MMIO_RANGES
             )
@@ -487,7 +496,7 @@ class LifecycleMixin:
         ]
         if config.key_register is not None:
             ranges.append((config.key_register, 4))
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             ranges.extend((start, end - start) for start, end in NAND_MMIO_RANGES)
         if secondary_base is not None:
             ranges.append((secondary_base, config.secondary_flash_size))
@@ -734,7 +743,7 @@ class LifecycleMixin:
         nand_backing_size = self.nand_page_count * self.nand_raw_page_size
         if nand_backing_size > MAX_NAND_BACKING_SIZE:
             raise ValueError("NAND raw backing exceeds 256 MiB safety limit")
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             if config.nand_image:
                 supplied = Path(config.nand_image).read_bytes()
                 self.nand_image = self._normalise_nand(supplied, nand_backing_size,
@@ -746,7 +755,7 @@ class LifecycleMixin:
         self.nand_metadata_path = Path(config.flash_state + ".nand.json")
         self.nand_recovered_seed = False
         self.nand_needs_rewrite = False
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             with exclusive_path_lock(config.flash_state):
                 self.nand_recovered_seed = self.nand_state_path.is_file()
                 if self.nand_recovered_seed:
@@ -793,6 +802,9 @@ class LifecycleMixin:
         self._lcd_gram_addressed = False
         self._lcd_gram_dirty = False
         self._lcd_packed_21_state = 0
+        self._lcd_packed_cursor_stage = 0
+        self._lcd_packed_cursor_accepts = 0
+        self._lcd_packed_cursor_reason = "setup-incomplete"
         self._lcd_data_byte_latch: dict[int, int] = {}
         # An older 0x028 board uses the direct 0x75/0x15/0x5C setup while
         # sharing the aperture with page-LCD traffic.  Hold only that exact
@@ -865,6 +877,7 @@ class LifecycleMixin:
         # from the direct RGB controllers until two complete adjacent page
         # rows prove the transport; that prevents an incidental B0 register
         # write on a colour panel from changing its renderer.
+        self._lcd_page_source_profile = None
         self._lcd_page_current = -1
         self._lcd_page_port: int | None = None
         self._lcd_page_column_high: int | None = None
@@ -888,12 +901,29 @@ class LifecycleMixin:
         self._lcd_packed12_panel = Packed12Panel(packed12_port) if packed12_port else None
         cursor_port = find_packed_cursor_port(self.image)
         self._lcd_cursor_panel = PackedCursorPanel(cursor_port) if cursor_port else None
+        packed_cursor12_port, self._lcd_packed_cursor12_reason = find_packed_cursor12_port(self.image)
+        self._lcd_packed_cursor12_panel = PackedCursor12Panel(packed_cursor12_port) if packed_cursor12_port is not None else None
+        packed2_port, self._lcd_packed2_reason = find_packed2_port(self.image)
+        self._lcd_packed2_panel = Packed2Panel(packed2_port) if packed2_port is not None else None
+        split18_port, self._lcd_split18_reason = find_split18_port(self.image)
+        self._lcd_split18_panel = Split18Panel(split18_port) if split18_port is not None else None
+        split565_port, self._lcd_split565_reason = find_split565_port(self.image)
+        self._lcd_split565_panel = Split565Panel(split565_port) if split565_port is not None else None
+        fa_direct_port, self._lcd_fa_direct_reason = find_fa_direct_port(self.image)
+        self._lcd_fa_direct_panel = FaDirectPanel(fa_direct_port) if fa_direct_port is not None else None
         ports = find_dual_page_ports(self.image)
         secondary_port, self._lcd_secondary_reason = find_byte_main_page_secondary(self.image)
         if ports:
             secondary_port = ports[1]
             self._lcd_secondary_reason = "paired-page-descriptor-awaiting-runtime"
         self._lcd_secondary_panel = PagePanel(secondary_port) if secondary_port else None
+        if not ports and secondary_port is None:
+            from ..detection.secondary_arm_page import find_secondary_arm_page
+            from ..devices.display.arm_page_panel import ArmPagePanel
+            profile, reason = find_secondary_arm_page(self.image)
+            if profile is not None:
+                self._lcd_secondary_panel = ArmPagePanel(profile["command_port"], profile)
+                self._lcd_secondary_reason = reason
         indexed_cursor = find_indexed_byte_panel(self.image)
         self._lcd_indexed_byte_panel = (
             IndexedBytePanel(indexed_cursor) if indexed_cursor is not None else None)
@@ -1073,7 +1103,7 @@ class LifecycleMixin:
             self.uc.hook_add(UC_HOOK_CODE, self._legacy_efs_page_read,
                              begin=config.legacy_efs_page_read_address,
                              end=config.legacy_efs_page_read_address)
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             self.uc.hook_add(UC_HOOK_MEM_WRITE, self._nand_command,
                              begin=0x01A00000, end=0x01A00000)
             self.uc.hook_add(UC_HOOK_MEM_WRITE, self._nand_address_write,
@@ -1094,7 +1124,7 @@ class LifecycleMixin:
             self.uc.hook_add(UC_HOOK_CODE, self._fast_boot_hook,
                              begin=config.fast_boot_address,
                              end=config.fast_boot_address)
-        if config.nand_enabled:
+        if self._legacy_nand_enabled:
             if config.nand_bad_block_address is not None:
                 self.uc.hook_add(UC_HOOK_CODE, self._nand_bad_block,
                                  begin=config.nand_bad_block_address,

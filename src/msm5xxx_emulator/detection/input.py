@@ -204,7 +204,7 @@ def _sbi_words_match(image: bytes, position: int,
                      expected: dict[int, int]) -> bool:
     """Match one fixed Thumb SBI bootstrap layout without loose literals."""
     return (position >= 0
-            and all(position + offset <= len(image) - 2
+            and all(0 <= position + offset <= len(image) - 2
                     and struct.unpack_from("<H", image, position + offset)[0]
                     == word
                     for offset, word in expected.items()))
@@ -217,7 +217,7 @@ def _sbi_literals_match(image: bytes, position: int,
 
 
 def _sbi_bootstrap_layout_at(image: bytes, position: int) -> str | None:
-    """Recognize only the two static layouts that close bootstrap plus R/W/R."""
+    """Recognize closed typed bootstrap and two status-loop compiler layouts."""
     m330_words = {
         0: 0x2045, 4: 0x7008, 6: 0x20C5, 8: 0x7008,
         0x0C: 0x303D, 0x0E: 0x8088, 0x12: 0x38F4, 0x14: 0x8188,
@@ -253,20 +253,67 @@ def _sbi_bootstrap_layout_at(image: bytes, position: int) -> str | None:
                 (0x32, 0, SBI_BOOTSTRAP_BASE),
             ))):
         return "thumb-sbi-bootstrap-direct-literal-v1"
+    reloaded_words = {
+        0: 0x2045, 4: 0x7008, 6: 0x20C5, 0x0A: 0x7008,
+        0x10: 0x8088, 0x16: 0x8188, 0x18: 0x2000, 0x1C: 0x7408,
+        0x1E: 0x2001, 0x22: 0x7408, 0x26: 0x8800, 0x28: 0x07C0,
+        0x2A: 0x0FC0, 0x2C: 0x2801, 0x2E: 0xD100, 0x30: 0xE7F8,
+        0x32: 0x2009, 0x34: 0x0200, 0x38: 0x8188, 0x3C: 0x8800,
+        0x3E: 0x07C0, 0x40: 0x0FC0, 0x42: 0x2801, 0x44: 0xD100,
+        0x46: 0xE7F8,
+    }
+    if (_sbi_words_match(image, position, reloaded_words)
+            and _sbi_literals_match(image, position, (
+                (2, 1, SBI_BOOTSTRAP_BASE), (8, 1, SBI_BOOTSTRAP_BASE),
+                (0x0C, 0, 0x085F), (0x0E, 1, SBI_BOOTSTRAP_BASE),
+                (0x12, 0, 0x041F), (0x14, 1, SBI_BOOTSTRAP_BASE),
+                (0x1A, 1, SBI_BOOTSTRAP_BASE), (0x20, 1, SBI_BOOTSTRAP_BASE),
+                (0x24, 0, SBI_BOOTSTRAP_BASE), (0x36, 1, SBI_BOOTSTRAP_BASE),
+                (0x3A, 0, SBI_BOOTSTRAP_BASE),
+            ))):
+        return "thumb-sbi-bootstrap-reloaded-literal-v1"
+    # The entire straight-line prefix closes both retained zero/one producers.
+    preserved_words = {
+        -0x5A: 0x2201, -0x58: 0x7322, -0x56: 0x7222,
+        -0x54: 0x20D3, -0x52: 0x0080, -0x50: 0x2109, -0x4E: 0x05C9,
+        **{offset: 0x8408 for offset in range(-0x4C, -0x3C, 2)},
+        -0x38: 0x8038, -0x34: 0x80B8, -0x32: 0x2000,
+        -0x30: 0x82B8, -0x2E: 0x813A, -0x2C: 0x2501, -0x2A: 0x036D,
+        -0x28: 0x833D, -0x24: 0x83BD, -0x22: 0x253A, -0x20: 0x823D,
+        -0x1E: 0x843A, -0x1C: 0x81B8, -0x18: 0x8638, -0x16: 0x2704,
+        -0x14: 0x800F, -0x12: 0x808A, -0x0E: 0x7738, -0x0C: 0x21FF,
+        -0x0A: 0x3101, -8: 0x8119, -6: 0x8118, -4: 0x8018, -2: 0x8098,
+        0: 0x2545, 4: 0x700D, 6: 0x25C5, 8: 0x700D,
+        0x0C: 0x808D, 0x10: 0x818D, 0x12: 0x7408, 0x14: 0x740A,
+        0x16: 0x880D, 0x18: 0x07ED, 0x1A: 0x0FED, 0x1C: 0x2D01,
+        0x1E: 0xD0FA, 0x20: 0x2509, 0x22: 0x022D, 0x24: 0x818D,
+        0x26: 0x880D, 0x28: 0x07ED, 0x2A: 0x0FED, 0x2C: 0x2D01,
+        0x2E: 0xD0FA,
+    }
+    if (_sbi_words_match(image, position, preserved_words)
+            and _sbi_literals_match(image, position, (
+                (-0x3C, 0, 0x0822), (-0x3A, 7, 0x04800080),
+                (-0x36, 0, 0x0222), (-0x26, 5, 0x0513),
+                (-0x1A, 7, 0x04800040), (-0x10, 7, 0x03000320),
+                (2, 1, SBI_BOOTSTRAP_BASE), (0x0A, 5, 0x085F),
+                (0x0E, 5, 0x041F),
+            ))):
+        return "thumb-sbi-bootstrap-preserved-register-v1"
     return None
 
 
 def find_sbi_bootstrap_profile(image: bytes) -> dict[str, object] | None:
     """Admit one exact SBI bootstrap; all later SBI semantics stay fail-closed."""
     matches: list[tuple[int, str]] = []
-    position = 0
-    while (position := image.find(b"\x45\x20", position)) >= 0:
-        candidate = position
-        position += 2
-        if candidate & 1:
-            continue
-        if (layout := _sbi_bootstrap_layout_at(image, candidate)) is not None:
-            matches.append((candidate, layout))
+    for marker in (b"\x45\x20", b"\x45\x25"):
+        position = 0
+        while (position := image.find(marker, position)) >= 0:
+            candidate = position
+            position += 2
+            if candidate & 1:
+                continue
+            if (layout := _sbi_bootstrap_layout_at(image, candidate)) is not None:
+                matches.append((candidate, layout))
     if len(matches) != 1:
         return None
     entry, layout = matches[0]

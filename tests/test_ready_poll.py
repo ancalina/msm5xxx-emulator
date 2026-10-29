@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import struct
+import random
 import unittest
 
-from msm5xxx_emulator.detection.ready_poll import find_ready_poll_profile
+from msm5xxx_emulator.detection.ready_poll import (
+    find_ready_poll_profile, _UART_RX_EMPTY_READ,
+)
 
 
 def fixture(status_base: int = 0x030007B0,
@@ -277,9 +280,9 @@ class ReadyPollDetectionTests(unittest.TestCase):
         near = bytearray(rotated_fixture())
         near[8 + 20] ^= 1
         self.assertIsNone(find_ready_poll_profile(bytes(near)))
-        self.assertIsNone(find_ready_poll_profile(
-            rotated_fixture() + rotated_fixture()
-        ))
+        duplicate = find_ready_poll_profile(rotated_fixture() + rotated_fixture())
+        self.assertEqual([member["entries"] for member in duplicate["variants"]],
+                         [[8], [len(rotated_fixture()) + 8]])
 
     def test_uart_rx_helper_is_not_promoted_to_ready_poll(self) -> None:
         profile = find_ready_poll_profile(rotated_with_uart_rx_fixture())
@@ -310,9 +313,11 @@ class ReadyPollDetectionTests(unittest.TestCase):
                     self.assertIsNone(find_ready_poll_profile(bytes(near)))
                 self.assertIsNone(find_ready_poll_profile(code[8:]))
                 self.assertIsNone(find_ready_poll_profile(code[:-1]))
-                self.assertIsNone(find_ready_poll_profile(code + code))
-                self.assertIsNone(find_ready_poll_profile(
-                    rotated_fixture(status - 4, pulse) + code))
+                self.assertEqual(len(find_ready_poll_profile(code + code)["variants"]), 2)
+                combined = find_ready_poll_profile(
+                    rotated_fixture(status - 4, pulse) + code)
+                self.assertEqual([p["status_read_pc_offset"]
+                                  for p in combined["variants"]], [0x10, 0x14])
                 self.assertIsNone(find_ready_poll_profile(code + control_fixture()))
         self.assertIsNone(find_ready_poll_profile(
             arithmetic_rotated_fixture(pulse=0x02000600)))
@@ -365,6 +370,107 @@ class ReadyPollDetectionTests(unittest.TestCase):
                     self.assertIsNone(find_ready_poll_profile(mixed(
                         compact, rotated_fixture(0x030007B0, 0x03000700),
                         compact_base, rotated_base)))
+
+    def test_multiple_rotated_members_flatten_and_keep_call_proof(self) -> None:
+        bodies = [fixture(0x03000F10, 0x03000700), rotated_fixture(),
+                  rotated_fixture()]
+        bases = [0x40, 0x100, 0x200]
+        image = bytearray(0x300)
+        for base, body in zip(bases, bodies):
+            image[base:base + len(body)] = body
+        profile = find_ready_poll_profile(bytes(image))
+        self.assertEqual([p["entries"] for p in profile["variants"]],
+                         [[0x48], [0x108], [0x208]])
+        self.assertTrue(all("variants" not in p for p in profile["variants"]))
+        foreign = bytearray(image)
+        struct.pack_into("<I", foreign, 0x200 + 36, 0x030007B0)
+        self.assertIsNone(find_ready_poll_profile(bytes(foreign)))
+        for offset in (0x100, 0x200):
+            near = bytearray(image)
+            near[offset:offset + 4] = b"\x00" * 4
+            remaining = find_ready_poll_profile(bytes(near))
+            self.assertNotIn([offset + 8],
+                             [p["entries"] for p in remaining["variants"]])
+            near = bytearray(image)
+            near[offset + 8 + 20] ^= 1
+            remaining = find_ready_poll_profile(bytes(near))
+            self.assertNotIn([offset + 8],
+                             [p["entries"] for p in remaining["variants"]])
+        # A relocated caller aimed at the other helper proves only that target.
+        near = bytearray(image)
+        displacement = 0x108 - (0x200 + 4)
+        struct.pack_into("<2H", near, 0x200,
+                         0xF000 | (displacement >> 12 & 0x7FF),
+                         0xF800 | (displacement >> 1 & 0x7FF))
+        self.assertEqual([p["entries"] for p in
+                          find_ready_poll_profile(bytes(near))["variants"]],
+                         [[0x48], [0x108]])
+
+    def test_rx_prefilter_positions_equal_halfword_scan(self) -> None:
+        rng = random.Random(0x79000840)
+        pattern = bytes.fromhex("00794008")
+        images = [bytes(rng.randrange(256) for _ in range(n))
+                  for n in range(100)]
+        for length in range(4, 40):
+            for at in range(length - 3):
+                code = bytearray(length)
+                code[at:at + 4] = pattern
+                images.append(bytes(code))
+        images.extend(pattern[:n] for n in range(5))
+        images.append(pattern * 20)
+        for image in images:
+            legacy = [at for at in range(4, len(image) - 6, 2)
+                      if struct.unpack_from("<2H", image, at) == (0x7900, 0x0840)]
+            filtered = [m.start() for m in _UART_RX_EMPTY_READ.finditer(image, 4)
+                        if not m.start() & 1 and m.start() < len(image) - 6]
+            self.assertEqual(filtered, legacy, (len(image), image.hex()))
+
+    def test_uart_status_literal_sub_and_add_require_exact_derived_alias(self) -> None:
+        for operation, literal in ((0x3810, 0x030007C0), (0x3010, 0x030007A0)):
+            code = bytearray(uart_csr_sr_fixture())
+            struct.pack_into("<2H", code, 0x8E, 0x4808, operation)
+            struct.pack_into("<I", code, 0xB0, literal)
+            profile = find_ready_poll_profile(bytes(code))
+            self.assertEqual(profile["signature"], "thumb-uart-csr-sr-rx-empty-v1")
+            self.assertEqual(profile["uart_rx_empty_read_pc_offset"], 0x8A)
+            # Relocating the whole closed helper keeps its literals and branches bound.
+            self.assertEqual(find_ready_poll_profile(bytes(0x40) + code)["entries"], [0x48])
+            for offset in (0x90, 0xB0, 0x9C):
+                near = bytearray(code)
+                near[offset] ^= 1
+                self.assertEqual(find_ready_poll_profile(bytes(near))["signature"],
+                                 "thumb-lsrs-bhs-pulse-v1")
+
+    def test_multiple_compact_members_upgrade_independently_and_merge_flat(self) -> None:
+        first = uart_csr_sr_fixture()
+        second = uart_csr_sr_fixture()
+        profile = find_ready_poll_profile(first + second)
+        self.assertEqual([p["entries"] for p in profile["variants"]],
+                         [[8], [len(first) + 8]])
+        self.assertTrue(all(p["signature"] == "thumb-uart-csr-sr-rx-empty-v1"
+                            for p in profile["variants"]))
+        near = bytearray(first + second)
+        near[len(first) + 0x94] ^= 1
+        profile = find_ready_poll_profile(bytes(near))
+        self.assertEqual([p["signature"] for p in profile["variants"]],
+                         ["thumb-uart-csr-sr-rx-empty-v1", "thumb-lsrs-bhs-pulse-v1"])
+        profile = find_ready_poll_profile(bytes(near) + arithmetic_rotated_fixture())
+        self.assertEqual(len(profile["variants"]), 3)
+        self.assertTrue(all("variants" not in p for p in profile["variants"]))
+        self.assertIsNone(find_ready_poll_profile(
+            bytes(near) + arithmetic_rotated_fixture(pulse=0x03002000)))
+
+    def test_ambiguous_rx_helpers_preserve_compact_fallback(self) -> None:
+        code = bytearray(uart_csr_sr_fixture())
+        code.extend(bytes(0x1B8 - len(code)))
+        code[0x180:0x1B8] = code[0x80:0xB8]
+        for callsite, target in ((0x64, 0x180), (0x182, 8)):
+            displacement = target - callsite - 4
+            struct.pack_into("<2H", code, callsite,
+                             0xF000 | (displacement >> 12 & 0x7FF),
+                             0xF800 | (displacement >> 1 & 0x7FF))
+        self.assertEqual(find_ready_poll_profile(bytes(code))["signature"],
+                         "thumb-lsrs-bhs-pulse-v1")
 
     def test_uart_csr_sr_pair_requires_exact_rx_empty_helper(self) -> None:
         self.assertEqual(find_ready_poll_profile(uart_csr_sr_fixture()), {

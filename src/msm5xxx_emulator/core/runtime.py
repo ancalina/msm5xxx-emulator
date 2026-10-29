@@ -213,6 +213,8 @@ class RuntimeMixin:
             "lcd_frame_protocol": self._lcd_frame_protocol,
             "lcd_selector": self._lcd_selector_telemetry(),
             "lcd_shifted_orientation": self.shifted_orientation_snapshot(),
+            "lcd_direct_cursor": self.direct_cursor_snapshot(),
+            "lcd_parallel_candidates": self.parallel_candidates_snapshot(),
             "lcd_packed_window": self._lcd_packed_window_telemetry(),
             "lcd_port_writes": [
                 {"address": f"0x{address:08X}", "size": size, "writes": writes}
@@ -412,6 +414,8 @@ class RuntimeMixin:
             "lcd_frame_protocol": self._lcd_frame_protocol,
             "lcd_selector": self._lcd_selector_telemetry(),
             "lcd_shifted_orientation": self.shifted_orientation_snapshot(),
+            "lcd_direct_cursor": self.direct_cursor_snapshot(),
+            "lcd_parallel_candidates": self.parallel_candidates_snapshot(),
             "lcd_packed_window": self._lcd_packed_window_telemetry(),
             "frame_sequence": self.frame_sequence,
             "firmware_frame_sequence": self.firmware_frame_sequence,

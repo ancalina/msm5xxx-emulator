@@ -9,6 +9,7 @@ from .arm import thumb_bl_target, thumb_literal_value
 
 _READ_SHIFT = b"\x00\x79\x00\x09"  # LDRB r0,[r0,#4]; LSRS r0,r0,#4
 _READ_SHIFT_CONTROL = b"\x09\x79\x09\x09"  # r1 variant with control write
+_UART_RX_EMPTY_READ = re.compile(rb"\x00\x79\x40\x08")
 _UART_FRAMED_READ = b"\x01\x79\x48\x08"  # LDRB r1,[r0,#4]; LSRS r0,r1,#1
 _ROTATED_READY_POLL = bytes.fromhex(
     "90b400200122064f044901e00a7008703c792309fad390bc70470000"
@@ -72,10 +73,13 @@ def _uart_status_base_at(
         return True
     if read < 4:
         return False
-    add = struct.unpack_from("<H", image, read - 2)[0]
+    arithmetic = struct.unpack_from("<H", image, read - 2)[0]
     base = thumb_literal_value(image, read - 4, 0)
-    return (base is not None and add & 0xFF00 == 0x3000
-            and base + (add & 0xFF) == status_address - 4)
+    if base is None or arithmetic & 0xFF00 not in (0x3000, 0x3800):
+        return False
+    immediate = arithmetic & 0xFF
+    derived = base + immediate if arithmetic & 0xFF00 == 0x3000 else base - immediate
+    return derived == status_address - 4
 
 
 def _uart_rx_empty_pulse_at(
@@ -159,7 +163,7 @@ def _uart_framed_rx_empty_offset(
     return candidates[0] - compact_entry
 
 
-def _find_uart_csr_sr_rx_empty_profile(
+def _find_single_uart_csr_sr_rx_empty_profile(
         image: bytes, compact: dict[str, object]) -> dict[str, object] | None:
     """Close a paired TX-empty helper and RX-empty drain helper at one alias."""
     entries = compact.get("entries")
@@ -178,7 +182,10 @@ def _find_uart_csr_sr_rx_empty_profile(
     ]
     called_entries = {target for _callsite, target in calls}
     candidates: list[int] = []
-    for read in range(4, len(image) - 6, 2):
+    for match in _UART_RX_EMPTY_READ.finditer(image, 4):
+        read = match.start()
+        if read & 1 or read >= len(image) - 6:
+            continue
         words = struct.unpack_from("<3H", image, read)
         condition = words[2] & 0x0F00
         if (words[:2] != (0x7900, 0x0840)
@@ -236,6 +243,31 @@ def _find_uart_csr_sr_rx_empty_profile(
     if framed_offset is not None:
         profile["uart_rx_empty_frame_read_pc_offset"] = framed_offset
     return profile
+
+
+def _find_uart_csr_sr_rx_empty_profile(
+        image: bytes, compact: dict[str, object]) -> dict[str, object] | None:
+    """Upgrade independently proven members while retaining unmatched base loops."""
+    entries = compact.get("entries")
+    if not isinstance(entries, list) or not entries or any(type(e) is not int for e in entries):
+        return None
+    if len(entries) == 1:
+        return _find_single_uart_csr_sr_rx_empty_profile(image, compact)
+    members = []
+    upgraded = False
+    for entry in entries:
+        member = {**compact, "entries": [entry]}
+        uart = _find_single_uart_csr_sr_rx_empty_profile(image, member)
+        members.append(uart or member)
+        upgraded |= uart is not None
+    if not upgraded:
+        return None
+    return {
+        "signature": "thumb-byte-ready-pulse-variants-v1",
+        "admission": "temporary-evidence-gated",
+        **{field: compact[field] for field in ("status_address", "mask", "pulse_address")},
+        "variants": members,
+    }
 
 
 def _find_compact_ready_poll_profile(
@@ -341,21 +373,29 @@ def _find_rotated_ready_poll_profile(
     candidates = [candidate for candidate in candidates
                   if candidate[0] in called]
     entries = [entry for entry, _contract, _offset in candidates]
-    contracts = {contract for _entry, contract, _offset in candidates}
-    if len(entries) != 1 or len(contracts) != 1:
+    if not entries:
         return None
-    status_address, mask, pulse_address = contracts.pop()
-    read_offset = candidates[0][2]
-    return {
+    status_address, mask, pulse_address = candidates[0][1]
+    profiles = [{
         "signature": "thumb-lsrs-bcc-pulse-rotated-v1",
+        "admission": "temporary-evidence-gated",
+        "status_address": contract[0],
+        "mask": contract[1],
+        "pulse_address": contract[2],
+        "status_read_pc_offset": read_offset,
+        "pulse_set_pc_offset": read_offset - 4,
+        "pulse_clear_pc_offset": read_offset - 2,
+        "entries": [entry],
+    } for entry, contract, read_offset in candidates]
+    if len(profiles) == 1:
+        return profiles[0]
+    return {
+        "signature": "thumb-byte-ready-pulse-variants-v1",
         "admission": "temporary-evidence-gated",
         "status_address": status_address,
         "mask": mask,
         "pulse_address": pulse_address,
-        "status_read_pc_offset": read_offset,
-        "pulse_set_pc_offset": read_offset - 4,
-        "pulse_clear_pc_offset": read_offset - 2,
-        "entries": entries,
+        "variants": profiles,
     }
 
 
@@ -643,9 +683,19 @@ def find_ready_poll_profile(image: bytes) -> dict[str, object] | None:
             compact = uart
     rotated = _find_rotated_ready_poll_profile(image)
     if rotated is not None:
-        uart = _find_rotated_uart_csr_sr_profile(image, rotated)
-        if uart is not None:
-            rotated = uart
+        members = rotated.get("variants", [rotated])
+        if any(member[field] != rotated[field]
+               for member in members
+               for field in ("status_address", "mask", "pulse_address")):
+            return None
+        upgraded = [
+            _find_rotated_uart_csr_sr_profile(image, member) or member
+            for member in members
+        ]
+        if "variants" in rotated:
+            rotated = {**rotated, "variants": upgraded}
+        else:
+            rotated = upgraded[0]
     if compact is not None and rotated is not None:
         fields = ("status_address", "mask", "pulse_address")
         if any(compact[field] != rotated[field] for field in fields):
@@ -654,7 +704,8 @@ def find_ready_poll_profile(image: bytes) -> dict[str, object] | None:
             "signature": "thumb-byte-ready-pulse-variants-v1",
             "admission": "temporary-evidence-gated",
             **{field: compact[field] for field in fields},
-            "variants": [compact, rotated],
+            "variants": [*compact.get("variants", [compact]),
+                         *rotated.get("variants", [rotated])],
         }
         compact = None
     control = _find_control_ready_poll_profile(image)

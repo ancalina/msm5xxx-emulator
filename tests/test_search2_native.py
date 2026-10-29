@@ -11,7 +11,12 @@ class Search2NativeTests(unittest.TestCase):
         native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
         source = (native / "msm5xxx-poc.c").read_text()
         start = source.index("static bool msm5xxx_poc_radio_irq_gate(")
-        functions = source[start:source.index("static uint16_t msm5xxx_poc_sbi_status_value(", start)]
+        # Keep all coupled search/decoder callbacks, ending at their own final ops.
+        last_ops = source.index("static const MemoryRegionOps msm5xxx_poc_decoder_init_ops = {", start)
+        functions = source[start:source.index("\n};", last_ops) + len("\n};")]
+        mmio_start = source.index("static bool msm5xxx_poc_mmio_access_pc(")
+        mmio_end = source.index("\n}", mmio_start) + len("\n}")
+        mmio = source[mmio_start:mmio_end] + "\n"
         branch_start = source.index("static bool msm5xxx_poc_arm_b_target(")
         branch = source[branch_start:
                         source.index("static uint32_t msm5xxx_poc_guest_u32(", branch_start)]
@@ -184,7 +189,7 @@ typedef struct {
     unsigned endianness;
     struct { unsigned min_access_size,max_access_size; } valid,impl;
 } MemoryRegionOps;
-''' + branch + functions + r'''
+''' + mmio + branch + functions + r'''
 static void set32(uint8_t *p, uint32_t v) {
     for (unsigned i=0;i<4;i++) p[i]=v>>(i*8);
 }

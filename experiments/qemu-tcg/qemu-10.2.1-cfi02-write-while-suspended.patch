@@ -1,20 +1,32 @@
 diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
 --- a/hw/block/pflash_cfi02.c
 +++ b/hw/block/pflash_cfi02.c
-@@ -1,3 +1,4 @@
-+/* Modified by MSM5xxx emulator contributors, 2026-09-30: optional write-while-suspended device behavior. */
+@@ -1,3 +1,5 @@
++/* Modified by MSM5xxx emulator contributors, 2026-09-30 and 2026-10-24:
++ * optional write-while-suspended behavior and erase-suspend status polling. */
  /*
   *  CFI parallel flash with AMD command set emulation
   *
-@@ -78,6 +79,7 @@
+@@ -78,6 +80,8 @@
      uint8_t mappings;
      uint8_t width;
      uint8_t be;
 +    bool write_while_suspended;
++    bool suspended_ready_dq7;
      int wcycle; /* if 0, the flash is read normally */
      int bypass;
      int ro;
-@@ -538,7 +540,8 @@
+@@ -336,7 +340,8 @@
+             /* Toggle bit 2, but not 6. */
+             toggle_dq2(pfl);
+             /* Status register read */
+-            ret = pfl->status;
++            /* Only the explicit device profile opts into ready DQ7. */
++            ret = pfl->status | (pfl->suspended_ready_dq7 ? 0x80 : 0);
+             trace_pflash_read_status(pfl->name, ret);
+             break;
+         }
+@@ -538,7 +543,8 @@
              /* We need another unlock sequence */
              goto check_unlock0;
          case 0xA0: /* Program */
@@ -24,12 +36,14 @@ diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
                  pflash_sector_is_erasing(pfl, offset)) {
                  /* Ignore writes to erasing sectors. */
                  if (pfl->bypass) {
-@@ -952,6 +955,8 @@
+@@ -952,6 +958,10 @@
      DEFINE_PROP_UINT8("width", PFlashCFI02, width, 0),
      DEFINE_PROP_UINT8("mappings", PFlashCFI02, mappings, 0),
      DEFINE_PROP_UINT8("big-endian", PFlashCFI02, be, 0),
 +    DEFINE_PROP_BOOL("write-while-suspended", PFlashCFI02,
 +                     write_while_suspended, false),
++    DEFINE_PROP_BOOL("suspended-ready-dq7", PFlashCFI02,
++                     suspended_ready_dq7, false),
      DEFINE_PROP_UINT16("id0", PFlashCFI02, ident0, 0),
      DEFINE_PROP_UINT16("id1", PFlashCFI02, ident1, 0),
      DEFINE_PROP_UINT16("id2", PFlashCFI02, ident2, 0),

@@ -1195,9 +1195,72 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only),
                          (None, "malformed-entries"))
         bootstrap_only.sbi_bootstrap_profile = profile
-        bootstrap_only.chipset = "MSM5100"
+        for chipset in ("MSM5100", "MSM5xxx"):
+            bootstrap_only.chipset = chipset
+            self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only), (
+                "sbi=on,sbi-bootstrap-only=on", None,
+            ))
+            self.assertEqual(bootstrap_only.chipset, chipset)
+        bootstrap_only.board_adc_reader_address = 0x4050
+        bootstrap_only.sbi_bootstrap_profile = None
+        self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only), (None, None))
+        bootstrap_only.sbi_bootstrap_profile = {
+            **profile, "bootstrap": [[0, True, 0x45], *profile["bootstrap"][1:]],
+        }
         self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only),
-                         (None, "unsupported-chipset"))
+                         (None, "malformed-contract"))
+        bootstrap_only.sbi_bootstrap_profile = {**profile, "base_address": float(0x03000780)}
+        self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only),
+                         (None, "malformed-contract"))
+        bootstrap_only.sbi_bootstrap_profile = {**profile, "accepted": False}
+        self.assertEqual(MODULE.qemu_sbi_property(bootstrap_only),
+                         (None, "unsupported-contract"))
+
+    def test_sbi_raw_input_is_source_scoped_and_preserves_bootstrap_fallback(self) -> None:
+        from msm5xxx_emulator.detection.input import SBI_BOOTSTRAP, SBI_BOOTSTRAP_VALIDATION
+        raw = dict(signature="thumb-sbi-raw-sample-086a-v1",
+                   admission="temporary-evidence-gated", accepted=True,
+                   policy="configured-virtual-raw-byte-uncalibrated",
+                   base_address=0x03000780, control=0x086A,
+                   clock_values=[0x4A, 0xCA],
+                   request_prefix=0x0A80, read_command=0x8B00,
+                   selector_mask=0x60, source_selector=0x40, selector_value=0x40,
+                   entry=0x100, read_pc=0x186, entries=[0x100])
+        base = dict(signature="thumb-sbi-bootstrap-only-v1",
+                    admission="temporary-evidence-gated", accepted=True,
+                    base_address=0x03000780, entries=[0x20],
+                    bootstrap=[list(row) for row in SBI_BOOTSTRAP],
+                    validation=[list(row) for row in SBI_BOOTSTRAP_VALIDATION])
+        config = SimpleNamespace(chipset="MSM5xxx", confidence="unknown",
+                                 board_adc_reader_address=None, board_adc_value=194,
+                                 flash_size=0x400, load_address=0,
+                                 sbi_bootstrap_profile={**base, "raw_input": raw})
+        self.assertEqual(MODULE.qemu_sbi_property(config),
+                         ("sbi=on,sbi-raw-input-profile=186:60:40", None))
+        self.assertEqual((config.chipset, config.confidence), ("MSM5xxx", "unknown"))
+        for field, value in (("accepted", False), ("policy", "physical-voltage"),
+                             ("control", 0x085F), ("selector_mask", True),
+                             ("clock_values", None), ("clock_values", (0x4A, 0xCA)),
+                             ("clock_values", [0x4A, 0xCB]),
+                             ("clock_values", [float(0x4A), 0xCA]),
+                             ("source_selector", False), ("selector_value", 0x20),
+                             ("read_pc", 0x188), ("read_pc", True),
+                             ("entries", [True])):
+            config.sbi_bootstrap_profile = {**base, "raw_input": {**raw, field: value}}
+            prop, reject = MODULE.qemu_sbi_property(config)
+            self.assertEqual(prop, "sbi=on,sbi-bootstrap-only=on")
+            self.assertTrue(reject.startswith("raw-input-"))
+        config.sbi_bootstrap_profile = {**base, "raw_input": raw}
+        config.load_address = 0x800000
+        self.assertEqual(MODULE.qemu_sbi_property(config),
+                         ("sbi=on,sbi-bootstrap-only=on", "raw-input-unverified-code-layout"))
+        config.load_address = 0
+        config.board_adc_value = None
+        self.assertEqual(MODULE.qemu_sbi_property(config),
+                         ("sbi=on,sbi-bootstrap-only=on", "raw-input-byte-unavailable"))
+        config.chipset = "MSM5000"
+        config.board_adc_reader_address = 0x4050
+        self.assertEqual(MODULE.qemu_sbi_property(config), ("sbi=on", None))
 
     def test_board_revision_property_is_complete_and_fail_closed(self) -> None:
         config = SimpleNamespace(
@@ -1968,7 +2031,13 @@ class QEMUInputTransportTests(unittest.TestCase):
 
         self.assertIn('"record-x16-nor"', machine)
         self.assertIn("TYPE_PFLASH_CFI02", record_init)
-        self.assertEqual(record_init.count("UINT16_MAX"), 4)
+        self.assertEqual(record_init.count("UINT16_MAX"), 2)
+        self.assertIn('"id0", s->record_x16_nor_id0', record_init)
+        self.assertIn('"id1", s->record_x16_nor_id1', record_init)
+        self.assertIn(
+            "uint32_t parsed[5] = { 0, 0, 0, UINT16_MAX, UINT16_MAX };",
+            machine,
+        )
         self.assertIn('"unlock-addr0", 0x555', record_init)
         self.assertIn('"unlock-addr1", 0x2aa', record_init)
         self.assertIn("pow2ceil(s->record_x16_nor_size)", record_init)
@@ -2604,6 +2673,16 @@ class QEMUInputTransportTests(unittest.TestCase):
             ))
             self.assertEqual(prefixed.read_bytes(), b"\xff" * 8 + b"\x66" * 8)
 
+    def test_ram_argument_preserves_non_mib_byte_counts(self) -> None:
+        for size, expected in ((0x800000, "8M"), (0x1000000, "16M"),
+                               (0xFFC000, "16760832B"), (0x80000, "524288B"),
+                               (0x1001, "4097B")):
+            with self.subTest(size=size):
+                self.assertEqual(MODULE.qemu_ram_argument(size), expected)
+        for size in (0, -1, True, 1.5, None):
+            with self.subTest(invalid=size), self.assertRaises(ValueError):
+                MODULE.qemu_ram_argument(size)
+
     def test_raw_loader_splits_at_machine_ram_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3147,6 +3226,99 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         del candidate["pending_ack_semantics"]
         self.assertIsNone(MODULE.w1c_rex_irq_profile(config))
+
+
+class RAMBootstrapTransportTests(unittest.TestCase):
+    def test_reserved_ram_requires_same_image_layout_and_safe_stack(self):
+        from copy import deepcopy
+        from msm5xxx_emulator.core.config import LinkerLayout
+        from test_bootstrap_sdram import synthetic_image
+
+        image = synthetic_image()
+        profile = MODULE.reset_copy_ram_profile(image)
+        config = SimpleNamespace(
+            load_address=0, flash_size=len(image), ram_base=profile['ram_base'],
+            ram_size=profile['ram_size'], ram_bootstrap_profile=profile,
+            linker=LinkerLayout(**profile['bootstrap_linker']),
+        )
+        self.assertEqual(MODULE.qemu_ram_reserved_property(image, config, 0x17ffffc),
+                         'ram-reserved=1c00000:200000')
+        for sp in (0x1bffffc, 0x1e00004, 0x1ffbffc):
+            self.assertEqual(MODULE.qemu_ram_reserved_property(image, config, sp),
+                             'ram-reserved=1c00000:200000')
+        for sp in (True, 0x1000000, 0x1c00000, 0x1dffffc, 0x1e00000,
+                   0x17ffffd, 0x2000000):
+            with self.subTest(sp=sp), self.assertRaises(ValueError):
+                MODULE.qemu_ram_reserved_property(image, config, sp)
+        for key, value in (('reserved_base', 0x1a00000), ('reserved_size', 0x1000),
+                           ('experimental', False), ('experimental', 1),
+                           ('ram_size', float(profile['ram_size']))):
+            changed = SimpleNamespace(**vars(config))
+            changed.ram_bootstrap_profile = {**profile, key: value}
+            with self.subTest(profile_key=key, value=value), self.assertRaises(ValueError):
+                MODULE.qemu_ram_reserved_property(image, changed, 0x17ffffc)
+        for key, value in (('ram_base', 0x1800000), ('ram_size', 0x800000),
+                           ('flash_size', 4), ('load_address', False)):
+            changed = SimpleNamespace(**{**vars(config), key: value})
+            with self.subTest(config_key=key), self.assertRaises(ValueError):
+                MODULE.qemu_ram_reserved_property(image, changed, 0x17ffffc)
+        changed = SimpleNamespace(**vars(config))
+        changed.linker = LinkerLayout(**{**profile['bootstrap_linker'], 'data_source': 0})
+        with self.assertRaises(ValueError):
+            MODULE.qemu_ram_reserved_property(image, changed, 0x17ffffc)
+        with self.assertRaises(ValueError):
+            MODULE.qemu_ram_reserved_property(b'\0' * 4 + image[4:], config, 0x17ffffc)
+        self.assertIsNone(MODULE.qemu_ram_reserved_property(
+            b'', SimpleNamespace(ram_bootstrap_profile=None), 0))
+
+    def test_detection_preserves_overrides_and_loaded_nor_is_revalidated(self):
+        import argparse
+        import qemu_transport
+        from msm5xxx_emulator.detection import detect
+        from test_bootstrap_sdram import synthetic_image
+
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / 'anonymous.bin'
+            image = bytearray(synthetic_image())
+            reset = 8 + (struct.unpack_from('<I', image)[0] & 0xffffff) * 4
+            for pc in range(4, 0x20, 4):
+                struct.pack_into('<I', image, pc,
+                                 0xea000000 | (((reset - pc - 8) // 4) & 0xffffff))
+            image = bytes(image)
+            firmware.write_bytes(image)
+            config = detect(firmware)
+            self.assertEqual((config.ram_base, config.ram_size), (0x1000000, 0xffc000))
+            self.assertIsNotNone(config.ram_bootstrap_profile)
+            self.assertIsNone(config.ready_poll)
+            for overrides in (argparse.Namespace(ram_size=0x800000),
+                              argparse.Namespace(ram_base=0x1800000),
+                              argparse.Namespace(load_address=0x10000000)):
+                changed = detect(firmware, overrides)
+                self.assertIsNone(changed.ram_bootstrap_profile)
+            firmware.write_bytes(b'\0' * 4 + image[4:])
+            self.assertIsNone(detect(firmware).ram_bootstrap_profile)
+            firmware.write_bytes(image)
+
+            def changed_seed(seed, *_args):
+                return b'\0' * 4 + seed[4:], True
+
+            listeners = []
+            make_listener = qemu_transport.loopback_listener
+            def listener():
+                channel = make_listener()
+                listeners.append(channel)
+                return channel
+
+            with mock.patch.object(qemu_transport, 'load_legacy_nor_state', changed_seed), \
+                 mock.patch.object(qemu_transport, 'loopback_listener', listener), \
+                 mock.patch.object(qemu_transport.subprocess, 'Popen',
+                                   side_effect=AssertionError('unexpected QEMU launch')) as launch:
+                with self.assertRaisesRegex(ValueError, 'reset-linked RAM profile'):
+                    MODULE.Transport(Path('/unused'), firmware, Path(directory) / 'state',
+                                     config=config)
+                launch.assert_not_called()
+            self.assertGreaterEqual(len(listeners), 3)
+            self.assertTrue(all(channel.fileno() == -1 for channel in listeners))
 
 
 class FoldInputTransportTests(unittest.TestCase):

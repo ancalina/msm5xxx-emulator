@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import hashlib
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ from ..core.config import FirmwareConfig
 
 from .arm import arm_vector_score
 from .audio import find_audio_transport
+from .bootstrap_sdram import reset_copy_ram_profile
+from .small_page_nand import small_page_nand_profile
 from .boot import (
     AUDIO_PLAY_SIGNATURE, BOARD_ADC_SIGNATURE, BUSY_DELAY_SIGNATURE,
     CRC16_SIGNATURE, DELAY_SIGNATURE, DMD_DOWNLOAD_510X_SIGNATURE,
@@ -41,6 +44,7 @@ from .memory_layout import (
     find_missing_overlays, find_overlays, find_runtime_overlays,
     has_dual_sdram_bootstrap, has_high_bank_reader_bootstrap,
     find_high_ram_readback_tests, high_ram_bootstrap_profile, infer_ram_base,
+    dual_stage_ram_profile,
     normalised_flash_size, plausible_ram_seed_size, referenced_flash_extent,
     restore_sparse_nor_gap,
 )
@@ -51,8 +55,13 @@ from .rex import (REX_TICK_SIGNATURE, find_rex_5ms_irq_arm,
                   find_rex_idle_address, find_uis_idle_pair,
                   find_rex_static_c40_controller_observation,
                   find_rex_static_controller_callback_candidate,
-                  find_rex_static_overlay_controller_callback_candidate)
+                  find_rex_static_overlay_controller_callback_candidate,
+                  find_rex_legacy_row0_profile)
 from .ready_poll import find_ready_poll_profile
+from .uart_console import find_uart_console_profile
+from .sbi_raw_input import find_sbi_raw_input_profile
+from .boot_keysense import find_boot_keysense_release
+from .spi_nv import find_spi_nv_profile
 from .signatures import find_all
 from .storage import (
     EEPROM_24LC64_CLASS_B_READ_PREFIX, EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
@@ -437,7 +446,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         raise ValueError("load address outside 32-bit address space")
     model_scores = _embedded_model_scores(image)
     chipset = detect_chipset(image, "")
-    model = detect_model(image, path, model_scores, chipset)
+    detection_notes: list[str] = []
+    model = detect_model(image, path, model_scores, chipset, notes=detection_notes)
     verified_model = _verified_embedded_model(image, model_scores)
     if verified_model != model:
         verified_model = None
@@ -446,7 +456,6 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     confidence = chipset_confidence(image, chipset)
     vector_score = arm_vector_score(image)
     image_kind = "firmware" if vector_score >= 2 else "data/non-bootable"
-    detection_notes: list[str] = []
     if all(marker in image for marker in DCC_LOADER_MARKERS):
         image_kind = "auxiliary/debug-loader"
         detection_notes.append("paired DumpNow DCC loader markers")
@@ -506,14 +515,41 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                           if overrides else None)
     ram_size = (0x00800000 if requested_ram_size is None
                 else requested_ram_size)
+    ram_bootstrap_profile = None
     if requested_ram_base is None and requested_ram_size is None:
+        bootstrap_candidate = (reset_copy_ram_profile(primary_image)
+                               if requested_load_address == 0 else None)
         high_ram = (high_ram_bootstrap_profile(primary_image)
                     if requested_load_address == 0 else None)
-        if high_ram is not None and linker is None:
+        dual_stage, dual_stage_reject = (
+            dual_stage_ram_profile(primary_image, linker)
+            if requested_load_address == 0 and image_kind == "firmware"
+            else (None, None)
+        )
+        if (bootstrap_candidate is not None
+                and ram_base == bootstrap_candidate["ram_base"]
+                and (linker is None or
+                     asdict(linker) == bootstrap_candidate["bootstrap_linker"])):
+            ram_bootstrap_profile = bootstrap_candidate
+            ram_size = bootstrap_candidate["ram_size"]
+            detection_notes.append(
+                "experimental reset-linked logical SDRAM span detected; "
+                "external-bus gap reserved, physical capacity and device protocol unverified"
+            )
+        elif high_ram is not None and linker is None:
             ram_base, ram_size = high_ram
             detection_notes.append(
                 "reset-linked high-RAM readback/extent profile detected; "
                 "peripheral protocol remains unverified"
+            )
+        elif dual_stage is not None:
+            ram_base = dual_stage["ram_base"]
+            ram_size = dual_stage["ram_size"]
+            # Appended RAM snapshots must not become additional primary code.
+            primary_image = primary_image[:ram_base - requested_load_address]
+            detection_notes.append(
+                "source-linked boot/application RAM scatter envelope detected; "
+                "private boot layout preserved, physical capacity unverified"
             )
         elif has_dual_sdram_bootstrap(primary_image, linker):
             ram_base = 0x01000000
@@ -532,10 +568,59 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 "high-RAM candidate rejected: no unique reset-linked "
                 "readback/extent proof or conflicting linker; native fallback"
             )
+        if dual_stage_reject is not None:
+            detection_notes.append(
+                f"dual-stage RAM class rejected: {dual_stage_reject}; native fallback"
+            )
+    boot_keysense_release = None
+    spi_nv_profile = None
+    rex_basic_irq_profile = None
+    _boot_key_reason = _spi_nv_reason = None
+    if requested_load_address == 0:
+        boot_keysense_release, _boot_key_reason = find_boot_keysense_release(primary_image)
+        spi_nv_profile, _spi_nv_reason = find_spi_nv_profile(primary_image)
+    if boot_keysense_release is not None:
+        detection_notes.append(
+            "reset-linked released-key predicate detected; only its three "
+            "source reads are eligible, not active key mapping"
+        )
+    elif _boot_key_reason not in (None, "predicate-not-closed"):
+        detection_notes.append(
+            f"boot key release not applied: {_boot_key_reason}; native fallback"
+        )
+    if spi_nv_profile is not None:
+        detection_notes.append(
+            "four-wire serial NVM producer detected: source-compatible virtual "
+            "16KiB/page32 geometry; physical part and timing unverified"
+        )
+    elif _spi_nv_reason not in (None, "spi-nv-typed-root-unclosed"):
+        detection_notes.append(
+            f"serial NVM not applied: {_spi_nv_reason}; native fallback"
+        )
     ready_poll = find_ready_poll_profile(primary_image)
+    if ram_bootstrap_profile is not None and ready_poll is not None:
+        ready_poll = None
+        detection_notes.append(
+            "pulse-ready profile unverified for reset-linked SDRAM class; "
+            "native device behavior retained"
+        )
     if ready_poll is not None:
         detection_notes.append(
             "exact firmware ready-poll class detected"
+        )
+    uart_console, uart_console_reason = find_uart_console_profile(
+        primary_image, ready_poll
+    )
+    if uart_console is not None:
+        detection_notes.append(
+            "bound UART console class: provisional synchronous TX sink, "
+            "empty RX; physical line timing and FIFO depth unverified"
+        )
+    elif (ready_poll is not None
+          or uart_console_reason.startswith("console-byte-")
+          or uart_console_reason == "console-protocol-ownership-ambiguous"):
+        detection_notes.append(
+            f"UART console class rejected: {uart_console_reason}; native fallback"
         )
     rex_static_controller_candidate = (
         find_rex_static_controller_callback_candidate(
@@ -648,6 +733,18 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     board_adc_reader_position = find_board_adc_reader(primary_image)
     dc0_board_adc_profile = find_dc0_board_adc_profile(primary_image)
     sbi_bootstrap_profile = find_sbi_bootstrap_profile(primary_image)
+    if sbi_bootstrap_profile is not None:
+        raw_input, raw_reason = find_sbi_raw_input_profile(
+            primary_image, sbi_bootstrap_profile, ram_base, ram_size
+        )
+        if raw_input is not None:
+            sbi_bootstrap_profile["raw_input"] = raw_input
+            detection_notes.append(
+                "temporary source-bound SBI raw-byte consumer detected; "
+                "configured virtual input, physical channel and calibration unverified"
+            )
+        else:
+            sbi_bootstrap_profile["raw_input_reject_reason"] = raw_reason
     if dc0_board_adc_profile is not None:
         if dc0_board_adc_profile["accepted"]:
             detection_notes.append(
@@ -772,6 +869,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             "Yamaha audio transport rejected: "
             f"{audio_transport['reject_reason']}"
         )
+    elif audio_transport["static_status"] == "candidate":
+        detection_notes.append(
+            "Yamaha MA5 structural readback candidate; runtime timing and "
+            "device mapping unverified; native fallback retained"
+        )
 
     board_adc_reader_address = (
         runtime_position("board_adc_reader_address", board_adc_reader_position)
@@ -799,6 +901,25 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             )
             detection_notes.append(
                 "REX IRQ wrapper/controller route proves firmware 5 ms delivery"
+            )
+
+    if (requested_load_address == 0 and rex_irq_route is None
+            and rex_idle_address is None and rex_tick_address is None):
+        rex_basic_irq_profile, _row0_reason = find_rex_legacy_row0_profile(
+            primary_image, ram_base, ram_size, overlays)
+        if rex_basic_irq_profile is not None:
+            rex_tick_address = mapped_runtime(
+                rex_basic_irq_profile["callback_file_offset"])
+            rex_irq_route = tuple(rex_basic_irq_profile["route"])
+            rex_irq_arm_address = rex_basic_irq_profile["arm_address"]
+            rex_tick_ms = 5
+            detection_notes.append(
+                "source-linked row0 IRQ: 5 logical units/1000 carry; "
+                "virtual 5ms policy, physical oscillator unverified; no idle hook"
+            )
+        elif _row0_reason not in (None, "row0-callback-none"):
+            detection_notes.append(
+                f"row0 IRQ not applied: {_row0_reason}; native fallback"
             )
 
     def runtime_signature(field: str, signature: bytes) -> int | None:
@@ -988,7 +1109,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         and all(struct.pack("<I", port) in primary_image
                 for port in (0x01800000, 0x01900000, 0x01A00000))
     )
-    nand_enabled = (raw_nand_ports or any(item is not None for item in (
+    native_nand_profile = (small_page_nand_profile(primary_image)
+                           if ram_bootstrap_profile is not None else None)
+    if ram_bootstrap_profile is not None and native_nand_profile is None:
+        detection_notes.append(
+            "reset-linked NAND candidate rejected: complete read/program/erase/"
+            "transfer ownership is not closed; native fallback retained")
+    nand_enabled = (native_nand_profile is not None or raw_nand_ports or any(item is not None for item in (
         nand_bad_block_address, nand_read_address, nand_write_address
     )))
     if raw_nand_ports and all(item is None for item in (
@@ -1101,6 +1228,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         eeprom_static_capacity=eeprom_static_capacity,
         ram_base=ram_base,
         ram_size=ram_size,
+        ram_bootstrap_profile=ram_bootstrap_profile,
         ram_image_offset=(compound_secondary_offset + compound_secondary_size
                           if compound_secondary_offset is not None
                           and compound_secondary_size is not None else flash_size),
@@ -1120,8 +1248,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         delay_address=delay_address,
         busy_delay_address=busy_delay_address,
         nand_enabled=nand_enabled,
+        native_nand_profile=native_nand_profile,
         nand_image=None,
-        nand_data_size=0x1000000 if nand_bad_block_address is not None else 0x800000,
+        nand_data_size=(0x2000000 if native_nand_profile is not None else
+                        0x1000000 if nand_bad_block_address is not None else 0x800000),
         nand_page_size=512, nand_spare_size=16, nand_pages_per_block=32,
         nand_bus_width=2,
         rex_idle_address=rex_idle_address,
@@ -1162,11 +1292,20 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         rex_static_controller_candidate=rex_static_controller_candidate,
         rex_static_c40_controller_observation=rex_static_c40_controller_observation,
         ready_poll=ready_poll,
+        uart_console=uart_console,
         dc0_board_adc_profile=dc0_board_adc_profile,
         sbi_bootstrap_profile=sbi_bootstrap_profile,
+        boot_keysense_release=boot_keysense_release,
+        spi_nv_profile=spi_nv_profile,
+        rex_basic_irq_profile=rex_basic_irq_profile,
         uis_idle_entry_address=uis_idle_entry_address,
         uis_idle_body_address=uis_idle_body_address,
     )
+    if native_nand_profile is not None:
+        config.detection_notes.append(
+            "temporary reset-linked x16 NAND: 512+16 transfer bytes, "
+            "32 pages/block; virtual row envelope and timing, unknown ID; "
+            "original NAND/OOB resources are not recovered")
     if overrides is not None:
         _apply_overrides(
             config, overrides, image=image, primary_image=primary_image,

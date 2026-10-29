@@ -9,8 +9,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from msm5xxx_emulator.detection.audio import _marker_families
-from msm5xxx_emulator.detection.audio import find_audio_transport
+from msm5xxx_emulator.detection.audio import (
+    _marker_families, _synthesized_base_accesses,
+)
+from msm5xxx_emulator.detection.audio import find_audio_transport, find_ma5_readback_candidate
+from msm5xxx_emulator.detection.arm import thumb_bl_target
 from msm5xxx_emulator.detection.memory_layout import find_linker_layout
 from msm5xxx_emulator.core.lifecycle import ApproximateSmafPlayer as LifecycleAudioPlayer
 from msm5xxx_emulator.devices.audio import AudioMixin
@@ -40,6 +43,67 @@ def _thumb_bl(source: int, target: int) -> bytes:
         0xF000 | displacement >> 12 & 0x7FF,
         0xF800 | displacement >> 1 & 0x7FF,
     )
+
+
+def _ma5_readback_image(relocation: int = 0) -> bytes:
+    # Original instruction fixture, relocated as a linked producer graph.
+    spans = (
+        (0x25ad08, 0x100, '90b5c0270024e443381cfff73bf9002811db0006000e60280cd10137d02ff3d3d027381cfff72ef9002804db0006000e3c2803d0201c90bc08bc18470137e02fefd30020f7e7'),
+        (0x259f8c, 0x200, 'f0b5071c294809260068f6018019817801318170032001f0cff901f049fc041c002805da00f084fe201cf0bc08bc18478025802f02d22f43381c13e0fc097806400e01239b039f4204d201f0a9fb2c43201c07e001f0a4fb6006400e01f0a0fbb80b28430006000e01f09afb802001f097fb402001f0cafb071c002802da00f057fe11e0412001f097f901f0b1fb071c064800688119887801380006000e887002d1802001f088f9381cbee7880c0101'),
+        (0x25b344, 0x400, '0a4a80b511680923db01c9180f7808701168c9184978012901d14006400e00f0c5f9381c80bc08bc18470000880c0101'),
+        (0x25b798, 0x500, 'f0b50f4d041c00262e80fff7b5ff071c28880c4b013028802888984209dd0420c0432e80fff796ff0420c043f0bc08bc18475af6a9fc2740e7d00020f6e70000941c4e01dc050000'),
+        (0x25b83c, 0x600, 'b0b50e4c00252580fff764ff071c20880b4b013020802088984209dd0420c0432580fff745ff0420c043b0bc08bc18475af658fc7808e7d30020f6e7941c4e01dc050000'),
+        (0x25b6f0, 0x700, '80b5071cf8f5f2fd04490020486015204005077080bc08bc18470000941c4e01'),
+        (0x25b710, 0x720, '00b5f8f5e3fd04490120486015204005007808bc18470000941c4e01'),
+        (0x25b72c, 0x73c, '80b5071cf8f5d4fd04490020486015204005877080bc08bc18470000941c4e01'),
+        (0x25b74c, 0x75c, 'b0b5041c0f1c0ed0f8f5c2fd0020074915256d05486004e020780134a870f8f5b7fd013ff8d2b0bc08bc1847941c4e01'),
+        (0x25b77c, 0x78c, '00b5f8f5adfd04490120486015204005807808bc18470000941c4e01'),
+    )
+    addresses = {original: target + relocation for original, target, _ in spans}
+    addresses.update({0x542DC: 0x1800 + relocation,
+                      0x25ACBC: 0x1802 + relocation,
+                      0x25B6EC: 0x1804 + relocation,
+                      0xB6120: 0x1806 + relocation})
+    image = bytearray(b"\xff" * (0x2000 + relocation))
+    for original, target, encoded in spans:
+        target += relocation
+        code = bytearray.fromhex(encoded)
+        for offset in range(0, len(code) - 3, 2):
+            destination = thumb_bl_target(code, offset)
+            if destination is not None:
+                code[offset:offset + 4] = _thumb_bl(
+                    target + offset, addresses[original + destination])
+        image[target:target + len(code)] = code
+    return bytes(image)
+
+
+def _ma5_literal_readback_image(relocation: int = 0) -> bytes:
+    spans = (
+        (0x138a10, 0x100, '90b5c0270024e443381cfff735f9002811db0006000e60280cd10137d02ff3d3d027381cfff728f9002804db0006000e3c2803d0201c90bc08bc18470137e02fefd30020f7e7'),
+        (0x137c88, 0x200, 'f0b5071c294809260068f6018019817801318170032001f0d7f901f0a1fa041c002805da00f08afe201cf0bc08bc18478025802f02d22f43381c13e0fc097806400e01239b039f4204d201f017fa2c43201c07e001f012fa6006400e01f00efab80b28430006000e01f008fa802001f005fa402001f03afa071c002802da00f05dfe11e0412001f09ff901f00dfa071c064800688119887801380006000e887002d1802001f090f9381cbee7d0128201'),
+        (0x139050, 0x400, '0a4a80b511680923db01c9180f7808701168c9184978012901d14006400e00f020f8381c80bc08bc18470000d0128201'),
+        (0x139174, 0x500, '90b5041c0027fff7afffff231a339f4208dd0420c043fff781ff0420c04390bc08bc184701372040edd00020f7e7'),
+        (0x1391e8, 0x600, '80b50027fff776ff084b9f4208dd0420c043fff749ff0420c04380bc08bc184701374008eed30020f7e7000028230000'),
+        (0x1390b2, 0x702, '084b80b41f680121002f064a00d1117011700021196009218905087080bc70470000b86db601327d8201'),
+        (0x1390dc, 0x72c, '074a012013680749002b03d10870087008700870087010600920800500787047b86db601327d8201'),
+        (0x139104, 0x754, '074b80b41f680121002f064a00d111701170002119600449087080bc70470000b86db601327d820180004002'),
+        (0x139130, 0x780, '074a012013680749002b03d10870087008700870087010600348007870470000b86db601327d820180004002'),
+        (0x13915c, 0x7ac, '002906d0034a02e00378013013700139fad2704780004002'),
+    )
+    addresses = {original: target + relocation for original, target, _ in spans}
+    addresses.update({0x139090: 0x1800 + relocation, 0x1389C4: 0x1802 + relocation})
+    image = bytearray(b"\xff" * (0x2000 + relocation))
+    for original, target, encoded in spans:
+        target += relocation
+        code = bytearray.fromhex(encoded)
+        for offset in range(0, len(code) - 3, 2):
+            destination = thumb_bl_target(code, offset)
+            if destination is not None:
+                code[offset:offset + 4] = _thumb_bl(
+                    target + offset, addresses[original + destination])
+        image[target:target + len(code)] = code
+    image[0x1800 + relocation:0x1802 + relocation] = b"\x70\x47"
+    return bytes(image)
 
 
 def _sequence_image(shift: int = 0) -> tuple[bytearray, dict[str, int]]:
@@ -333,6 +397,111 @@ class AudioTransportTests(unittest.TestCase):
             find_audio_transport(bytes(ma5))["reject_reason"],
             "marker-ambiguous",
         )
+
+    def test_experimental_ma5_readback_requires_closed_relocated_graph(self) -> None:
+        for relocation in (0, 0x100, 0x1000):
+            with self.subTest(relocation=relocation):
+                image = _ma5_readback_image(relocation)
+                profile = find_ma5_readback_candidate(image)
+                self.assertEqual(profile["static_status"], "candidate")
+                self.assertEqual((profile["base"], profile["data_offset"]),
+                                 (0x02A00000, 2))
+                for target in (0x1800, 0x1802, 0x1804, 0x1806):
+                    self.assertIn([target + relocation, 2], profile["nor_dependencies"])
+                self.assertEqual(profile["ram_dependencies"],
+                                 [[0x1010C88, 4], [0x14E1C94, 8]])
+                self.assertEqual(profile["sites"], {
+                    "write_0": [0x712 + relocation],
+                    "read_0": [0x730 + relocation],
+                    "write_2": [0x74E + relocation, 0x778 + relocation],
+                    "read_2": [0x79C + relocation],
+                })
+                detected = find_audio_transport(image)
+                self.assertEqual(detected["static_status"], "candidate")
+                self.assertEqual(detected["protocol_status"], "temporary-evidence-gated")
+                self.assertEqual(detected["base"], 0x02A00000)
+        image = _ma5_readback_image()
+        for offset in (0x116, 0x22A, 0x412, 0x730, 0x778, 0x71C):
+            with self.subTest(mutation=hex(offset)):
+                changed = bytearray(image)
+                changed[offset] ^= 1
+                self.assertEqual(find_ma5_readback_candidate(bytes(changed))["static_status"],
+                                 "rejected")
+        changed = bytearray(image)
+        changed[0x10A:0x10E] = _thumb_bl(0x10A, 0x204)
+        self.assertEqual(find_ma5_readback_candidate(bytes(changed))["static_status"], "rejected")
+        rebased = bytearray(image)
+        for offset in (0x70E, 0x72C, 0x74A, 0x76C, 0x798):
+            rebased[offset] = 0x14
+        self.assertEqual(find_ma5_readback_candidate(bytes(rebased))["base"], 0x02800000)
+        duplicate = bytearray(image + _ma5_readback_image())
+        second = _ma5_readback_image(len(image))
+        duplicate[len(image):] = second[len(image):]
+        self.assertEqual(find_ma5_readback_candidate(bytes(duplicate))["reject_reason"],
+                         "structural-ambiguous")
+
+    def test_ma5_literal_data_class_keeps_exact_roles_and_bounds(self) -> None:
+        for relocation in (0, 0x100, 0x1000):
+            with self.subTest(relocation=relocation):
+                image = _ma5_literal_readback_image(relocation)
+                profile = find_ma5_readback_candidate(image)
+                self.assertEqual(profile["static_status"], "candidate")
+                self.assertEqual((profile["base"], profile["data_offset"]),
+                                 (0x02400000, 128))
+                self.assertEqual(profile["sites"], {
+                    "write_0": [0x71C + relocation],
+                    "read_0": [0x748 + relocation],
+                    "write_128": [0x76C + relocation, 0x7B8 + relocation],
+                    "read_128": [0x79A + relocation],
+                })
+                self.assertEqual(profile["ram_dependencies"],
+                                 [[0x18212D0, 4], [0x1B66DB8, 4], [0x1827D32, 1]])
+                self.assertNotIn("poll_state", profile["structural_evidence"])
+                self.assertIn([0x1800 + relocation, 2], profile["nor_dependencies"])
+                detected = find_audio_transport(image)
+                self.assertEqual(detected["static_status"], "candidate")
+                self.assertEqual(detected["protocol_status"], "temporary-evidence-gated")
+        image = _ma5_literal_readback_image()
+        for offset in (0x116, 0x506, 0x60A, 0x71C, 0x748, 0x76C,
+                       0x7B8, 0x703, 0x724, 0x77C, 0x1800):
+            with self.subTest(mutation=hex(offset)):
+                changed = bytearray(image)
+                changed[offset] ^= 1
+                self.assertEqual(find_ma5_readback_candidate(bytes(changed))["static_status"],
+                                 "rejected")
+        for end in (0x1800, 0x7C2, 0x410):
+            self.assertEqual(find_ma5_readback_candidate(image[:end])["static_status"], "rejected")
+        changed = bytearray(image)
+        for offset in (0x77C, 0x7A8, 0x7C0):
+            struct.pack_into("<I", changed, offset, 0x02400004)
+        self.assertEqual(find_ma5_readback_candidate(bytes(changed))["static_status"], "rejected")
+        # Consistent physical rebase preserves the protocol and data delta.
+        changed = bytearray(image)
+        changed[0x718] = changed[0x744] = 10
+        for offset in (0x77C, 0x7A8, 0x7C0):
+            struct.pack_into("<I", changed, offset, 0x02800080)
+        self.assertEqual(find_ma5_readback_candidate(bytes(changed))["base"], 0x02800000)
+        combined = bytearray(image + _ma5_readback_image())
+        second = _ma5_readback_image(len(image))
+        combined[len(image):] = second[len(image):]
+        self.assertEqual(find_ma5_readback_candidate(bytes(combined))["reject_reason"],
+                         "structural-ambiguous")
+
+    def test_synthesized_base_stops_at_register_overwrite(self) -> None:
+        image = bytearray(b"\xff" * 0x80)
+        _access(image, 0x20, 0x02400000, 0, "write")
+        for instruction, expected in (
+            (0x4800, [0x24]),  # LDR r0, [PC] replaces the MMIO base.
+            (0x4A00, [0x24, 0x28]),  # LDR r2, [PC] preserves r0.
+            (0x7800, [0x24, 0x26]),  # LDRB r0, [r0] uses then replaces it.
+        ):
+            with self.subTest(instruction=hex(instruction)):
+                struct.pack_into("<2H", image, 0x26, instruction, 0x7001)
+                self.assertEqual(
+                    [site["offset"] for site in
+                     _synthesized_base_accesses(bytes(image))],
+                    expected,
+                )
 
     def test_repeated_status_requires_closed_accumulator_and_keeps_native_fallback(self) -> None:
         for immediate in (0x41, 0x49):

@@ -21,6 +21,171 @@ _SHIFTED_ORIENTATION_PREFIX = tuple(
 
 
 class PageProtocolMixin:
+    def _lcd_odd_page_clear_proof(self) -> None:
+        self._lcd_page_qualified = self._lcd_page_dirty = False
+        self._lcd_page_source_profile = self._lcd_page_port = None
+        self._lcd_page_current = self._lcd_page_last_finished = -1
+        self._lcd_page_column_high = None
+        self._lcd_page_column_ready = False
+        self._lcd_page_column = self._lcd_page_start_column = 0
+        self._lcd_page_data_count = self._lcd_page_row_bytes = 0
+        self._lcd_page_width = self._lcd_page_height = 0
+        self._lcd_page_candidate_rows = 0
+        self._lcd_page_bits_per_pixel = 1
+        self._lcd_page_geometry_rendered = False
+        self._lcd_page_seen.clear()
+        self._lcd_page_ram[:] = bytes(len(self._lcd_page_ram))
+
+    def _lcd_odd_page_reject(self, state: dict, reason: str) -> None:
+        state["rejected"], state["reason"] = True, reason
+        if state["acquired"]:
+            self._lcd_odd_page_clear_proof()
+            self._lcd_page_width_hint = state["prior_width_hint"]
+            state["acquired"] = False
+
+    def _lcd_odd_page_write(self, address: int, size: int, value: int) -> bool:
+        """Route only the unique source-bound byte page producer."""
+        state = getattr(self, "_lcd_odd_page_state", None)
+        owner = self._lcd_raw_streams
+        if state is None or state["owner"] is not owner:
+            if address not in (0x02000000, 0x02000001, 0x02000002, 0x02000003):
+                return False
+            from ....detection.mono_page import find_odd_byte_page_profile
+            image = getattr(self, "image", b"")
+            profile, reason = find_odd_byte_page_profile(image)
+            if profile is None:
+                from ....detection.byte_lane_page import find_byte_lane_page_profile
+                profile, reason = find_byte_lane_page_profile(image)
+            if profile and profile.get("class_name") == "descending-paired-byte-page128-v1":
+                loaded = getattr(self, "_lcd_page_loaded_image", image)
+                spans = profile["source_intervals"]
+                base, length = getattr(self.config, "ram_base", None), getattr(self.config, "ram_size", None)
+                if (type(base) is not int or type(length) is not int or
+                        not all(base <= a < b <= base + length for a, b in profile["ram_intervals"])):
+                    profile, reason = None, "paired-page-RAM-layout-unverified"
+                elif (not isinstance(loaded, bytes) or not spans or
+                      any(not 0 <= a < b <= min(len(image), len(loaded)) or
+                          image[a:b] != loaded[a:b] for a, b in spans)):
+                    profile, reason = None, "paired-page-loaded-source-mismatch"
+                elif loaded is not image and find_byte_lane_page_profile(loaded)[0] != profile:
+                    profile, reason = None, "paired-page-loaded-owner-mismatch"
+            if profile and (type(profile.get("page_step", 1)) is not int or
+                            profile.get("page_step", 1) not in (-1, 1)):
+                profile, reason = None, "source-page-step-unverified"
+            state = self._lcd_odd_page_state = {
+                "owner": owner, "profile": profile, "reason": reason,
+                "rejected": False, "blocked": False, "acquired": False,
+                "prior_width_hint": self._lcd_page_width_hint,
+                "icon": False, "high": None,
+                "column": None, "argument": None, "init_position": 0,
+                "icon_ram": bytearray(132), "icon_words": 0,
+            }
+        profile = state["profile"]
+        if profile is None or state["rejected"] or state["blocked"]:
+            return False
+        command, data = profile["command_port"], profile["data_port"]
+        if address not in (command, data):
+            if state["acquired"] and 0x02000000 <= address < 0x02001000:
+                self._lcd_page_finish_transfer()
+                self._lcd_odd_page_reject(state, "foreign-aperture-owner")
+            return False
+        if (self._lcd_page_qualified
+                and (not state["acquired"] or self._lcd_page_port != command)):
+            state["blocked"], state["reason"] = True, "qualified-foreign-page-owner"
+            return False
+        if size != profile["access_width"] or not 0 <= value <= 255:
+            self._lcd_odd_page_reject(state, "width-value-or-page-owner")
+            return False
+        prefix = profile.get("init_commands", ())
+        position = state["init_position"]
+        if (profile.get("page_step") == -1 and address == command and prefix
+                and value == prefix[0] and position == len(prefix)):
+            state.update(acquired=False, init_position=0, icon=False,
+                         high=None, column=None, argument=None)
+            position = 0
+        elif (profile.get("bits_per_pixel") == 2 and address == command
+              and self._lcd_page_data_count & 1):
+            self._lcd_odd_page_reject(state, "incomplete-page-plane-pair")
+            return False
+        if position < len(prefix):
+            if address != command or value != prefix[position]:
+                if position:
+                    self._lcd_odd_page_reject(state, "init-command-sequence-mismatch")
+                return False
+            state["init_position"] += 1
+        if not state["acquired"]:
+            if address != command:
+                return False
+            self._lcd_odd_page_clear_proof()
+            state["acquired"] = True
+        if address == command:
+            state["argument"] = None
+            if (profile.get("bits_per_pixel") == 2 and 0 <= value < 16
+                    and self._lcd_page_current >= 0 and self._lcd_page_column_high is not None
+                    and not 0 <= ((self._lcd_page_column_high << 4) | value) - profile["column_bias"] < profile["width"]):
+                self._lcd_odd_page_reject(state, "column-outside-source-viewport")
+                return False
+            if value == 0xB8 and profile["icon_page"] == 8:
+                self._lcd_page_finish_transfer()
+                self._lcd_page_current = -1
+                self._lcd_page_column_ready = False
+                self._lcd_page_data_count = 0
+                state.update(icon=True, high=None, column=None)
+                return True
+            if state["icon"]:
+                if 0x10 <= value <= 0x1F:
+                    state.update(high=value & 15, column=None)
+                    return True
+                if value < 16 and state["high"] is not None:
+                    state["column"] = state["high"] * 16 + value - profile["column_bias"]
+                    return True
+                state.update(icon=False, high=None, column=None)
+            argument = profile.get("init_data_argument")
+            if argument is not None and value == argument["command"]:
+                state["argument"] = argument["value"]
+            self._lcd_page_begin_command(address, size, value,
+                                         byte_wide=True, source_profile=profile)
+            return True
+        if state["argument"] is not None:
+            expected, state["argument"] = state["argument"], None
+            if value != expected:
+                self._lcd_odd_page_reject(state, "init-argument-mismatch")
+            return True
+        if state["icon"]:
+            column = state["column"]
+            if column is not None and 0 <= column < len(state["icon_ram"]):
+                state["icon_ram"][column] = value
+                state["column"] += 1
+                state["icon_words"] += 1
+            else:
+                self._lcd_odd_page_reject(state, "icon-column-unaddressed-or-overflow")
+            return True
+        if (self._lcd_page_column_ready
+                and not 0 <= self._lcd_page_column < profile.get("column_capacity", profile["width"])):
+            self._lcd_odd_page_reject(state, "main-column-overflow")
+            return False
+        if profile.get("bits_per_pixel") == 2 and not self._lcd_page_column_ready:
+            self._lcd_odd_page_reject(state, "data-without-page-column")
+            return False
+        self._lcd_page_feed_data(address, size, value)
+        return True
+
+    def odd_page_snapshot(self) -> dict[str, object]:
+        state = getattr(self, "_lcd_odd_page_state", {})
+        result = {"source_bound": state.get("profile") is not None,
+                "rejected": state.get("rejected", False),
+                "blocked": state.get("blocked", False),
+                "reason": state.get("reason", "source-not-observed"),
+                "icon_words": state.get("icon_words", 0),
+                "icon_bytes": bytes(state.get("icon_ram", b"")),
+                "main_raster": ((state["profile"]["width"], state["profile"]["height"])
+                                if state.get("profile") else None),
+                "optical_polarity": None}
+        if (state.get("profile") or {}).get("bits_per_pixel") == 2:
+            result.update(logical_y_reverse=True, logical_plane_weights=[2, 1],
+                          physical_calibration=None)
+        return result
+
     def _lcd_observe_shifted_orientation(self, address: int, size: int,
                                          value: int) -> None:
         # shortcut: exact captured scanout grammar until independent
@@ -209,6 +374,10 @@ class PageProtocolMixin:
                 cache[key] = shades
         framebuffer = self.framebuffer
         width = self.config.width
+        profile = getattr(self, "_lcd_page_source_profile", None)
+        if profile and profile.get("logical_y_reverse") is True:
+            page = self.config.height // 8 - 1 - page
+            shades = shades[::-1]
         offset = (page * 8 * width + column) * 3
         stride = width * 3
         end = offset + stride * 8
@@ -256,6 +425,9 @@ class PageProtocolMixin:
                     panel.flush()
         if not self._lcd_page_dirty:
             return
+        profile = getattr(self, "_lcd_page_source_profile", None)
+        if profile and profile.get("bits_per_pixel") == 2 and self._lcd_page_data_count & 1:
+            return
         changed = self._lcd_page_render_current()
         self._lcd_page_dirty = False
         if changed:
@@ -266,37 +438,53 @@ class PageProtocolMixin:
         """Close a page transfer when firmware selects the next command."""
         page = self._lcd_page_current
         count = self._lcd_page_data_count
+        if page < 0:
+            self._lcd_page_data_count = 0
+            self._lcd_page_dirty = False
+            return
         whole_row = (self._lcd_page_start_column == 0 and count in (128, 256))
+        profile = getattr(self, "_lcd_page_source_profile", None)
+        step = profile.get("page_step", 1) if profile else 1
         if whole_row:
             if not self._lcd_page_row_bytes:
                 self._lcd_page_row_bytes = count
+                profile = getattr(self, "_lcd_page_source_profile", None)
                 (self._lcd_page_width,
-                 self._lcd_page_bits_per_pixel) = self._lcd_page_layout(
-                    count, self._lcd_page_width_hint
+                 self._lcd_page_bits_per_pixel) = (
+                    (profile["width"], profile.get("bits_per_pixel", 1)) if profile
+                    else self._lcd_page_layout(count, self._lcd_page_width_hint)
                 )
                 self._lcd_page_candidate_rows = 1
             elif (count == self._lcd_page_row_bytes
-                  and page == self._lcd_page_last_finished + 1):
+                  and page == self._lcd_page_last_finished + step):
                 self._lcd_page_candidate_rows += 1
             elif count == self._lcd_page_row_bytes:
                 self._lcd_page_candidate_rows = 1
             elif not self._lcd_page_qualified:
                 self._lcd_page_row_bytes = count
+                profile = getattr(self, "_lcd_page_source_profile", None)
                 (self._lcd_page_width,
-                 self._lcd_page_bits_per_pixel) = self._lcd_page_layout(
-                    count, self._lcd_page_width_hint
+                 self._lcd_page_bits_per_pixel) = (
+                    (profile["width"], profile.get("bits_per_pixel", 1)) if profile
+                    else self._lcd_page_layout(count, self._lcd_page_width_hint)
                 )
                 self._lcd_page_candidate_rows = 1
             self._lcd_page_last_finished = page
-            if self._lcd_page_candidate_rows >= 2:
+            profile = getattr(self, "_lcd_page_source_profile", None)
+            required = profile.get("required_pages", 8) if profile else 2
+            if self._lcd_page_candidate_rows >= required:
                 self._lcd_page_qualified = True
         elif count and not self._lcd_page_qualified:
             self._lcd_page_candidate_rows = 0
         self._lcd_page_flush_current()
 
     def _lcd_page_begin_command(self, address: int, size: int, value: int,
-                                *, byte_wide: bool = False) -> bool:
+                                *, byte_wide: bool = False,
+                                source_profile: dict | None = None) -> bool:
         """Recognise a page-LCD command grammar on its command port."""
+        owner = getattr(self, "_lcd_page_source_profile", None)
+        if self._lcd_page_qualified and owner and address != owner["command_port"]:
+            return False
         if (size not in (1, 2) or (size == 2 and value > 0xFF)
                 or (byte_wide and size != 1)):
             return False
@@ -304,6 +492,14 @@ class PageProtocolMixin:
         if 0xB0 <= command <= 0xBF:
             self._lcd_page_finish_transfer()
             page = command & 0x0F
+            self._lcd_page_source_profile = source_profile
+            if source_profile is not None:
+                if page not in source_profile["main_pages"]:
+                    self._lcd_page_current = -1
+                    self._lcd_page_column_ready = False
+                    return False
+                self._lcd_page_width_hint = source_profile["width"]
+                self._lcd_page_height = source_profile["height"]
             self._lcd_page_current = page
             self._lcd_page_port = address
             self._lcd_page_column_high = None
@@ -312,7 +508,7 @@ class PageProtocolMixin:
             self._lcd_page_start_column = 0
             self._lcd_page_data_count = 0
             self._lcd_page_seen.add(page)
-            if page >= 8:
+            if source_profile is None and page >= 8:
                 self._lcd_page_height = 128
             elif (page == 0 and not self._lcd_page_height
                   and all(index in self._lcd_page_seen for index in range(8))):
@@ -323,7 +519,7 @@ class PageProtocolMixin:
         if (self._lcd_page_current < 0 or self._lcd_page_port != address):
             return False
         if 0x10 <= command <= 0x1F:
-            if byte_wide and command != 0x10:
+            if byte_wide and source_profile is None and command != 0x10:
                 self._lcd_page_finish_transfer()
                 self._lcd_page_current = -1
                 self._lcd_page_port = None
@@ -336,7 +532,7 @@ class PageProtocolMixin:
             self._lcd_page_column_ready = False
             return True
         if 0x00 <= command <= 0x0F and self._lcd_page_column_high is not None:
-            if byte_wide and (command or self._lcd_page_column_high):
+            if byte_wide and source_profile is None and (command or self._lcd_page_column_high):
                 self._lcd_page_finish_transfer()
                 self._lcd_page_current = -1
                 self._lcd_page_port = None
@@ -347,6 +543,11 @@ class PageProtocolMixin:
             self._lcd_page_start_column = (
                 self._lcd_page_column_high << 4 | command & 0x0F
             )
+            if source_profile is not None:
+                self._lcd_page_start_column -= source_profile["column_bias"]
+                if not 0 <= self._lcd_page_start_column < source_profile["width"]:
+                    self._lcd_page_column_ready = False
+                    return False
             self._lcd_page_column = self._lcd_page_start_column * (
                 self._lcd_page_bits_per_pixel if self._lcd_page_qualified else 1
             )
@@ -366,8 +567,11 @@ class PageProtocolMixin:
 
     def _lcd_page_feed_data(self, address: int, size: int, value: int) -> bool:
         """Record page-RAM data and consume it once the grammar is proven."""
+        profile = getattr(self, "_lcd_page_source_profile", None)
+        data_port = profile["data_port"] if profile else (
+            self._lcd_page_port + 4 if self._lcd_page_port is not None else None)
         if (self._lcd_page_port is None
-                or address != self._lcd_page_port + 4
+                or address != data_port
                 or size not in (1, 2)
                 or (size == 2 and value > 0xFF)
                 or (self._lcd_page_port == 0x02000000 and size != 1
@@ -376,11 +580,16 @@ class PageProtocolMixin:
                 or not self._lcd_page_column_ready):
             return False
         column = self._lcd_page_column
-        if 0 <= column < 256:
+        if 0 <= column < (profile.get("column_capacity", profile["width"]) if profile else 256):
             self._lcd_page_ram[self._lcd_page_current * 256 + column] = value & 0xFF
             self._lcd_page_dirty = True
         self._lcd_page_column += 1
         self._lcd_page_data_count += 1
+        if (profile and profile.get("init_row_bytes") == self._lcd_page_data_count
+                and self._lcd_page_current == profile["main_pages"][-1]
+                and self._lcd_page_last_finished == self._lcd_page_current - profile.get("page_step", 1)
+                and self._lcd_page_candidate_rows + 1 >= profile["required_pages"]):
+            self._lcd_page_qualified = True
         return self._lcd_page_qualified
 
     def _lcd_lowbyte_page_reset(self, *, replay: bool) -> None:

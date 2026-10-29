@@ -16,6 +16,9 @@ class DisplayControllerMixin:
 
     def _publish_frame(self, *, firmware_originated: bool = True) -> None:
         """Atomically expose only a complete scanout to the GUI thread."""
+        if (getattr(self, "_lcd_source_window_owned", False)
+                and not getattr(self, "_lcd_source_window_publishing", False)):
+            return
         frame = bytes(self.framebuffer)
         with self._display_lock:
             self.display_frame = frame
@@ -29,11 +32,22 @@ class DisplayControllerMixin:
     def display_snapshot(self) -> tuple[int, int, bytes]:
         """Return a geometry/frame triple which is safe for a GUI consumer."""
         with self._display_lock:
+            source_window = getattr(self, "_lcd_source_window_panel", None)
+            if (getattr(self, "_lcd_source_window_owned", False)
+                    and source_window is not None and source_window.sequence):
+                return source_window.width, source_window.height, source_window.frame
             segmented = getattr(self, "_lcd_segmented_panel", None)
             if segmented is not None:
                 candidate = segmented.scanout_snapshot()
                 if candidate is not None:
                     return segmented.width, segmented.height, candidate
+            for name in ("_lcd_packed_cursor12_panel", "_lcd_packed2_panel", "_lcd_split18_panel", "_lcd_split565_panel", "_lcd_fa_direct_panel"):
+                panel = getattr(self, name, None)
+                if panel is not None:
+                    snapshot = panel.snapshot()
+                    if (snapshot["qualified"] and not snapshot.get("rejection")
+                            and self._parallel_panel_owns_display(snapshot)):
+                        return snapshot["width"], snapshot["height"], snapshot["frame"]
             window = getattr(self, "_lcd_window_panel", None)
             if window is not None and window.qualified and window.rejection is None:
                 return window.width, window.height, window.frame
@@ -98,11 +112,123 @@ class DisplayControllerMixin:
     def window_panel_snapshot(self) -> dict[str, object]:
         """Expose temporary retained-window admission independently of native state."""
         with self._display_lock:
+            source = getattr(self, "_lcd_source_window_panel", None)
+            if source is not None:
+                return {"class": "source-copied-half128", "admitted": True,
+                        "qualified": source.qualified,
+                        "owned": getattr(self, "_lcd_source_window_owned", False),
+                        "rejection": source.rejection, "sequence": source.sequence,
+                        "optical_properties": None}
             panel = getattr(self, "_lcd_window_panel", None)
             return {"class": "temporary-retained-window", "admitted": panel is not None,
                     "qualified": bool(panel and panel.qualified),
                     "rejection": panel.rejection if panel else None,
                     "sequence": panel.sequence if panel else 0}
+
+    def _lcd_bind_source_window(self, original: bytes, loaded: bytes, *,
+                                ram_claimed: bool = False) -> None:
+        """Stage a source candidate; only a complete bus raster acquires ownership."""
+        from ...detection.copied_window import find_copied_window_profile
+        from .window_panel import WindowPanel
+
+        self._lcd_source_window_panel = None
+        self._lcd_source_window_owned = False
+        self._lcd_source_window_reason = "source-layout-unverified"
+        cfg = self.config
+        if (not isinstance(original, bytes) or not isinstance(loaded, bytes)
+                or getattr(cfg, "image_kind", None) != "firmware"
+                or any(type(getattr(cfg, field, None)) is not int
+                       for field in ("load_address", "image_offset", "entry",
+                                     "flash_size", "ram_base", "ram_size"))
+                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0)
+                or not 0 < cfg.flash_size <= 0xFFFFFFFF
+                or len(loaded) != getattr(cfg, "flash_size", None)
+                or len(original) < len(loaded)):
+            return
+        profile, reason = find_copied_window_profile(original)
+        self._lcd_source_window_reason = reason
+        if profile is None:
+            return
+        if (ram_claimed or getattr(cfg, "ram_bootstrap_profile", None) is not None
+                or getattr(cfg, "missing_overlays", None)):
+            self._lcd_source_window_reason = "source-memory-owner-unclosed"
+            return
+        if ((cfg.width, cfg.height) != (128, 128)
+                and getattr(cfg, "display_geometry_source", "external-config") != "auto-default"):
+            self._lcd_source_window_reason = "source-geometry-owner-conflict"
+            return
+        for field, begin, end in (
+                ("ram_intervals", cfg.ram_base, cfg.ram_base + cfg.ram_size),
+                ("iram_intervals", 0x03800000, 0x03A00000)):
+            spans = profile.get(field)
+            if (not isinstance(spans, (list, tuple)) or not spans
+                    or any(not isinstance(span, (list, tuple)) or len(span) != 2
+                           or any(type(v) is not int for v in span)
+                           or not begin <= span[0] < span[1] <= end for span in spans)):
+                self._lcd_source_window_reason = "source-" + field + "-unverified"
+                return
+        for field in ("code_intervals", "literal_intervals", "data_intervals", "boot_guard_intervals"):
+            spans = profile.get(field)
+            if (not isinstance(spans, (list, tuple)) or not spans
+                    or any(not isinstance(span, (list, tuple)) or len(span) != 2
+                           or any(type(v) is not int for v in span)
+                           or not 0 <= span[0] < span[1] <= len(loaded)
+                           or original[span[0]:span[1]] != loaded[span[0]:span[1]]
+                           for span in spans)):
+                self._lcd_source_window_reason = "source-loaded-bytes-unverified"
+                return
+        current, _ = find_copied_window_profile(loaded)
+        if current != profile:
+            self._lcd_source_window_reason = "source-loaded-owner-mismatch"
+            return
+        if (profile.get("signature") != "copied-byte-range-half128-v1"
+                or profile.get("admission") != "temporary-evidence-gated"
+                or profile.get("role") != "main"
+                or profile.get("protocol") != "copied-half128"
+                or (profile.get("command_port"), profile.get("data_port"),
+                    profile.get("command_width"), profile.get("access_width"),
+                    profile.get("width"), profile.get("height")) !=
+                   (0x02000000, 0x02000002, 1, 2, 128, 128)):
+            self._lcd_source_window_reason = "source-register-contract-unclosed"
+            return
+        try:
+            self._lcd_source_window_panel = WindowPanel(
+                profile["command_port"], profile["width"], profile["height"],
+                protocol=profile["protocol"], source_init=tuple(profile["init_commands"]),
+                source_controls=tuple(tuple(v) for v in profile["opaque_control_sequences"]))
+        except (KeyError, TypeError, ValueError):
+            self._lcd_source_window_reason = "source-window-profile-malformed"
+            return
+        self._lcd_source_window_reason = "static-source-candidate-awaiting-full-raster"
+
+    def _lcd_source_window_write(self, address: int, size: int, value: int) -> bool:
+        panel = getattr(self, "_lcd_source_window_panel", None)
+        if panel is None or address not in (panel.port, panel.port + 2):
+            return False
+        owned = getattr(self, "_lcd_source_window_owned", False)
+        with self._display_lock:
+            before = panel.sequence
+            panel.write(address, size, value)
+            commit = panel.sequence != before and panel.qualified and panel.rejection is None
+            frame = panel.frame if commit else None
+        if commit:
+            if not owned:
+                self._set_display_geometry(128, 128, source="runtime:source-copied-half128")
+                if (self.config.width, self.config.height) != (128, 128):
+                    self._lcd_source_window_reason = "source-geometry-owner-conflict"
+                    self._lcd_source_window_panel = None
+                    return False
+                self._lcd_source_window_owned = owned = True
+            with self._display_lock:
+                self.framebuffer[:] = frame
+            self._lcd_protocol = "source-copied-half128"
+            self._lcd_source_window_publishing = True
+            try:
+                self._publish_frame()
+            finally:
+                self._lcd_source_window_publishing = False
+            self._lcd_source_window_reason = "complete-source-window"
+        return owned
 
     def secondary_display_snapshot(self) -> dict[str, object] | None:
         panel = getattr(self, "_lcd_secondary_panel", None)
@@ -136,6 +262,9 @@ class DisplayControllerMixin:
     def _set_display_geometry(self, width: int, height: int, *,
                               source: str, force: bool = False) -> None:
         """Adopt a controller-proven panel geometry before its first visible frame."""
+        if (getattr(self, "_lcd_source_window_owned", False)
+                and source != "runtime:source-copied-half128"):
+            return
         current_source = getattr(self.config, "display_geometry_source",
                                  "external-config")
         if (width, height) == (self.config.width, self.config.height):
@@ -210,6 +339,11 @@ class DisplayControllerMixin:
             self._set_display_geometry(*geometry, source="runtime:lgfa")
 
     def _flush_indexed_frame(self) -> None:
+        with self._display_lock:
+            for name in ("_lcd_packed_cursor12_panel", "_lcd_packed2_panel", "_lcd_split18_panel", "_lcd_split565_panel", "_lcd_fa_direct_panel"):
+                panel = getattr(self, name, None)
+                if panel is not None:
+                    panel.flush()
         if self._lcd_indexed_dirty:
             self._publish_frame()
             self._lcd_indexed_dirty = False
@@ -325,8 +459,79 @@ class DisplayControllerMixin:
         elif gram_cursor_stream:
             self._lcd_promote_gram_geometry()
 
+    def _parallel_panel_owns_display(self, state: dict[str, object]) -> bool:
+        source = getattr(self.config, "display_geometry_source", "external-config")
+        return (source == "auto-default" or source.startswith("runtime:")
+                or (state["width"], state["height"]) == (self.config.width, self.config.height))
+
+    def parallel_candidates_snapshot(self) -> dict[str, object]:
+        names = ("packed_cursor12", "packed2", "split18", "split565", "fa_direct")
+        result = {name: {"qualified": False,
+                         "static_reason": getattr(self, "_lcd_" + name + "_reason", "not-initialized")}
+                  for name in names}
+        panels = [(name, getattr(self, "_lcd_" + name + "_panel", None)) for name in names]
+        if not any(panel is not None for _, panel in panels):
+            return result
+        with self._display_lock:
+            for name, panel in panels:
+                if panel is not None:
+                    state = panel.snapshot()
+                    result[name].update({key: state.get(key) for key in (
+                        "qualified", "width", "height", "port", "sequence", "rejection", "observation")})
+                    owner = self._parallel_panel_owns_display(state)
+                    result[name]["display_owner"] = bool(state["qualified"] and not state.get("rejection") and owner)
+                    result[name]["ownership_reason"] = "compatible-geometry" if owner else "explicit-geometry-mismatch"
+        return result
+
+    def direct_cursor_snapshot(self) -> dict[str, object]:
+        return {"class": "ordered-16-17-packed21", "stage": getattr(self, "_lcd_packed_cursor_stage", 0),
+                "accepted": getattr(self, "_lcd_packed_cursor_accepts", 0),
+                "reason": getattr(self, "_lcd_packed_cursor_reason", "setup-incomplete")}
+
+    def _lcd_packed_cursor_data(self, address: int, size: int, value: int) -> bool:
+        """Keep packed XY separate from the scalar 0x20/0x21 dialect."""
+        if address != 0x02000002:
+            return False
+        if size != 2 or self._lcd_protocol != "parallel-2":
+            self._lcd_packed_cursor_stage = 0
+            self._lcd_packed_cursor_reason = "unsupported-bus"
+            return False
+        command = self._lcd_command
+        stage = getattr(self, "_lcd_packed_cursor_stage", 0)
+        if command == 1:
+            stage = 1 if value == 0x0113 else 0
+        elif command == 2:
+            stage = 2 if stage == 1 and value == 0x0700 else 0
+        elif command == 5:
+            stage = 3 if stage >= 2 and value in (0x1030, 0x1230) else 0
+        elif command == 0:
+            stage = 0
+        self._lcd_packed_cursor_stage = stage
+        if command != 0x21 or stage != 3:
+            self._lcd_packed_cursor_reason = "setup-closed" if stage == 3 else "setup-incomplete"
+            return False
+        # shortcut: two independently observed entry modes until more classes close.
+        if (self._lcd_window_axis_mask != 0xF or self._lcd_x != [0, 127]
+                or self._lcd_y not in ([0, 159], [0, 175])
+                or self.config.width != 128 or self.config.height not in (160, 176)
+                or (self.config.height == 176 and self._lcd_y != [0, 175])):
+            self._lcd_packed_cursor_reason = "viewport-not-closed"
+            return False
+        x, y = value & 0xFF, value >> 8 & 0xFF
+        if not 0 <= value <= 0xFFFF or x >= self.config.width or y >= self.config.height:
+            self._lcd_packed_cursor_reason = "cursor-outside-viewport"
+            return False
+        self._lcd_cursor[:] = [x, y]
+        self._lcd_gram_cursor[:] = [x, y]
+        self._lcd_gram_addressed = True
+        self._lcd_packed_cursor_accepts = getattr(self, "_lcd_packed_cursor_accepts", 0) + 1
+        self._lcd_packed_cursor_reason = "packed-xy"
+        return True
+
     def _lcd_feed_data(self, address: int, size: int, value: int) -> None:
         """Consume one controller data word shared by the parallel transports."""
+        if self._lcd_packed_cursor_data(address, size, value):
+            return
         value &= 0xFFFF
         source = getattr(
             self.config, "display_geometry_source", "external-config"
@@ -454,8 +659,15 @@ class DisplayControllerMixin:
             return
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        if self._lcd_source_window_write(address, size, value):
+            return
         self._lcd_observe_shifted_orientation(address, size, value)
         self._lcd_packed_window_observe(address, size, value)
+        with self._display_lock:
+            for name in ("_lcd_packed_cursor12_panel", "_lcd_packed2_panel", "_lcd_split18_panel", "_lcd_split565_panel", "_lcd_fa_direct_panel"):
+                panel = getattr(self, name, None)
+                if panel is not None:
+                    panel.write(address, size, value)
         indexed = getattr(self, "_lcd_indexed_byte_panel", None)
         if indexed is not None:
             with self._display_lock:
@@ -515,21 +727,51 @@ class DisplayControllerMixin:
             elif address in (primary_port, primary_port + 4):
                 commands.clear()
         pending = []
+        if panel is not None and getattr(panel, "source_profile", None) is not None:
+            profile = panel.source_profile
+            if not panel.source_validated and panel.rejection is None:
+                loaded = getattr(self, "_lcd_page_loaded_image", self.image)
+                base, length = getattr(self.config, "ram_base", None), getattr(self.config, "ram_size", None)
+                descriptor = profile["descriptor"]
+                if (not isinstance(loaded, bytes) or type(base) is not int or type(length) is not int
+                        or not base <= descriptor < descriptor + 0x2c4 <= base + length
+                        or any(not 0 <= a < b <= min(len(self.image), len(loaded))
+                               or self.image[a:b] != loaded[a:b]
+                               for a, b in profile["source_intervals"])):
+                    panel.rejection = "source-or-ram-owner-unverified"
+                else:
+                    panel.source_validated = True
+            if address == panel.port and size == 2 and value == 0:
+                # Source-owned bus reinitialization requires fresh page proof.
+                self._lcd_secondary_panel = type(panel)(panel.port, profile)
+                panel = None
+            elif not panel.started:
+                if address == panel.port and size == 1 and value == 0xe2 and panel.rejection is None:
+                    panel.started = True
+                else:
+                    panel = None
+            elif address not in (panel.port, panel.port + panel.data_offset):
+                panel = None
         if panel is not None:
             with self._display_lock:
-                if panel.committed and address in (panel.port, panel.port + 4):
-                    # Rejected committed traffic still belongs to this panel.
-                    if panel.rejection is None:
-                        panel.write(address, size, value)
-                    return
+                data_port = panel.port + getattr(panel, "data_offset", 4)
+                if panel.committed and address in (panel.port, data_port):
+                    if getattr(panel, "source_profile", None) is None:
+                        # Preserve the legacy panel's committed ownership.
+                        if panel.rejection is None:
+                            panel.write(address, size, value)
+                        return
+                    if panel.rejection is None and panel.write(address, size, value):
+                        return
+                    panel.committed = False
                 if (panel.rejection is None
-                        and (panel.pending or address in (panel.port, panel.port + 4))):
-                    secondary = address in (panel.port, panel.port + 4)
+                        and (panel.pending or address in (panel.port, data_port))):
+                    secondary = address in (panel.port, data_port)
                     panel.pending.append((address, size, value))
                     accepted = secondary and panel.write(address, size, value)
                     if not secondary:
                         panel.rejection = "interleaved ports before page qualification"
-                    if len(panel.pending) > 1024:
+                    if len(panel.pending) > getattr(panel, "pending_limit", 1024):
                         panel.rejection = "page qualification budget exceeded"
                         accepted = False
                     if accepted:
@@ -591,6 +833,10 @@ class DisplayControllerMixin:
 
     def _lcd_route_write(self, uc: Uc, access: int, address: int, size: int,
                          value: int, user_data: object) -> None:
+        if (address in (0x02000000, 0x02000001, 0x02000002, 0x02000003)
+                or getattr(self, "_lcd_odd_page_state", {}).get("profile")):
+            if self._lcd_odd_page_write(address, size, value):
+                return
         selector_refresh_order = (0x02, 0x03, 0x04, 0x05, 0x15, 0x0E)
         reacquire = getattr(self, "_lcd_selector_reacquire_index", None)
         if not getattr(self, "_lcd_selector_reacquire_replaying", False):

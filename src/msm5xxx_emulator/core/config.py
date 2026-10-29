@@ -128,8 +128,14 @@ class FirmwareConfig:
     audio_transport: dict[str, object] | None = None
     eeprom_static_capacity: int | None = None
     ready_poll: dict[str, object] | None = None
+    uart_console: dict[str, object] | None = None
     dc0_board_adc_profile: dict[str, object] | None = None
     sbi_bootstrap_profile: dict[str, object] | None = None
+    ram_bootstrap_profile: dict[str, object] | None = None
+    native_nand_profile: dict[str, object] | None = None
+    boot_keysense_release: dict[str, object] | None = None
+    spi_nv_profile: dict[str, object] | None = None
+    rex_basic_irq_profile: dict[str, object] | None = None
     uis_idle_entry_address: int | None = None
     uis_idle_body_address: int | None = None
 

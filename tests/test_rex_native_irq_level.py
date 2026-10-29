@@ -22,6 +22,7 @@ typedef struct {
     uint16_t rex_irq_pending[3];
     bool rex_irq_c80, rex_irq_read_consume, rex_irq_route_active;
     bool rex_irq_level, irq_level;
+    bool ma5_irq_configured, ma5_irq_qualified, ma5_irq_level;
     unsigned rex_irq_assertions;
     bool *cpu_irq;
 } MSM5xxxPOCMachineState;
@@ -62,6 +63,16 @@ int main(void) {
     msm5xxx_poc_rex_irq_update(&s); assert(!cpu);
     s.irq_level = true;
     msm5xxx_poc_rex_irq_update(&s); assert(cpu && !s.rex_irq_level);
+    s.irq_level = false; s.ma5_irq_level = true;
+    msm5xxx_poc_rex_irq_update(&s); assert(!cpu); /* Default off. */
+    s.ma5_irq_configured = true; s.rex_irq_route_active = true;
+    msm5xxx_poc_rex_irq_update(&s); assert(!cpu); /* Live gate required. */
+    s.ma5_irq_qualified = true;
+    msm5xxx_poc_rex_irq_update(&s); assert(cpu);
+    s.rex_irq_route_active = false;
+    msm5xxx_poc_rex_irq_update(&s); assert(!cpu);
+    s.irq_level = true;
+    msm5xxx_poc_rex_irq_update(&s); assert(cpu); /* Other source survives. */
     return 0;
 }
 '''
