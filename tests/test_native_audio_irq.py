@@ -8,7 +8,7 @@ import unittest
 class NativeAudioIRQTests(unittest.TestCase):
     def test_live_gate_threshold_mask_ack_and_peer_preservation(self):
         repo = Path(__file__).resolve().parents[1]
-        source = (repo / 'experiments/qemu-tcg/msm5xxx-poc.c').read_text()
+        source = (repo / 'native/qemu/msm5xxx-poc.c').read_text()
         functions = []
         for signature in ('static bool msm5xxx_poc_ma2_irq_gate(',
                           'static uint8_t msm5xxx_poc_ma2_fifo_flags(',
@@ -128,7 +128,7 @@ int main(void) {
             path = Path(directory)
             (path / 'check.c').write_text(code)
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',
-                            '-I', str(repo / 'experiments/qemu-tcg'),
+                            '-I', str(repo / 'native/qemu'),
                             str(path / 'check.c'),'-o',str(path / 'check')], check=True)
             subprocess.run([str(path / 'check')], check=True)
 

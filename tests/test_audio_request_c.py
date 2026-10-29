@@ -6,7 +6,7 @@ from pathlib import Path
 
 class TestAudioRequestC(unittest.TestCase):
     def test_sequence_timer0_raw_mirrors(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''#include "msm5xxx-audio-request.h"
 #include <assert.h>
 #include <stddef.h>
@@ -74,7 +74,7 @@ int main(void){
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_sequence_timer_pair_raw_mirrors(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''#include "msm5xxx-audio-request.h"
 #include <assert.h>
 #include <stdio.h>
@@ -221,7 +221,7 @@ int main(void)
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_timed_packet_streams(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
         #include <assert.h>
         #include <stddef.h>
@@ -336,7 +336,7 @@ int main(void)
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_sequence_packet_consumer(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
         #include <assert.h>
         #include <string.h>
@@ -511,7 +511,7 @@ int main(void)
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_partial_packet_consumer(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
         #include <assert.h>
         #include <stddef.h>
@@ -786,7 +786,7 @@ int main(void)
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_command_packet_streams_and_reset(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
         #include <assert.h>
         #include <stddef.h>
@@ -908,7 +908,7 @@ int main(void)
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_typed_request_boundaries_and_restart(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
         #include <assert.h>
         #include <stddef.h>

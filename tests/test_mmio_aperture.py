@@ -11,7 +11,7 @@ from unicorn import (Uc, UC_ARCH_ARM, UC_MEM_READ_UNMAPPED, UC_MEM_WRITE_UNMAPPE
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
                                UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2)
 
-from msm5xxx import (ARM_MEMORY_CLEAR_CHUNK_SIGNATURE,
+from msm5xxx_emulator.legacy_api import (ARM_MEMORY_CLEAR_CHUNK_SIGNATURE,
                      BUSY_DELAY_REGISTER_SIGNATURE, GenericMSMEmulator,
                      HostBackendFault, LCD_MMIO_PRIMARY_COMMAND_SIZE,
                      LCD_MMIO_PRIMARY_END, LCD_MMIO_PRIMARY_START,

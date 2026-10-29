@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-import boot_probe
-from boot_probe import boot_event, boot_phase, firmware_visible_frame
+from msm5xxx_emulator.probe import boot as boot_probe
+from msm5xxx_emulator.probe.boot import boot_event, boot_phase, firmware_visible_frame
 
 
 class BootProbePhaseTests(unittest.TestCase):

@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import deque
 import unittest
 
-from msm5xxx import GenericMSMEmulator
+from msm5xxx_emulator.legacy_api import GenericMSMEmulator
 
 
 class ControlSinkTests(unittest.TestCase):

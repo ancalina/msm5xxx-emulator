@@ -20,14 +20,9 @@ from msm5xxx_emulator.detection.boot import (
 )
 
 
-EXPERIMENT = Path(__file__).parents[1] / "experiments/qemu-tcg"
-sys.path.insert(0, str(EXPERIMENT))
-SPEC = importlib.util.spec_from_file_location(
-    "qemu_live_display", EXPERIMENT / "live-display.py"
-)
-assert SPEC is not None and SPEC.loader is not None
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+NATIVE = Path(__file__).parents[1] / "native/qemu"
+TRANSPORT_SOURCE = Path(__file__).parents[1] / "src/msm5xxx_emulator/qemu/transport.py"
+MODULE = importlib.import_module("msm5xxx_emulator.qemu.live_display")
 
 
 class QEMUInputTransportTests(unittest.TestCase):
@@ -86,7 +81,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertEqual(transport.sideband_held, set())
 
     def test_gdb_remote_tcp_nodelay_preserves_stream_contract(self):
-        from gdb_remote import Remote
+        from msm5xxx_emulator.qemu.gdb_remote import Remote
 
         families = [MODULE.socket.AF_INET, MODULE.socket.AF_INET6, None]
         if hasattr(MODULE.socket, "AF_UNIX"):
@@ -138,7 +133,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                          promotion='temporary-evidence-gated',
                          runtime_admitted=False, default_level=None, physical_role=None)
         helper = MODULE.qemu_halfword_status_property
-        with mock.patch('qemu_transport.resolve_indirect_board_status',
+        with mock.patch('msm5xxx_emulator.qemu.transport.resolve_indirect_board_status',
                         return_value=(candidate,'static-candidate',[])) as resolver:
             for profile in (None, dict(matrix, promotion=None),
                             dict(matrix, grammar='indirect-halfword-six-row-v1')):
@@ -172,7 +167,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             resolver.return_value=(None,'ambiguous-status-helpers',[])
             self.assertEqual(helper(image,0,matrix,16),(None,'ambiguous-status-helpers'))
         # Proves level16 passes only constructor argument validation. No runtime starts.
-        with mock.patch('qemu_transport.detect',side_effect=RuntimeError('detect-sentinel')) as detector:
+        with mock.patch('msm5xxx_emulator.qemu.transport.detect',side_effect=RuntimeError('detect-sentinel')) as detector:
             with self.assertRaisesRegex(RuntimeError,'detect-sentinel'):
                 MODULE.Transport(Path('unused'),Path('unused'),experimental_halfword=True,
                                  experimental_status_level=16)
@@ -672,7 +667,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                       descriptor=0x1000000, queue_sink="0x500")
         candidate = dict(descriptor=0x1000000, queue_sink=0x500)
         helper = MODULE.qemu_halfword_status_property
-        with mock.patch('qemu_transport.resolve_indirect_board_status',
+        with mock.patch('msm5xxx_emulator.qemu.transport.resolve_indirect_board_status',
                         return_value=(candidate, 'static-candidate', [])) as resolver:
             self.assertEqual(helper(b'', 0, matrix, None), (None, None))
             resolver.assert_not_called()
@@ -901,7 +896,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                                             source=0x100, target=0x1000600, size=0x100))
         helper = MODULE.qemu_halfword_matrix_property
         owner = (0x3000720, 0, 0x20, 0, 0x40, 0xc, 0x8000)
-        with mock.patch('qemu_transport.eeprom_gpio_profile', return_value=(owner, None)):
+        with mock.patch('msm5xxx_emulator.qemu.transport.eeprom_gpio_profile', return_value=(owner, None)):
             self.assertEqual(helper(bytes(image), config, profile, enabled=False),
                              ('matrix-halfword=1000628:12:22:3b03,'
                               'experimental-matrix-contact=32:10,'
@@ -934,7 +929,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         for bad_owner in (None, (0x300072a, 0, 0x20, 0, 0x40, 0xc, 0x8000),
                           (0x3000720, 8, 2, 0, 0x40, 0xc, 0x8000),
                           (0x3000720, 0, 0x10, 0, 0x40, 0xc, 0x8000)):
-            with self.subTest(owner=bad_owner), mock.patch('qemu_transport.eeprom_gpio_profile', return_value=(bad_owner, None)):
+            with self.subTest(owner=bad_owner), mock.patch('msm5xxx_emulator.qemu.transport.eeprom_gpio_profile', return_value=(bad_owner, None)):
                 self.assertIsNone(helper(bytes(image), config, profile, enabled=False)[0])
 
     def test_halfword_public_key_api_requires_unique_semantic_cell(self):
@@ -993,7 +988,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         image[0x22] ^= 1
         self.assertEqual(helper(bytes(image), config, profile),
                          (None, 'sense-load-shape-mismatch'))
-        with mock.patch('qemu_transport.resolve_indirect_board_status') as resolver:
+        with mock.patch('msm5xxx_emulator.qemu.transport.resolve_indirect_board_status') as resolver:
             self.assertEqual(MODULE.qemu_halfword_status_property(b'', 0, profile, 4),
                              (None, 'halfword-matrix-not-admitted'))
             resolver.assert_not_called()
@@ -1154,7 +1149,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         }), (None, "unsupported-admission"))
 
     def test_uart_csr_write_does_not_leak_into_sr_readback(self) -> None:
-        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        source = (NATIVE / "msm5xxx-poc.c").read_text()
         start = source.index("static uint64_t msm5xxx_poc_ready_status_read")
         end = source.index("\nstatic ", start + 1)
         read_body = source[start:end]
@@ -1374,7 +1369,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             (None, None),
         )
 
-        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        source = (NATIVE / "msm5xxx-poc.c").read_text()
         self.assertIn("qemu_in_vcpu_thread()", source)
         self.assertIn("msm5xxx_poc_dmd_5500_pc_is(s, 0x20)", source)
         self.assertIn("old == UINT16_MAX", source)
@@ -1388,7 +1383,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             self.assertEqual(listener.getsockname()[0], "127.0.0.1")
         finally:
             listener.close()
-        argv = ["live-display.py", "--qemu", "qemu-system-arm"]
+        argv = ["live_display.py", "--qemu", "qemu-system-arm"]
         with mock.patch.object(sys, "argv", argv), \
              mock.patch.object(MODULE, "choose_firmware",
                                return_value=None) as chooser, \
@@ -1399,7 +1394,7 @@ class QEMUInputTransportTests(unittest.TestCase):
 
     def test_launcher_uses_persistent_state_by_default(self) -> None:
         argv = [
-            "live-display.py", "phone.bin",
+            "live_display.py", "phone.bin",
             "--qemu", "qemu-system-arm",
         ]
         state_root = Path("/tmp/msm5xxx-state-root")
@@ -1929,7 +1924,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
 
     def test_raw_nand_main_backend_is_named_and_non_orphaned(self) -> None:
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        machine = (NATIVE / "msm5xxx-poc.c").read_text()
         start = machine.index(
             "s->raw_nand_blk = blk_by_name(MSM5XXX_POC_RAW_NAND_DRIVE)"
         )
@@ -1941,7 +1936,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         self.assertNotIn("drive_get(IF_MTD", raw_nand_init)
         self.assertNotIn("msm5xxx_poc_raw_nand_set_ready", machine)
-        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        transport = TRANSPORT_SOURCE.read_text()
         self.assertIn(
             '"id=msm5xxx-raw-nand-main"', transport,
         )
@@ -1958,7 +1953,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             )
 
     def test_eeprom_gpio_reset_preserves_shared_msm_backing(self) -> None:
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        machine = (NATIVE / "msm5xxx-poc.c").read_text()
         reset = machine[machine.index("static void msm5xxx_poc_reset"):
                         machine.index("static void msm5xxx_poc_init")]
 
@@ -1973,8 +1968,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
 
     def test_mapped_primary_nor_persists_upper_bank_and_aliases_intel(self) -> None:
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
-        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        machine = (NATIVE / "msm5xxx-poc.c").read_text()
+        transport = TRANSPORT_SOURCE.read_text()
 
         self.assertIn("mapped-primary-x16-nor-upper", machine)
         self.assertIn("intel_x16_nor_data_alias", machine)
@@ -1982,8 +1977,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertIn("pflash_unit += 2", transport)
 
     def test_primary_nor_honors_suspend_write_descriptor_option(self) -> None:
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
-        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        machine = (NATIVE / "msm5xxx-poc.c").read_text()
+        transport = TRANSPORT_SOURCE.read_text()
         start = machine.index("    if (s->primary_x16_nor_enabled) {")
         end = machine.index("    if (s->record_x16_nor_enabled) {", start)
         primary_init = machine[start:end]
@@ -2020,8 +2015,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
 
     def test_record_nor_is_descriptor_gated_and_identity_fail_closed(self) -> None:
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
-        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        machine = (NATIVE / "msm5xxx-poc.c").read_text()
+        transport = TRANSPORT_SOURCE.read_text()
         start = machine.index("    if (s->record_x16_nor_enabled) {")
         start = machine.index("    if (s->record_x16_nor_enabled) {", start + 1)
         end = machine.index(
@@ -2060,8 +2055,8 @@ class QEMUInputTransportTests(unittest.TestCase):
                       transport)
 
     def test_secondary_nor_hides_power_of_two_backing_tail(self) -> None:
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
-        transport = (EXPERIMENT / "qemu_transport.py").read_text()
+        machine = (NATIVE / "msm5xxx-poc.c").read_text()
+        transport = TRANSPORT_SOURCE.read_text()
         start = machine.index("    if (s->fujitsu_x16_nor_enabled) {")
         end = machine.index("    if (upper_nor_enabled) {", start)
         secondary_init = machine[start:end]
@@ -2108,7 +2103,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
 
     def test_raw_nand_state_is_observable_without_ready_synthesis(self) -> None:
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        machine = (NATIVE / "msm5xxx-poc.c").read_text()
         start = machine.index("    case 0xac:")
         end = machine.index("    default:", start)
         telemetry = machine[start:end]
@@ -2574,7 +2569,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertEqual(terminated, [True])
 
     def test_qemu_input_framing_survives_reset_and_reentry(self) -> None:
-        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        source = (NATIVE / "msm5xxx-poc.c").read_text()
         read_start = source.index("static void msm5xxx_poc_host_input_read")
         read_end = source.index("\nstatic ", read_start + 1)
         read_body = source[read_start:read_end]
@@ -2615,7 +2610,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
 
     def test_qemu_sbi_adc_status_poll_preserves_completed_phase(self) -> None:
-        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        source = (NATIVE / "msm5xxx-poc.c").read_text()
         read_start = source.index("static uint64_t msm5xxx_poc_sbi_read")
         read_end = source.index("\nstatic ", read_start + 1)
         read_body = source[read_start:read_end]
@@ -3108,7 +3103,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
 
     def test_c80_machine_parser_consumes_optional_bank_count(self) -> None:
-        source = (EXPERIMENT / "msm5xxx-poc.c").read_text()
+        source = (NATIVE / "msm5xxx-poc.c").read_text()
         start = source.index("static void msm5xxx_poc_set_rex_static_c80")
         end = source.index("\nstatic ", start + 1)
         setter = source[start:end]
@@ -3273,7 +3268,7 @@ class RAMBootstrapTransportTests(unittest.TestCase):
 
     def test_detection_preserves_overrides_and_loaded_nor_is_revalidated(self):
         import argparse
-        import qemu_transport
+        from msm5xxx_emulator.qemu import transport as qemu_transport
         from msm5xxx_emulator.detection import detect
         from test_bootstrap_sdram import synthetic_image
 

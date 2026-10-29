@@ -6,7 +6,7 @@ root launchers. It includes no firmware.
 Stage and build the pinned QEMU source on Linux or macOS:
 
 ```sh
-./experiments/qemu-tcg/build_qemu_native.sh \
+./native/qemu/build_qemu_native.sh \
   /path/to/qemu-10.2.1.tar.xz /new/build/work
 ```
 
@@ -14,17 +14,18 @@ Set `MSM5XXX_DTC_SOURCE` to a checkout at the revision recorded in
 `qemu_build_inputs.env`.
 
 The same checked staging script is used by the Windows build. It verifies the
-upstream archive, icount patch, machine source, and transport source before
+upstream archive, icount patch, machine source, and transport source
+(`src/msm5xxx_emulator/qemu/transport.py`) before
 changing the QEMU tree.
 
 Run:
 
 ```sh
-PYTHONPATH=src python3 experiments/qemu-tcg/live-display.py [FIRMWARE] \
+PYTHONPATH=src python3 -m msm5xxx_emulator.qemu.live_display [FIRMWARE] \
   --qemu /path/to/qemu-system-arm --state-dir /path/to/qemu-state
 ```
 
-`live-display.py` reuses the existing firmware detector and display decoder.
+The live display reuses the existing firmware detector and display decoder.
 Omitting `FIRMWARE` opens the same chooser as the Unicorn GUI.
 It passes only detector-accepted machine properties, starts QEMU without GDB
 register/memory seeding, and transports LCD writes plus accepted physical input

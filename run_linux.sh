@@ -59,5 +59,5 @@ qemu=${MSM5XXX_QEMU:-"$script_dir/bin/qemu-system-arm"}
 [ -x "$qemu" ] ||
     die "Missing QEMU binary: $qemu. Use a matching release archive or set MSM5XXX_QEMU." 1
 
-exec "$python" "$script_dir/experiments/qemu-tcg/live-display.py" \
-    "$@" --qemu "$qemu"
+PYTHONPATH="$script_dir/src${PYTHONPATH:+:$PYTHONPATH}" \
+    exec "$python" -m msm5xxx_emulator.qemu.live_display "$@" --qemu "$qemu"

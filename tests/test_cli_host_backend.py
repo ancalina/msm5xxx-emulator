@@ -10,8 +10,8 @@ import sys
 import unittest
 from unittest import mock
 
-import msm5xxx
-from msm5xxx import GenericMSMEmulator, HostBackendFault
+from msm5xxx_emulator import legacy_api as msm5xxx
+from msm5xxx_emulator.legacy_api import GenericMSMEmulator, HostBackendFault
 
 
 class CLIHostBackendFaultTests(unittest.TestCase):
@@ -88,9 +88,9 @@ class CLIHostBackendFaultTests(unittest.TestCase):
         with (mock.patch.object(sys, "argv", [
                     "msm5xxx.py", "SCH-X350.bin", "--steps", "1",
                 ]),
-              mock.patch("runtime_log.install_runtime_logging",
+              mock.patch("msm5xxx_emulator.diagnostics.runtime_log.install_runtime_logging",
                          return_value=Path("logs/cli-session.log")),
-              mock.patch("runtime_log.record_diagnostic",
+              mock.patch("msm5xxx_emulator.diagnostics.runtime_log.record_diagnostic",
                          return_value=Path("logs/diagnostic-host.json")) as record,
               mock.patch.object(msm5xxx, "detect", return_value=config),
               mock.patch.object(msm5xxx, "GenericMSMEmulator",

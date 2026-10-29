@@ -12,7 +12,7 @@ from unicorn.arm_const import (
     UC_ARM_REG_R0,
 )
 
-from msm5xxx import GenericMSMEmulator, detect, find_ma2_silent_boot_wait
+from msm5xxx_emulator.legacy_api import GenericMSMEmulator, detect, find_ma2_silent_boot_wait
 
 
 FIRMWARES = Path(__file__).resolve().parent.parent / "firmwares"

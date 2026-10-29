@@ -10,7 +10,7 @@ from pathlib import Path
 class WholePrimaryNORNativeTests(unittest.TestCase):
     def test_actual_c_parser_final_context_and_legacy_guards(self):
         repo = Path(__file__).resolve().parents[1]
-        source = (repo / 'experiments/qemu-tcg/msm5xxx-poc.c').read_text()
+        source = (repo / 'native/qemu/msm5xxx-poc.c').read_text()
 
         def function(name):
             match = re.search(r'^static [^\n]*(?:\n[^\n]*)?\b' + name + r'\(', source, re.M)

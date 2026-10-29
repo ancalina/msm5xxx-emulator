@@ -10,7 +10,7 @@ import unittest
 class DMD5100NativeTests(unittest.TestCase):
     def test_actual_variable_stream_context_barriers_and_topology(self):
         repo=Path(__file__).resolve().parents[1]
-        source=(repo/'experiments/qemu-tcg/msm5xxx-poc.c').read_text()
+        source=(repo/'native/qemu/msm5xxx-poc.c').read_text()
         def function(name):
             match=re.search(r'^static [^\n]*(?:\n[^\n]*)?\b'+name+r'\(',source,re.M)
             self.assertIsNotNone(match,name)

@@ -6,7 +6,7 @@ import unittest
 
 class TraceTests(unittest.TestCase):
     def test_actual_trace_bound_and_payload(self):
-        root = Path(__file__).resolve().parents[1] / 'experiments/qemu-tcg'
+        root = Path(__file__).resolve().parents[1] / 'native/qemu'
         source = (root / 'msm5xxx-poc.c').read_text()
         begin = source.index('static void msm5xxx_poc_ma5_commit_trace(')
         body = source.index('{', begin)

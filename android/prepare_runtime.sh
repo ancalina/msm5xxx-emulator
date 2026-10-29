@@ -50,10 +50,7 @@ if target.is_symlink():
 if target.exists():
     shutil.rmtree(target)
 shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-for source in (root / "app/src/main/python/msm5xxx_android_runtime.py",
-               repo / "experiments/qemu-tcg/qemu_transport.py",
-               repo / "experiments/qemu-tcg/gdb_remote.py"):
-    shutil.copy2(source, site / source.name)
+shutil.copy2(root / "app/src/main/python/msm5xxx_android_runtime.py", site)
 print("Project Python synchronized; native runtime and dependency assets reused.")
 PY_SYNC
     exit 0
@@ -126,9 +123,6 @@ done
 cp "$ROOT/app/src/main/python/msm5xxx_android_runtime.py" \
     "$ASSETS/lib/python3.14/site-packages/"
 cp -a "$REPO/src/msm5xxx_emulator" \
-    "$ASSETS/lib/python3.14/site-packages/"
-cp "$REPO/experiments/qemu-tcg/qemu_transport.py" \
-    "$REPO/experiments/qemu-tcg/gdb_remote.py" \
     "$ASSETS/lib/python3.14/site-packages/"
 cp -a "$UNICORN_SOURCE/." \
     "$ASSETS/lib/python3.14/site-packages/unicorn/"

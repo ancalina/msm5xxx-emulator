@@ -3,7 +3,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(CDPATH= cd -- "$ROOT/.." && pwd)
-. "$REPO/experiments/qemu-tcg/qemu_build_inputs.env"
+. "$REPO/native/qemu/qemu_build_inputs.env"
 
 if [ "$#" -ne 1 ]; then
     echo "usage: $0 EMPTY_WORK_DIR" >&2
@@ -25,7 +25,7 @@ TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 ARCHIVE="$ROOT/build/vendor-downloads/qemu-$QEMU_VERSION.tar.xz"
 GLIB=${MSM5XXX_GLIB_PREFIX:-"$ROOT/build/vendor-install/glib-source-r13/usr/local"}
 DTC_SOURCE=${MSM5XXX_DTC_SOURCE:-}
-ANDROID_PATCH="$REPO/experiments/qemu-tcg/qemu-10.2.1-android-host.patch"
+ANDROID_PATCH="$REPO/native/qemu/qemu-10.2.1-android-host.patch"
 
 check_sha256() {
     expected=$1
@@ -71,7 +71,7 @@ SOURCE="$WORK/qemu-$QEMU_VERSION-msm5xxx-android"
 BUILD="$WORK/build"
 RUNTIME="$WORK/runtime"
 PC_DIR="$WORK/pkgconfig"
-"$REPO/experiments/qemu-tcg/stage_qemu_source.sh" "$ARCHIVE" "$SOURCE"
+"$REPO/native/qemu/stage_qemu_source.sh" "$ARCHIVE" "$SOURCE"
 patch -p1 -d "$SOURCE" < "$ANDROID_PATCH"
 mkdir "$SOURCE/subprojects/dtc" "$BUILD" "$RUNTIME" "$PC_DIR"
 git -C "$DTC_SOURCE" archive "$QEMU_DTC_REVISION" \
@@ -143,11 +143,11 @@ for file in "$RUNTIME"/*.so; do
         echo "runtime contains RPATH/RUNPATH" >&2
         exit 1
     fi
-    if strings -a "$file" | grep -Eiq '/home/|codex|evidence|android-client/build'; then
+    if strings -a "$file" | grep -Eiq '/home/|codex|evidence|android(-client)?/build'; then
         echo "runtime contains a private build path" >&2
         exit 1
     fi
-    if strings -a -e l "$file" | grep -Eiq '/home/|codex|evidence|android-client/build'; then
+    if strings -a -e l "$file" | grep -Eiq '/home/|codex|evidence|android(-client)?/build'; then
         echo "runtime contains a private UTF-16 build path" >&2
         exit 1
     fi

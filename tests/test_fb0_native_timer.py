@@ -9,7 +9,7 @@ from pathlib import Path
 class FB0NativeTimerTests(unittest.TestCase):
     def test_property_and_byte_two_arm(self):
         source = (Path(__file__).resolve().parents[1] /
-                  'experiments/qemu-tcg/msm5xxx-poc.c').read_text()
+                  'native/qemu/msm5xxx-poc.c').read_text()
 
         def function(name):
             start = source.index(name + '(')

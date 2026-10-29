@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run the QEMU PoC while the unchanged emulator GUI decodes LCD writes."""
 from __future__ import annotations
 
@@ -12,16 +11,13 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 
 
-ROOT = Path(__file__).parents[2]
-sys.path.insert(0, str(ROOT / "src"))
-
-from qemu_transport import *  # noqa: E402,F403
-from msm5xxx_emulator.detection.firmware import DEFAULT_STATE_ROOT  # noqa: E402
-from msm5xxx_emulator.gui.app import Window, choose_firmware  # noqa: E402
-from msm5xxx_emulator.gui.controls import detect_profile  # noqa: E402
-from msm5xxx_emulator.gui.locale import display_model_name  # noqa: E402
-from msm5xxx_emulator.gui.worker import _prepared_profile_matches  # noqa: E402
-from msm5xxx_emulator.virtual_cell import virtual_cell_scenario  # noqa: E402
+from .transport import *  # noqa: F403
+from ..detection.firmware import DEFAULT_STATE_ROOT
+from ..gui.app import Window, choose_firmware
+from ..gui.controls import detect_profile
+from ..gui.locale import display_model_name
+from ..gui.worker import _prepared_profile_matches
+from ..virtual_cell import virtual_cell_scenario
 
 
 class LiveWindow(Window):

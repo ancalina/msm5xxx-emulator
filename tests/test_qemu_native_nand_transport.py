@@ -14,8 +14,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'experiments/qemu-tcg'))
-import qemu_transport as transport
+from msm5xxx_emulator.qemu import transport
 from msm5xxx_emulator import GenericMSMEmulator, native_nand_state
 from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
 from msm5xxx_emulator.detection.firmware import detect

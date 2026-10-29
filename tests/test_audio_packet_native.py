@@ -8,7 +8,7 @@ from pathlib import Path
 
 class AudioPacketNativeTests(unittest.TestCase):
     def test_owned_packet_and_foreign_lcd_fallback(self):
-        core = Path(__file__).resolve().parents[1] / 'experiments/qemu-tcg'
+        core = Path(__file__).resolve().parents[1] / 'native/qemu'
         source = (core / 'msm5xxx-poc.c').read_text()
 
         def function(name):

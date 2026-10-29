@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import runtime_log
+from msm5xxx_emulator.diagnostics import runtime_log
 
 
 class NativeFaultLoggingPolicyTests(unittest.TestCase):

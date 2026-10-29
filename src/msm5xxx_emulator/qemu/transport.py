@@ -16,7 +16,7 @@ import time
 from collections import deque
 from dataclasses import asdict
 
-from gdb_remote import Remote
+from .gdb_remote import Remote
 from msm5xxx_emulator.core import FirmwareConfig, GenericMSMEmulator
 from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO
 from msm5xxx_emulator.detection import detect

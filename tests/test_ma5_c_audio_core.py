@@ -9,10 +9,9 @@ from pathlib import Path
 class TestMA5CAudioCore(unittest.TestCase):
     def test_qemu_maps_only_site_owned_ma5_boot_writes(self):
         repo = Path(__file__).resolve().parents[1]
-        machine = (repo / "experiments" / "qemu-tcg" /
+        machine = (repo / "native" / "qemu" /
                    "msm5xxx-poc.c").read_text(encoding="utf-8")
-        launcher = (repo / "experiments" / "qemu-tcg" /
-                   "qemu_transport.py").read_text(encoding="utf-8")
+        launcher = (repo / "src/msm5xxx_emulator/qemu/transport.py").read_text(encoding="utf-8")
         self.assertNotIn("msm5xxx_ma5_data_write", machine)
         self.assertIn("msm5xxx_poc_audio_opaque_write", machine)
         self.assertIn("msm5xxx_poc_audio_site_owned", machine)
@@ -33,7 +32,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_readback_backing_contract(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments/qemu-tcg/msm5xxx-ma5-audio.c"
+        core = repo / "native/qemu/msm5xxx-ma5-audio.c"
         harness = r"""
         #include <assert.h>
         #include <stdint.h>
@@ -136,7 +135,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_experimental_timed_device_contract(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments/qemu-tcg/msm5xxx-ma5-audio.c"
+        core = repo / "native/qemu/msm5xxx-ma5-audio.c"
         harness = r"""
         #include <assert.h>
         #include <stdint.h>
@@ -260,7 +259,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_explicit_clock_counter_and_snapshot(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-ma5-audio.c"
+        core = repo / "native" / "qemu" / "msm5xxx-ma5-audio.c"
         harness = r"""
         #include <assert.h>
         #include <stdint.h>
@@ -401,7 +400,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_target_rate_infers_only_closed_runtime_pll_pairs(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments/qemu-tcg/msm5xxx-ma5-audio.c"
+        core = repo / "native/qemu/msm5xxx-ma5-audio.c"
         harness = r"""
         #include <assert.h>
         #include <stdint.h>
@@ -451,7 +450,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_predecoded_adpcm_loop_wraps_to_loop_point_and_one_shot_holds(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments/qemu-tcg"
+        core = repo / "native/qemu"
         harness = r"""
         #include <assert.h>
         #include <stdint.h>
@@ -533,7 +532,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_wt_ar15_key_reset_attack_decay_and_endpoint_pipeline(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments/qemu-tcg"
+        core = repo / "native/qemu"
         harness = r"""
         #include <assert.h>
         #include <stdint.h>
@@ -645,7 +644,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_manual_closed_wt_envelope_and_tl_class(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments/qemu-tcg"
+        core = repo / "native/qemu"
         harness = r"""
         #include <assert.h>
         #include <math.h>
@@ -762,7 +761,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_mode_shadow_readback_keeps_dirty_reset_closed(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-ma5-audio.c"
+        core = repo / "native" / "qemu" / "msm5xxx-ma5-audio.c"
         harness = r"""
         #include <assert.h>
         #include <string.h>
@@ -832,7 +831,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_clocked_delayed_fifo_deadlines_and_isolation(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-ma5-audio.c"
+        core = repo / "native" / "qemu" / "msm5xxx-ma5-audio.c"
         harness = r"""
         #include <assert.h>
         #include <string.h>
@@ -1016,7 +1015,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_stop_resume_retains_phase_and_clock_changes_require_reset(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-ma5-audio.c"
+        core = repo / "native" / "qemu" / "msm5xxx-ma5-audio.c"
         harness = r"""
         #include <assert.h>
         #include <string.h>
@@ -1152,7 +1151,7 @@ class TestMA5CAudioCore(unittest.TestCase):
 
     def test_transport_contract(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-ma5-audio.c"
+        core = repo / "native" / "qemu" / "msm5xxx-ma5-audio.c"
         include_dir = core.parent
         harness = textwrap.dedent(
             r"""

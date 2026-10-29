@@ -32,7 +32,7 @@ from unicorn.arm_const import (
     UC_ARM_REG_SPSR,
 )
 
-from msm5xxx import GenericMSMEmulator
+from msm5xxx_emulator.legacy_api import GenericMSMEmulator
 
 
 class RexIdleObservationTests(unittest.TestCase):

@@ -1,7 +1,8 @@
-/experiments/qemu-tcg/*.c text eol=lf
-/experiments/qemu-tcg/*.h text eol=lf
-/experiments/qemu-tcg/*.env text eol=lf
-/experiments/qemu-tcg/*.patch text eol=lf whitespace=-trailing-space
-/experiments/qemu-tcg/*.py text eol=lf
-/experiments/qemu-tcg/*.sh text eol=lf
-/android-client/*.sh text eol=lf
+/native/qemu/*.c text eol=lf
+/native/qemu/*.h text eol=lf
+/native/qemu/*.env text eol=lf
+/native/qemu/*.patch text eol=lf whitespace=-trailing-space
+/native/qemu/*.py text eol=lf
+/native/qemu/*.sh text eol=lf
+/src/msm5xxx_emulator/qemu/*.py text eol=lf
+/android/*.sh text eol=lf

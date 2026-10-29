@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import condition_report
+from msm5xxx_emulator.tools import condition_report
 import msm5xxx_emulator.detection.storage as storage_detection
 from msm5xxx_emulator.core.config import LinkerLayout
 from msm5xxx_emulator.detection.memory_layout import (
@@ -52,7 +52,7 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC,
                                UC_ARM_REG_R0)
 
-from msm5xxx import (
+from msm5xxx_emulator.legacy_api import (
     BUSY_DELAY_SIGNATURE,
     BUSY_DELAY_REGISTER_SIGNATURE,
     OPTIONAL_RAM_CALLER_PATTERN,

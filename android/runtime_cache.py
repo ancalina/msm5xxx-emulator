@@ -17,7 +17,7 @@ def digest(path):
 
 
 def native():
-    tree = REPO / 'experiments/qemu-tcg'
+    tree = REPO / 'native/qemu'
     names = ['stage_qemu_source.sh', 'qemu-10.2.1-icount-advance.patch',
              'qemu-10.2.1-cfi02-write-while-suspended.patch',
              'qemu-10.2.1-dsound-playback-only.patch',
@@ -47,7 +47,7 @@ def native():
 def dependencies():
     assets = GENERATED / 'python-assets'
     site = assets / 'python/lib/python3.14/site-packages'
-    project = {'msm5xxx_android_runtime.py', 'qemu_transport.py', 'gdb_remote.py'}
+    project = {'msm5xxx_android_runtime.py'}
     files = {}
     for p in assets.rglob('*'):
         if p.is_file():

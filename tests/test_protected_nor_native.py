@@ -20,7 +20,7 @@ def function(source, name):
 class ProtectedNorNativeTests(unittest.TestCase):
     def test_source_ownership_commit_boundaries_and_legacy_mode(self):
         root = Path(__file__).resolve().parents[1]
-        native = root / "experiments/qemu-tcg"
+        native = root / "native/qemu"
         source = (native / "msm5xxx-poc.c").read_text()
         names = ("msm5xxx_poc_boot_storage_hex", "msm5xxx_poc_protected_owned_read",
                  "msm5xxx_poc_protected_source_bounds", "msm5xxx_poc_protected_source_check",

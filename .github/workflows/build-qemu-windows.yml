@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euxo pipefail
           workflow_qemu_version="$QEMU_VERSION"
-          . experiments/qemu-tcg/qemu_build_inputs.env
+          . native/qemu/qemu_build_inputs.env
           test "$workflow_qemu_version" = "$QEMU_VERSION"
           work="$PWD/.ci-windows"
           source="$work/qemu-${QEMU_VERSION}-msm5xxx"
@@ -60,7 +60,7 @@ jobs:
             "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" \
             -o "$archive"
           MSYS=winsymlinks:sys \
-            experiments/qemu-tcg/stage_qemu_source.sh "$archive" "$source"
+            native/qemu/stage_qemu_source.sh "$archive" "$source"
           mkdir "$source/subprojects/dtc"
           git -C "$source/subprojects/dtc" init
           git -C "$source/subprojects/dtc" config core.autocrlf false
@@ -92,15 +92,11 @@ jobs:
           work="$PWD/.ci-windows"
           source="$work/qemu-${QEMU_VERSION}-msm5xxx"
           bundle="$PWD/dist/$BUNDLE_NAME"
-          mkdir -p "$bundle/bin" "$bundle/docs" "$bundle/experiments/qemu-tcg"
+          mkdir -p "$bundle/bin" "$bundle/docs"
           cp "$work/build/qemu-system-arm.exe" "$bundle/bin/"
           cp run_windows.bat requirements.txt README.md README.ko.md \
             LICENSE THIRD_PARTY_NOTICES.md "$bundle/"
           cp -a src "$bundle/"
-          cp experiments/qemu-tcg/live-display.py \
-            experiments/qemu-tcg/qemu_transport.py \
-            experiments/qemu-tcg/gdb_remote.py \
-            experiments/qemu-tcg/README.md "$bundle/experiments/qemu-tcg/"
           cp docs/QEMU_TCG_BACKEND.md docs/SOURCE_DISTRIBUTION.md "$bundle/docs/"
           cp "$source/COPYING" "$bundle/QEMU_COPYING"
 
@@ -202,7 +198,7 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:PYTHONPATH = "src;."
+          $env:PYTHONPATH = "src"
           $suites = @(
             "test_audio_synth_c.py", "test_ma2_c_audio_core.py",
             "test_ma5_c_audio_core.py", "test_qemu_input_transport.py",
@@ -213,8 +209,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           $bundle = (Resolve-Path "dist/$env:BUNDLE_NAME").Path
-          $env:PYTHONPATH = "$bundle/src;$bundle"
-          python "$bundle/experiments/qemu-tcg/live-display.py" --help | Out-Null
+          $env:PYTHONPATH = "$bundle/src"
+          python -m msm5xxx_emulator.qemu.live_display --help | Out-Null
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Finalize and verify runtime bundle
@@ -265,7 +261,7 @@ jobs:
           (cd dist && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
           git archive --format=tar.gz --prefix=msm5xxx-r17/ \
             -o dist/msm5xxx-project-source.tar.gz "$GITHUB_SHA"
-          python experiments/qemu-tcg/package_windows_sources.py \
+          python native/qemu/package_windows_sources.py \
             "dist/$BUNDLE_NAME" dist/windows-runtime-sources
           (cd dist && sha256sum msm5xxx-project-source.tar.gz \
             MSM5xxx-QEMU-windows-runtime-sources.tar.xz > extra-source.sha256)

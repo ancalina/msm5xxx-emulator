@@ -147,7 +147,8 @@ if defined MSM5XXX_QEMU (
 )
 if not exist "%QEMU%" goto missing_qemu
 
-"%PYTHON_CMD%" %PYTHON_ARGS% "%SCRIPT_DIR%experiments\qemu-tcg\live-display.py" %* --qemu "%QEMU%"
+set "PYTHONPATH=%SCRIPT_DIR%src;%PYTHONPATH%"
+"%PYTHON_CMD%" %PYTHON_ARGS% -m msm5xxx_emulator.qemu.live_display %* --qemu "%QEMU%"
 set "STATUS=%ERRORLEVEL%"
 if not "%STATUS%"=="0" (
     echo Emulator exited with status %STATUS%.

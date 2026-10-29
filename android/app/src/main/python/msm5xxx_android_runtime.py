@@ -21,8 +21,8 @@ def _json(value):
 def probe():
     import numpy
     import unicorn
-    from gdb_remote import Remote
-    from qemu_transport import Transport
+    from msm5xxx_emulator.qemu.gdb_remote import Remote
+    from msm5xxx_emulator.qemu.transport import Transport
     from unicorn import UC_ARCH_ARM, UC_MODE_ARM, Uc
     from msm5xxx_emulator.detection.firmware import detect
     from msm5xxx_emulator.e170_gm_audio import ApproximateSmafPlayer
@@ -80,7 +80,7 @@ def start_session(request_json):
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
     from msm5xxx_emulator.detection.firmware import detect
     from msm5xxx_emulator.virtual_cell import virtual_cell_scenario
-    from qemu_transport import Transport
+    from msm5xxx_emulator.qemu.transport import Transport
 
     if _session is not None:
         raise RuntimeError("session already running")

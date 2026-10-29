@@ -47,7 +47,7 @@ PROTECTED_NOR_CORE="$ROOT/msm5xxx-protected-nor.c"
 PROTECTED_NOR_HEADER="$ROOT/msm5xxx-protected-nor.h"
 SEARCH2_CORE="$ROOT/msm5xxx-search2.c"
 SEARCH2_HEADER="$ROOT/msm5xxx-search2.h"
-TRANSPORT="$ROOT/qemu_transport.py"
+TRANSPORT="$ROOT/../../src/msm5xxx_emulator/qemu/transport.py"
 
 sha256() {
     if command -v sha256sum >/dev/null 2>&1; then

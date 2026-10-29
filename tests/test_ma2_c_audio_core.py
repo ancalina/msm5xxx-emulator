@@ -8,7 +8,7 @@ from pathlib import Path
 class TestMA2CAudioCore(unittest.TestCase):
     def test_qemu_bus_keeps_unowned_accesses_on_lcd_path(self):
         repo = Path(__file__).resolve().parents[1]
-        source = (repo / "experiments" / "qemu-tcg" /
+        source = (repo / "native" / "qemu" /
                   "msm5xxx-poc.c").read_text(encoding="utf-8")
         self.assertIn("static bool msm5xxx_poc_audio_read_owned", source)
         start = source.index("static uint64_t msm5xxx_poc_lcd_aperture_read")
@@ -211,7 +211,7 @@ int main(void) {
             path=Path(directory)
             (path/'check.c').write_text(code)
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',
-                            '-I',str(repo/'experiments/qemu-tcg'),
+                            '-I',str(repo/'native/qemu'),
                             str(path/'check.c'),'-o',str(path/'check')],check=True)
             subprocess.run([str(path/'check')],check=True)
 
@@ -272,13 +272,13 @@ int main(void) {
             path = Path(directory)
             (path / 'check.c').write_text(code)
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
-                            '-I', str(repo / 'experiments/qemu-tcg'),
+                            '-I', str(repo / 'native/qemu'),
                             str(path / 'check.c'), '-o', str(path / 'check')], check=True)
             subprocess.run([str(path / 'check')], check=True)
 
     def test_protocol_contract(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-ma2-audio.c"
+        core = repo / "native" / "qemu" / "msm5xxx-ma2-audio.c"
         include_dir = core.parent
         harness = textwrap.dedent(
             r"""
@@ -1148,7 +1148,7 @@ int main(void) {
 
     def test_fm_renderer_core(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-ma2-audio.c"
+        core = repo / "native" / "qemu" / "msm5xxx-ma2-audio.c"
         include_dir = core.parent
         harness = textwrap.dedent(
             r"""

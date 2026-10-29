@@ -10,7 +10,7 @@ from unittest import mock
 
 
 JAVA = (Path(__file__).parents[1]
-        / "android-client/app/src/main/java/org/msm5xxx/emulator/"
+        / "android/app/src/main/java/org/msm5xxx/emulator/"
         "MainActivity.java")
 
 
@@ -34,7 +34,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
                            profile=profile, qemu=str(binary), state=None)
             with mock.patch('msm5xxx_emulator.detection.firmware.detect',
                             return_value=config), mock.patch(
-                                'qemu_transport.Transport', return_value=transport) as constructor:
+                                'msm5xxx_emulator.qemu.transport.Transport', return_value=transport) as constructor:
                 try:
                     runtime.start_session(json.dumps(request))
                     self.assertNotIn('icount_shift', constructor.call_args.kwargs)
@@ -65,7 +65,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
                            virtual_network=True)
             with mock.patch('msm5xxx_emulator.detection.firmware.detect',
                             return_value=config), mock.patch(
-                                'qemu_transport.Transport', return_value=transport) as constructor:
+                                'msm5xxx_emulator.qemu.transport.Transport', return_value=transport) as constructor:
                 try:
                     result = json.loads(runtime.start_session(json.dumps(request)))
                     self.assertTrue(result['process_running'])

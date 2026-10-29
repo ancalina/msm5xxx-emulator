@@ -10,7 +10,7 @@ from pathlib import Path
 class BootStorageNativeTests(unittest.TestCase):
     def test_actual_c_guest_scope_geometry_pending_write_and_properties(self):
         repo = Path(__file__).resolve().parents[1]
-        native = repo / 'experiments/qemu-tcg'
+        native = repo / 'native/qemu'
         source = (native / 'msm5xxx-poc.c').read_text()
 
         def function(name, text=source):

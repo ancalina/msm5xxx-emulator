@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE = ROOT / "experiments/qemu-tcg"
+CORE = ROOT / "native/qemu"
 
 HARNESS = r"""
 #include <assert.h>

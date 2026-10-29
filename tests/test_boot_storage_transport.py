@@ -13,9 +13,7 @@ from test_rex_legacy_row0 import fixture as row0_fixture
 from msm5xxx_emulator.detection.rex import find_rex_legacy_row0_profile
 from msm5xxx_emulator.detection.boot_keysense import find_boot_keysense_release
 from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'experiments/qemu-tcg'))
-from qemu_transport import (prepare_spi_nv_state, qemu_boot_keysense_property,
+from msm5xxx_emulator.qemu.transport import (prepare_spi_nv_state, qemu_boot_keysense_property,
                             qemu_spi_nv_properties, qemu_state_directory, qemu_basic_row0_property)
 
 

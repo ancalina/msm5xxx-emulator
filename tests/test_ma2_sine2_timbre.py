@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import unittest
 
-CORE = Path(__file__).resolve().parents[1] / 'experiments/qemu-tcg'
+CORE = Path(__file__).resolve().parents[1] / 'native/qemu'
 
 
 class Sine2TimbreTests(unittest.TestCase):

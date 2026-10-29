@@ -32,7 +32,7 @@ def compile_and_run(code):
 class MatrixRow734Tests(unittest.TestCase):
     def source(self):
         return (Path(__file__).resolve().parents[1] /
-                "experiments/qemu-tcg/msm5xxx-poc.c").read_text()
+                "native/qemu/msm5xxx-poc.c").read_text()
 
     def test_actual_combiner_all_rows_senses_and_invalid_drives(self):
         helper = native_function(self.source(), "msm5xxx_poc_row734_sense")

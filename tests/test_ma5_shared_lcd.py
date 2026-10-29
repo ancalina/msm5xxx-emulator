@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SOURCE = Path(__file__).resolve().parents[1] / 'experiments/qemu-tcg/msm5xxx-poc.c'
+SOURCE = Path(__file__).resolve().parents[1] / 'native/qemu/msm5xxx-poc.c'
 
 
 def function(source, name):

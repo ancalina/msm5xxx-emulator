@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import corpus_verify
+from msm5xxx_emulator.tools import corpus_verify
 
 
 class CorpusVerifyIsolationTests(unittest.TestCase):

@@ -10,7 +10,7 @@ class ProtectedNorCoreTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("cc"), "native C compiler unavailable")
     def test_protocol_transactions_and_reset_preserve_source(self):
         root = Path(__file__).resolve().parents[1]
-        native = root / "experiments/qemu-tcg"
+        native = root / "native/qemu"
         fixture = root / "tests/fixtures/protected_nor_selfcheck.c"
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "check"

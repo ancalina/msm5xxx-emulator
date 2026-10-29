@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "windows_sources",
-    Path(__file__).resolve().parents[1] / "experiments/qemu-tcg/package_windows_sources.py",
+    Path(__file__).resolve().parents[1] / "native/qemu/package_windows_sources.py",
 )
 packager = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packager)

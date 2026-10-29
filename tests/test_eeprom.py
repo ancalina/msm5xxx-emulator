@@ -16,7 +16,7 @@ from msm5xxx_emulator.detection.storage import (
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
     EEPROM_24LCXX_F6F7_WRITE_PREFIX,
 )
-from msm5xxx import (EEPROM_24LC64_CLASS_A_READ_PREFIX,
+from msm5xxx_emulator.legacy_api import (EEPROM_24LC64_CLASS_A_READ_PREFIX,
                      EEPROM_24LC64_CLASS_A_WRITE_PREFIX,
                      EEPROM_24LCXX_READ_SIGNATURE,
                      EEPROM_24LCXX_WRITE_PREFIX,

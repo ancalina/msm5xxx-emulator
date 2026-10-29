@@ -6,7 +6,7 @@ from pathlib import Path
 
 class TestSPINVC(unittest.TestCase):
     def test_wire_readback_busy_reset_and_rejected_frames(self):
-        core = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''#include "msm5xxx-spi-nv.h"
 #include <assert.h>
 #include <stdio.h>

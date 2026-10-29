@@ -1,6 +1,6 @@
 import unittest
 
-from qemu_transport import qemu_uart_console_property
+from msm5xxx_emulator.qemu.transport import qemu_uart_console_property
 
 
 class UARTConsoleTransportTests(unittest.TestCase):

@@ -8,7 +8,7 @@ from pathlib import Path
 
 class AudioPCMWatchTests(unittest.TestCase):
     def test_ma5_timer_consumes_without_followup_mmio(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         source = (native / "msm5xxx-poc.c").read_text()
         helpers = source[source.index("static void msm5xxx_poc_ma5_sram_observe("):
                          source.index("static bool msm5xxx_poc_audio_site_owned(")]
@@ -178,7 +178,7 @@ int main(void) {
 
     def test_partial_packet_writable_and_lifecycle(self):
         repo = Path(__file__).resolve().parents[1]
-        native = repo / 'experiments/qemu-tcg'
+        native = repo / 'native/qemu'
         source = (native / 'msm5xxx-poc.c').read_text()
 
         def function(name):

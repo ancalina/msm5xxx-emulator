@@ -10,13 +10,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from gui import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
+from msm5xxx_emulator.gui.app import (METRIC_TEXT, Window, display_model_name, normalize_ui_language,
                  resolve_ui_language, runtime_status_text, settings_apply_mode,
                  system_ui_language)
 from msm5xxx_emulator import gui as package_gui
 from msm5xxx_emulator.gui.app import (choose_firmware,
                                       main as package_main)
-from msm5xxx import detect
+from msm5xxx_emulator.legacy_api import detect
 from msm5xxx_emulator.gui.controls import (ControlsMixin, detect_profile,
                                            manual_keymap,
                                            parse_manual_key_event)

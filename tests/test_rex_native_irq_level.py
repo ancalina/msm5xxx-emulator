@@ -8,7 +8,7 @@ from pathlib import Path
 class NativeIRQLevelTests(unittest.TestCase):
     def test_both_banks_masking_ack_and_other_controller_fallback(self):
         source = (Path(__file__).resolve().parents[1] /
-                  'experiments/qemu-tcg/msm5xxx-poc.c').read_text()
+                  'native/qemu/msm5xxx-poc.c').read_text()
         start = source.index('static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s)\n{')
         end = source.index('\nstatic ', start + 1)
         harness = r'''

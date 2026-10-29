@@ -7,12 +7,11 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'experiments/qemu-tcg'))
-from qemu_transport import (prepare_protected_nor_state, qemu_loaded_source_matches,
+from msm5xxx_emulator.qemu.transport import (prepare_protected_nor_state, qemu_loaded_source_matches,
                             qemu_row734_property, qemu_protected_nor_properties,
                             qemu_amd_bank_profile, qemu_loaded_uart_console_property,
                             qemu_uart_console_property, PERSISTENT_STATE_FILES)
-from qemu_transport import qemu_dmd5100_property
+from msm5xxx_emulator.qemu.transport import qemu_dmd5100_property
 
 
 class DMDProgramBindingTests(unittest.TestCase):
@@ -390,7 +389,7 @@ class SourceClassTransportTests(unittest.TestCase):
         from msm5xxx_emulator.detection.input_row734 import find_row734_input_profile
         from msm5xxx_emulator.detection.protected_nor import find_protected_nor_profile
         from msm5xxx_emulator.devices.input import InputMixin
-        from qemu_transport import Transport, matrix_input_command, HOST_INPUT
+        from msm5xxx_emulator.qemu.transport import Transport, matrix_input_command, HOST_INPUT
         root=Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT', Path(__file__).resolve().parents[1] / 'firmwares')) / 'incoming-20260719-r1/MSM5100'
         controls=(('SCP-4900_1.059SP_JTAG.bin','6ff77b7f6a2933c227a1097043ffa162d4b693fd9e9d2890a40f2375b600111e'),
                   ('SCP-7200_2.046SP_JTAG.bin','72486e9a0b3bac598adee2913405ad287a65880bc896816f69453131fe949714'))

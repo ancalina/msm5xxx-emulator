@@ -8,7 +8,7 @@ from pathlib import Path
 class TestSmallPageNand(unittest.TestCase):
     def test_transaction_and_unknown_identity_contract(self):
         root = Path(__file__).resolve().parents[1]
-        core = root / "experiments/qemu-tcg/msm5xxx-small-page-nand.c"
+        core = root / "native/qemu/msm5xxx-small-page-nand.c"
         fixture = root / "tests/fixtures/small-page-nand-core.c"
         with tempfile.TemporaryDirectory(prefix="msm5xxx-nand-test-") as tmp:
             binary = Path(tmp) / "nand-core"

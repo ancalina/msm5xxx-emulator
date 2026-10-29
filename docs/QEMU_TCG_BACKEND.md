@@ -83,12 +83,12 @@ The local verified target is QEMU `v10.2.1`, `arm-softmmu`. Linux and macOS use
 the checked source staging and native build wrapper:
 
 ```sh
-./experiments/qemu-tcg/build_qemu_native.sh \
+./native/qemu/build_qemu_native.sh \
   /path/to/qemu-10.2.1.tar.xz /new/build/work
 ```
 
 Set `MSM5XXX_DTC_SOURCE` to a checkout at the revision recorded in
-`experiments/qemu-tcg/qemu_build_inputs.env`.
+`native/qemu/qemu_build_inputs.env`.
 
 The Windows workflow calls the same staging script before its MinGW build.
 

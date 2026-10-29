@@ -50,11 +50,11 @@ if readelf -dW "$LIBRARY" | grep -Eq 'RPATH|RUNPATH'; then
     echo "Unicorn contains RPATH/RUNPATH" >&2
     exit 1
 fi
-if strings -a "$LIBRARY" | grep -Eiq '/home/|codex|evidence|android-client/build'; then
+if strings -a "$LIBRARY" | grep -Eiq '/home/|codex|evidence|android(-client)?/build'; then
     echo "Unicorn contains a private build path" >&2
     exit 1
 fi
-if strings -a -el "$LIBRARY" | grep -Eiq '/home/|codex|evidence|android-client/build'; then
+if strings -a -el "$LIBRARY" | grep -Eiq '/home/|codex|evidence|android(-client)?/build'; then
     echo "Unicorn contains a UTF-16 private build path" >&2
     exit 1
 fi

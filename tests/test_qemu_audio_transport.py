@@ -19,9 +19,9 @@ from msm5xxx_emulator.devices.audio import AudioMixin
 from msm5xxx_emulator.devices.audio_lle import AudioTransport
 
 
-EXPERIMENT = Path(__file__).parents[1] / "experiments/qemu-tcg"
-sys.path.insert(0, str(EXPERIMENT))
-from qemu_transport import (  # noqa: E402
+NATIVE = Path(__file__).parents[1] / "native/qemu"
+TRANSPORT_SOURCE = Path(__file__).parents[1] / "src/msm5xxx_emulator/qemu/transport.py"
+from msm5xxx_emulator.qemu.transport import (  # noqa: E402
     AUDIO_PACKET_BYTES, AUDIO_SOCKET_SEND_BUFFER,
     AUDIO_PCM_TELEMETRY, AUDIO_REJECT_TELEMETRY, AUDIO_STATUS,
     AUDIO_STATUS_NATIVE, AUDIO_STATUS_OVERFLOW, AUDIO_STATUS_REJECTED,
@@ -34,7 +34,7 @@ from qemu_transport import (  # noqa: E402
 
 ANDROID_RUNTIME = (
     Path(__file__).parents[1]
-    / "android-client/app/src/main/python/msm5xxx_android_runtime.py"
+    / "android/app/src/main/python/msm5xxx_android_runtime.py"
 )
 
 
@@ -84,7 +84,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
                                  rex_irq_enable_address=0x03000C94)
         route['installation'].update(profile='direct-install-no-flag-v1',
                                      installed_flag=None, installed_value=None)
-        with patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=route):
+        with patch('msm5xxx_emulator.qemu.transport.find_ma5_gpio_irq_candidate', return_value=route):
             prop, reason = qemu_ma5_gpio_irq_property(image, config)
         self.assertIsNone(reason)
         fields = [int(value, 16) for value in prop.split('=')[1].split(':')]
@@ -97,7 +97,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
             bad = deepcopy(route)
             bad['installation'][key] = value
             with self.subTest(key=key, value=value), patch(
-                    'qemu_transport.find_ma5_gpio_irq_candidate', return_value=bad):
+                    'msm5xxx_emulator.qemu.transport.find_ma5_gpio_irq_candidate', return_value=bad):
                 self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1],
                                  'ma5-irq-installation-unverified')
 
@@ -116,9 +116,9 @@ class QEMUAudioTransportTests(unittest.TestCase):
                                  ram_base=0x1000000, ram_size=0x1000000,
                                  rex_static_controller_candidate=controller)
         def check(fresh, profile='verified'):
-            with patch('qemu_transport.find_rex_static_controller_callback_candidate',
+            with patch('msm5xxx_emulator.qemu.transport.find_rex_static_controller_callback_candidate',
                        return_value=fresh) as finder, patch(
-                       'qemu_transport.c80_rex_irq_profile', return_value=profile):
+                       'msm5xxx_emulator.qemu.transport.c80_rex_irq_profile', return_value=profile):
                 result = qemu_ma5_gpio_irq_property(image, config)
                 finder.assert_called_once_with(image, ram_base=config.ram_base,
                                                ram_size=config.ram_size)
@@ -150,7 +150,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
                                  rex_irq_enable_address=0x03000C94)
         audio = find_ma5_readback_candidate(image)
         route = find_ma5_gpio_irq_candidate(image, audio)
-        with patch('qemu_transport.find_ma5_gpio_irq_candidate', wraps=find_ma5_gpio_irq_candidate) as finder:
+        with patch('msm5xxx_emulator.qemu.transport.find_ma5_gpio_irq_candidate', wraps=find_ma5_gpio_irq_candidate) as finder:
             first, reason = qemu_ma5_gpio_irq_property(image, config)
             self.assertIsNone(reason)
             finder.assert_called_once_with(image, audio)
@@ -176,17 +176,17 @@ class QEMUAudioTransportTests(unittest.TestCase):
         ):
             bad = deepcopy(route)
             bad[field] = value
-            with self.subTest(field=field), patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=bad):
+            with self.subTest(field=field), patch('msm5xxx_emulator.qemu.transport.find_ma5_gpio_irq_candidate', return_value=bad):
                 self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1], reason)
         bad = deepcopy(route)
         bad['installation']['direct_gate']['any'][0]['address'] += 1
-        with patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=bad):
+        with patch('msm5xxx_emulator.qemu.transport.find_ma5_gpio_irq_candidate', return_value=bad):
             self.assertEqual(qemu_ma5_gpio_irq_property(image, config)[1],
                              'ma5-irq-installation-unverified')
         # Unknown auxiliary object extent stays unknown; require only its address byte.
         minimal = deepcopy(route)
         minimal['aux_addresses'] = [{'address': 0x1FFFFFF, 'width': None}]
-        with patch('qemu_transport.find_ma5_gpio_irq_candidate', return_value=minimal):
+        with patch('msm5xxx_emulator.qemu.transport.find_ma5_gpio_irq_candidate', return_value=minimal):
             self.assertIsNotNone(qemu_ma5_gpio_irq_property(image, config)[0])
 
     def test_ma5_gpio_irq_opt_in_and_coupling_validate_before_io(self):
@@ -200,7 +200,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
             {'experimental_ma5_irq': True, 'experimental_ma5_byte_ns': 1000,
              'experimental_ma5_clki_hz': True},
         ])
-        with patch('qemu_transport.detect') as detector, patch('qemu_transport.tempfile.TemporaryDirectory') as temporary:
+        with patch('msm5xxx_emulator.qemu.transport.detect') as detector, patch('msm5xxx_emulator.qemu.transport.tempfile.TemporaryDirectory') as temporary:
             for kwargs in cases:
                 with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                     Transport(Path('/unused-qemu'), Path('/unused-firmware'), **kwargs)
@@ -221,8 +221,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
             {'experimental_ma5_pcm_output': True,
              'experimental_ma5_byte_ns': 1000, 'audio_pcm': False},
         ))
-        with patch('qemu_transport.detect') as detector, patch(
-                'qemu_transport.tempfile.TemporaryDirectory') as temporary:
+        with patch('msm5xxx_emulator.qemu.transport.detect') as detector, patch(
+                'msm5xxx_emulator.qemu.transport.tempfile.TemporaryDirectory') as temporary:
             for kwargs in cases:
                 with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                     Transport(Path('/unused-qemu'), Path('/unused-firmware'), **kwargs)
@@ -245,8 +245,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
              'experimental_ma5_byte_ns': 1000,
              'experimental_ma5_clki_hz': 19660800},
         ))
-        with patch('qemu_transport.detect') as detector, patch(
-                'qemu_transport.tempfile.TemporaryDirectory') as temporary:
+        with patch('msm5xxx_emulator.qemu.transport.detect') as detector, patch(
+                'msm5xxx_emulator.qemu.transport.tempfile.TemporaryDirectory') as temporary:
             for kwargs in cases:
                 with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                     Transport(Path('/unused-qemu'), Path('/unused-firmware'), **kwargs)
@@ -760,7 +760,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
             },
         }
         self.assertIsNone(qemu_audio_sites(overflow))
-        source = (EXPERIMENT / "qemu_transport.py").read_text(
+        source = (TRANSPORT_SOURCE).read_text(
             encoding="utf-8"
         )
         audio_block = source[source.index("audio = self.config.audio_transport"):]
@@ -791,7 +791,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
         for profile in (None, {"experimental": True}):
             config = SimpleNamespace(native_nand_profile=profile)
             decoder = Mock()
-            exec(compile(setup, str(EXPERIMENT / "qemu_transport.py"), "exec"),
+            exec(compile(setup, str(TRANSPORT_SOURCE), "exec"),
                  {"self": SimpleNamespace(config=config), "GenericMSMEmulator": decoder})
             expected = {"approximate_audio": False}
             if profile is not None:
@@ -801,7 +801,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertIn('"pass_fds": (audio_qemu_socket.fileno(),)', source)
         self.assertIn("AUDIO_PACKET_BYTES - len(pending)", source)
         java = (Path(__file__).parents[1]
-                / "android-client/app/src/main/java/org/msm5xxx/emulator/"
+                / "android/app/src/main/java/org/msm5xxx/emulator/"
                 "MainActivity.java").read_text(encoding="utf-8")
         self.assertIn("new ArrayBlockingQueue<>(4)", java)
         self.assertIn("audioSink.start(opened);", java)
@@ -851,13 +851,13 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertNotIn("while (!closed && !disabled", java)
         self.assertNotIn("pending.clear();\n            pending.offer", java)
         bridge = (Path(__file__).parents[1]
-                  / "android-client/app/src/main/java/org/msm5xxx/emulator/"
+                  / "android/app/src/main/java/org/msm5xxx/emulator/"
                   "BackendBridge.java").read_text(encoding="utf-8")
         self.assertIn("private static PythonSession activeSession", bridge)
         self.assertIn("static synchronized Session open", bridge)
         self.assertIn("if (activeSession != this)", bridge)
         runtime_java = (Path(__file__).parents[1]
-                        / "android-client/app/src/main/java/org/msm5xxx/emulator/"
+                        / "android/app/src/main/java/org/msm5xxx/emulator/"
                         "PythonRuntime.java").read_text(encoding="utf-8")
         self.assertIn("new ReentrantLock(true)", runtime_java)
         self.assertIn("static byte[] audio()", runtime_java)
@@ -867,15 +867,15 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertIn("static synchronized String key(", runtime_java)
         self.assertIn("static synchronized String canKey(", runtime_java)
         korean = (Path(__file__).parents[1]
-                  / "android-client/app/src/main/res/values-ko/strings.xml"
+                  / "android/app/src/main/res/values-ko/strings.xml"
                   ).read_text(encoding="utf-8")
         self.assertIn("u%2$d/o%3$d/e%4$d/l%5$d", korean)
         self.assertIn('"coreaudio,id=msm5xxx"', source)
         self.assertIn('"out.buffer-length=40000"', source)
         self.assertIn('"in.voices=0," if desktop_audio_driver == "dsound"', source)
-        stage = (EXPERIMENT / 'stage_qemu_source.sh').read_text()
+        stage = (NATIVE / 'stage_qemu_source.sh').read_text()
         self.assertIn('patch -p1 -d "$OUTPUT" < "$DSOUND_PATCH"', stage)
-        patch = EXPERIMENT / 'qemu-10.2.1-dsound-playback-only.patch'
+        patch = NATIVE / 'qemu-10.2.1-dsound-playback-only.patch'
         self.assertIn('if (dso->in->voices)', patch.read_text())
         replay = source[source.index("    def replay("):
                         source.index("    def _queue_native_audio(")]
@@ -884,8 +884,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertNotIn('qemu_prefix=("/system/bin/nice"', android_runtime)
         self.assertNotIn("icount_shift=", android_runtime)
         self.assertIn('f"shift={icount_shift},align=on,sleep=on"', source)
-        machine = (EXPERIMENT / "msm5xxx-poc.c").read_text(encoding="utf-8")
-        synth_header = (EXPERIMENT / "msm5xxx-audio-synth.h").read_text(
+        machine = (NATIVE / "msm5xxx-poc.c").read_text(encoding="utf-8")
+        synth_header = (NATIVE / "msm5xxx-audio-synth.h").read_text(
             encoding="utf-8")
         self.assertIn("MSM5XXX_AUDIO_TARGET_FRAMES", machine)
         self.assertIn("MSM5XXX_AUDIO_SAMPLE_RATE * 80u / 1000u",
@@ -1020,9 +1020,9 @@ class QEMUAudioTransportTests(unittest.TestCase):
 
                 audio_worker = Mock()
                 audio_worker.is_alive.return_value = False
-                with patch('qemu_transport.select.select', side_effect=select_batch) as select_mock, \
-                        patch('qemu_transport.threading.Thread', return_value=audio_worker) as start_worker, \
-                        patch('qemu_transport.time', SimpleNamespace(sleep=yield_to_audio), create=True):
+                with patch('msm5xxx_emulator.qemu.transport.select.select', side_effect=select_batch) as select_mock, \
+                        patch('msm5xxx_emulator.qemu.transport.threading.Thread', return_value=audio_worker) as start_worker, \
+                        patch('msm5xxx_emulator.qemu.transport.time', SimpleNamespace(sleep=yield_to_audio), create=True):
                     transport.replay(stop)
                 self.assertEqual(replayed, records)
                 self.assertEqual(completed, [True])

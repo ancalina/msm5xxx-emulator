@@ -5,9 +5,7 @@ import os
 import sys
 from types import SimpleNamespace
 import unittest
-
-sys.path.insert(0, str(Path(__file__).parents[1] / "experiments/qemu-tcg"))
-from qemu_transport import qemu_virtual_cell_property
+from msm5xxx_emulator.qemu.transport import qemu_virtual_cell_property
 from msm5xxx_emulator.detection.rex import find_rex_5ms_sleep_timer
 
 

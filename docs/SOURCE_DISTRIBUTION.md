@@ -28,15 +28,15 @@ and build configuration. Dependency companions identify their versions and
 source input hashes. Binary `BUILDINFO`/payload manifests and `SHA256SUMS`
 identify the matching artifacts. Manufacturer firmware is not included.
 
-The desktop native builder is `experiments/qemu-tcg/build_qemu_native.sh`;
+The desktop native builder is `native/qemu/build_qemu_native.sh`;
 Windows configuration and assembly are in `.github/workflows/build-qemu-windows.yml`.
 Platform-specific assembly recipes accompany the corresponding source archives.
-Android build scripts and the pinned cross-file are in `android-client/`.
+Android build scripts and the pinned cross-file are in `android/`.
 Use their recorded source inputs rather than a newer upstream checkout.
 
 The Android developer preview uses this public Gradle configuration:
 
-From the extracted project's `android-client/` directory:
+From the extracted project's `android/` directory:
 
 ```sh
 gradle --offline --max-workers=1 -I preview-signing.init.gradle :app:assembleRelease

@@ -8,7 +8,7 @@ from pathlib import Path
 
 class MA5NativeIRQTests(unittest.TestCase):
     def test_live_gates_ack_layers_and_all_gpio_banks(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         source = (native / "msm5xxx-poc.c").read_text()
 
         def function(name):

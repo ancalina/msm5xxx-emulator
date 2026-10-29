@@ -281,7 +281,7 @@ NATIVE_SOURCES = (
 
 class MA5PCMDrainNativeTests(unittest.TestCase):
     def test_callback_drains_bursts_and_keeps_backpressure_bounded(self):
-        native = Path(__file__).resolve().parents[1] / 'experiments/qemu-tcg'
+        native = Path(__file__).resolve().parents[1] / 'native/qemu'
         machine = (native / 'msm5xxx-poc.c').read_text()
         # Reset holds core, but its engine operation must never reenter emit.
         reset = native_function(machine, 'msm5xxx_poc_audio_reset')

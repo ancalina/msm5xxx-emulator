@@ -9,7 +9,7 @@ from pathlib import Path
 class TestAudioSynthC(unittest.TestCase):
     def test_silent_batches_preserve_pcm_and_full_state(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-audio-synth.c"
+        core = repo / "native" / "qemu" / "msm5xxx-audio-synth.c"
         text = core.read_text()
         # Oracle is the unchanged slow renderer; remove only the optimization.
         begin = text.index("    /* Only batch-entry silence:")
@@ -95,7 +95,7 @@ int main(void) {
 
     def test_integer_synth_and_bounded_ring(self):
         repo = Path(__file__).resolve().parents[1]
-        core = repo / "experiments" / "qemu-tcg" / "msm5xxx-audio-synth.c"
+        core = repo / "native" / "qemu" / "msm5xxx-audio-synth.c"
         harness = textwrap.dedent(
             r"""
             #include <assert.h>

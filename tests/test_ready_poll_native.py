@@ -10,7 +10,7 @@ from pathlib import Path
 class ReadyPollNativeTests(unittest.TestCase):
     def test_site_parser_and_owned_runtime(self):
         repo = Path(__file__).resolve().parents[1]
-        source = (repo / 'experiments/qemu-tcg/msm5xxx-poc.c').read_text()
+        source = (repo / 'native/qemu/msm5xxx-poc.c').read_text()
 
         def function(name):
             match = re.search(r'^static [^\n]*(?:\n[^\n]*)?\b' + name + r'\(',

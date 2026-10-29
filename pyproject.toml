@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "msm5xxx-emulator"
 version = "0.1.0a0"
-description = "Experimental Unicorn-based Qualcomm MSM5xxx feature-phone emulator"
+description = "Experimental QEMU-based Qualcomm MSM5xxx feature-phone emulator"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Ancalina"}]
@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 msm5xxx-emulator = "msm5xxx_emulator.cli:main"
+msm5xxx-qemu = "msm5xxx_emulator.qemu.live_display:main"
 msm5xxx-gui = "msm5xxx_emulator.gui.app:main"
 msm5xxx-boot-probe = "msm5xxx_emulator.probe.boot:main"
 msm5xxx-condition-report = "msm5xxx_emulator.tools.condition_report:main"

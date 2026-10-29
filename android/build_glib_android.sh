@@ -211,7 +211,7 @@ for file in "$RUNTIME"/*.so; do
         echo "runtime contains RPATH/RUNPATH: $file" >&2
         exit 1
     fi
-    if strings -a "$file" | grep -Eiq '/home/|codex|evidence|android-client/build'; then
+    if strings -a "$file" | grep -Eiq '/home/|codex|evidence|android(-client)?/build'; then
         echo "runtime contains a private build path: $file" >&2
         exit 1
     fi

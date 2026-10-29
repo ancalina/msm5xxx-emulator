@@ -9,16 +9,16 @@ from unittest import mock
 
 class AndroidRuntimeCacheTests(unittest.TestCase):
     def test_reuse_rejects_native_and_dependency_mutations(self):
-        path = Path(__file__).parents[1] / 'android-client/runtime_cache.py'
+        path = Path(__file__).parents[1] / 'android/runtime_cache.py'
         spec = importlib.util.spec_from_file_location('android_runtime_cache', path)
         cache = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cache)
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
             cache.REPO = repo
-            cache.ROOT = repo / 'android-client'
+            cache.ROOT = repo / 'android'
             cache.GENERATED = cache.ROOT / 'build/generated'
-            tree = repo / 'experiments/qemu-tcg'
+            tree = repo / 'native/qemu'
             jni = cache.GENERATED / 'jniLibs/arm64-v8a'
             assets = cache.GENERATED / 'python-assets/python/lib/python3.14'
             tools = repo / 'sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin'

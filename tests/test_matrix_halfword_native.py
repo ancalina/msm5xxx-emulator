@@ -7,7 +7,7 @@ from pathlib import Path
 class MatrixHalfwordTests(unittest.TestCase):
     def test_row_selection_release_and_shared_bits(self):
         source = (Path(__file__).resolve().parents[1] /
-                  "experiments/qemu-tcg/msm5xxx-poc.c").read_text()
+                  "native/qemu/msm5xxx-poc.c").read_text()
         start = source.index("static uint16_t msm5xxx_poc_halfword_sense(")
         end = source.index("/* Temporary electrical approximation", start)
         harness = "#include <stdint.h>\n#include <stdbool.h>\n#include <assert.h>\n" + source[start:end] + r"""
@@ -46,7 +46,7 @@ int main(void) {
 
     def test_low5_native_read_host_and_property_gates(self):
         source = (Path(__file__).resolve().parents[1] /
-                  "experiments/qemu-tcg/msm5xxx-poc.c").read_text()
+                  "native/qemu/msm5xxx-poc.c").read_text()
         def section(first, last):
             start = source.index(first)
             return source[start:source.index(last, start)]

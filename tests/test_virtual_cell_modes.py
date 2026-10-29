@@ -47,8 +47,7 @@ class VirtualCellModesTests(unittest.TestCase):
 
     def test_receive_only_opt_in_does_not_hide_invalid_requests(self):
         source = Path(msm5xxx_emulator.__file__).resolve().parents[2]
-        sys.path.insert(0, str(source / 'experiments/qemu-tcg'))
-        from qemu_transport import qemu_virtual_cell_property
+        from msm5xxx_emulator.qemu.transport import qemu_virtual_cell_property
         config = SimpleNamespace(load_address=1, image_offset=0)
         for value in (0, 1, None, 'true', {}):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -62,8 +61,7 @@ class VirtualCellModesTests(unittest.TestCase):
 
     def test_existing_validator_checks_payload_before_unsupported_map(self):
         source = Path(msm5xxx_emulator.__file__).resolve().parents[2]
-        sys.path.insert(0, str(source / 'experiments/qemu-tcg'))
-        from qemu_transport import qemu_virtual_cell_property
+        from msm5xxx_emulator.qemu.transport import qemu_virtual_cell_property
         self.assertEqual(qemu_virtual_cell_property(
             b'', SimpleNamespace(load_address=1, image_offset=0), virtual_cell_scenario(True)),
             (None, 'primary-map-unsupported'))

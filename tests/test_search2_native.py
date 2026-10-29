@@ -8,7 +8,7 @@ import unittest
 
 class Search2NativeTests(unittest.TestCase):
     def test_machine_probe_gate_timer_irq_and_native_fallback(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         source = (native / "msm5xxx-poc.c").read_text()
         start = source.index("static bool msm5xxx_poc_radio_irq_gate(")
         # Keep all coupled search/decoder callbacks, ending at their own final ops.
@@ -1123,7 +1123,7 @@ static const uint8_t lengths[4]={33,19,9,9};
     def test_traffic_callback_class_and_negative_rom_mutations(self):
         import hashlib
 
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         fixtures = Path(__file__).resolve().parents[2] / "firmwares"
         cases = (
             ("x350_VC22.bin", "7a6a4df853b51a4b44e86c3334330c12facad2954eef5a94031724ff1ff44073"),
@@ -1201,7 +1201,7 @@ int main(int argc,char**argv){assert(argc==3);unsigned mutations=0;
                            check=True, timeout=10)
 
     def test_paging_rates_carry_som_crc_and_shared_deadlines(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
 #include "msm5xxx-search2.h"
 #include <assert.h>
@@ -1375,7 +1375,7 @@ int main(void) {
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_fifo_aliases_full_wrap_status_and_stale_completion(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
 #include <assert.h>
 #include <string.h>
@@ -1627,7 +1627,7 @@ int main(void) {
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_finger_banks_separate_filter_writes_from_latched_rssi_and_position(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
 #include <assert.h>
 #include <string.h>
@@ -1701,7 +1701,7 @@ int main(void) {
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_access_fifo_crc_prefix_address_bounds_gaps_and_eviction(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
 #include <assert.h>
 #include <stdio.h>
@@ -1787,7 +1787,7 @@ int main(void) {
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_access_assignment_golden_and_retained_reply_alias(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
 #include <assert.h>
 #include <string.h>
@@ -1835,7 +1835,7 @@ int main(void) {
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_traffic_erasure_descriptor_geometry_and_atomicity(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
 #include <assert.h>
 #include <string.h>
@@ -1885,7 +1885,7 @@ int main(void) {
             subprocess.run([str(path / "check")], check=True, timeout=10)
 
     def test_decoded_traffic_crc_payload_and_atomic_rejection(self):
-        native = Path(__file__).resolve().parents[1] / "experiments/qemu-tcg"
+        native = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r'''
 #include <assert.h>
 #include <string.h>

@@ -47,7 +47,7 @@ class InstallationStatus:
 
 
 def application_root() -> Path:
-    """Return the distribution root containing ``gui.py``."""
+    """Return the distribution root containing ``src/``."""
     return Path(__file__).resolve().parents[2]
 
 
@@ -194,8 +194,7 @@ def _extract_update_archive(archive: Path, destination: Path, revision: str) -> 
         except (BadZipFile, OSError) as error:
             raise UpdateError("GitHub update archive is invalid") from error
         source = work / roots.pop()
-        if not ((source / "gui.py").is_file() and (source / "_compat.py").is_file()
-                and (source / "src" / "msm5xxx_emulator" / "gui" / "app.py").is_file()):
+        if not (source / "src" / "msm5xxx_emulator" / "gui" / "app.py").is_file():
             raise UpdateError("GitHub update archive is not an emulator distribution")
         status = installation_status(source)
         if not status.clean:
@@ -287,12 +286,13 @@ def apply_prepared_update(prepared: Path, target: Path, state_root: Path,
 
 
 _APPLY_CODE = """\
-import pathlib, subprocess, sys
+import os, pathlib, subprocess, sys
 root, prepared, state, firmware, revision, discard = sys.argv[1:]
 sys.path.insert(0, str(pathlib.Path(root) / 'src'))
 from msm5xxx_emulator.update import apply_prepared_update
 apply_prepared_update(pathlib.Path(prepared), pathlib.Path(root), pathlib.Path(state), revision, discard == '1')
-subprocess.Popen([sys.executable, str(pathlib.Path(root) / 'gui.py'), firmware], cwd=root)
+subprocess.Popen([sys.executable, '-m', 'msm5xxx_emulator.gui.app', firmware], cwd=root,
+                 env=dict(os.environ, PYTHONPATH=str(pathlib.Path(root) / 'src')))
 """
 
 

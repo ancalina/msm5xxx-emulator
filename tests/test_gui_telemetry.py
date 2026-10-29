@@ -12,7 +12,7 @@ from unittest import mock
 
 from PIL import Image
 
-from gui import (TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_POLL_ESCAPE_CAP,
+from msm5xxx_emulator.gui.app import (TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_POLL_ESCAPE_CAP,
                  TELEMETRY_SCREENSHOT_CADENCE, _compact_telemetry,
                  _frame_metrics,
                  create_repro_bundle, finish_repro_bundle,
@@ -115,7 +115,7 @@ class GuiTelemetryTests(unittest.TestCase):
         self.assertEqual(nonblack, 1)
 
     def test_visible_pixels_preserves_partial_rgb_chunk_semantics(self) -> None:
-        from boot_probe import visible_pixels
+        from msm5xxx_emulator.probe.boot import visible_pixels
 
         self.assertEqual(visible_pixels(b""), 0)
         self.assertEqual(visible_pixels(b"\0\0\0\xff\0\0\0\xff\0\0\0\xff"), 3)
