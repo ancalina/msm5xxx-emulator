@@ -1,6 +1,8 @@
 """NOR command and persistence telemetry regressions."""
 from __future__ import annotations
 
+from corpus import snippet
+
 from pathlib import Path
 from types import SimpleNamespace
 import struct
@@ -322,13 +324,7 @@ class NORTelemetryTests(unittest.TestCase):
         self.assertEqual(emulator._flash_restore, {})
 
     def test_fujitsu_bulk_hle_normalizes_absolute_secondary_address(self) -> None:
-        body = bytes.fromhex(
-            "f0b5141c051c0f1c400803d2780801d2600802d3184919481ae00120c0050cf7"
-            "a3fa174e301c1fe02e8895f0dffa154aa02151813e80002801d195f0e5fa0122"
-            "381c311cfff78afc002805d00a490e481ef7a6fe0120f0bd0120c005023c0235"
-            "02370cf781fa0648084967f713f8002cdad10020f0bd0000acca1b00dc050000"
-            "308f4001a00a4000ed050000c5030000"
-        )
+        body = snippet("test_nor_telemetry", "nor_write_routine")
         base = 0x00400000
         ram = 0x01000000
         incoming = bytes.fromhex("12345678")

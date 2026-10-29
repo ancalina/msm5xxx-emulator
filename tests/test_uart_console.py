@@ -1,6 +1,7 @@
 import struct
 import os
 import unittest
+from corpus import snippet
 
 from msm5xxx_emulator.detection.ready_poll import find_ready_poll_profile
 from msm5xxx_emulator.detection.uart_console import find_uart_console_profile
@@ -26,7 +27,7 @@ def fixture(shift=0, sibling=False):
     for at, target in ((0x42, 0x100), (0x46, 0x130), (0x4A, 0x280)):
         bl(at, target)
     data[0x4E + shift:0x5E + shift] = bytes.fromhex('011c0c2902d1012008bc18470020fbe7')
-    primary = bytes.fromhex('00200949097909090dd2011c421c101c4908f6d30121054a1170002111702021014a1173ede77047')
+    primary = snippet("test_uart_console", "uart_fixture_boot_code")
     data[0x100 + shift:0x128 + shift] = primary
     literal(0x102, 1, 0x128); literal(0x116, 2, 0x12C); literal(0x120, 2, 0x128)
     value(0x128, 0x03000F10); value(0x12C, 0x03000700)
@@ -96,7 +97,7 @@ def legacy_fixture(layout='register-and',shift=0,extended_root=False):
             word=struct.unpack_from('<H',data,at+offset)[0]
             if word&0xf800==0x4800:literal(name,offset,0x1801000)
             offset+=2
-    bodies={'register-and': '82211c480181802404810027078187801a490180018008210175184901800180fff7d7ffc02116480175af21017604771921144a1170077007731e210172124a177334201074ff201075302010771020107710772020107710770121117704201077', 'lsr-ready': 'c02017490871af2008728020087319201549087000201449087008731e200872002012490873342012490870ff200871302008731020087308732020087308730120087304200873'}
+    bodies={'register-and': snippet("test_uart_console", "legacy_register_and_body").hex(), 'lsr-ready': snippet("test_uart_console", "legacy_lsr_ready_body").hex()}
     body=bytes.fromhex(bodies[layout]);start=positions['init_head']+spec['body']
     data[start:start+len(body)]=body
     for offset in range(spec['body'],spec['drain_off'],2):
@@ -658,8 +659,8 @@ _FF_FIXTURE_VALUES = {'console': {'calls': {'8': 8372, '12': 1580, '16': 5216, '
                        '276': 50333440}},
  'tag': {'calls': {}, 'literals': {'0': 36, '4': 44, '16': 8968}}}
 _FF_FIXTURE_ORIGINS = {'console': 5176, 'primary': 5216, 'init': 5260, 'rx': 5416, 'wrapper': 5508, 'tx': 5608, 'byteflag': 5128, 'dispatch': 4968, 'parser': 3940, 'ack1': 3864, 'ack2': 3898, 'wordflag': 809784, 'aux': 2772, 'delay': 2720, 'hardware': 1580, 'prelude': 245808, 'config': 245452, 'copy': 2864, 'tag': 2832}
-_FF_FIXTURE_TEST = bytes.fromhex(
-    "54019fe5000090e50110a0e30020a0e348319fe5003093e5004083e0001080e5002084e5003090e5010053e14500001a8110a0e1800c51e3f7ffffda0120a0e31c319fe5003093e50020c3e50020a0e30020c3e50f10a0e30010c0e5aa10a0e30110c0e55510a0e30210c0e5f4109fe5001091e5001081e0031001e50420a0e3e0309fe5003093e50240e0e1004082e78220a0e1030052e1faffffba0020d0e50f0052e32700001a0120d0e5aa0052e32400001a0220d0e5550052e32100001a0420a0e30240e0e1005092e7040055e11c00001a8220a0e1030052e1f8ffffba032011e5010052e11600001a0030a0e30330c0e570209fe5002092e5004090e5040052e10f00001a60209fe5002092e5b040d0e1040052e10a00001a50209fe5002092e5b240d0e1040052e10500001aaa20a0e30140d0e5040052e10100001a0000a0e30ef0a0e128009fe50ef0a0e1")
+def _ff_fixture_test():
+    return snippet("test_uart_console", "half_ff_test_code")
 
 
 def half_ff_fixture(shift=0, ram_shift=0, copied_flag=0):
@@ -705,7 +706,7 @@ def half_ff_fixture(shift=0, ram_shift=0, copied_flag=0):
         if i<2:
             u32(table+12,targets[i]+sizes[i]);u32(table+16,0x100 if i==0 else 0x5000)
     u32(0x20,0);u16(0x24,0x4c);u16(0x2c,0x4c)
-    data[test:test+0x150]=_FF_FIXTURE_TEST
+    data[test:test+0x150]=_ff_fixture_test()
     for i,value in enumerate((ram,0x3fffff,16,0x55aa0f,0xaa0f,0x55,0x03000700)):u32(test-28+i*4,value)
     for off,field in ((0,0),(0x10,8),(0x40,24),(0x6c,4),(0x80,4),(0xf4,12),(0x108,16),(0x11c,20)):
         op=struct.unpack_from('<I',data,test+off)[0];u32(test+off+8+(op&4095),test-28+field)
@@ -849,7 +850,7 @@ def probe_fixture(shift=0, ram_shift=0, ffcc=False):
     u32(sources[0]+0xa8,19);u16(sources[0]+0xac,1)
     gpio=[0x3000720,0x3000720,0x300072c,0,0x3000724,0x3000724,0x3000730,0x1000100,0x3000728,0x3000728,0x3000734]
     for i,value in enumerate(gpio):u32(sources[1]+0x578+4*i,value)
-    data[test:test+0x150]=_FF_FIXTURE_TEST
+    data[test:test+0x150]=_ff_fixture_test()
     for i,value in enumerate((0x1000000,0x1fffff,16,0x55aa0f,0xaa0f,0x55,0x3000700)):u32(test-28+4*i,value)
     for off,field in ((0,0),(0x10,8),(0x40,24),(0x6c,4),(0x80,4),(0xf4,12),(0x108,16),(0x11c,20)):
         op=struct.unpack_from('<I',data,test+off)[0];u32(test+off+8+(op&4095),test-28+field)

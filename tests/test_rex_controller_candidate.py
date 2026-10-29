@@ -19,7 +19,7 @@ from msm5xxx_emulator.detection.rex import (
 )
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_SP
-from corpus import FIRMWARE_ROOT
+from corpus import FIRMWARE_ROOT, firmware_path
 
 RAM_5000 = {"ram_base": 0x01000000, "ram_size": 0x00800000}
 RAM_5100 = {"ram_base": 0x01800000, "ram_size": 0x00800000}
@@ -184,7 +184,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
         )
 
     def test_c80_group12_exact_peer_route_promotes_only_exact_handler(self) -> None:
-        root = FIRMWARE_ROOT
+        root = firmware_path()
         for name in ("SPH-X6000.bin", "SPH-X7700.bin",
                      "SPH-X8500-fulldump.bin", "SPH-X8500.bin"):
             image = (root / name).read_bytes()
@@ -215,7 +215,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
         self.assertNotIn("group_row_size", fallback)
 
     def test_overlay_b590_registrar_requires_closed_literal_relations(self) -> None:
-        root = FIRMWARE_ROOT / "incoming-20260814"
+        root = firmware_path("incoming-20260814")
         expected = {
             "SCH-E130.bin": (0x5886A8, 0x5883C0, 0x0100A0B4),
             "SCH-E140 (1).bin": (0x788134, 0x787E4C, 0x0100F160),
@@ -246,7 +246,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
             self.assertFalse(rejected["accepted"])
 
     def test_overlay_vector_copy_must_branch_to_irq_wrapper(self) -> None:
-        image = bytearray((FIRMWARE_ROOT / "incoming-20260814/SCH-E160.bin").read_bytes())
+        image = bytearray(firmware_path("incoming-20260814/SCH-E160.bin").read_bytes())
         overlays = (
             (0x7B4880, 0x03800000, 0x15A74),
             (0xBEB8, 0x03817000, 0xA84),
@@ -364,7 +364,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
         self.assertEqual(emulator.rex_controller_pending_acks, 2)
 
     def test_620_two_peer_exact_class_is_temporary_evidence_gated(self) -> None:
-        root = FIRMWARE_ROOT
+        root = firmware_path()
         expected = {
             "SPH-X7509.bin": (0x92320, 0x92520, 0x1A128, 0x926BC,
                                0x20CC04, 0x010C892C, 0x010035EC),
@@ -414,7 +414,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
             )
 
     def test_620_group10_two_peer_copied_vector_route(self) -> None:
-        root = FIRMWARE_ROOT
+        root = firmware_path()
         for name in ("X430_VE21_Dump.bin", "SCH-X430.bin"):
             image = (root / name).read_bytes()
             candidate = find_rex_static_controller_callback_candidate(
@@ -494,7 +494,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
                 self.assertFalse(rejected["accepted"])
 
     def test_620_w1c_two_peer_class_closes_exact_routes(self) -> None:
-        root = FIRMWARE_ROOT / "incoming-20260814"
+        root = firmware_path("incoming-20260814")
         expected = {
             "SCH-X290.bin": (0x01100000, 0x0009D264, 0x0000E170,
                               0x011AE238, 0x01102B24),
@@ -532,7 +532,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
             self.assertFalse(rejected["accepted"])
 
     def test_fb0_exact_copied_route_is_experimental_and_fails_closed(self) -> None:
-        root = FIRMWARE_ROOT
+        root = firmware_path()
         image = (root / "incoming-20260914/KTF-X3300.bin").read_bytes()
         result = find_rex_static_controller_callback_candidate(image, **RAM_5000)
         self.assertIsNotNone(result)
@@ -607,7 +607,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
         self.assertNotIn("time_tick_control_address", c80)
 
     def test_c80_group10_relocated_vector_three_peer_topology(self) -> None:
-        root = FIRMWARE_ROOT
+        root = firmware_path()
         expected = {
             "LG-SD810-General.bin": (0x00A41C18, 0x3694),
             "LG-SD810-AfterSKTVer.bin": (0x00A2A48C, 0x3520),
@@ -661,7 +661,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
                          "two-bank-handler-not-closed")
 
     def test_compact_group10_requires_copied_tick_row(self) -> None:
-        root = FIRMWARE_ROOT
+        root = firmware_path()
         image = (root / "KTFT_X3500_verX3p56.73.0_riffdump_clean.bin").read_bytes()
         result = find_rex_static_controller_callback_candidate(image, **RAM_5000)
         assert result is not None
@@ -696,7 +696,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
                         or "group_row_size" not in fallback)
 
     def test_c80_full_handler_span_closes_tail_and_relocated_abis(self) -> None:
-        root = FIRMWARE_ROOT
+        root = firmware_path()
         cases = (
             ("KTFT_X3500_verX3p56.73.0_riffdump_clean.bin", RAM_5000, 0x188),
             ("LG-SD810-General.bin", RAM_5100, 0x1B6),

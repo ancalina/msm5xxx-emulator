@@ -56,8 +56,6 @@ class BoardADCReaderTests(unittest.TestCase):
     def test_dc0_battery_policy_is_complete_and_fail_closed(self) -> None:
         firmware = FIRMWARE_ROOT / "KTFT_X3500_verX3p56.73.0_riffdump_clean.bin"
         if not firmware.is_file():
-            firmware = ROOT.parent / firmware.relative_to(ROOT)
-        if not firmware.is_file():
             self.skipTest("private firmware corpus is not available")
         image = bytearray(firmware.read_bytes())
         profile = find_dc0_board_adc_profile(image)

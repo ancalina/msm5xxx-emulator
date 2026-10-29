@@ -1,5 +1,6 @@
 import struct
 import unittest
+from corpus import snippet
 from msm5xxx_emulator.devices.display.split565_panel import (
     Split565Panel, decode_split565, find_split565_port,
 )
@@ -91,7 +92,7 @@ class Split565Tests(unittest.TestCase):
 
     def test_bound_source_and_near_miss(self):
         image=bytearray(1024)
-        producer=bytes.fromhex('b200d4e04027a0e1ba2fc3e1e02d00e20221a0e1f80cc0e3800082e1ba0fc3e1')
+        producer=snippet("test_split565_panel", "bound_source_code")
         image[512:544]=producer
         image[740:772]=producer
         image[436:448]=bytes.fromhex('7720a0e30610a0e10000a0e3')
@@ -99,10 +100,7 @@ class Split565Tests(unittest.TestCase):
         image[496:500]=bytes.fromhex('0a30a0e1')
         image[504:508]=bytes.fromhex('7810a0e3')
         image[808:812]=bytes.fromhex('a00056e3')
-        image[128:216]=bytes.fromhex(
-            'f0402de90370a0e10260a0e10150a0e10040a0e1b80c00eb770066e2800f80e3'
-            '8067a0e3b807c6e1b30c00ebc00f85e3b807c6e1b00c00eb770064e2400e80e3'
-            'b807c6e1ac0c00eb500e87e3b807c6e1f040bde81eff2fe1')
+        image[128:216]=snippet("test_split565_panel", "bound_source_caller_code")
         struct.pack_into('<I',image,448,0xeb000000|(((128-448-8)//4)&0xffffff))
         self.assertEqual(find_split565_port(bytes(image))[0],0x02000000)
         for offset in (461,497,517,744,809,160,448):

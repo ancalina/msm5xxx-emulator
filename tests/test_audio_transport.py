@@ -1,6 +1,8 @@
 """Yamaha transport detector and write-stream checks."""
 from __future__ import annotations
 
+from corpus import snippet
+
 import struct
 import threading
 import time
@@ -48,11 +50,11 @@ def _thumb_bl(source: int, target: int) -> bytes:
 def _ma5_readback_image(relocation: int = 0) -> bytes:
     # Original instruction fixture, relocated as a linked producer graph.
     spans = (
-        (0x25ad08, 0x100, '90b5c0270024e443381cfff73bf9002811db0006000e60280cd10137d02ff3d3d027381cfff72ef9002804db0006000e3c2803d0201c90bc08bc18470137e02fefd30020f7e7'),
-        (0x259f8c, 0x200, 'f0b5071c294809260068f6018019817801318170032001f0cff901f049fc041c002805da00f084fe201cf0bc08bc18478025802f02d22f43381c13e0fc097806400e01239b039f4204d201f0a9fb2c43201c07e001f0a4fb6006400e01f0a0fbb80b28430006000e01f09afb802001f097fb402001f0cafb071c002802da00f057fe11e0412001f097f901f0b1fb071c064800688119887801380006000e887002d1802001f088f9381cbee7880c0101'),
-        (0x25b344, 0x400, '0a4a80b511680923db01c9180f7808701168c9184978012901d14006400e00f0c5f9381c80bc08bc18470000880c0101'),
-        (0x25b798, 0x500, 'f0b50f4d041c00262e80fff7b5ff071c28880c4b013028802888984209dd0420c0432e80fff796ff0420c043f0bc08bc18475af6a9fc2740e7d00020f6e70000941c4e01dc050000'),
-        (0x25b83c, 0x600, 'b0b50e4c00252580fff764ff071c20880b4b013020802088984209dd0420c0432580fff745ff0420c043b0bc08bc18475af658fc7808e7d30020f6e7941c4e01dc050000'),
+        (0x25ad08, 0x100, snippet("test_audio_transport", "ma5_readback_span_01").hex()),
+        (0x259f8c, 0x200, snippet("test_audio_transport", "ma5_readback_span_02").hex()),
+        (0x25b344, 0x400, snippet("test_audio_transport", "ma5_readback_span_03").hex()),
+        (0x25b798, 0x500, snippet("test_audio_transport", "ma5_readback_span_04").hex()),
+        (0x25b83c, 0x600, snippet("test_audio_transport", "ma5_readback_span_05").hex()),
         (0x25b6f0, 0x700, '80b5071cf8f5f2fd04490020486015204005077080bc08bc18470000941c4e01'),
         (0x25b710, 0x720, '00b5f8f5e3fd04490120486015204005007808bc18470000941c4e01'),
         (0x25b72c, 0x73c, '80b5071cf8f5d4fd04490020486015204005877080bc08bc18470000941c4e01'),
@@ -79,16 +81,16 @@ def _ma5_readback_image(relocation: int = 0) -> bytes:
 
 def _ma5_literal_readback_image(relocation: int = 0) -> bytes:
     spans = (
-        (0x138a10, 0x100, '90b5c0270024e443381cfff735f9002811db0006000e60280cd10137d02ff3d3d027381cfff728f9002804db0006000e3c2803d0201c90bc08bc18470137e02fefd30020f7e7'),
-        (0x137c88, 0x200, 'f0b5071c294809260068f6018019817801318170032001f0d7f901f0a1fa041c002805da00f08afe201cf0bc08bc18478025802f02d22f43381c13e0fc097806400e01239b039f4204d201f017fa2c43201c07e001f012fa6006400e01f00efab80b28430006000e01f008fa802001f005fa402001f03afa071c002802da00f05dfe11e0412001f09ff901f00dfa071c064800688119887801380006000e887002d1802001f090f9381cbee7d0128201'),
-        (0x139050, 0x400, '0a4a80b511680923db01c9180f7808701168c9184978012901d14006400e00f020f8381c80bc08bc18470000d0128201'),
-        (0x139174, 0x500, '90b5041c0027fff7afffff231a339f4208dd0420c043fff781ff0420c04390bc08bc184701372040edd00020f7e7'),
-        (0x1391e8, 0x600, '80b50027fff776ff084b9f4208dd0420c043fff749ff0420c04380bc08bc184701374008eed30020f7e7000028230000'),
-        (0x1390b2, 0x702, '084b80b41f680121002f064a00d1117011700021196009218905087080bc70470000b86db601327d8201'),
-        (0x1390dc, 0x72c, '074a012013680749002b03d10870087008700870087010600920800500787047b86db601327d8201'),
-        (0x139104, 0x754, '074b80b41f680121002f064a00d111701170002119600449087080bc70470000b86db601327d820180004002'),
-        (0x139130, 0x780, '074a012013680749002b03d10870087008700870087010600348007870470000b86db601327d820180004002'),
-        (0x13915c, 0x7ac, '002906d0034a02e00378013013700139fad2704780004002'),
+        (0x138a10, 0x100, snippet("test_audio_transport", "ma5_literal_readback_span_01").hex()),
+        (0x137c88, 0x200, snippet("test_audio_transport", "ma5_literal_readback_span_02").hex()),
+        (0x139050, 0x400, snippet("test_audio_transport", "ma5_literal_readback_span_03").hex()),
+        (0x139174, 0x500, snippet("test_audio_transport", "ma5_literal_readback_span_04").hex()),
+        (0x1391e8, 0x600, snippet("test_audio_transport", "ma5_literal_readback_span_05").hex()),
+        (0x1390b2, 0x702, snippet("test_audio_transport", "ma5_literal_readback_span_06").hex()),
+        (0x1390dc, 0x72c, snippet("test_audio_transport", "ma5_literal_readback_span_07").hex()),
+        (0x139104, 0x754, snippet("test_audio_transport", "ma5_literal_readback_span_08").hex()),
+        (0x139130, 0x780, snippet("test_audio_transport", "ma5_literal_readback_span_09").hex()),
+        (0x13915c, 0x7ac, snippet("test_audio_transport", "ma5_literal_readback_span_10").hex()),
     )
     addresses = {original: target + relocation for original, target, _ in spans}
     addresses.update({0x139090: 0x1800 + relocation, 0x1389C4: 0x1802 + relocation})
@@ -109,25 +111,25 @@ def _ma5_literal_readback_image(relocation: int = 0) -> bytes:
 def _sequence_image(shift: int = 0) -> tuple[bytearray, dict[str, int]]:
     spans = {
         'timer': (0xb00, (156,),
-            'fcb51c1c0126f6430328079d07dc012d05dc012c03dc01278740fb0803d0301cfcbc08bc1847214bdb681e1c3e4002d00220c043f4e7061c5006400ea2006d002a43022e16da9b0712d1522400ab1c7082245c708023194300ab99705421d970822119715871802010439871072114e0002015e00121012c00d000210906090e572400ab1c7082245c7098700a43101c8023184300abd8700421684604f0aaf9024bd9683943d960bae7'),
+            snippet("test_audio_transport", "sequence_timer").hex()),
         'timer-stop': (0xbb0, (70,),
-            '98b5021c0020871e022a03dc01219140cb0803d0381c98bc08bc18470b4f0c1cfb689c4302d00020c043f4e75940f960022af0d1582000ab187082205870802098700321684604f07df9e4e7'),
+            snippet("test_audio_transport", "sequence_timer_stop").hex()),
         'sequence': (0x100, (76,),
-            '9cb501228240930804d00120c0439cbc08bc1847104f7b6a1c1c144002d00220c043f4e71a437a62002812d15e2000ab187082205870c8114006400e98704806400ed870842018710521684604f052f9dde70020dbe7'),
+            snippet("test_audio_transport", "sequence_sequence").hex()),
         'sender': (0x200, (8, 16, 36, 54, 72, 88, 104),
-            'f0b5071c0e1c022002f0a1fdb5090de002f082fe041c002800da11e0402403e03878013702f0a5fd013cf9d2013defd2b506ad0e14d002f06ffe041c00280dda0b4840682030007902f081fd201cf0bc08bc18473878013702f08bfd013df9d2034840682030007902f071fd0020eee7'),
+            snippet("test_audio_transport", "sequence_sender").hex()),
         'init': (0x400, (2, 8, 14, 20, 26, 32),
-            '042001f012fe002001f021fe052001f00cfe0e2001f01bfe062001f006fe3f2001f015fe'),
+            snippet("test_audio_transport", "sequence_init").hex()),
         'alternate-init': (0x45e, (2, 8, 14, 20, 26, 32),
-            '042001f0e3fd002001f0f2fd052001f0ddfd0e2001f0ecfd062001f0d7fd3e2001f0e6fd'),
+            snippet("test_audio_transport", "sequence_alternate_init").hex()),
         'reset': (0x43c, (2, 8, 12, 18),
             '042001f0f4fd802001f003fe83f67efb002001f0fefd'),
         'empty': (0x8ee, (4, 14, 26, 38, 50, 62, 78, 94, 120, 130, 142, 154, 166, 178, 188, 198),
-            'f0b50027fff7a8ff800800d30127fff7a3ff800801d302200743fff79dff800801d304200743fff797ff800801d308200743fff791ff800801d310200743fff78bff022318402024002800d02743fff783ff022318404025002800d02f43fff77bff022318408026002800d03743002f34d0ff2f2ed00027fff76eff800800d30127fff769ff800801d302200743fff763ff800801d304200743fff75dff800801d308200743fff757ff800801d310200743fff751ff800800d32743fff74cff800800d32f43fff747ff800800d33743ff2f03d10120f0bc08bc18470020fae7'),
+            snippet("test_audio_transport", "sequence_empty").hex()),
         'ready': (0xa00, (14, 24, 36, 48, 60, 72, 84, 94),
-            'f0b5224c00204025802620700027fff71aff400800d30127fff715ff400801d302200743fff70fff400801d304200743fff709ff400801d308200743fff703ff400801d310200743fff7fdfe400801d320200743fff7f7fe400800d32f43fff7f2fe400800d337432078013020700006000e642805dd00202070c043f0bc08bc1847ff2fc2d10020f8e7'),
+            snippet("test_audio_transport", "sequence_ready").hex()),
         'wrapper': (0x600, (8, 24, 44, 60),
-            '4121c90400b5087081f689fd08bc18474120c00480b5077881f681fd381c80bc08bc18474121c90400b5887081f677fd08bc18474120c00480b5877881f66ffd381c80bc08bc1847'),
+            snippet("test_audio_transport", "sequence_wrapper").hex()),
     }
     image = bytearray(b"\xff" * (0xe00 + shift))
     targets = {
@@ -162,11 +164,7 @@ def _sequence_image(shift: int = 0) -> tuple[bytearray, dict[str, int]]:
 def _sequence_clear_image(shift: int = 0) -> tuple[bytearray, dict[str, int]]:
     image, roles = _sequence_image(shift)
     clear = 0xd00 + shift
-    code = bytes.fromhex(
-        "90b5042001f0f3fe282001f002ff83f67dfc002001f0fdfe03211448fff740f9"
-        "124f0020163f21227968520189180873796889184873002441007b680130c918"
-        "89184c820428f7db78682030007901f0cefe78682030c4717868203044707868"
-        "2030047090bc08bc00201847")
+    code = snippet("test_audio_transport", "sequence_clear")
     image[clear:clear + 108] = code
     for offset, target in zip((4, 10, 14, 20, 28, 78),
                               (roles["wrapper"], roles["wrapper"] + 0x24,

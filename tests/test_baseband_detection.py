@@ -5,6 +5,7 @@ import struct
 import os
 from pathlib import Path
 import unittest
+from corpus import snippet
 
 from msm5xxx_emulator.detection.baseband import (
     detect_aux_completion_shape,
@@ -524,10 +525,7 @@ class BasebandDetectionTests(unittest.TestCase):
         struct.pack_into("<H", image, 0x30, 0x4935)
         struct.pack_into("<H", image, 0x34, 0x5A0A)
         struct.pack_into("<H", image, 0x3E, 0x4930)
-        image[0x40:0x64] = bytes.fromhex(
-            "8e80049a8a80039a8a808c80c2088a803a7a400392021043"
-            "ba7a120210437a7a10438880"
-        )
+        image[0x40:0x64] = snippet("test_baseband_detection", "transport_consumer_code")
         struct.pack_into("<H", image, 0x64, 0xBDF0)
         struct.pack_into("<3I", image, 0x100, 0x03000800, 0x200, 0x600)
         struct.pack_into("<512H", image, 0x200, *range(1, 513))

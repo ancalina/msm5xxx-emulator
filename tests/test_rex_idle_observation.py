@@ -1,5 +1,6 @@
 """Passive REX idle call-site observation must not invent a timer tick."""
 from __future__ import annotations
+from corpus import snippet
 
 from collections import Counter, deque
 import struct
@@ -706,11 +707,7 @@ class RexIdleObservationTests(unittest.TestCase):
             )
 
         image = bytearray(b"\xff" * 0x6000)
-        sleep = bytes.fromhex(
-            "134c2078012806d112480078012802d11148007800e00820"
-            "00f000f800f000f80421071c0920c005227800f000f8002f"
-            "01d100f000f880e7"
-        )
+        sleep = snippet("test_rex_idle_observation", "sleep_loop")
         image[0x1000:0x1000 + len(sleep)] = sleep
         image[0x18:0x1C] = arm_b(0x18, 0x01300800)
         interrupted = 0x1200
@@ -741,17 +738,7 @@ class RexIdleObservationTests(unittest.TestCase):
         for literal in range(0x2440, 0x2454, 4):
             struct.pack_into("<I", image, literal, 0x01300100)
 
-        wrapper = bytes.fromhex(
-            "04e04ee20f542de900004fe101002de92c029fe5b010d0e1011081e2"
-            "b010c0e19ff021e300402de918329fe5003093e5010013e310e29f151"
-            "0e29f0513ff2fe1784700000040bde892f021e3f0019fe5b010d0e101"
-            "1051e2b010c0e12000001aec019fe5000090e5e8119fe5001091e5010"
-            "050e11a00000a0100bde800f068e100f061e10f54bde893f021e304d0"
-            "4de2ff5f2de904d04de20d10a0e1b0019fe5002090e5001082e592f02"
-            "1e33ce081e500304fe1003081e593f021e394119fe5001091e5001080e"
-            "500d091e50100bde800f068e100f061e10d10a0e13cd08de2ffdfd1e8"
-            "0100bde800f068e100f061e10f94fde8"
-        )
+        wrapper = snippet("test_rex_idle_observation", "interrupt_wrapper")
         image[0x4000:0x4000 + len(wrapper)] = wrapper
         for offset, value in (
             (0x240, 0x01300014), (0x244, 0x0130000C),

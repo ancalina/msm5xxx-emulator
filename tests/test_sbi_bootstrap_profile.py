@@ -1,6 +1,8 @@
 """Focused static admission checks for the SBI bootstrap-only bridge."""
 from __future__ import annotations
 
+from corpus import snippet
+
 import struct
 import unittest
 
@@ -27,10 +29,7 @@ class SbiBootstrapProfileTest(unittest.TestCase):
                         (0x1A,1,0x03000780),(0x20,1,0x03000780),(0x24,0,0x03000780),
                         (0x36,1,0x03000780),(0x3A,0,0x03000780))
         elif layout == "preserved":
-            prefix = bytes.fromhex(
-                "012222732272d32080000921c90508840884088408840884088408840884"
-                "0000000038800000b8800020b8823a8101256d033d830000bd833a253d823a84"
-                "b8810000388604270f808a8000003877ff2101311981188118809880")
+            prefix = snippet("test_sbi_bootstrap_profile", "preserved_layout_prefix")
             words = {offset-0x5A:struct.unpack_from('<H',prefix,offset)[0]
                      for offset in range(0,len(prefix),2)}
             words.update({0:0x2545,4:0x700D,6:0x25C5,8:0x700D,0x0C:0x808D,

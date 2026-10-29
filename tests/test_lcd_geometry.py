@@ -1,5 +1,6 @@
 """Regression tests for controller-proven display geometry."""
 from __future__ import annotations
+from corpus import snippet
 
 from collections import Counter, deque
 from types import SimpleNamespace
@@ -158,9 +159,7 @@ class LCDGeometryTests(unittest.TestCase):
     def test_paired_state_requires_command_helper_and_shared_state_caller(self):
         import struct
         image = bytearray(256)
-        helper = bytes.fromhex(
-            "031caf20ae22002b04d10523db05002906d003e001235b06002901d0"
-            "1880f7461a80f746")
+        helper = snippet("test_lcd_geometry", "lcd_helper")
         image[128:128 + len(helper)] = helper
         def call(at, target):
             delta = target - at - 4
@@ -1020,10 +1019,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(GenericMSMEmulator._lcd_page_layout(256, None), (256, 1))
 
     def test_page_descriptor_width_requires_consistent_plane_extent(self) -> None:
-        image = bytearray(bytes.fromhex(
-            "90b51c1c00281c4f0bd180203882702078820e203883c301c8183862"
-            "f96114c790bd6020b8824020f8820820b884b9620020f862ba60fc60"
-        ))
+        image = bytearray(snippet("test_lcd_geometry", "page_initializer"))
         image.extend(bytes(0x7C - len(image)))
         image[0x78:0x7C] = (0x01180000).to_bytes(4, "little")
         self.assertEqual(detect_lcd_width_hint(image), 128)
@@ -1039,9 +1035,7 @@ class LCDGeometryTests(unittest.TestCase):
 
     def test_dual_page_ports_require_shared_initializer_and_buffer_extent(self) -> None:
         image = bytearray(0x200)
-        image[:54] = bytes.fromhex(
-            "90b51c1c00281c4f0bd180203882702078820e203883c301c8183862"
-            "f96114c790bd6020b8824020f8820820b884b9620020f862ba60fc60")
+        image[:54] = snippet("test_lcd_geometry", "page_initializer")
         image[0x78:0x7C] = (0x01180000).to_bytes(4, "little")
         start = 0x100
         image[start:start + 34] = bytes.fromhex(

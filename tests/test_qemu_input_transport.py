@@ -11,6 +11,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from corpus import snippet
 from unittest import mock
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
 
@@ -29,10 +30,8 @@ class QEMUInputTransportTests(unittest.TestCase):
     def test_distributed_sideband_source_admission_and_release(self):
         from copy import deepcopy
         from msm5xxx_emulator.devices.input import InputMixin
-        root = os.environ.get("MSM5XXX_TEST_FIRMWARE_ROOT")
-        if root is None:
-            self.skipTest("firmware corpus unavailable")
-        image = (Path(root) / "SPH-X4500.bin").read_bytes()
+        from corpus import firmware_path
+        image = firmware_path("SPH-X4500.bin").read_bytes()
         profile, status, _ = MODULE.resolve_distributed_matrix_input(image)
         self.assertEqual(status, "static-candidate")
         config = SimpleNamespace(load_address=0, flash_size=0x400000,
@@ -1544,10 +1543,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                 "<I", image, index * 4,
                 0xEA000000 | (displacement & 0xFFFFFF),
             )
-        boot_table_loop = bytes.fromhex(
-            "c1002e4a515800290bd0c10089188988c2002a4b9a581180"
-            "411c0904090c081ceee7"
-        )
+        boot_table_loop = snippet("test_qemu_input_transport", "detector_normalization_code")
         image[0x11C:0x11C + len(boot_table_loop)] = boot_table_loop
         struct.pack_into("<I", image, 0x1D8, 0x1158)
         struct.pack_into(
@@ -2759,14 +2755,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                 0xF800 | displacement >> 1 & 0x7FF,
             )
 
-        helper = bytes.fromhex(
-            "90b4322813dc00211423041c5c431f23e318223b9b1106d414214843031c1f21"
-            "591822398911214b198090bc704700211424322363431f241b19223b9b1106d4"
-            "1421322359431f23c91822398911174b1980c11f2b39081c322813dd00211424"
-            "322363431f241b199b1105d41421322359431f23c91889110c4b1980c11f2b39"
-            "081ce9e70028d0dd00211423041c5c431f23e3189b1105d414214843031c1f21"
-            "59188911014b1980bfe7000020008004"
-        )
+        helper = snippet("test_qemu_input_transport", "pause_timer_profile_code")
         image = bytearray(b"\xff" * 0x800)
         caller, pool, start = 0x100, 0x180, 0x300
         ldr = 0x4800 | (pool - ((caller + 4) & ~3)) // 4

@@ -3,6 +3,7 @@ from __future__ import annotations
 import struct
 import random
 import unittest
+from corpus import snippet
 
 from msm5xxx_emulator.detection.ready_poll import (
     find_ready_poll_profile, _UART_RX_EMPTY_READ,
@@ -12,9 +13,7 @@ from msm5xxx_emulator.detection.ready_poll import (
 def fixture(status_base: int = 0x030007B0,
             pulse: int = 0x03000600) -> bytes:
     code = bytearray.fromhex("00f002f800000000")
-    code.extend(bytes.fromhex(
-        "05480079000905d201200449087000200870f5e7f7460000"
-    ))
+    code.extend(snippet("test_ready_poll", "ready_poll_fixture_code"))
     code.extend(struct.pack("<2I", status_base, pulse))
     return bytes(code)
 
@@ -22,10 +21,7 @@ def fixture(status_base: int = 0x030007B0,
 def control_fixture(status_base: int = 0x03000F10,
                     pulse: int = 0x03000700) -> bytes:
     code = bytearray.fromhex("00f002f800000000")
-    code.extend(bytes.fromhex(
-        "00200949097909090dd2011c421c101c4908f6d30121054a"
-        "1170002111702021014a1173ede77047"
-    ))
+    code.extend(snippet("test_ready_poll", "control_fixture_code"))
     code.extend(struct.pack("<2I", status_base, pulse))
     return bytes(code)
 
@@ -67,9 +63,7 @@ def control_uart_empty_fixture(status_base: int = 0x03000F10,
 def rotated_fixture(status_base: int = 0x03000F10,
                     pulse: int = 0x03000700) -> bytes:
     code = bytearray.fromhex("00f002f800000000")
-    code.extend(bytes.fromhex(
-        "90b400200122064f044901e00a7008703c792309fad390bc70470000"
-    ))
+    code.extend(snippet("test_ready_poll", "rotated_fixture_code"))
     code.extend(struct.pack("<2I", pulse, status_base))
     return bytes(code)
 
@@ -85,13 +79,7 @@ def arithmetic_rotated_fixture(subtract: bool = False,
 def rotated_uart_clock_fixture(pulse: int = 0x03000600) -> bytes:
     code = bytearray(arithmetic_rotated_fixture(pulse=pulse))
     code.extend(b"\x00" * (0x240 - len(code)))
-    code[0x80:0x112] = bytes.fromhex(
-        "80b500f0abfb23491d22520189180a89214b1a400a810989204a11820028"
-        "01d100f0acfbfff7daff1c49c02090310871af2008728020087318491920"
-        "a0310870164900208031087088811e2008811349002060318881114a3420"
-        "70321070ff20107130201073102010731073202010731073012010730421"
-        "11730949002302e0177a08700b7017797f08f9d280bc08bc1847"
-    )
+    code[0x80:0x112] = snippet("test_ready_poll", "rotated_uart_clock_code")
     for callsite, target in ((0x5C, 8), (0x60, 0x80), (0x82, 0x150),
                              (0xA0, 0x154), (0xA4, 8)):
         displacement = target - callsite - 4
@@ -116,10 +104,7 @@ def rotated_with_uart_rx_fixture(status_base: int = 0x03000F10,
         0xF800 | (displacement >> 1 & 0x7FF),
     ))
     code.extend(b"\x00" * (uart_rx - len(code)))
-    code.extend(bytes.fromhex(
-        "b0b40127002400280a4a0b4b0cd00b491079450806d21f701c700139"
-        "0029f7dc0120c043b0bc704710794108fad21f701c70f9e7"
-    ))
+    code.extend(snippet("test_ready_poll", "rotated_uart_rx_code"))
     code.extend(struct.pack("<3I", status_base, pulse, 0x001E8480))
     return bytes(code)
 

@@ -1,4 +1,5 @@
 """Synthetic reset/copy/external-bus class tests; no firmware file dependency."""
+from corpus import snippet
 import struct
 import unittest
 
@@ -161,8 +162,8 @@ def _fixture(shift=0, iram_source=0x13000, read_offset=0x100, data_port=0x1c0000
     image[ready:ready + 14] = bytes.fromhex('034840690188090afcd370470000')
     _word(image, ready + 16, 0x1000100)
     struct.pack_into('<8I', image, 0x11100, 0x3000720, 0x3000720, 0x300072c, 0, 0x3000724, 0x3000724, 0x3000730, 0x4000400)
-    image[disable:disable + 24] = bytes.fromhex('7847000000000fe1c01080e301f021e1c00000e21eff2fe1')
-    image[enable:enable + 24] = bytes.fromhex('7847000000000fe1c010c0e301f021e1c00000e21eff2fe1')
+    image[disable:disable + 24] = snippet("test_bootstrap_sdram", "interrupt_disable")
+    image[enable:enable + 24] = snippet("test_bootstrap_sdram", "interrupt_enable")
     return image, dict(first=first, vector=vector, second=second, copier=copier,
                        tables=tables, first_pool=first_pool, second_pool=second_pool,
                        copy_pool=copy_pool, read_raw=iram_source + read_offset,

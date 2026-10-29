@@ -1,4 +1,5 @@
 """Descriptor-bound secondary scanout and lossless candidate rejection."""
+from corpus import snippet
 from collections import Counter
 import struct
 import unittest
@@ -31,7 +32,7 @@ class SecondaryPagePanelTests(unittest.TestCase):
         selector, setup, caller, byte, color = 0x100, 0x200, 0x300, 0x400, 0x700
         put(command, '0121490608807047')
         put(data, '0121490688807047')
-        put(window, '90b443270524e405278020802180422020802280238090bc7047')
+        put(window, snippet("test_secondary_page_panel", "window_writer").hex())
         put(selector, '80b5002817d10527ff0500290e480bd02c21398000000000512038800b480000000080bc08bc184750213980000000002d203880f5e7002901d0af2000e0ae2000000000ede7')
         bl(selector + 0x40, command)
         put(0x380, '397d002000000000397d012000000000')
@@ -55,7 +56,7 @@ class SecondaryPagePanelTests(unittest.TestCase):
             bl(byte + offset, command)
         put(byte + 0x88, 'e8690204120c60247c4307e068682018805c0000000001321204120c286a824201dc602af2db01373f043f0ca86a874201dc042fd0db')
         bl(byte + 0x9a, data)
-        put(color - 0xc0, 'a068002801da0020a060e068772801dd7720e0602069002801da0020206160698f2801dd8f206061')
+        put(color - 0xc0, snippet("test_secondary_page_panel", "color_clamp").hex())
         put(color, '004c3a1ca068e1686369000000007820a168784340184000e11d273140180523db057821491b490009e02a1c03e0068802309e80')
         literal(color, 4, 0x800)
         bl(color + 10, window)

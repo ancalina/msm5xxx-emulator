@@ -1,6 +1,8 @@
 """Closed-shape tests for automatic direct-MMIO keypad detection."""
 from __future__ import annotations
 
+from corpus import snippet
+
 import os
 import struct
 import unittest
@@ -413,17 +415,11 @@ class DirectInputMatrixTests(unittest.TestCase):
         scanner = 0x100
         press = scanner + 0x3EC
         release = scanner + 0x472
-        press_prefix = bytes.fromhex(
-            "285d2a2801d052280dd1ac490978002909d0ff212d310122480067f066f9"
-            "285da74908800be00021"
-        )
+        press_prefix = snippet("test_input_matrix", "n330_press_prefix")
         release_prefix = bytes.fromhex(
             "295d081c0938f12803d889300006000e00e08020"
         )
-        image[scanner:scanner + 64] = bytes.fromhex(
-            "f0b501260024f1058bb0b04823f046fa002106224a43002000236a4400231354"
-            "01300006000e0628f8d301310906090e0529eed3"
-        )
+        image[scanner:scanner + 64] = snippet("test_input_matrix", "n330_scanner")
         image[scanner + 0x6A:scanner + 0x78] = bytes.fromhex(
             "9b4f786b0068c006c00e1f2871d0"
         )
@@ -844,18 +840,17 @@ class DirectInputMatrixTests(unittest.TestCase):
 
 class SelectedFunctionalConfirmTests(unittest.TestCase):
     # Exact instruction spans only; BLs and RAM literal words built separately.
-    _SPANS = (
+    @staticmethod
+    def _spans():
+        return (
         ("forward", 0xb98ac,
-         "542c01d0552c0cd102998878002805dc1c48007b1821c043084002d1201c00f000f8"
+         snippet("test_input_matrix", "x7509_forward").hex()
          , ((30, -16860),)),
         ("producer", 0xb56d0,
-         "90b5154c071c2068033004d54042c006c00e404201e0c006c00e6168884204d1ff2088300d4900f0"
-         "00f820680130011c002804da4042c006c00e404201e0c006c00e6268904203d02060400000190781"
-         "90bc08bc1847"
+         snippet("test_input_matrix", "x7509_producer").hex()
          , ((38, -266836),)),
         ("secondary", 0xb5b1e,
-         "184c683c19e0013004d54042c006c00e404201e0c006c00e164960600978002905d0400000190089"
-         "c82100f000f8606840000019008900f000f83878002803d0606821688142ded1"
+         snippet("test_input_matrix", "x7509_secondary").hex()
          , ((42, 288614), (54, 198054))),
         ("app_entry", 0xe60c4,
          "f0b5071ceb48ea499ab0"
@@ -877,16 +872,7 @@ class SelectedFunctionalConfirmTests(unittest.TestCase):
          "00f000f841e0"
          , ((0, -103832),)),
         ("handler_entry", 0xce94c,
-         "f0b5f54fd7b0f54e00207873b07c832109013873f24840185690c078002808d1ef48ff2300682133"
-         "984202d00133984208d10120b073387b092801d100f000f849203873e74841215590e74849015490"
-         "e348e84a09185391e149e4484f92401852905b20400240185190e148db4a40185090e148da4e4018"
-         "4e90e048c11d99314d91c11d79314c91c11d59314b91c11d39314a91d84920307031cc1d09344990"
-         "7920800120324892d54a4792c21d093292194692d34ad61dff36ba364596c84e89231b019e194496"
-         "c54e20339e194396c34ecd4b9e194296c54bc14e0f339e194196c94bbe4e5e3b9e194096bc4e7d23"
-         "9b019e193f96c54ec34b3e96103e3d96b74e243b9e193c96b54e0a3b9e193b96b34ebf4b9e193a96"
-         "b14ea419b9239b0139949c19ff32813235923894103b9c19b54ab74b4e3a921910333492da1fff3a"
-         "213a92193392b34a37943292b24a9c193192b24a36942e92a14aae4e89182d919d492036c0312c91"
-         "3096103e9c492f96441800f000f8"
+         snippet("test_input_matrix", "x7509_dispatch").hex()
          , ((60, -5692), (370, 31610))),
         ("raw_arm", 0xcec5c,
          "334800685b2801d100f000f82fdc372801d100f000f814dc3228fad008dc2328f7d02a28f5d03028"
@@ -894,9 +880,7 @@ class SelectedFunctionalConfirmTests(unittest.TestCase):
          "dfd05028ddd0512897d100f000f8532800d1e7e0542819d055288ed1"
          , ((8, 3226), (18, 1860), (90, 29718))),
         ("selection", 0xcee90,
-         "c64ac34e106bca4bc11d29313160d16b994211d1002803d1ff20053000f000f80a2801d13020f9e7"
-         "0b2801d12a20f5e70c281dd12320f1e7b64a914202d10928f8d015e0bb4a914204d10a28eed00b28"
-         "f0d00de0b84a914202d10a28e2d007e0b64a914203d1062802d15020d6e7b448022000f000f8"
+         snippet("test_input_matrix", "x7509_handler").hex()
          , ((28, 5300), (114, 30150))),
         ("tail", 0xd6456,
          "387335e0"
@@ -905,7 +889,7 @@ class SelectedFunctionalConfirmTests(unittest.TestCase):
          "387b002801d000f000f8787b57b0f0bc08bc1847"
          , ((6, -31236),)),
         ("state_bridge", 0xceac2,
-         "994aa9499074002038730870907c4a2804d203a31b181b5adb189f4400f000f80000"
+         snippet("test_input_matrix", "x7509_tail").hex()
          , ((28, 31214),)),
         ("selected_entry", 0xcebec,
          "4d4e6149203ef06b884205d14c490868872801d100f000f84898484a407a00280dd1f06b007e0138"
@@ -964,7 +948,7 @@ class SelectedFunctionalConfirmTests(unittest.TestCase):
             struct.pack_into("<H", image, at + shift,
                              0xE000 | ((target - at - 4) // 2 & 0x7FF))
 
-        for _, at, code, calls in cls._SPANS:
+        for _, at, code, calls in cls._spans():
             data = bytes.fromhex(code)
             image[at + shift:at + shift + len(data)] = data
             for offset, target in calls:
@@ -983,8 +967,7 @@ class SelectedFunctionalConfirmTests(unittest.TestCase):
             "064a50781178884201d10020704750180131c906c90e807811707047")
         struct.pack_into("<I", image, 0x7F3EC + shift, 0x20BA8A8 + ram_delta)
         image[0xCEAE8 + shift:0xCEAEA + shift] = bytes.fromhex("8600")
-        image[0xE7E8C + shift:0xE7EAE + shift] = bytes.fromhex(
-            "111447171a1d2029732c3573383b73413e23262f324a4d505b5e53675661646a6f44")
+        image[0xE7E8C + shift:0xE7EAE + shift] = snippet("test_input_matrix", "x7509_key_table")
         profile = {
             "grammar": "direct-low-nibble-6-row-v1", "rows": 6, "columns": 4,
             "event_sink_family": SAMSUNG_RING32,
@@ -1084,18 +1067,17 @@ class SelectedFunctionalConfirmTests(unittest.TestCase):
 
 class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
     # Distinct saved-r7 class; only contract opcodes, synthetic calls/literals.
-    _SPANS = (
+    @staticmethod
+    def _spans():
+        return (
         ("forward", 0xb3680,
          "542f01d0552f02d1381c00f000f8"
          , ((10, -16104),)),
         ("producer", 0xaf798,
-         "90b5154c071c2068033004d54042c006c00e404201e0c006c00e6168884204d1ff207f300d4900f0"
-         "00f820680130011c002804da4042c006c00e404201e0c006c00e6268904203d02060400000190781"
-         "90bc08bc1847"
+         snippet("test_input_matrix", "x7500_producer").hex()
          , ((38, -259788),)),
         ("secondary", 0xafbf4,
-         "164c683c19e0013004d54042c006c00e404201e0c006c00e144960600978002905d0400000190089"
-         "c82100f000f8606840000019008900f000f83878002803d0606821688142ded1"
+         snippet("test_input_matrix", "x7500_secondary").hex()
          , ((42, 248016), (54, 188048))),
         ("app_entry", 0xdda84,
          "f0b5fb4d041c2878002799b0"
@@ -1112,21 +1094,13 @@ class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
          "cd4dcc49d34a2868"
          , ()),
         ("outer_state", 0xdf900,
-         "584e403db07b02381e2800d36de002a31b5c5b009f440000"
+         snippet("test_input_matrix", "x7500_key_fragment").hex()
          , ()),
         ("selected_call", 0xdf978,
          "00f000f833e0"
          , ((0, -102116),)),
         ("handler_entry", 0xc6a94,
-         "f0b5e94ff7b000207872e848e84e807943243872f01dff305a307690c078002807d13068ff232133"
-         "984202d00133984205d1387a092801d100f000f83c72dd48de497590dc487391203972917490dc48"
-         "d749db4a40187190d948c032703040187090d848d24e6f90d748c11d99316e91c11d79316d91c11d"
-         "59316c91c11d20306a90d01f09383931bb235b019e196996c64e203b10366896c54e6b919e196796"
-         "cb4eca496696c14e9036f41f593c6494c84c65966394cc1dc04eff34ba3450366294f41d19346094"
-         "123c6196b84e3123db015f949c19ba4b5e9406339c192f26b34bf6015d94f418b44e3a365c960a3e"
-         "c5235b015b96ae4eff319e195a96ac4e813192195992b44a569192195892b24aaa49103a92191031"
-         "55915792a44aaf498918af4a5491d11d09315291ad49539251919f4940185090a848193840184f90"
-         "00f000f8"
+         snippet("test_input_matrix", "x7500_dispatch").hex()
          , ((56, -5904), (320, 33884))),
         ("raw_arm", 0xc6d2e,
          "45480068552800d138e22edc362801d100f000f812dc3228fad008dc2328f7d02a28f5d03028f3d0"
@@ -1134,21 +1108,16 @@ class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
          "ded05028a1d1dbe7522800d126e1532800d1d4e0542898d1d2e2"
          , ((16, 1914), (64, 30214))),
         ("selection", 0xc6f3c,
-         "da48d94ac06bda4bc11d29311160b168994211d1002803d1ff20053000f000f80a2801d13020f9e7"
-         "0b2801d12a20f5e70c2831d12320f1e7ce4b994202d10928f8d029e0cc4b994204d10a28eed00b28"
-         "f0d021e0c94b994202d10a28e2d01be0c74b994203d1062816d15020d6e7c54b994202d10a28d5d0"
-         "0ee0c34b99420bd1012802d1ff205330c8e7022802d1ff205430c3e72e30c1e7022000f000f8"
+         snippet("test_input_matrix", "x7500_handler").hex()
          , ((28, 18232), (154, 29898))),
         ("tail_return", 0xceef0,
          "387a002801d000f000f8787a77b0f0bc08bc1847"
          , ((6, -33560),)),
         ("state_bridge", 0xc6bd8,
-         "9949a84a88710020387210708879442804d203a31b181b5adb189f4400f000f8"
+         snippet("test_input_matrix", "x7500_tail").hex()
          , ((28, 33548),)),
         ("selected_entry", 0xc6cca,
-         "689a5c49507b002813d1594b594e10339868007e01381860689a012050734f9bd87898704f9bff20"
-         "d87088680138303ef0635049c879002804d00020c8715f4800f000f84b4e5e491036b068884206d1"
-         "50988079002802dd00f000f802e0012000f000f8"
+         snippet("test_input_matrix", "x7500_extra").hex()
          , ((64, -91922), (88, -618), (96, 90182))),
         ("child", 0xc74a8,
          "00f000f8002804d184490868502800d159e47d4a864e40329068b04207d17f480068232801d10921"
@@ -1208,7 +1177,7 @@ class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
             struct.pack_into("<H", image, at + shift,
                              0xE000 | ((target - at - 4) // 2 & 0x7FF))
 
-        for _, at, code, calls in cls._SPANS:
+        for _, at, code, calls in cls._spans():
             data = bytes.fromhex(code)
             image[at + shift:at + shift + len(data)] = data
             for offset, target in calls:
@@ -1225,8 +1194,7 @@ class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
             "064a50781178884201d10020704750180131c906c90e807811707047")
         struct.pack_into("<I", image, 0x7B1B4 + shift, 0x20B5AEC + ram_delta)
         image[0xC6BFC + shift:0xC6BFE + shift] = bytes.fromhex("6a00")
-        image[0xDF918 + shift:0xDF936 + shift] = bytes.fromhex(
-            "0f1245151821242d69303669393c693f272a33484b4e515c5f5462576542")
+        image[0xDF918 + shift:0xDF936 + shift] = snippet("test_input_matrix", "x7500_key_table")
         image[0xCE406 + shift:0xCE408 + shift] = bytes.fromhex("3872")
         for at, target in ((0xCE408, 0xCDCD2), (0xCDCD2, 0xCD538),
                            (0xCD538, 0xCCF50), (0xCCF50, 0xCCC42),
@@ -1306,7 +1274,7 @@ class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
         image, profile, load = self.fixture()
         # Duplicate independently relocated consumer and its decoded calls.
         duplicate = 0xD0000
-        _, at, code, calls = next(span for span in self._SPANS if span[0] == "secondary")
+        _, at, code, calls = next(span for span in self._spans() if span[0] == "secondary")
         image[duplicate:duplicate + 0x48] = bytes.fromhex(code)
         for offset, target in calls:
             delta = target - offset - 4
@@ -1328,16 +1296,14 @@ class SelectedFunctionalConfirmR7Tests(unittest.TestCase):
 
 class FlagsSidebandEndTests(unittest.TestCase):
     # Five exact spans only; no surrounding firmware resources.
-    _SPANS = (
+    @staticmethod
+    def _spans():
+        return (
         (0x7b52c,
          "f0b50421ce4800f000f800f000f8071c00d08be100f000f8002800d086e100f000f8061c"
          , ((6, 1587208), (10, -652), (20, -300), (30, 1587008))),
         (0x7b550,
-         "c748007910220240c748c649c74d13d1ec1f193ca27c052a05da0132a2740122c31f193b1a77a27c"
-         "052a25d1e27c0a2a0eda0132e2740be0bc4cbb4b0022203ca274203b1a770270e274a27c052a13d1"
-         "b64c203ce27c0a2a0ed1227a002a00d0fbe00078002803d0c878002800d1f4e05e2701226a72f0e0"
-         "ac4c203ca27c531e022b10d8a84a203a127f002a00d1e4e00979002903d1a6490978002901d00122"
-         "02705127d9e0"
+         snippet("test_input_matrix", "sideband_flags_body").hex()
          , ()),
         (0x7b610,
          "687a012803d16a72ff2000f000f8"
@@ -1350,11 +1316,7 @@ class FlagsSidebandEndTests(unittest.TestCase):
          "c27300222a72"
          , ((4, 1586394), (52, -1522), (134, 399606), (146, -1522))),
         (0x7b1b8,
-         "80b5071c30480078002802d0522f00d156e0ff2f01d0602f01d100f000f82b48817a002900d14be0"
-         "0179002902d1602f00d045e0017800290dd0007a00280ad05f2f03db872f00d13ae004e0542f02d0"
-         "552f00d034e01e481e4a007b002803d11d480078002807d0507811781d30c006c00e884200d123e0"
-         "50781378411cc906c90e994207d08018877050780130c006c00e507003e01149114800f000f81148"
-         "ff2f01d0078002e0ff210131018009480c388168002900d102e0406800f000f880bc08bc1847"
+         snippet("test_input_matrix", "sideband_event_sink").hex()
          , ((26, 219948), (154, -45292), (188, 1588080))),
     )
     _LITERALS = (
@@ -1370,7 +1332,7 @@ class FlagsSidebandEndTests(unittest.TestCase):
     @classmethod
     def fixture(cls, shift=0, ram_delta=0, load=0):
         image = bytearray(b"\xff" * (0x200000 + shift))
-        for at, code, calls in cls._SPANS:
+        for at, code, calls in cls._spans():
             data = bytes.fromhex(code)
             image[at + shift:at + shift + len(data)] = data
             for offset, target in calls:

@@ -1,3 +1,4 @@
+from corpus import snippet
 import dataclasses
 import struct
 import tempfile
@@ -12,29 +13,21 @@ from msm5xxx_emulator.detection.model import (
 from corpus import FIRMWARE_ROOT
 
 
-_BODY = bytes.fromhex(
-    '90b5742000f0cefa2ba101602ca141602ba181600124846104730221071c79733422'
-    'ba733221f9733321397430237b740021b974f97436213a757975bb753c77022000f0'
-    'affa24a13862098801802349f81d1930f9860471786a230298435900084349000843'
-    '0f23db029843490108434b00984389000843490008434b00984349030843c90a0843'
-    '07235b0598430901084303235b069843c9000843490008431b019843011c7962'
-    'b86a010a0902b962381c90bc08bc1847'
-)
-_ALLOCATOR = bytes.fromhex(
-    '80b40c4f021c9108386849000b1801219207920f002a00dc0021490059180122d203'
-    '8a188a42396001d23860002080bc7047'
-)
+def _body():
+    return snippet("test_model_identity", "product_constructor")
+def _allocator():
+    return snippet("test_model_identity", "product_allocator")
 
 
 def fixture(start=0x100, *, at_product=b'LG-AB123', company=b'LG ELECTRONICS CO. LTD'):
     raw = bytearray(b'\xff' * (start + 0x600))
-    raw[start:start + len(_BODY)] = _BODY
+    raw[start:start + len(_body())] = _body()
     model = (start + 0xBB) & ~3
     vendor = model + 8
     locale = model + 0x28
     literal = model + 0x30
     allocator = start + 0x300
-    raw[allocator:allocator + len(_ALLOCATOR)] = _ALLOCATOR
+    raw[allocator:allocator + len(_allocator())] = _allocator()
     literal_pc = (allocator + 6) & ~3
     allocator_literal = (allocator + 0x37) & ~3
     struct.pack_into('<H', raw, allocator + 2,
@@ -106,7 +99,7 @@ class ModelIdentityTests(unittest.TestCase):
 
     def test_every_fixed_constructor_halfword_and_middle_clobber_rejects(self):
         variable = {4, 6, 8, 12, 16, 0x42, 0x44, 0x46, 0x4E}
-        for offset in range(0, len(_BODY), 2):
+        for offset in range(0, len(_body()), 2):
             if offset in variable:
                 continue
             with self.subTest(offset=offset):
@@ -114,7 +107,7 @@ class ModelIdentityTests(unittest.TestCase):
                 raw[0x100 + offset] ^= 1
                 self.assertIsNone(_product_constructor_model(bytes(raw))[0])
         for offset, opcode in ((10, 0x8001), (14, 0x7041), (0x70, 0x2700),
-                               (len(_BODY) - 2, 0x4770)):
+                               (len(_body()) - 2, 0x4770)):
             raw = fixture()
             struct.pack_into('<H', raw, 0x100 + offset, opcode)
             self.assertIsNone(_product_constructor_model(bytes(raw))[0])
@@ -138,7 +131,7 @@ class ModelIdentityTests(unittest.TestCase):
             self.assertIsNone(_product_constructor_model(bytes(fixture()[:end]))[0])
 
     def test_allocator_must_preserve_saved_object_register(self):
-        for offset in range(0, len(_ALLOCATOR), 2):
+        for offset in range(0, len(_allocator()), 2):
             if offset == 2:
                 continue
             with self.subTest(offset=offset):

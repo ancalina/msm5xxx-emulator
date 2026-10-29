@@ -1,4 +1,5 @@
 """Closed high-RAM bootstrap acceptance and negative controls."""
+from corpus import snippet
 import argparse
 from pathlib import Path
 import struct
@@ -10,7 +11,8 @@ from msm5xxx_emulator.detection.memory_layout import (
 )
 
 
-_READBACK_BODY = bytes.fromhex('54019fe5000090e50110a0e30020a0e348319fe5003093e5004083e0001080e5002084e5003090e5010053e14500001a8110a0e1800c51e3f7ffffda0120a0e31c319fe5003093e50020c3e50020a0e30020c3e50f10a0e30010c0e5aa10a0e30110c0e55510a0e30210c0e5f4109fe5001091e5001081e0031001e50420a0e3e0309fe5003093e50240e0e1004082e78220a0e1030052e1faffffba0020d0e50f0052e32700001a0120d0e5aa0052e32400001a0220d0e5550052e32100001a0420a0e30240e0e1005092e7040055e11c00001a8220a0e1030052e1f8ffffba032011e5010052e11600001a0030a0e30330c0e570209fe5002092e5004090e5040052e10f00001a60209fe5002092e5b040d0e1040052e10a00001a50209fe5002092e5b240d0e1040052e10500001aaa20a0e30140d0e5040052e10100001a0000a0e30ef0a0e128009fe50ef0a0e1')
+def _readback_body():
+    return snippet("test_high_ram_bootstrap", "readback_body")
 
 class HighRAMBootstrapTests(unittest.TestCase):
     def test_reset_readback_extent_and_rejections(self):
@@ -22,7 +24,7 @@ class HighRAMBootstrapTests(unittest.TestCase):
         struct.pack_into('<3I', image, 0x180, 0x300, 0x115, 0x118)
         struct.pack_into('<7I', image, 0x2E4, 0x14000000, 0x3FFFFF,
                          0x10, 0x55AA0F, 0xAA0F, 0x55, 0x030006D0)
-        body = _READBACK_BODY
+        body = _readback_body()
         image[0x300:0x450] = body
         self.assertEqual(find_high_ram_readback_tests(bytes(image)), [0x300])
         self.assertEqual(find_high_ram_readback_tests(b'\x00\x00\x00\x14' * 128), [])
@@ -122,7 +124,7 @@ def prefixed_fixture(shift=0, image=None):
                      0x55AA0F,0xAA0F,0x55,0x030006D0,
                      0x147FFFFE,0x147FFDFE,0x14000130)
     image[entry:body]=bytes.fromhex('5c019fe558019fe554019fe554019fe554019fe5')
-    image[body:body+len(_READBACK_BODY)] = _READBACK_BODY
+    image[body:body+len(_readback_body())] = _readback_body()
     for offset,field in ((0,0),(0x10,8),(0x40,24),(0x6C,4),
                          (0x80,4),(0xF4,12),(0x108,16),(0x11C,20)):
         instruction=struct.unpack_from('<I',image,body+offset)[0]

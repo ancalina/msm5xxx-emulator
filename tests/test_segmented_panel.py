@@ -1,3 +1,4 @@
+from corpus import snippet
 import unittest
 from msm5xxx_emulator.devices.display.segmented_panel import SegmentedPanel, ROWS
 
@@ -146,8 +147,8 @@ class SegmentedPanelTests(unittest.TestCase):
         put(row+118, '13880232a3800131bfdd')
         put(row+0x8a, '0004716a000c8842b5dd')
         struct.pack_into('<I', image, 156, 0x01010000)
-        put(512, '90b4c706ff0e3f225201024052091f23db021840c00a904203d1b84201d1ba42')
-        put(612, '00d500201f2800dd1f200004800a0004000c1104090c084340010004000c3904090c084390bc')
+        put(512, snippet("test_segmented_panel", "panel_detector_prefix").hex())
+        put(612, snippet("test_segmented_panel", "panel_detector_tail").hex())
         self.assertEqual(detect_segmented_panel(image)[0], PORT)
         self.assertEqual(detect_segmented_panel(bytes(4096)+image)[0], PORT)
         for offset in (row-20, row-2, row+2, row+122, 156, 512):

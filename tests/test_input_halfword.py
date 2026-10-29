@@ -1,4 +1,5 @@
 """Mapped-row synthetic cases and pinned loop-class mutation/relocation cases."""
+from corpus import snippet
 import struct
 import unittest
 from unittest.mock import patch
@@ -10,7 +11,7 @@ from msm5xxx_emulator.detection.input_halfword import (
 from msm5xxx_emulator.detection.arm import thumb_bl_target
 from pathlib import Path
 import hashlib
-from corpus import FIRMWARE_ROOT
+from corpus import FIRMWARE_ROOT, firmware_path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -40,8 +41,7 @@ class MappedRowTests(unittest.TestCase):
     def image(self):
         image = bytearray(bytes.fromhex('c046') * 0x1200)
         # Separate source/destination/length slots read by a literal-driven loop.
-        code = bytes.fromhex('38480068384909684018061c37480068051c34480068041c'
-                             'b4420dd204e0281d051c201d041cf7e7286820600120')
+        code = snippet("test_input_halfword", "mapped_copy_loop")
         image[0x100:0x100 + len(code)] = code
         for offset, register, slot, value in ((0,0,0x1e0,0x2104),
                 (4,1,0x1e4,0x2108),(12,0,0x1e8,0x2100),(18,0,0x1ec,0x2104)):
@@ -53,8 +53,7 @@ class MappedRowTests(unittest.TestCase):
         for entry,opcode in ((0x1800,'80'),(0x1818,'c0')):
             image[entry:entry + 24] = bytes.fromhex(
                 '7847000000000fe1c010' + opcode + 'e301f021e1c00000e21eff2fe1')
-        image[0x300:0x322] = bytes.fromhex(
-            '00b5b7f1d3fa0749074b8a8b1a408a838a8b09690a80002801d1b7f1d3fa08bc1847')
+        image[0x300:0x322] = snippet("test_input_halfword", "mapped_interrupt_helper")
         self.bl(image,0x302,0x1800)
         self.bl(image,0x31a,0x1818)
         self.literal(image,0x306,1,0x3d0,0x1001020)
@@ -62,7 +61,7 @@ class MappedRowTests(unittest.TestCase):
         for offset,code in {
             0:'b0b5071c',0x0c:'602f00d054e0',
             0x52:'687829781d308007800f884200d12ce0',
-            0x68:'6878240c2a78411c8907890f914207d040198770687801308007800f687004e0',
+            0x68:snippet("test_input_halfword", "mapped_row_loop").hex(),
             0x92:'002c01d1',0x9c:'ff2f01d0078002e0ff2101310180',
             0xbc:'b0bc08bc1847',
         }.items():
@@ -87,11 +86,10 @@ class MappedRowTests(unittest.TestCase):
             self.branch(image,arm + 24,0xb08,conditional=1)
             self.branch(image,arm + 26,0xb04)
         self.bl(image,0xb04,0x1818)
-        tail = bytes.fromhex('706b00880007000f0f2808d070491039085cc300181a1c394018475d'
-                             '05e001352d062d0e072d00da76e7')
+        tail = snippet("test_input_halfword", "mapped_row_tail")
         image[0xb08:0xb08 + len(tail)] = tail
         self.literal(image,0xb14,1,0xc40,0x1c2c)
-        image[0x1c00:0x1c1c] = bytes.fromhex('000000675455642a37343150655b30383532528a6323393633006653')
+        image[0x1c00:0x1c1c] = snippet("test_input_halfword", "mapped_event_codes")
         image[0x1c1c:0x1c2c] = bytes([0,1,0,2,0,1,0,3,0,1,0,2,0,1,0,0])
         self.bl(image,0xb32,0x300)
         image[0xb88:0xb8a] = bytes.fromhex('381c')
@@ -150,7 +148,7 @@ class MappedRowTests(unittest.TestCase):
 
 class LoopRowTests(unittest.TestCase):
     def image(self):
-        p = FIRMWARE_ROOT / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin'
+        p = firmware_path('KTFT_X3500_verX3p56.73.0_riffdump_clean.bin')
         image = p.read_bytes()
         self.assertEqual(hashlib.sha256(image).hexdigest(), '7406845487ce4b47c23d134c201a5b26b781c8aa45469bed3f1f1e8b09fcf7b2')
         return image
@@ -204,7 +202,7 @@ class LoopRowTests(unittest.TestCase):
         self.assertIsNone(resolve_indirect_matrix_input(image,4)[0])
 
     def test_different_structural_peer_rejected(self):
-        p = FIRMWARE_ROOT / 'incoming-20260814' / 'KTF-E2000_-_2.bin'
+        p = firmware_path('incoming-20260814', 'KTF-E2000_-_2.bin')
         image = p.read_bytes()
         self.assertEqual(hashlib.sha256(image).hexdigest(),
                          '2500e169ad9ff6b32139f289e4586e434b052e4e141117418821c762d4acab61')
@@ -215,7 +213,7 @@ class LoopRowTests(unittest.TestCase):
 class FunctionalConfirmTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.original = (FIRMWARE_ROOT / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin').read_bytes()
+        cls.original = firmware_path('KTFT_X3500_verX3p56.73.0_riffdump_clean.bin').read_bytes()
         assert hashlib.sha256(cls.original).hexdigest() == '7406845487ce4b47c23d134c201a5b26b781c8aa45469bed3f1f1e8b09fcf7b2'
 
     def resolve(self, image):
@@ -337,7 +335,7 @@ class FunctionalConfirmTests(unittest.TestCase):
 class MappedScanGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.original = (FIRMWARE_ROOT / 'SPH-X7700.bin').read_bytes()
+        cls.original = firmware_path('SPH-X7700.bin').read_bytes()
         assert hashlib.sha256(cls.original).hexdigest() == '8e2c5b84c210052d414f61559c60d8cdb423851579a105dcbd8478439eb8eb07'
 
     def resolve(self, image):
@@ -677,7 +675,9 @@ class MappedPhysicalMenuTests(unittest.TestCase):
         '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'
         '000000000000000000000000000000000000000000000000000000F0iusX<N'
     )
-    EVENTS = list(bytes.fromhex('000000675455642a37343150655b30383532528a6323393633006653'))
+    @property
+    def EVENTS(self):
+        return list(snippet("test_input_halfword", "mapped_event_codes"))
 
     def fixture(self, shift=0, ram_shift=0):
         import base64
@@ -752,11 +752,13 @@ class MappedPhysicalMenuTests(unittest.TestCase):
 class MappedFunctionalConfirmTests(unittest.TestCase):
     # Sparse compiler-class scaffold: 720 opcode bytes, explicit calls and literals.
     # Reuse the existing queue/MENU scaffold; no complete firmware fixture.
-    SPANS = (
+    @property
+    def SPANS(self):
+        return (
         (0xFD6B4, 'f0b5ffb0a8b0002630abef481e823390', ()),
-        (0xFDA48, '11490868602800d161e166dc372800d1e5e052dc322800d1e1e041dc232800d1dde02a2800d1dae0302800d1d7e03128c1d1d4e0fa2a0e01a7f8310040410e01205e000158521001f8501001c062000020c700016cc70001301a0000205b0e01e0300000d05f0000503e0e01d0bd0001b0bf130160082501204b0e01e0520000a8ce0001d4c60001d0180000b01d0000a8c60001701700009d5d0001409c0000332800d19be0342800d198e0352800d195e0362800d0f7e691e0522800d190e10cdc382800d18ae0392800d187e0502800d184e05128eed105e122e0532800d122e1', ()),
+        (0xFDA48, snippet("test_input_halfword", "transport_dispatch").hex(), ()),
         (0xFDD70, '6648694ec06830303060000000006348704b8069984215d16049c868002803d1ff200530000000000a2801d13020f9e70b2801d12a20f5e70c2801d0000000002320efe7594a5549904203d1c8680928f6d0f3e7604a904205d1c8680928e9d00a28edd0eae75d4a904205d1c8680a28dcd00b28ded0e1e7594a904204d1c8680628dbd15020cde7564b984205d1c8680a28cbd00b28cdd0d0e7534a9042cdd1c868012802d1ff205430bbe7022802d1ff205530b6e72e30b4e7', ((10, 158760), (36, 6682), (60, 29122))),
-        (0x124998, '90b5114ce71dff375a37f878002807d10e480078002814d10d480078002810d1002200210120000000000a490020c87109496118ca78002a03d0fa78002a00d1c87090bc08bc1847', ((38, -1119888),)),
+        (0x124998, snippet("test_input_halfword", "transport_helper").hex(), ((38, -1119888),)),
         (0x13308, 'b0b50f1c051c141c00000000002809d008210171c4608760057400000000b0bc08bc1847002ffad00c21201c00000000f5e7', ((8, -6136), (26, -6080), (44, 2381174))),
         (0x11B10, '80b50a4800000000071c04d1084909480000000005e02021381c0000000017203871381c80bc08bc1847', ((4, 2385252), (16, 537100), (26, 2388456))),
         (0x11B48, '80b5071c011c00000000391c044800000000022103480000000080bc08bc1847', ((6, 203854), (14, 2385220), (22, 2385208))),

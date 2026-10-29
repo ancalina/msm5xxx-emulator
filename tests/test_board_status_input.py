@@ -1,6 +1,8 @@
 """Board-status signature and default-bit regression tests."""
 from __future__ import annotations
 
+from corpus import snippet
+
 import struct
 from types import SimpleNamespace
 import unittest
@@ -18,9 +20,7 @@ class BoardStatusInputTests(unittest.TestCase):
         image = bytearray(b"\xff" * 0x400)
         start = 0x100
         image[start:start + 4] = bytes.fromhex("f0b53c48")
-        image[start + 4:start + 36] = bytes.fromhex(
-            "007808231840082801d1012100e00021002700260124002936484ad0"
-        )
+        image[start + 4:start + 36] = snippet("test_board_status_input", "board_status_reader")
         struct.pack_into("<I", image, 0x1F4, 0x03000670)
         return image
 

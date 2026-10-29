@@ -1,4 +1,5 @@
 """Focused consumer/typed bus closure; no VM or firmware fixtures required."""
+from corpus import snippet
 import copy
 import struct
 import unittest
@@ -8,7 +9,8 @@ from msm5xxx_emulator.detection.input import find_sbi_bootstrap_profile
 from msm5xxx_emulator.detection.sbi_raw_input import find_sbi_raw_input_profile, _clock_pair
 
 _RAW = bytes.fromhex('b0b50406240e0000000005042d0c000000002a20000000000000387880231843387038789f2318403870402c04d138784023184338700de0602c04d1387860231843387006e0002c04d13878202318433870ffe739780a2000000000000000000000000038788023db431840387039780a2000000000000000000b2000000000000000000000808907063f0e002d01d100000000002c05d1000000680078002800d0ffe7381cb0bd')
-_FILTER = bytes.fromhex('f0b582b082b00006000e00900d062d0e1106090e019182b00027002001900024002100910026e91f03390591e91d03310491032e30da03e0701c0606360ef8e7029800000000002d1ad00399884217db0599814209da0499814206dd20180404240c781c07063f0e09e0009908180104090c0091019801300006000e01900ae0002d08d10399884205db20180404240c781c07063f0ecfe70198032807db00990198000000000006000e06b0f0bd002f02d1281c06b0f9e7211c381c000000000006000e06b0f1e7')
+def _filter():
+    return snippet("test_sbi_raw_input", "filter_body")
 
 
 def fixture(selector=0x40, parameter=0x5A, shift=0, ram_base=0x01000000):
@@ -27,7 +29,7 @@ def fixture(selector=0x40, parameter=0x5A, shift=0, ram_base=0x01000000):
         struct.pack_into('<I', image, pool, value)
     raw, filt, cache = 0x500, 0x800, 0xC00
     image[raw:raw+len(_RAW)] = _RAW
-    image[filt:filt+len(_FILTER)] = _FILTER
+    image[filt:filt+len(_filter())] = _filter()
     links = {6:0x1000,0x0E:0x1100,0x14:0x1200,0x58:0x1240,0x5C:0x1280,
              0x60:0x1140,0x72:0x1240,0x76:0x1140,0x7C:0x12C0,0x80:0x1180,0x90:0x1040}
     for offset, target in links.items(): bl(raw+offset, target)
@@ -38,8 +40,8 @@ def fixture(selector=0x40, parameter=0x5A, shift=0, ram_base=0x01000000):
     words(cache,{0:0xB580,4:0x7839,6:0x2200|parameter,8:0x2000|selector,
                  0x0E:0x7038,0x10:0xBD80})
     literal(cache+2,7,cache+0x40,ram_base+0x300);bl(cache+0x0A,filt)
-    image[0x1000:0x101C] = bytes.fromhex('7847000001e08ee300000fe1801080e301f021e1800000e21eff2fe1')
-    image[0x1040:0x105C] = bytes.fromhex('7847000001e08ee300000fe18010c0e301f021e1800000e21eff2fe1')
+    image[0x1000:0x101C] = snippet("test_sbi_raw_input", "interrupt_disable")
+    image[0x1040:0x105C] = snippet("test_sbi_raw_input", "interrupt_enable")
     words(0x1200,{0:0x0680,2:0x0E80,4:0x2321,6:0x019B,8:0x4318,12:0x8088,14:0x46F7})
     literal(0x120A,1,0x1210,0x03000780)
     words(0x1240,{0:0x0600,2:0x0E00,4:0x0609,6:0x0E09,8:0x0700,10:0x0F00,

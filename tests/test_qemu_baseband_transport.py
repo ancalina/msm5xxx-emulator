@@ -1,4 +1,5 @@
 """Explicit virtual-cell configuration and same-image binding."""
+from corpus import snippet
 from copy import deepcopy
 from pathlib import Path
 import os
@@ -11,7 +12,8 @@ from corpus import FIRMWARE_ROOT
 
 
 # Fixed synthetic full-view pair; CRC outcome belongs to the decoder hardware.
-TRAFFIC_FRAME_VALID = "00000000000000000000000000000000000000000003d700"
+def traffic_frame_valid():
+    return snippet("test_qemu_baseband_transport", "traffic_frame_valid").hex()
 TRAFFIC_FRAME_BAD_CRC = "80000000000000000000000000000000000000000003d700"
 
 
@@ -274,7 +276,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "requires traffic_decoder_probe"):
                     qemu_virtual_cell_property(b"", object(), scenario)
         # CRC is a hardware result; the host accepts either protected-bit content.
-        for frame in (TRAFFIC_FRAME_VALID, TRAFFIC_FRAME_BAD_CRC, "auto"):
+        for frame in (traffic_frame_valid(), TRAFFIC_FRAME_BAD_CRC, "auto"):
             self.assertEqual(qemu_virtual_cell_property(
                 b"", object(), {**cell, "traffic_frame_hex": frame}),
                 (None, "primary-map-unsupported"))
@@ -322,7 +324,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                     "isr", "reader", "status_reader", "initializer", "mode_base",
                     "layout_address", "layout_source", "linker_table_offset"))
                 self.assertEqual(enabled, absent + ",decoder-traffic-source=" + value)
-                for frame in (TRAFFIC_FRAME_VALID.upper(), TRAFFIC_FRAME_BAD_CRC.upper()):
+                for frame in (traffic_frame_valid().upper(), TRAFFIC_FRAME_BAD_CRC.upper()):
                     received, reason = qemu_virtual_cell_property(
                         image, config, {**cell, "traffic_decoder_probe": True,
                                         "traffic_frame_hex": frame})
@@ -344,7 +346,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                 with patch.object(service_detector, "find_origination_service_profile", return_value=rejected_service):
                     fallback, limit = qemu_virtual_cell_property(
                         image, config, {**cell, "traffic_decoder_probe": True, "traffic_frame_hex": "auto"})
-                    self.assertEqual(fallback, enabled + ",decoder-traffic-frame=" + TRAFFIC_FRAME_VALID)
+                    self.assertEqual(fallback, enabled + ",decoder-traffic-frame=" + traffic_frame_valid())
                     self.assertEqual(limit, "service-packer-unmatched")
                 for key, broken_value, expected in (
                     ("code_dependencies", [(len(image), 4)], "service-packer-code-unmapped"),
@@ -353,7 +355,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                     with patch.object(service_detector, "find_origination_service_profile", return_value=bad_service):
                         fallback, limit = qemu_virtual_cell_property(
                             image, config, {**cell, "traffic_decoder_probe": True, "traffic_frame_hex": "auto"})
-                        self.assertEqual(fallback, enabled + ",decoder-traffic-frame=" + TRAFFIC_FRAME_VALID)
+                        self.assertEqual(fallback, enabled + ",decoder-traffic-frame=" + traffic_frame_valid())
                         self.assertEqual(limit, expected)
                 self.assertNotEqual(image[traffic["layout_source"] + 20], 24)
                 for layout_source in (traffic["layout_source"] + 8, len(image)):
@@ -361,7 +363,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                     with patch.object(baseband, "find_traffic_decoder_profile", return_value=unsupported_layout):
                         self.assertEqual(qemu_virtual_cell_property(
                             image, config, {**cell, "traffic_decoder_probe": True,
-                                            "traffic_frame_hex": TRAFFIC_FRAME_VALID}),
+                                            "traffic_frame_hex": traffic_frame_valid()}),
                             (None, "traffic-full-frame-layout-unsupported"))
                 for layout_source in (traffic["layout_source"] + 8, len(image), None, True):
                     unsupported_layout = {**traffic, "layout_source": layout_source}
@@ -388,14 +390,14 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                         broken[field] = [*broken[field], change]
                     with patch.object(baseband, "find_traffic_decoder_profile", return_value=broken):
                         for frame_fields in ({}, {"traffic_frame_hex": "auto"},
-                                             {"traffic_frame_hex": TRAFFIC_FRAME_VALID}):
+                                             {"traffic_frame_hex": traffic_frame_valid()}):
                             self.assertEqual(qemu_virtual_cell_property(
                                 image, config, {**cell, "traffic_decoder_probe": True, **frame_fields}),
                                 (None, expected))
                 with patch.object(baseband, "find_traffic_decoder_profile",
                                   return_value={"accepted": False, "reject_reason": "unclosed"}):
                     for frame_fields in ({}, {"traffic_frame_hex": "auto"},
-                                         {"traffic_frame_hex": TRAFFIC_FRAME_VALID}):
+                                         {"traffic_frame_hex": traffic_frame_valid()}):
                         self.assertEqual(qemu_virtual_cell_property(
                             image, config, {**cell, "traffic_decoder_probe": True, **frame_fields}),
                             (None, "unclosed"))

@@ -1,4 +1,5 @@
 """Finite synthetic linked NAND class plus a read-only original-NOR witness."""
+from corpus import snippet
 import hashlib
 import os
 import struct
@@ -25,19 +26,10 @@ _MOVE = bytes.fromhex(
     '01c06085022052e2f9ffff2a1eff2fe178470000013050e003005221a6feff9a10402de9021081e0020080e0030010e3'
     '013071150120421201306015faffff1a102052e2185031291850202910205222fbffff2a822eb0e11800312918002029'
     '04301145043000451040bde81eff2fe1')
-_FORWARD = bytes.fromhex(
-    '030052e33e00009a03c010e20800000a0130d1e402005ce30c2082e001c0d1940130c0e40130d134042042e201c0c094'
-    '0130c034033011e21e00000a042052e22f00003a03c031e7020053e30800000a0f00008a2c34a0e104c0b1e5042052e2'
-    '0c3c83e1043080e4f9ffff2a011081e2230000ea2c38a0e104c0b1e5042052e20c3883e1043080e4f9ffff2a021081e2'
-    '1b0000ea2c3ca0e104c0b1e5042052e20c3483e1043080e4f9ffff2a031081e2130000ea7847000010402de9202052e2'
-    '0500003a1850b1281850a0281850b1281850a02820205222f9ffff2a02ceb0e11850b1281850a0281800b1481800a048'
-    '02cfb0e104309124043080241040bde81eff2f01822fb0e10120d1440130d12401c0d1240120c0440130c02401c0c024'
-    '1eff2fe1')
-_TRANSFER = bytes.fromhex(
-    'f0b5151c00274200ffb083b02b488192825a520100924e00805b4401201cfff739fd012810d10098c11921231b010022'
-    '2348baf29ffee11921231b0100222048fff7a4fd012805d000207fb003b0f0bc08bc18470137202fe5d30020ff2101aa'
-    '1154013001235b029842f8d3154800ab01277f02d8803b1c0022291c01a8fff785fd3b1c0022291c01a8baf273feff22'
-    'f93203a90c48baf28bfc00ab19890848403881635989c163084805600348815b819a8152002181530120c6e7')
+def _forward():
+    return snippet("test_small_page_nand_detection", "forward_copy")
+def _transfer():
+    return snippet("test_small_page_nand_detection", "nand_transfer")
 
 
 def _thumb_bl(image, pc, target):
@@ -80,7 +72,7 @@ def _nand_fixture(shift=0, iram_source=0x13000, read_offset=0x100, data_port=0x1
     image[address['move']:address['move'] + len(_MOVE)] = _MOVE
     _branch(image, address['move'] + 8, address['forward_veneer'], 0x2a)
     struct.pack_into('<II', image, address['forward_veneer'], 0xe51ff004, forward)
-    image[iram_source + 0xa00:iram_source + 0xa00 + len(_FORWARD)] = _FORWARD
+    image[iram_source + 0xa00:iram_source + 0xa00 + len(_forward())] = _forward()
     image[address['read_wrapper']:address['read_wrapper'] + 8] = bytes.fromhex('7847c04604f01fe5')
     _word(image, address['read_wrapper'] + 8, read_entry)
     image[address['diagnostic']:address['diagnostic'] + 2] = bytes.fromhex('7047')
@@ -99,7 +91,7 @@ def _nand_fixture(shift=0, iram_source=0x13000, read_offset=0x100, data_port=0x1
         ((0x18, command >> 20), (0x1e, ale >> 19)))
     pools['status'] = _place(image, address['status'], _STATUS, {}, {0x1a: 20000},
         ((2, data_port >> 22), (6, command >> 20)))
-    pools['transfer'] = _place(image, address['transfer'], _TRANSFER,
+    pools['transfer'] = _place(image, address['transfer'], _transfer(),
         {0x1e: address['erase'], 0x32: address['read_wrapper'], 0x40: address['program'],
          0x7e: address['program'], 0x8a: address['read_wrapper'], 0x96: address['copy']},
         {0xc: 0x1001000, 0x30: 0x1002040, 0x3e: 0x1002040, 0x6c: 0xfff8,
@@ -173,7 +165,7 @@ class SmallPageNandDetectionTests(unittest.TestCase):
         for size in (0, 4, layout['program'] + 50, 0x13a80, 0x180ff):
             with self.subTest(size=size):
                 self.assertIsNone(small_page_nand_profile(bytes(self.image[:size])))
-        for name, code in (('program', _PROGRAM), ('erase', _ERASE), ('transfer', _TRANSFER)):
+        for name, code in (('program', _PROGRAM), ('erase', _ERASE), ('transfer', _transfer())):
             image = self.image.copy()
             image[0x1b000:0x1b00c] = code[:12]
             with self.subTest(name=name):

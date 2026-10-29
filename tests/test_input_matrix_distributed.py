@@ -1,4 +1,5 @@
 """Synthesized distributed byte scanner/queue instructions; no firmware fixture."""
+from corpus import snippet
 import struct
 import unittest
 
@@ -90,9 +91,9 @@ class DistributedMatrixTests(unittest.TestCase):
         branch(start+0x154,sense)
         bl(sense-4,unlock);literal(sense,0,start + 0x3e4,0x3000690)
         put(sense+2,'00790007000f0f28');branch(sense+10,sense+76,0)
-        put(sense+12,'0107090f0020ca43069201218140069a11400cd006214143')
+        put(sense+12,snippet("test_input_matrix_distributed", "sense_prefix").hex())
         literal(sense+36,2,start + 0x3fc,delta + 0x1900)
-        put(sense+38,'8918039a8b5c711c0a06120e311c161c6a4653540a2e0eda01300006000e0428e6db0a2e07da039a501c0206120e0392062a00da')
+        put(sense+38,snippet("test_input_matrix_distributed", "sense_loop").hex())
         branch(sense+90,switch-4);bl(sense+92,helper)
         put(sense+96,'012e');branch(sense+98,sense+0x122,13)
         branch(sense+0x122,sense+0x152)
@@ -104,7 +105,7 @@ class DistributedMatrixTests(unittest.TestCase):
         put(sense+0x222,'381c');bl(sense+0x224,sink)
         put(sink,'b0b5');literal(sink+2,4,sink+0xc0,0x1002200);put(sink+4,'071c')
         bl(sink+56,lock);put(sink+60,'0504');literal(sink+62,0,sink+0xc4,0x1002300)
-        put(sink+64,'2d0c417803784a1cd206d20e9a4207d009188f7041780131c906c90e417003e0')
+        put(sink+64,snippet("test_input_matrix_distributed", "sink_tail").hex())
         bl(sink+108,unlock);put(sink+124,'b0bd')
         image[dequeue:dequeue+len(SAMSUNG_RAW_DEQUEUE)]=SAMSUNG_RAW_DEQUEUE
         literal(dequeue,2,dequeue+28,0x1002300)
@@ -133,8 +134,8 @@ class DistributedMatrixTests(unittest.TestCase):
         self.branch(image,forwards[0]-0x1C,forwards[0])
         for pc in forwards:put(pc,'381c');self.bl(image,pc+2,sink)
         put(sink,'90b5');literal(sink+2,4,sink+0x80,0x1003000);put(sink+4,'071c')
-        put(sink+6,'2068033004d54042c006c00e404201e0c006c00e6168884203d1')
-        put(sink+0x28,'20680130011c002804da4042c006c00e404201e0c006c00e6268904203d0206040000019078190bd')
+        put(sink+6,snippet("test_input_matrix_distributed", "controls_press").hex())
+        put(sink+0x28,snippet("test_input_matrix_distributed", "controls_release").hex())
         put(consumer-0x12,'013004d54042c006c00e404201e0c006c00e')
         put(consumer,'5060400080180089');self.bl(image,consumer+8,app)
         literal(consumer+0x12,2,consumer+0x40,0x1003000)
@@ -265,9 +266,8 @@ class DistributedMatrixTests(unittest.TestCase):
         import os
         from pathlib import Path
         from msm5xxx_emulator.detection.input_matrix import _distributed_call_profile
-        root=os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT')
-        if root is None:self.skipTest('firmware corpus unavailable')
-        image=(Path(root)/'SPH-X4500.bin').read_bytes()
+        from corpus import firmware_path
+        image = firmware_path('SPH-X4500.bin').read_bytes()
         parent,status,_=resolve_distributed_matrix_input(image)
         self.assertEqual(status,'static-candidate');self.assertEqual(parent['call_mapping_status'],'accepted-provisional')
         self.assertEqual((parent['call_consumer']['event'],parent['call_consumer']['request_code']),(0x50,0x32))
@@ -302,10 +302,10 @@ class DistributedMatrixTests(unittest.TestCase):
         put(0x22C,'00490868542836d036dc362835d013dc322832d009dc23282fd02a282dd030282bd0312864d11ae191e0332825d0342823d035285cd112e150281ed006dc37281bd0382819d0392852d108e1512850d052284fd053284bd10049004e486bc21d29323260496d004a914244d1002843d1ff2005301fe369e000e03be3ff230233984236d039dc642838d038dc552837d05b2836d060282cd0632829d1')
         # -3 primary mode: previous/current/count stores and signed wrap math.
         put(0x2C8,'004a004e516d004ee160506bb142106344d1c11e51631991106d0068002813d01999004800290fda806bc11c061c03200000000043001999181840180049b042486301dd00484663ff20004e013030600048bfe1')
-        put(0x31C,'b7e02ee003e1e1e0d6e01ee0dce201e004e03fe3652821d0662820d1')
+        put(0x31C,snippet("test_input_matrix_distributed", "navigation_dispatch").hex())
         # +1 current/previous stores, mode flag and count+1 remainder call.
         put(0x338,'ff2000490130004a0860566de660506b411c10635163106d0068002812d0906b013000000000004a516393e1')
-        put(0x364,'92e2ff231933984207d007dcff230533984245e0dae19be07ee14ae05ee0')
+        put(0x364,snippet("test_input_matrix_distributed", "navigation_handler").hex())
         # +1 alternate mode uses (value-1) remainder then adds one.
         put(0x67C,'00480139806b00000000481c00494863')
         # -1: old store, software100, decrement, signed/zero mode wrap to count.

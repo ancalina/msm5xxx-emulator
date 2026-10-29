@@ -1,6 +1,8 @@
 """Detector regression tests for BSP and handset identity evidence."""
 from __future__ import annotations
 
+from corpus import snippet
+
 import argparse
 import hashlib
 import json
@@ -113,10 +115,7 @@ class DetectionTests(unittest.TestCase):
             self) -> None:
         image = bytearray(b"\xff" * 0x2000)
         position = 0x100
-        signature = bytes.fromhex(
-            "8c009fe50000d0e5020000e2020050e30300000a7c009fe5"
-            "0010d0e5011081e30010c0e570209fe512ff2fe1"
-        )
+        signature = snippet("test_detection", "dual_sdram_signature")
         image[position:position + len(signature)] = signature
         struct.pack_into(
             "<3I", image, position + 0x94,
@@ -596,10 +595,7 @@ class DetectionTests(unittest.TestCase):
             displacement = (target - (index * 4 + 8)) // 4
             struct.pack_into("<I", image, index * 4,
                              0xEA000000 | (displacement & 0xFFFFFF))
-        loop = bytes.fromhex(
-            "c1002e4a515800290bd0c10089188988c2002a4b9a581180"
-            "411c0904090c081ceee7"
-        )
+        loop = snippet("test_detection", "sparse_nor_gap_loop")
         image[0x11C:0x11C + len(loop)] = loop
         struct.pack_into("<I", image, 0x1D8, 0x1158)
         struct.pack_into(
@@ -1092,64 +1088,12 @@ class DetectionTests(unittest.TestCase):
 
     def test_fujitsu_bulk_writer_requires_unique_shape_and_adjacent_bus(self) -> None:
         variants = (
-            (bytes.fromhex(
-                "f0b5141c051c0f1c400803d2780801d2600802d3184919481ae00120c0050cf7"
-                "a3fa174e301c1fe02e8895f0dffa154aa02151813e80002801d195f0e5fa0122"
-                "381c311cfff78afc002805d00a490e481ef7a6fe0120f0bd0120c005023c0235"
-                "02370cf781fa0648084967f713f8002cdad10020f0bd0000acca1b00dc050000"
-                "308f4001a00a4000ed050000c5030000"
-            ), 0x400000, 0x112378),
-            (bytes.fromhex(
-                "f0b50f1c041c151c400803d2780801d2680803d35120000119491be00120c005"
-                "f5f7c4fb184e1749301c22e02688c6f1d9ff164aa02151813e80002801d1c6f1"
-                "ddff0122311c381cfff788fc002807d00b490f48f5f71cfa0120f0bc08bc1847"
-                "02340237023d0120c005f5f79ffb0549054814f082f8002dd8d10020ede70000"
-                "dc0a2600c50300007cd81501a0aa800021050000"
-            ), 0x800000, 0x84FC8),
-            (bytes.fromhex(
-                "f8b5041c3c488b18171c42688032556b6d00ab4201d901206de0037a002b01d0"
-                "022bf8d1126b0068344b10184518e607f60fa0205522002e52d1490850d27908"
-                "4ed21be0268875f059fc2d49aa224a812a4b55229a82a0224a812e80002801d1"
-                "75f05afc0221281cfff79efd002802d0244925482ee002340235023f012fe1d8"
-                "30e06e087600217830886a0803d2ff231b02194302e00902ff23194308400104"
-                "090c009175f02afc1549aa224a81134b55229a82a0224a8100993180002801d1"
-                "75f02afc0221301cfff76efd002804d00c490e482af7e6fc9de701340135013f"
-                "002fced80120c00518f7e4fa0848094972f76af90020f8bd4870180140552000"
-                "a0aa2000"
-            ), 0x200000, 0x2000),
-            (bytes.fromhex(
-                "f8b5041c8818171c3b4a12688032536b5b00984205d8394b1879002805d00228"
-                "03d00120f8bc08bc1847106b1a6880184518600800d352e0480800d34fe07808"
-                "00d34ce01be02688fdf022fa2c4aaa2151812c4b55219982a02151812e800028"
-                "01d1fdf021fa0221281cfff769fd002802d0254925482ce002340235023f012f"
-                "e1d82ee06e087600217830886a0802d2ff22120201e00902ff22114301400091"
-                "fdf0f6f9164aaa215181164b55219982a021518100993180002801d1fdf0f4f9"
-                "0221301cfff73cfd002805d00f480e493130f5f705fca4e701340135013f002f"
-                "d0d80120c005f5f777fd08490848893913f0e1fb002095e7bc191801044c1e01"
-                "a0aa200040552000"
-            ), 0x200000, 0x3000),
-            (bytes.fromhex(
-                "f8b5041c8818171c3b4a12688032536b5b00984205d8394b1879002805d00228"
-                "03d00120f8bc08bc1847106b1a6880184518600800d352e0480800d34fe07808"
-                "00d34ce01be026882ef112fe2c4aaa2151812c4b55219982a02151812e800028"
-                "01d12ef111fe0221281cfff769fd002802d0254925482ce002340235023f012f"
-                "e1d82ee06e087600217830886a0802d2ff22120201e00902ff22114301400091"
-                "2ef1e6fd164aaa215181164b55219982a021518100993180002801d12ef1e4fd"
-                "0221301cfff73cfd002805d00f480e493130f7f7f9fca4e701340135013f002f"
-                "d0d80120c005f7f76bfe08490848ba3919f029f8002095e7541918011ce91f01"
-                "a0aa400040554000"
-            ), 0x400000, 0x300),
-            (bytes.fromhex(
-                "f8b5041c8818171c3b4a1268ff32c13293695b00984205d8384b1879002805d0"
-                "022803d00120f8bc08bc184750691a6880184518600800d352e0480800d34fe0"
-                "780800d34ce01be02688b7f155fe2c4aaa2151812b4b55219982a02151812e80"
-                "002801d1b7f154fe0221281cfff7ecfc002802d0244925482ce002340235023f"
-                "012fe1d82ee06e087600217830886a0802d2ff22120201e00902ff2211430140"
-                "0091b7f129fe164aaa215181154b55219982a021518100993180002801d1b7f1"
-                "27fe0221301cfff7bffc002805d00f480d493130f4f700fda4e701340135013f"
-                "002fd0d801208005f4f76cfe0849094817f099ff002096e714200001c87c0c01"
-                "a0aa800040558000"
-            ), 0x800000, 0x5000),
+            (snippet("test_detection", "fujitsu_writer_x350"), 0x400000, 0x112378),
+            (snippet("test_detection", "fujitsu_writer_x430"), 0x800000, 0x84FC8),
+            (snippet("test_detection", "fujitsu_writer_x127"), 0x200000, 0x2000),
+            (snippet("test_detection", "fujitsu_writer_x4000"), 0x200000, 0x3000),
+            (snippet("test_detection", "fujitsu_writer_x2700"), 0x400000, 0x300),
+            (snippet("test_detection", "fujitsu_writer_x7700"), 0x800000, 0x5000),
         )
         for body, secondary_base, padding in variants:
             image = b"\xff" * padding + body + b"fs_fujitsu.c\0"
@@ -1247,19 +1191,7 @@ class DetectionTests(unittest.TestCase):
     def test_primary_fsd_amd_nor_requires_linked_writer_and_geometry(self) -> None:
         image = bytearray(b"\xff" * 0x4000)
         writer = 0x400
-        writer_body = bytearray(bytes.fromhex(
-            "f0b5544b8f181b68ff3381339c696400a74200d962e0504f3f78002f02d0022f"
-            "00d05be04d4f5b693f685b00df197c186608760005235b059c4203d301231b06"
-            "9c4205d300a1b4394548f4f7fff845e0aa231d017f197b813e4f55233f683f4d"
-            "ff3781377f692d687f007f191525ad017f19bb82374f20233f68384dff378137"
-            "7f692d687f007f1955256d017f197b81c307db0f0127002b00d053e0490800d3"
-            "50e0510800d34de02e4d1ee00188a0232380218001272f7080270f4021888023"
-            "0b40bb420ed08909f8d3218880231940b94207d090202080002020800120f0bc"
-            "08bc184702300234023a012aded82be06108490003780f88a0250d80650802d2"
-            "ff252d0201e01b02ff252b433b400b80144d01272f701f1c80253d400f888023"
-            "3b40ab420bd0bb09f8d30f8880233b40ab4204d09020088000200880cee70130"
-            "0134013a002ad3d89020308000203080c5e7"
-        ))
+        writer_body = bytearray(snippet("test_detection", "amd_nor_writer_body"))
         displacement = 0x600 - (writer + 0x4A) - 4
         encoded = displacement & ((1 << 23) - 1)
         struct.pack_into(
@@ -1280,11 +1212,7 @@ class DetectionTests(unittest.TestCase):
         image[name:name + 8] = b"NOR-X16\0"
         flash_id = 0x208
         struct.pack_into("<3I", image, flash_id - 12, 0, entry, 0)
-        image[flash_id:flash_id + 70] = bytes.fromhex(
-            "30b50e4b011ccc18084d094b258023800b4bca18074b1380074b238008884b88"
-            "00041b04000c184325800be0f0000000aa0000005500000090000000aa0a0000"
-            "5405000030bd"
-        )
+        image[flash_id:flash_id + 70] = snippet("test_detection", "amd_nor_flash_id")
 
         self.assertEqual(
             find_primary_fsd_amd_x16_nor(bytes(image), flash_id, len(image)),
@@ -1884,13 +1812,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_complete_compound_fujitsu_dump_splits_and_seeds_secondary_nor(self) -> None:
         primary_size, secondary_size = 0x400000, 0x200000
-        writer = bytes.fromhex(
-            "f0b5141c051c0f1c400803d2780801d2600802d3184919481ae00120c0050cf7"
-            "a3fa174e301c1fe02e8895f0dffa154aa02151813e80002801d195f0e5fa0122"
-            "381c311cfff78afc002805d00a490e481ef7a6fe0120f0bd0120c005023c0235"
-            "02370cf781fa0648084967f713f8002cdad10020f0bd0000acca1b00dc050000"
-            "308f4001a00a4000ed050000c5030000"
-        )
+        writer = snippet("test_detection", "compound_fujitsu_writer")
         image = bytearray(b"\xff" * (primary_size + secondary_size))
         for offset in range(0, 32, 4):
             struct.pack_into("<I", image, offset, 0xEA000000)
@@ -1934,13 +1856,7 @@ class DetectionTests(unittest.TestCase):
     def test_adjacent_fujitsu_nor_requires_linked_physical_geometry(self) -> None:
         primary_size = secondary_size = 0x400000
         writer_offset = 0x1000
-        writer = bytearray(bytes.fromhex(
-            "f0b50f1c041c151c400803d2780801d2680802d31a491b481ce00120c005f5f7"
-            "ddfa1a4e1849301c23e0268876f196ff174aa02151813e80002801d176f19cff"
-            "0122311c381cfff73ffc002808d00d480b491130f5f7eaf80120f0bc08bc1847"
-            "02340237023d0120c005f5f7b7fa064906481cf0a3fe002dd7d10020ede70000"
-            "6cc32000e3050000c5030000c8711701a00a8000"
-        ))
+        writer = bytearray(snippet("test_detection", "compound_fujitsu_writer_x290"))
         struct.pack_into("<I", writer, 0x90, primary_size + 0xAA0)
         image = bytearray(b"\xff" * primary_size)
         for offset in range(0, 32, 4):
@@ -2131,17 +2047,7 @@ class DetectionTests(unittest.TestCase):
     def test_adjacent_fujitsu_nor_accepts_linked_reserved_boot_geometry(self) -> None:
         primary_size = 0x400000
         writer_offset = 0x300
-        writer = bytes.fromhex(
-            "f8b5041c8818171c3b4a12688032536b5b00984205d8394b1879002805d00228"
-            "03d00120f8bc08bc1847106b1a6880184518600800d352e0480800d34fe07808"
-            "00d34ce01be026882ef112fe2c4aaa2151812c4b55219982a02151812e800028"
-            "01d12ef111fe0221281cfff769fd002802d0254925482ce002340235023f012f"
-            "e1d82ee06e087600217830886a0802d2ff22120201e00902ff22114301400091"
-            "2ef1e6fd164aaa215181164b55219982a021518100993180002801d12ef1e4fd"
-            "0221301cfff73cfd002805d00f480e493130f7f7f9fca4e701340135013f002f"
-            "d0d80120c005f7f76bfe08490848ba3919f029f8002095e7541918011ce91f01"
-            "a0aa400040554000"
-        )
+        writer = snippet("test_detection", "adjacent_fujitsu_writer")
         image = bytearray(b"\xff" * 0x5000)
         image[writer_offset:writer_offset + len(writer)] = writer
         image[0x1800:0x1815] = b"Fujitsu MB84VD2219X\0"
@@ -2200,11 +2106,7 @@ class DetectionTests(unittest.TestCase):
         )
 
     def test_rex_5ms_pair_requires_unique_sleep_wrapper_and_timer_shapes(self) -> None:
-        sleep = bytes.fromhex(
-            "134c2078012806d112480078012802d11148007800e00820"
-            "00f000f800f000f80421071c0920c005227800f000f8002f"
-            "01d100f000f880e7"
-        )
+        sleep = snippet("test_detection", "rex_sleep_wrapper")
         timer = bytes.fromhex(
             "f0b5041c00f000f8071c0f480026056811e0a868a0420bd8"
             "ae6003cd083d0860686829684860e868296900f000f801e0"
@@ -2235,14 +2137,8 @@ class DetectionTests(unittest.TestCase):
 
     def test_trampm5_consumer_accepts_x150_x350_and_requires_unique_shape(self) -> None:
         variants = (
-            (0xA1D88, bytes.fromhex(
-                "90b50848d6f782fe0024071c002806d0f868b96860f701f93c71012090bd"
-                "201c90bd00006c293e01"
-            )),
-            (0xA21A8, bytes.fromhex(
-                "90b50848d6f760fe0024071c002806d0f868b9685ff7fbfe3c71012090bd"
-                "201c90bd0000b80a3e01"
-            )),
+            (0xA1D88, snippet("test_detection", "trampm5_x150")),
+            (0xA21A8, snippet("test_detection", "trampm5_x350")),
         )
         for address, body in variants:
             image = bytearray(b"\xff" * 0xB0000)
