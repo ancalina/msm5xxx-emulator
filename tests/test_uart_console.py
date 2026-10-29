@@ -4,6 +4,7 @@ import unittest
 
 from msm5xxx_emulator.detection.ready_poll import find_ready_poll_profile
 from msm5xxx_emulator.detection.uart_console import find_uart_console_profile
+from corpus import FIRMWARE_ROOT
 
 
 def fixture(shift=0, sibling=False):
@@ -1060,7 +1061,7 @@ class FiniteProbeConsoleTests(unittest.TestCase):
     def test_actual_two_positive_and_two_probe_negative(self):
         import hashlib
         from pathlib import Path
-        root=Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT', Path(__file__).resolve().parents[1] / 'firmwares'))
+        root=FIRMWARE_ROOT
         controls=[(root/'T030TEDT09_5.177_JTAG - Old Phone Preservation.bin','f236bcf02a9f16e9e5aa0d13c714a832f5e1ed8dbd5da4d58278ecfd103338ed',True),
           (root/'incoming-msm5xxx-all-manufacturers-20260726/Audiovox/CDM-8500/T050VMDM01_3.191_JTAG/T050VMDM01_3.191_JTAG.bin','67f47b9ab99e9f4c8477fc56d3b969f2dc02a9713ed28bb57b8812de557b0ef8',True),
           (root/'incoming-20260719-r1/MSM5100/T055BW1T19_1.242_JTAG.bin','24bf05931ac81cce005b1ad5e970e061b38daf25ea3d70f658e2fa66fb801491',False)]

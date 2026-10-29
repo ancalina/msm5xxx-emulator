@@ -6,13 +6,14 @@ import unittest
 from msm5xxx_emulator.detection.service import (
     _at as at, find_origination_service_profile as find,
     _SIZE, _CALLS, _LITERALS, _CALLEE_BODIES, thumb_bl_target)
+from corpus import FIRMWARE_ROOT
 
 CASES=[('x350_VC22.bin',0x1081c,'7a6a4df853b51a4b44e86c3334330c12facad2954eef5a94031724ff1ff44073'),
        ('schx150.bin',0x1086c,'347057aeb9985579bb31c64e7fa20dc18486b7fb59aea82a682d4b10d9711de0')]
 
 class ServiceDetectionTests(unittest.TestCase):
     def test_two_roms_and_mutated_dependencies(self):
-        ROOT=Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT',Path(__file__).resolve().parents[2]/'firmwares'))
+        ROOT=FIRMWARE_ROOT
         if not all((ROOT/name).is_file() for name,_,_ in CASES):
             self.skipTest('original service producer ROM fixtures unavailable')
         mutations=0
@@ -70,7 +71,7 @@ class ServiceDetectionTests(unittest.TestCase):
         self.assertFalse(find(bytes(4096),0x1000000,0x800000)['accepted'])
 
     def test_multiple_valid_producers_are_rejected(self):
-        root=Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT',Path(__file__).resolve().parents[2]/'firmwares'))
+        root=FIRMWARE_ROOT
         path=root/CASES[0][0]
         if not path.is_file():self.skipTest('original service producer ROM fixture unavailable')
         image=bytearray(path.read_bytes());original=find(image,0x1000000,0x800000)

@@ -15,9 +15,10 @@ from unicorn.arm_const import (
 from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.boot import find_ma2_silent_boot_wait
+from corpus import FIRMWARE_ROOT
 
 
-FIRMWARES = Path(__file__).resolve().parent.parent / "firmwares"
+FIRMWARES = FIRMWARE_ROOT
 
 
 class Ma2SilentBootTests(unittest.TestCase):

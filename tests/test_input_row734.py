@@ -6,6 +6,7 @@ import struct
 import unittest
 from msm5xxx_emulator.detection import input_row734 as module
 from msm5xxx_emulator.detection.protected_nor import _MASKS as COPY_MASKS
+from corpus import FIRMWARE_ROOT
 
 # Reuse the reviewed portable boot-contact fixture, not an original dump.
 _BOOT_CHUNKS = [(304,
@@ -272,7 +273,7 @@ class Row734Tests(unittest.TestCase):
             self.assertIsNone(profile);self.assertIn('zero-tuple',reason)
 
     def test_actual_two_originals(self):
-        root=Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT', Path(__file__).resolve().parents[1] / 'firmwares')) / 'incoming-20260719-r1/MSM5100'
+        root=FIRMWARE_ROOT / 'incoming-20260719-r1/MSM5100'
         for name,sha in [('SCP-4900_1.059SP_JTAG.bin','6ff77b7f6a2933c227a1097043ffa162d4b693fd9e9d2890a40f2375b600111e'),('SCP-7200_2.046SP_JTAG.bin','72486e9a0b3bac598adee2913405ad287a65880bc896816f69453131fe949714')]:
             with self.subTest(name=name):
                 path=root/name

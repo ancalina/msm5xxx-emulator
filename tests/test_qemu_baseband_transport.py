@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import unittest
 from msm5xxx_emulator.qemu.transport import qemu_virtual_cell_property
 from msm5xxx_emulator.detection.rex import find_rex_5ms_sleep_timer
+from corpus import FIRMWARE_ROOT
 
 
 # Fixed synthetic full-view pair; CRC outcome belongs to the decoder hardware.
@@ -55,8 +56,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                          (None, "controller-mode-unsupported"))
 
     def test_two_images_auto_bind_and_mutations_fall_back(self):
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -118,8 +118,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
 
     def test_tx_init_is_explicit_same_image_bound_and_mapped(self):
         from msm5xxx_emulator.detection.baseband import find_tx_init_profile
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -156,8 +155,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                     **CELL, "tx_init_delay_ns": 1000000, "tx_frame_period_ns": value})
         with self.assertRaisesRegex(ValueError, "requires tx_init_delay_ns"):
             qemu_virtual_cell_property(b"", object(), {**CELL, "tx_frame_period_ns": 20000000})
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -286,8 +284,7 @@ class QEMUBasebandTransportTests(unittest.TestCase):
         from functools import lru_cache
         from unittest.mock import patch
         from msm5xxx_emulator.detection import baseband
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")

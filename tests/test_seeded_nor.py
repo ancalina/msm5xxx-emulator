@@ -4,6 +4,7 @@ import struct
 import unittest
 
 from msm5xxx_emulator.detection.storage import seeded_amd_x16_nor_profile
+from corpus import FIRMWARE_ROOT
 
 
 class SeededNorTests(unittest.TestCase):
@@ -13,7 +14,7 @@ class SeededNorTests(unittest.TestCase):
                 image, load, len(image), 0x1000000, ram_size)
 
         self.assertEqual(detect(b""), (None, None))
-        corpus = Path(__file__).resolve().parents[2] / "firmwares"
+        corpus = FIRMWARE_ROOT
         firmware = corpus / "incoming-20260914/SCH-X700_UG25_JTAG.bin"
         if not firmware.is_file():
             self.skipTest("private firmware corpus is not available")

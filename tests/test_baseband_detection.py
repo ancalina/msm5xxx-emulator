@@ -22,6 +22,7 @@ from msm5xxx_emulator.detection.baseband import (
     _find_finger_quality,
 )
 from msm5xxx_emulator.detection.rex import find_rex_5ms_sleep_timer
+from corpus import FIRMWARE_ROOT
 
 
 def _image() -> bytearray:
@@ -52,8 +53,7 @@ def _literal_clobber_image() -> bytearray:
 
 class BasebandDetectionTests(unittest.TestCase):
     def _traffic_images(self):
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -62,8 +62,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_conditional_search1_and_compact_paging_protocol_class(self):
         from msm5xxx_emulator.detection.arm import thumb_bl_target
-        root = Path(os.environ.get("MSM5XXX_TEST_FIRMWARE_ROOT",
-                                  Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         path = root / "SPH-X4500.bin"
         if not path.is_file():
             self.skipTest("conditional class firmware unavailable")
@@ -192,8 +191,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_tx_frame_full_data_helper_writer_tables_and_mutations(self):
         self.assertFalse(find_tx_frame_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -255,8 +253,7 @@ class BasebandDetectionTests(unittest.TestCase):
             self.assertFalse(find_tx_frame_profile(bytes(changed), tick)["accepted"])
 
     def test_tx_frame_opaque_diagnostic_record_ids(self):
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         path = root / "SCH-x127.bin"
         if not path.is_file():
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -289,8 +286,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_tx_init_complete_callback_controller_and_mutations(self):
         self.assertFalse(find_tx_init_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -360,8 +356,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_search1_abort_shared_owner_and_zero_store_shape(self):
         self.assertFalse(find_search1_abort_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -397,8 +392,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_paging_decoder_coupled_readers_irq_mode_and_carry(self):
         self.assertFalse(find_paging_decoder_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -431,8 +425,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_combiner_position_roll_and_descriptor_class(self):
         self.assertFalse(find_combiner_clock_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -453,8 +446,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_decoder_init_probe_signature_and_coupled_irq_descriptor(self):
         self.assertFalse(find_decoder_init_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -477,8 +469,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_finger_selected_rssi_scale_and_position_class(self):
         self.assertFalse(find_finger_transport_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
@@ -499,8 +490,7 @@ class BasebandDetectionTests(unittest.TestCase):
 
     def test_search1_command_queue_and_selected_results_in_independent_firmware(self):
         self.assertFalse(find_search1_transport_profile(b"", 0)["accepted"])
-        root = Path(os.environ.get(
-            "MSM5XXX_TEST_FIRMWARE_ROOT", Path(__file__).resolve().parents[2] / "firmwares"))
+        root = FIRMWARE_ROOT
         files = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in files):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")

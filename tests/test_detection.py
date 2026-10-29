@@ -82,6 +82,7 @@ from msm5xxx_emulator.detection.storage import (
     find_fujitsu_x16_bulk_write,
     fujitsu_x16_flash_ids,
 )
+from corpus import FIRMWARE_ROOT
 from msm5xxx_emulator.detection.chipset import chipset_confidence, detect_chipset
 from msm5xxx_emulator.detection.arm import arm_vector_score, thumb_bl_target, thumb_literal_value
 from msm5xxx_emulator.detection.firmware import detect
@@ -2279,7 +2280,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_rex_5ms_irq_route_accepts_four_homologs(self) -> None:
         root = Path(__file__).resolve().parent.parent
-        if not (root / "firmwares").is_dir():
+        if not FIRMWARE_ROOT.is_dir():
             self.skipTest("private firmware corpus is not available")
         cases = (
             ("schx150.bin", 0x13D7C,
@@ -2296,7 +2297,7 @@ class DetectionTests(unittest.TestCase):
               0x03000620, 0x03000628, 0x0200)),
         )
         for name, tick, expected in cases:
-            image = (root / "firmwares" / name).read_bytes()
+            image = (FIRMWARE_ROOT / name).read_bytes()
             self.assertEqual(find_rex_5ms_irq_route(image, tick), expected)
             self.assertEqual(
                 find_rex_5ms_irq_route(
@@ -2308,30 +2309,30 @@ class DetectionTests(unittest.TestCase):
 
     def test_rex_5ms_irq_route_accepts_x4500_enqueue_layout(self) -> None:
         root = Path(__file__).resolve().parent.parent
-        if not (root / "firmwares").is_dir():
+        if not FIRMWARE_ROOT.is_dir():
             self.skipTest("private firmware corpus is not available")
-        image = bytearray((root / "firmwares" / "SPH-X4500.bin").read_bytes())
+        image = bytearray((FIRMWARE_ROOT / "SPH-X4500.bin").read_bytes())
         expected = (0x18E2AC, 0x9400C, 0x1382AA8, 0x1382A70,
                     0x03000620, 0x03000628, 0x0200)
         self.assertEqual(find_rex_5ms_irq_route(image, 0x17978), expected)
         self.assertEqual(find_rex_5ms_irq_arm(image, 0x17978), 0x030006E0)
         self.assertEqual(
-            detect(root / "firmwares" / "SPH-X4500.bin").rex_irq_arm_address,
+            detect(FIRMWARE_ROOT / "SPH-X4500.bin").rex_irq_arm_address,
             0x030006E0,
         )
 
         struct.pack_into("<I", image, 0x94264 + 0x4C, 0)
         self.assertIsNone(find_rex_5ms_irq_route(image, 0x17978))
 
-        image = bytearray((root / "firmwares" / "SPH-X4500.bin").read_bytes())
+        image = bytearray((FIRMWARE_ROOT / "SPH-X4500.bin").read_bytes())
         struct.pack_into("<H", image, 0x179EA - 8, 0x2001)
         self.assertIsNone(find_rex_5ms_irq_arm(image, 0x17978))
 
     def test_rex_5ms_irq_route_rejects_broken_cross_checks(self) -> None:
         root = Path(__file__).resolve().parent.parent
-        if not (root / "firmwares").is_dir():
+        if not FIRMWARE_ROOT.is_dir():
             self.skipTest("private firmware corpus is not available")
-        image = bytearray((root / "firmwares" / "schx150.bin").read_bytes())
+        image = bytearray((FIRMWARE_ROOT / "schx150.bin").read_bytes())
         tick = 0x13D7C
         handler = 0xA1DB0
         default_position = handler - 0x38
@@ -2440,9 +2441,9 @@ class DetectionTests(unittest.TestCase):
 
     def test_rex_5ms_irq_route_accepts_uniform_relocation_only(self) -> None:
         root = Path(__file__).resolve().parent.parent
-        if not (root / "firmwares").is_dir():
+        if not FIRMWARE_ROOT.is_dir():
             self.skipTest("private firmware corpus is not available")
-        original = bytearray((root / "firmwares" / "schx150.bin").read_bytes())
+        original = bytearray((FIRMWARE_ROOT / "schx150.bin").read_bytes())
         tick = 0x13D7C
         handler = 0xA1DB0
         wrapper = 0x1A62CC

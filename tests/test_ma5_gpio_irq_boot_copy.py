@@ -6,8 +6,8 @@ import unittest
 import os
 from msm5xxx_emulator.detection import ma5_gpio_irq as candidate
 from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
-ROOT = Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT',
-                           Path(__file__).resolve().parents[2] / 'firmwares'))
+from corpus import FIRMWARE_ROOT
+ROOT = FIRMWARE_ROOT
 FIRMWARE = ROOT / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin'
 
 class NewParentClass(unittest.TestCase):

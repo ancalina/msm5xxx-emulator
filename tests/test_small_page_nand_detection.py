@@ -7,6 +7,7 @@ from pathlib import Path
 
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from test_bootstrap_sdram import _fixture as reset_fixture, _word, _branch
+from corpus import FIRMWARE_ROOT
 
 
 _PROGRAM = bytes.fromhex(
@@ -200,7 +201,7 @@ class SmallPageNandDetectionTests(unittest.TestCase):
 
     def test_original_nor_readonly_witness(self):
         root = Path(__file__).resolve().parents[1]
-        corpus = Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT', root / 'firmwares')) / 'incoming-20261020-audio-agent'
+        corpus = FIRMWARE_ROOT / 'incoming-20261020-audio-agent'
         path = corpus / 'SCH-X850_NOR_00000000_len_01000000(1).bin'
         if not path.is_file():
             self.skipTest('optional original NOR witness unavailable')

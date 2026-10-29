@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from corpus import FIRMWARE_ROOT
 
 
 class Search2NativeTests(unittest.TestCase):
@@ -1124,7 +1125,7 @@ static const uint8_t lengths[4]={33,19,9,9};
         import hashlib
 
         native = Path(__file__).resolve().parents[1] / "native/qemu"
-        fixtures = Path(__file__).resolve().parents[2] / "firmwares"
+        fixtures = FIRMWARE_ROOT
         cases = (
             ("x350_VC22.bin", "7a6a4df853b51a4b44e86c3334330c12facad2954eef5a94031724ff1ff44073"),
             ("schx150.bin", "347057aeb9985579bb31c64e7fa20dc18486b7fb59aea82a682d4b10d9711de0"),

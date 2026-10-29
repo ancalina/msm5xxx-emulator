@@ -9,6 +9,7 @@ from msm5xxx_emulator.detection.model import (
     _product_constructor_model, detect_model, embedded_model_scores,
     verified_embedded_model,
 )
+from corpus import FIRMWARE_ROOT
 
 
 _BODY = bytes.fromhex(
@@ -354,7 +355,7 @@ class ADRBrowserIdentityTests(unittest.TestCase):
     def test_two_supplied_full_and_partial_labels_only(self):
         import hashlib
         from msm5xxx_emulator.detection.model import _browser_product_model
-        root=Path(__file__).resolve().parents[1]/'firmwares'
+        root=FIRMWARE_ROOT
         cases=[('incoming-20260719-r1/MSM5100/T055BW1T19_1.242_JTAG.bin','24bf05931ac81cce005b1ad5e970e061b38daf25ea3d70f658e2fa66fb801491'),
                ('incoming-msm5xxx-candidates-20260726/Audiovox/CDM-8600/T055BM1T16_2.242_Memory/T055BM1T16_2.242_Memory.bin','3ce5fac1b66816972a11236f239d62207dd584f067c809a44922631e0cbd8753')]
         for relative,digest in cases:

@@ -5,6 +5,7 @@ import struct
 import unittest
 
 from msm5xxx_emulator.detection.audio_irq import find_audio_irq_candidate
+from corpus import FIRMWARE_ROOT
 
 
 class TestAudioIRQCandidate(unittest.TestCase):
@@ -13,7 +14,7 @@ class TestAudioIRQCandidate(unittest.TestCase):
             self.assertEqual(find_audio_irq_candidate(image)['status'], 'rejected')
 
     def test_real_descriptor_and_mutations(self):
-        corpus = Path(__file__).resolve().parents[2] / 'firmwares'
+        corpus = FIRMWARE_ROOT
         path = corpus / 'SCH-X350_UJ08_JTAG.bin'
         if not path.is_file():
             self.skipTest('private regression corpus unavailable')

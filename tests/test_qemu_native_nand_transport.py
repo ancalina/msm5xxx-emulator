@@ -22,6 +22,7 @@ from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from msm5xxx_emulator.state_io import exclusive_path_lock
 from test_small_page_nand_detection import _nand_fixture
+from corpus import FIRMWARE_ROOT
 
 
 def _config(image):
@@ -341,7 +342,7 @@ class NativeNandMonitorFramingTests(unittest.TestCase):
 
 class NativeNandDecoderOwnershipTests(unittest.TestCase):
     def test_actual_nor_decoder_keeps_config_without_legacy_nand(self):
-        corpus = Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT', ROOT / 'firmwares'))
+        corpus = FIRMWARE_ROOT
         path = corpus / 'incoming-20261020-audio-agent/SCH-X850_NOR_00000000_len_01000000(1).bin'
         if not path.is_file():
             self.skipTest('optional original NOR ownership witness unavailable')

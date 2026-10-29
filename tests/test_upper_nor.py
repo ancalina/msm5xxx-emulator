@@ -16,6 +16,7 @@ from msm5xxx_emulator.detection.upper_nor import (
 )
 from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1
+from corpus import FIRMWARE_ROOT
 
 
 class UpperNorTests(unittest.TestCase):
@@ -64,7 +65,7 @@ class UpperNorTests(unittest.TestCase):
 
     @staticmethod
     def _fixtures() -> tuple[Path, ...]:
-        root = Path(__file__).resolve().parents[1] / "firmwares"
+        root = FIRMWARE_ROOT
         paths = tuple(path for name in ("lg-sd9210.bin", "LG-SD810-General.bin")
                       if (path := root / name).is_file())
         if not paths:

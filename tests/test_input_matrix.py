@@ -32,19 +32,11 @@ from src.msm5xxx_emulator.detection.input_semantics import (
     KEYEMU_PASSTHROUGH,
     KeyemuSemantics,
 )
+from corpus import FIRMWARE_ROOT
 
 
 def _test_firmware_root() -> Path | None:
-    configured = os.environ.get("MSM5XXX_TEST_FIRMWARE_ROOT")
-    if configured:
-        root = Path(configured).expanduser()
-        return root if root.is_dir() else None
-    test_file = Path(__file__).resolve()
-    for parent in (test_file.parents[1], test_file.parents[2]):
-        root = parent / "firmwares"
-        if root.is_dir():
-            return root
-    return None
+    return FIRMWARE_ROOT if FIRMWARE_ROOT.is_dir() else None
 
 
 class DirectInputMatrixTests(unittest.TestCase):

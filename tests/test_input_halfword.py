@@ -10,6 +10,7 @@ from msm5xxx_emulator.detection.input_halfword import (
 from msm5xxx_emulator.detection.arm import thumb_bl_target
 from pathlib import Path
 import hashlib
+from corpus import FIRMWARE_ROOT
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -149,7 +150,7 @@ class MappedRowTests(unittest.TestCase):
 
 class LoopRowTests(unittest.TestCase):
     def image(self):
-        p = ROOT / 'firmwares' / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin'
+        p = FIRMWARE_ROOT / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin'
         image = p.read_bytes()
         self.assertEqual(hashlib.sha256(image).hexdigest(), '7406845487ce4b47c23d134c201a5b26b781c8aa45469bed3f1f1e8b09fcf7b2')
         return image
@@ -203,7 +204,7 @@ class LoopRowTests(unittest.TestCase):
         self.assertIsNone(resolve_indirect_matrix_input(image,4)[0])
 
     def test_different_structural_peer_rejected(self):
-        p = ROOT / 'firmwares' / 'incoming-20260814' / 'KTF-E2000_-_2.bin'
+        p = FIRMWARE_ROOT / 'incoming-20260814' / 'KTF-E2000_-_2.bin'
         image = p.read_bytes()
         self.assertEqual(hashlib.sha256(image).hexdigest(),
                          '2500e169ad9ff6b32139f289e4586e434b052e4e141117418821c762d4acab61')
@@ -214,7 +215,7 @@ class LoopRowTests(unittest.TestCase):
 class FunctionalConfirmTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.original = (ROOT / 'firmwares/KTFT_X3500_verX3p56.73.0_riffdump_clean.bin').read_bytes()
+        cls.original = (FIRMWARE_ROOT / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin').read_bytes()
         assert hashlib.sha256(cls.original).hexdigest() == '7406845487ce4b47c23d134c201a5b26b781c8aa45469bed3f1f1e8b09fcf7b2'
 
     def resolve(self, image):
@@ -336,7 +337,7 @@ class FunctionalConfirmTests(unittest.TestCase):
 class MappedScanGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.original = (ROOT / 'firmwares/SPH-X7700.bin').read_bytes()
+        cls.original = (FIRMWARE_ROOT / 'SPH-X7700.bin').read_bytes()
         assert hashlib.sha256(cls.original).hexdigest() == '8e2c5b84c210052d414f61559c60d8cdb423851579a105dcbd8478439eb8eb07'
 
     def resolve(self, image):
@@ -883,7 +884,7 @@ class MappedFunctionalConfirmTests(unittest.TestCase):
 
     def test_actual_selected_confirm_and_optional_rejection_keep_numeric_menu(self):
         import os
-        root = Path(os.environ.get('MSM5XXX_TEST_FIRMWARE_ROOT', ROOT / 'firmwares'))
+        root = FIRMWARE_ROOT
         firmware = root / 'SPH-X7700.bin'
         if not firmware.is_file():
             self.skipTest('local firmware corpus unavailable')
