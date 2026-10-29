@@ -70,18 +70,18 @@
     },
     {
       "package": "mingw-w64-x86_64-libwinpthread",
-      "version": "14.0.0.r426.g4564ee4b5-2",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-2.src.tar.zst",
-      "source_archive": "sources/mingw-w64-winpthreads-14.0.0.r426.g4564ee4b5-2.src.tar.zst",
-      "source_archive_sha256": "d2d540bb20b227f5d920d8f509e4e0c413e8310d08a96347c1bdeb9af8844d72",
-      "source_archive_bytes": 55135349,
+      "version": "14.0.0.r569.g34eeafb7d-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r569.g34eeafb7d-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-winpthreads-14.0.0.r569.g34eeafb7d-1.src.tar.zst",
+      "source_archive_sha256": "8f43ac029183d5afea64dfbb4692729bd7fd8c087de550d32deab1d061fe2a36",
+      "source_archive_bytes": 59742929,
       "source_root": "mingw-w64-winpthreads",
-      "recipe_sha256": "c70b65fd94cd0aa66373427155b70ab33774f78ec06d83c96a72f4cc3ed2374c",
+      "recipe_sha256": "ce977f0a06848c55cfdea7bdcbaa49036ca204eb4f1a1d11788712d355996367",
       "pkgbuild_license": "('spdx:MIT AND BSD-3-Clause')",
       "bundled_dlls": [
         {
           "file": "bin/libwinpthread-1.dll",
-          "sha256": "c26528202c73151e4bff49d0fae08c7e6dd6b78c0d45278253d46e33f2f1417e"
+          "sha256": "69d7bb54bfa7502501b8cda3e09ae9d0a7ae3325d7419aeaeb55c13f4ae8dddb"
         }
       ],
       "runtime_license_files": [
@@ -111,18 +111,18 @@
     },
     {
       "package": "mingw-w64-x86_64-zlib",
-      "version": "1.3.2-2",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-2.src.tar.zst",
-      "source_archive": "sources/mingw-w64-zlib-1.3.2-2.src.tar.zst",
-      "source_archive_sha256": "eef69dea52357e01b272d6fd6dc4d7c0773f71260cb7bcde6047c8c383518db3",
-      "source_archive_bytes": 1326375,
+      "version": "1.3.2-3",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-3.src.tar.zst",
+      "source_archive": "sources/mingw-w64-zlib-1.3.2-3.src.tar.zst",
+      "source_archive_sha256": "4b7839ab2826d3e3d27fe46150d2180a1f561f4d03c9e82aeb4b056180561f00",
+      "source_archive_bytes": 1326411,
       "source_root": "mingw-w64-zlib",
-      "recipe_sha256": "8a4a54a964eab7efa313e2faa8267052bc237ef61f8adf82a55cc93f4028db8a",
+      "recipe_sha256": "64c6315e3825a295aa82c3218017d5a700381711bfc58a5cbceb9f6bc685b55e",
       "pkgbuild_license": "('spdx:Zlib')",
       "bundled_dlls": [
         {
           "file": "bin/zlib1.dll",
-          "sha256": "93e9243a44c29200eeacaf9658efe2558581770e4b11ca4b500e18e424a6e3b5"
+          "sha256": "a2efc7d0985a82364e79e0fdde3570f7ad66cb8cf5d60d54355a80c2504325fe"
         }
       ],
       "runtime_license_files": [
