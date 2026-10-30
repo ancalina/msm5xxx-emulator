@@ -1887,6 +1887,29 @@ def qemu_loaded_uart_console_property(
     return wire, None
 
 
+def qemu_watchdog_property(profile: object, image: bytes) -> tuple[str | None, str | None]:
+    """Emit only a profile independently reproduced from the loaded firmware."""
+    if profile is None:
+        return None, None
+    from msm5xxx_emulator.detection.watchdog import find_watchdog_profile
+    if not isinstance(profile, dict):
+        return None, "invalid profile"
+    size = profile.get("image_size")
+    if type(size) is not int or not 0 < size <= len(image):
+        return None, "invalid source window"
+    current, reason = find_watchdog_profile(image[:size])
+    if current is None:
+        return None, f"source not admitted ({reason})"
+    # Timeout is an explicit tunable, while every evidence field stays bound.
+    timeout = profile.get("timeout_ms")
+    if type(timeout) is not int or not 1000 <= timeout <= 3600000:
+        return None, "invalid timeout"
+    if {**profile, "timeout_ms": current["timeout_ms"]} != current:
+        return None, "source profile mismatch"
+    return (f"watchdog-register={current['register']},"
+            f"watchdog-mask={current['mask']},watchdog-timeout-ms={timeout}"), None
+
+
 def qemu_ready_poll_property(
         profile: object) -> tuple[str | None, str | None]:
     """Serialize only recognized, unambiguous ready-poll contracts."""
@@ -4163,6 +4186,14 @@ class Transport:
                 f"QEMU DMD5500 bridge rejected: {dmd_5500_reject}; "
                 "native fallback retained"
             )
+        watchdog_property, watchdog_reject = qemu_watchdog_property(
+            getattr(self.config, "watchdog", None), primary_seed
+        )
+        if watchdog_property is not None:
+            machine += f",{watchdog_property}"
+        elif watchdog_reject is not None:
+            self.config.detection_notes.append(
+                f"QEMU watchdog rejected: {watchdog_reject}")
         if len(primary_seed) != self.config.flash_size:
             raise ValueError("primary seed size does not match flash size")
         # New source-bound page producers must match the image actually loaded.

@@ -45,6 +45,7 @@
 #include "system/address-spaces.h"
 #include "system/cpus.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "system/qtest.h"
 #include "target/arm/cpu.h"
 #include "target/arm/cpu-qom.h"
@@ -247,6 +248,15 @@ struct MSM5xxxPOCMachineState {
     uint32_t last_reset_callback_pc;
     uint32_t ram_base;
     uint32_t initial_sp;
+    uint32_t watchdog_register;
+    uint32_t watchdog_mask;
+    uint32_t watchdog_timeout_ms;
+    uint8_t watchdog_backing;
+    bool watchdog_high;
+    bool watchdog_armed;
+    int64_t watchdog_last_edge_ns;
+    QEMUTimer *watchdog_timer;
+    MemoryRegion watchdog_region;
     bool memory_profile_enabled;
     uint32_t ram_reserved_base, ram_reserved_size;
     MemoryRegion ram_low_alias, ram_high_alias;
@@ -2253,6 +2263,90 @@ static void msm5xxx_poc_ready_pulse_write(void *opaque, hwaddr offset,
     }
     s->ready_pulse_backing = value;
 }
+
+/* A detector-admitted high->low pulse starts/reloads this virtual watchdog.
+ * QEMU_CLOCK_VIRTUAL advances with icount, independently of guest IRQ/FIQ.
+ * No timer runs before the first complete pulse (or after a machine reset).
+ */
+static bool msm5xxx_poc_watchdog_valid(MSM5xxxPOCMachineState *s)
+{
+    return s->memory_profile_enabled &&
+        s->watchdog_register >= MSM5XXX_POC_MSM_BASE &&
+        s->watchdog_register < MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE &&
+        s->watchdog_mask && s->watchdog_mask <= UINT8_MAX &&
+        !(s->watchdog_mask & (s->watchdog_mask - 1)) &&
+        s->watchdog_timeout_ms && s->watchdog_timeout_ms <= 3600000;
+}
+
+static void msm5xxx_poc_watchdog_expire(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (s->watchdog_armed) {
+        s->watchdog_armed = false;
+        /* Use the normal full reset: flash block devices and EEPROM device
+         * contents survive; msm5xxx_poc_reset resets only their controllers. */
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+static void msm5xxx_poc_watchdog_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    timer_del(s->watchdog_timer);
+    s->watchdog_high = false;
+    s->watchdog_armed = false;
+    s->watchdog_backing = 0;
+    s->watchdog_last_edge_ns = 0;
+}
+
+static void msm5xxx_poc_watchdog_pulse(MSM5xxxPOCMachineState *s,
+                                       uint8_t value)
+{
+    bool high = (value & s->watchdog_mask) != 0;
+    if (s->watchdog_high && !high) {
+        s->watchdog_last_edge_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->watchdog_armed = true;
+        timer_mod(s->watchdog_timer, s->watchdog_last_edge_ns +
+                  (int64_t)s->watchdog_timeout_ms * 1000000);
+    }
+    s->watchdog_high = high;
+    s->watchdog_backing = value;
+}
+
+static uint64_t msm5xxx_poc_watchdog_read(void *opaque, hwaddr offset,
+                                          unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (s->ready_poll_enabled && !s->ready_poll_lcd_enabled &&
+        s->ready_pulse_address == s->watchdog_register) {
+        return msm5xxx_poc_ready_pulse_read(s, offset, size);
+    }
+    return s->watchdog_backing;
+}
+
+static void msm5xxx_poc_watchdog_write(void *opaque, hwaddr offset,
+                                       uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (offset || size != 1) {
+        return;
+    }
+    msm5xxx_poc_watchdog_pulse(s, value);
+    if (s->ready_poll_enabled && !s->ready_poll_lcd_enabled &&
+        s->ready_pulse_address == s->watchdog_register) {
+        msm5xxx_poc_ready_pulse_write(s, offset, value, size);
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_watchdog_ops = {
+    .read = msm5xxx_poc_watchdog_read,
+    .write = msm5xxx_poc_watchdog_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
 
 static const MemoryRegionOps msm5xxx_poc_ready_status_ops = {
     .read = msm5xxx_poc_ready_status_read,
@@ -12797,6 +12891,20 @@ static void msm5xxx_poc_init(MachineState *machine)
         qemu_register_reset(msm5xxx_poc_dmd5100_reset, s);
         msm5xxx_poc_dmd5100_reset(s);
     }
+    if (s->watchdog_register || s->watchdog_mask) {
+        if (!msm5xxx_poc_watchdog_valid(s)) {
+            error_report("watchdog requires memory-profile, MSM pulse port, single byte mask and timeout 1..3600000 ms");
+            exit(EXIT_FAILURE);
+        }
+        s->watchdog_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         msm5xxx_poc_watchdog_expire, s);
+        memory_region_init_io(&s->watchdog_region, OBJECT(machine),
+            &msm5xxx_poc_watchdog_ops, s, "msm5xxx-poc.watchdog", 1);
+        memory_region_add_subregion_overlap(get_system_memory(),
+            s->watchdog_register, &s->watchdog_region, 4);
+        qemu_register_reset(msm5xxx_poc_watchdog_reset, s);
+        msm5xxx_poc_watchdog_reset(s);
+    }
     if (s->memory_profile_enabled) {
         qemu_register_reset(msm5xxx_poc_reset, s);
         msm5xxx_poc_reset(s);
@@ -15191,6 +15299,48 @@ static void msm5xxx_poc_set_eeprom_gpio(Object *obj, const char *value,
     s->eeprom_gpio_enabled = true;
 }
 
+static void msm5xxx_poc_get_watchdog_register(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    visit_type_uint32(v, name, &s->watchdog_register, errp);
+}
+
+static void msm5xxx_poc_set_watchdog_register(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    visit_type_uint32(v, name, &s->watchdog_register, errp);
+}
+
+static void msm5xxx_poc_get_watchdog_mask(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    visit_type_uint32(v, name, &s->watchdog_mask, errp);
+}
+
+static void msm5xxx_poc_set_watchdog_mask(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    visit_type_uint32(v, name, &s->watchdog_mask, errp);
+}
+
+static void msm5xxx_poc_get_watchdog_timeout_ms(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    visit_type_uint32(v, name, &s->watchdog_timeout_ms, errp);
+}
+
+static void msm5xxx_poc_set_watchdog_timeout_ms(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    visit_type_uint32(v, name, &s->watchdog_timeout_ms, errp);
+}
+
 static void msm5xxx_poc_get_board_adc_value(Object *obj, Visitor *v,
                                              const char *name, void *opaque,
                                              Error **errp)
@@ -15836,6 +15986,8 @@ static void msm5xxx_poc_instance_init(Object *obj)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
+    s->watchdog_timeout_ms = 30000;
+
     s->sbi_enabled = false;
     s->tx_init_last_mode = UINT8_MAX;
     s->sbi_bootstrap_only = false;
@@ -16009,6 +16161,12 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_get_uart_console_probe_state, NULL);
     object_class_property_add_str(oc, "uart-console-status",
                                   msm5xxx_poc_get_uart_console_status, NULL);
+    object_class_property_add(oc, "watchdog-register", "uint32",
+        msm5xxx_poc_get_watchdog_register, msm5xxx_poc_set_watchdog_register, NULL, NULL);
+    object_class_property_add(oc, "watchdog-mask", "uint32",
+        msm5xxx_poc_get_watchdog_mask, msm5xxx_poc_set_watchdog_mask, NULL, NULL);
+    object_class_property_add(oc, "watchdog-timeout-ms", "uint32",
+        msm5xxx_poc_get_watchdog_timeout_ms, msm5xxx_poc_set_watchdog_timeout_ms, NULL, NULL);
     object_class_property_add_str(oc, "ready-poll",
                                   msm5xxx_poc_get_ready_poll,
                                   msm5xxx_poc_set_ready_poll);
@@ -16304,6 +16462,10 @@ static void msm5xxx_poc_instance_finalize(Object *obj)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
+    if (s->watchdog_timer) {
+        qemu_unregister_reset(msm5xxx_poc_watchdog_reset, s);
+        timer_free(s->watchdog_timer);
+    }
     if (s->sbi_raw_input_registered) {
         qemu_unregister_reset(msm5xxx_poc_sbi_raw_input_reset, s);
     }

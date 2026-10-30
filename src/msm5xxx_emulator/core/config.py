@@ -127,6 +127,7 @@ class FirmwareConfig:
     rex_static_controller_experimental: bool = False
     audio_transport: dict[str, object] | None = None
     eeprom_static_capacity: int | None = None
+    watchdog: dict[str, object] | None = None
     ready_poll: dict[str, object] | None = None
     uart_console: dict[str, object] | None = None
     dc0_board_adc_profile: dict[str, object] | None = None
