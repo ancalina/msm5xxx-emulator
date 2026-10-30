@@ -142,15 +142,16 @@ def _transport_clusters(image: bytes) -> list[dict[str, object]]:
                 and len(writes[port]) >= 2
             ]
             indexed = modes.get(0) == {"read", "write"} and len(data_ports) == 1
+            # Port 1 is optional: SCH-X350 never writes it (its +1 stores go to a RAM shadow).
             ma2 = (
-                set(modes) == {0, 1, 2}
+                set(modes) in ({0, 2}, {0, 1, 2})
                 and modes[0] == {"write"}
-                and modes[1] == {"write"}
+                and modes.get(1, {"write"}) == {"write"}
                 and modes[2] == {"read", "write"}
                 and len(writes[0]) == 3
-                and 1 <= len(writes[1]) <= 2
+                and len(writes[1]) <= 2
                 and len(writes[2]) == 2
-                and 7 <= len(cluster) <= 8
+                and 6 <= len(cluster) <= 8
             )
             kinds = []
             if indexed:
