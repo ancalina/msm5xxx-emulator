@@ -34,3 +34,7 @@ reports/
 !src/msm5xxx_emulator/audio/gm.sf2
 *.idb
 *.i64
+
+# iOS build outputs
+/ios/app/Frameworks/
+xcuserdata/

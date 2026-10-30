@@ -17,7 +17,7 @@
 | `src/msm5xxx_emulator/` | Python package: detectors, devices, GUI, `qemu/` transport and live display |
 | `native/qemu/` | QEMU machine sources, upstream patches, pinned build inputs and scripts |
 | `android/` | Android client and its runtime build scripts |
-| `ios/` | iOS GLib and QEMU cross-build scripts (app not yet started) |
+| `ios/` | iOS GLib/QEMU cross-build scripts and the SwiftUI app shell |
 | `tests/` | Unit and native regression tests |
 | `docs/` | Backend and source distribution notes |
 
