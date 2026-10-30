@@ -679,7 +679,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     )
     if status_72c_note is not None:
         detection_notes.append(status_72c_note)
-    board_status_input = find_board_status_input(primary_image)
+    board_status_input = find_board_status_input(primary_image, detection_notes)
     if board_status_input is not None:
         detection_notes.append(
             "Thumb byte-status mask/branch/debounce shape detected board-status input"
