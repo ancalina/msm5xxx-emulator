@@ -604,14 +604,19 @@ def _find_rex_620_static_controller_callback_candidate(
     }
     handler_size = 0x178
     profile = handler_profiles.get(handler_shape)
-    # Complete group-10 callback-then-W1C dispatcher, ending at BX r3.
+    # Complete callback-then-W1C dispatchers, ending at BX r3.
+    # Both walk three priority groups; the row stride is part of the code shape.
     # Unlike the older profiles, exclude the following literal pool.
-    if _normalized_thumb_sha256(image, handler, 0x15A) == (
-            "02d8707640c6924c3eeec04593f88735bef9fdaa0492d998d84e4dd38d40093d",
-            (0x30, 0x90, 0xB6, 0xE0, 0x11C, 0x122, 0x134)):
+    w1c_shape = _normalized_thumb_sha256(image, handler, 0x15A)
+    w1c_stride = {
+        "02d8707640c6924c3eeec04593f88735bef9fdaa0492d998d84e4dd38d40093d": 10,
+        "532cb58afa8601af64bd4617afc6a1b117192629555c8c734eddd29bb2cff230": 12,
+    }.get(w1c_shape[0]) if w1c_shape is not None and w1c_shape[1] == (
+        0x30, 0x90, 0xB6, 0xE0, 0x11C, 0x122, 0x134) else None
+    if profile is None and w1c_stride is not None:
         handler_size = 0x15A
         profile = (
-            "legacy-msm5000-620-two-bank-w1c-group10-v1", 10,
+            f"legacy-msm5000-620-two-bank-w1c-group{w1c_stride}-v1", w1c_stride,
             0x70,
             ("ed69c76589103931751b1e00818205148bf4438831add7bd61dbb82fa787eb37",
              (0x06, 0x20, 0x66)),
@@ -629,10 +634,17 @@ def _find_rex_620_static_controller_callback_candidate(
             return rejected("two-bank-w1c-call-route-not-closed")
         for offset, instruction in ((0x30, 0xE3C010C0), (0x11C, 0xE38010C0)):
             helper = calls[offset]
-            expected = bytes.fromhex("78470000") + struct.pack(
-                "<6I", 0xE38EE001, 0xE10F0000, instruction,
-                0xE121F001, 0xE20000C0, 0xE12FFF1E)
-            if helper & 3 or image[helper:helper + len(expected)] != expected:
+            # Interworking helpers either tag LR explicitly or return directly
+            # with BX LR; both preserve the caller's Thumb return state.
+            bodies = [bytes.fromhex("78470000") + struct.pack(
+                "<" + "I" * len(words), *words) for words in (
+                    (0xE38EE001, 0xE10F0000, instruction,
+                     0xE121F001, 0xE20000C0, 0xE12FFF1E),
+                    (0xE10F0000, instruction, 0xE121F001,
+                     0xE20000C0, 0xE12FFF1E))]
+            if helper & 3 or not any(
+                    image[helper:helper + len(expected)] == expected
+                    for expected in bodies):
                 return rejected("two-bank-w1c-irq-lock-not-closed")
         if any(not _ram_contains(
                 thumb_literal_value(image, handler + offset, register) or 0,
@@ -680,12 +692,12 @@ def _find_rex_620_static_controller_callback_candidate(
         return rejected("two-bank-read-consume-literals-not-closed")
 
     if handler_size == 0x15A:
-        # The dispatcher walks three ten-byte groups. Source 28 must be
+        # The dispatcher walks three groups of the proven stride. Source 28 must be
         # reachable in the bank-0 timer group, with no competing membership.
         groups_at = descriptor_file_offset + 0x1C
-        if groups_at + 30 > vector_source + vector_size:
+        if groups_at + 3 * group_row_size > vector_source + vector_size:
             return rejected("two-bank-w1c-groups-outside-vector-copy")
-        groups = [struct.unpack_from("<4H2B", image, groups_at + row * 10)
+        groups = [struct.unpack_from("<4H2B", image, groups_at + row * group_row_size)
                   for row in range(3)]
         if (groups[2] != (mask, 0, mask, 0, 0x1C, 0x1C)
                 or any(group[0] & mask or not 0 <= group[4] <= group[5] < 0x1C
