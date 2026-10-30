@@ -633,7 +633,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     if rex_static_controller_candidate is not None:
         if rex_static_controller_candidate["accepted"]:
             if (rex_static_controller_candidate.get("controller_class")
-                    == "legacy-msm5000-620-two-bank-w1c-8call-v1"):
+                    in {"legacy-msm5000-620-two-bank-w1c-8call-v1",
+                        "legacy-msm5000-620-two-bank-w1c-group10-v1"}):
                 detection_notes.append(
                     "static MSM5000 0x620 two-bank clear/write controller "
                     "class detected; 5-unit service cadence is a temporary "
