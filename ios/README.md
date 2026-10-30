@@ -15,8 +15,12 @@ iOS cannot spawn processes, so QEMU is relinked as an embeddable framework expor
 `qemu_entry(argc, argv)`:
 
 ```sh
-ios/build_qemu_framework.sh /new/qemu-work/build ios/app/Frameworks/iphoneos   # or iphonesimulator
+ios/build_qemu_framework.sh /new/qemu-work/build ios/app/Frameworks/iphoneos QEMU   # QEMUTCI for a tci build
 ```
+
+Packages: `ios/package_ios.sh OUT` builds `MSM5xEmu.ipa` (sideload; JIT through StikJIT, Jitterbug or
+AltJIT, otherwise TCI) and `MSM5xEmu.tipa` (TrollStore; `dynamic-codesigning` gives JIT without a
+debugger). It needs `ios/app/Frameworks/iphoneos/QEMU.framework` (tcg) and `QEMUTCI.framework` (tci).
 
 `ios/app/MSM5xEmu.xcodeproj` (bundle id `me.ancal.msm5xemu`) is the SwiftUI shell: firmware import,
 LCD placeholder, keypad and engine status. It embeds `ios/app/Frameworks/$PLATFORM_NAME/QEMU.framework`

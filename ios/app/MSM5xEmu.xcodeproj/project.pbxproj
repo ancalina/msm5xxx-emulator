@@ -66,7 +66,7 @@
 				A30000000000000000000001 /* Sources */,
 				A30000000000000000000002 /* Frameworks */,
 				A30000000000000000000003 /* Resources */,
-				A30000000000000000000004 /* Embed QEMU.framework */,
+				A30000000000000000000004 /* Embed QEMU frameworks */,
 			);
 			buildRules = (
 			);
@@ -116,7 +116,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		A30000000000000000000004 /* Embed QEMU.framework */ = {
+		A30000000000000000000004 /* Embed QEMU frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -124,12 +124,12 @@
 			);
 			inputPaths = (
 			);
-			name = "Embed QEMU.framework";
+			name = "Embed QEMU frameworks";
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Optional: copy the per-platform QEMU.framework built by ios/build_qemu_framework.sh.\nsrc=\"$SRCROOT/Frameworks/$PLATFORM_NAME/QEMU.framework\"\n[ -d \"$src\" ] || { echo \"warning: $src not built; app runs without QEMU\"; exit 0; }\ndst=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$dst\"\nrm -rf \"$dst/QEMU.framework\"\ncp -R \"$src\" \"$dst/\"\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$dst/QEMU.framework\"\n";
+			shellScript = "# Optional: copy the per-platform frameworks built by ios/build_qemu_framework.sh\n# (QEMU = TCG/JIT, QEMUTCI = interpreter).\ndst=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nfor name in QEMU QEMUTCI; do\n  src=\"$SRCROOT/Frameworks/$PLATFORM_NAME/$name.framework\"\n  [ -d \"$src\" ] || { echo \"warning: $src not built\"; continue; }\n  mkdir -p \"$dst\"; rm -rf \"$dst/$name.framework\"; cp -R \"$src\" \"$dst/\"\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$dst/$name.framework\"\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
