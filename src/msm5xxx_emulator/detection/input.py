@@ -8,6 +8,8 @@ from ..core.config import BoardStatusInput
 
 from .arm import thumb_bl_target, thumb_literal_value
 from .input_scanner import scanner_at
+from .input_scanner_direct import direct_scanner_at
+from .input_scanner_gated import gated_scanner_at
 from .rex import THUMB_BL_PATTERN, _normalized_thumb_sha256
 from .signatures import find_all
 
@@ -528,9 +530,24 @@ def find_board_status_input(image: bytes, notes: list[str] | None = None
                             ) -> BoardStatusInput | None:
     """Accept one unique Thumb byte-status mask/branch/debounce control shape."""
     found: set[BoardStatusInput] = set()
+    # This compiler layout loads the GPIO literal before saving registers.
+    for match in re.finditer(b"\xb0\xb5\x00\x78", image):
+        start = match.start() - 2
+        if start < 0 or start & 1:
+            continue
+        scanner, reason = direct_scanner_at(image, start)
+        if scanner is not None:
+            found.add(scanner)
+        elif reason and notes is not None:
+            notes.append(f"board-status scanner rejected at {start:#x}: {reason}")
     offset = 0
     while (offset := image.find(b"\xf0\xb5", offset)) >= 0:
         scanner, reason = scanner_at(image, offset)
+        if scanner is not None:
+            found.add(scanner)
+        elif reason and notes is not None:
+            notes.append(f"board-status scanner rejected at {offset:#x}: {reason}")
+        scanner, reason = gated_scanner_at(image, offset)
         if scanner is not None:
             found.add(scanner)
         elif reason and notes is not None:

@@ -94,7 +94,7 @@ def _periodic_caller(image: bytes, scanner: int) -> bool:
     # repeat=1 on stack; equal nonzero initial/repeat periods in r2/r3;
     # timer object in r0; callback literal in r1; direct clock-service call.
     registration = re.compile(
-        rb"\x01\x22\x00\x92(.)\x22(.)\x23\x28\x1c.\x49", re.S)
+        rb"\x01\x22\x00\x92(.)\x22(.)\x23[\x20\x28]\x1c.\x49", re.S)
     for match in registration.finditer(image):
         pc = match.start()
         if pc & 1 or match[1] != match[2] or match[1] == b'\x00':

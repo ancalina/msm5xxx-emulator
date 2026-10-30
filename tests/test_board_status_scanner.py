@@ -128,7 +128,8 @@ class ScannerTests(unittest.TestCase):
         self.assertIn('board-status input rejected: ambiguous descriptors', notes)
 
     def test_private_firmware(self):
-        for parts in [('incoming-20260914', 'x460_ul26_cai6.bin'), ('x350_VC22.bin',)]:
+        for parts in [('incoming-20260914', 'x460_ul26_cai6.bin'), ('x350_VC22.bin',),
+                      ('incoming-20260914', 'SCH-X700_UG25_JTAG.bin')]:
             with self.subTest(parts=parts):
                 image = firmware_path(*parts).read_bytes()
                 self.assertEqual(find_board_status_input(image), BoardStatusInput(0x03000670, 8, 8))
