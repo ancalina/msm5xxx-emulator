@@ -370,6 +370,19 @@ class AudioTransportTests(unittest.TestCase):
             find_audio_transport(bytes(ma2))["static_status"], "accepted"
         )
 
+        no_port1 = bytearray(b"\xff" * 0x800)
+        no_port1[0x700:0x709] = b"Ma2main.c"
+        for offset, port, kind in (
+            (0x20, 0, "write"), (0x40, 2, "write"), (0x80, 0, "write"),
+            (0xA0, 2, "write"), (0xE0, 0, "write"), (0x100, 2, "read"),
+        ):
+            _access(no_port1, offset, 0x02080000, port, kind)
+        detected = find_audio_transport(bytes(no_port1))
+        self.assertEqual(
+            (detected["grammar"], detected["static_status"], sorted(detected["sites"])),
+            ("ma2-command-v1", "accepted", ["read_2", "write_0", "write_2"]),
+        )
+
         ma5 = bytearray(b"\xff" * 0x800)
         ma5[0x700:0x707] = b"MA5_SMW"
         for offset, port, kind in (
