@@ -297,6 +297,7 @@ typedef struct {
     bool dmd5100_enabled;
     uint16_t *dmd5100_even, *dmd5100_odd;
     int ma2_audio;
+    void *watchdog_timer;
 } MSM5xxxPOCMachineState;
 typedef MSM5xxxPOCMachineState Object;
 #define MSM5XXX_POC_MACHINE(obj) (obj)
@@ -362,6 +363,7 @@ static void msm5xxx_poc_uart_console_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_dmd5100_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_small_nand_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_protected_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_watchdog_reset(void *opaque) { assert(false); }
 static void qemu_unregister_reset(void (*reset)(void *), void *opaque) {
     assert(false);
 }
