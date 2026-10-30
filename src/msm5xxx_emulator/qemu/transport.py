@@ -2906,10 +2906,12 @@ def read_consume_rex_irq_profile(config: object, enabled: bool) -> str | None:
 
 
 def w1c_rex_irq_profile(config: object) -> str | None:
-    """Use the existing direct W1C lane for the two-peer closed class."""
+    """Encode closed callback-then-W1C classes without an unproven idle PC."""
     profile = _legacy_620_rex_irq_profile(
         config, True,
-        {"legacy-msm5000-620-two-bank-w1c-8call-v1": 12},
+        {"legacy-msm5000-620-two-bank-w1c-8call-v1": 12,
+         "legacy-msm5000-620-two-bank-w1c-group10-v1": 10,
+         "legacy-msm5000-620-two-bank-w1c-group12-v1": 12},
         "temporary-evidence-gated", "latched-read",
     )
     return ":".join(profile.split(":")[:5]) if profile is not None else None

@@ -3208,6 +3208,16 @@ class QEMUInputTransportTests(unittest.TestCase):
             MODULE.w1c_rex_irq_profile(config),
             "3000620:3000628:30006e0:200:4c4b40",
         )
+        candidate.update({
+            "controller_class": "legacy-msm5000-620-two-bank-w1c-group10-v1",
+            "group_row_size": 10,
+            "handler_validation_size": 0x15A,
+        })
+        self.assertEqual(MODULE.w1c_rex_irq_profile(config),
+                         "3000620:3000628:30006e0:200:4c4b40")
+        candidate["group_row_size"] = 12
+        self.assertIsNone(MODULE.w1c_rex_irq_profile(config))
+        candidate["group_row_size"] = 10
         del candidate["pending_ack_semantics"]
         self.assertIsNone(MODULE.w1c_rex_irq_profile(config))
 
