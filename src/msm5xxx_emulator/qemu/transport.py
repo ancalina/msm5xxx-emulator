@@ -64,6 +64,7 @@ from msm5xxx_emulator.detection.storage import (
     eeprom_24lcxx_write_at,
     flash_id_for_size,
     fujitsu_x16_flash_ids,
+    find_24lcxx_halfword_driver,
     find_24lcxx_f6f7_driver,
     find_24lcxx_f7f6_driver,
     find_24lcxx_x270_driver,
@@ -1590,13 +1591,23 @@ def qemu_amd_bank_profile(original: bytes, loaded: bytes, config: object, *,
     if limit is None or limit != config.flash_size or len(loaded) != limit:
         return None, "amd-bank-source-layout-unverified"
     args = (config.load_address, config.flash_size, config.ram_base, config.ram_size)
+    from msm5xxx_emulator.detection.efs_nor import find_inline_efs_nor_profile
     profile, reason = find_amd_bank_profile(original[:limit], *args)
+    inline, inline_reason = find_inline_efs_nor_profile(original[:limit], *args)
+    if profile is not None and inline is not None:
+        return None, "amd-bank-inline-efs-owner-conflict"
+    finder = find_amd_bank_profile
+    if inline is not None or inline_reason is not None:
+        if profile is not None:
+            return None, "amd-bank-inline-efs-candidate-conflict"
+        profile, reason, finder = inline, inline_reason, find_inline_efs_nor_profile
     if profile is None:
         return None, reason
     if nor_claimed:
         return None, "amd-bank-owner-conflict"
     try:
-        if (profile['signature'] != 'thumb-copy-selected-amd-x16-bank-v1'
+        if (profile['signature'] not in ('thumb-copy-selected-amd-x16-bank-v1',
+                                             'inline-copy-selected-efs-amd-x16-v1')
                 or profile['admission'] != 'temporary-evidence-gated'):
             return None, "amd-bank-contract-unclosed"
         base, size, sector = (profile[k] for k in ('base', 'size', 'sector_size'))
@@ -1614,7 +1625,7 @@ def qemu_amd_bank_profile(original: bytes, loaded: bytes, config: object, *,
             return None, "amd-bank-loaded-source-mismatch"
         if any(max(start, base) < min(end, base + size) for start, end in guards):
             return None, "amd-bank-source-overlaps-array"
-        current, _ = find_amd_bank_profile(loaded, *args)
+        current, _ = finder(loaded, *args)
         if current != profile:
             return None, "amd-bank-loaded-contract-mismatch"
     except (KeyError, TypeError, ValueError):
@@ -2937,6 +2948,104 @@ def eeprom_gpio_profile(
     )
     if find_24lcxx_f6f7_driver(image) == (read, write, geometry):
         return (0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None
+    if find_24lcxx_halfword_driver(image) == (read, write, geometry):
+        from msm5xxx_emulator.detection.memory_layout import find_linker_layout
+        # Paired transport calls prove ownership of these byte-level leaves.
+        # Their halfword stores use a shared RAM GPIO descriptor; resolve its
+        # ROM initializer through the detected linker scatter copy.
+        writer, reader, ack = write - 0x160, write - 0x78, write - 0x1FE
+        # Close every instruction in the three byte-level leaves, including
+        # loop bounds and reloads between the explicit pin operations below.
+        # BL displacements vary with linking; validate their callee roles and
+        # hash the remaining compiler shape, as the NOR driver gates do.
+        lock = thumb_bl_target(image, ack + 2)
+        unlock = thumb_bl_target(image, ack + 0x1A)
+        delay = thumb_bl_target(image, ack + 0x38)
+        timed_delay = thumb_bl_target(image, ack + 0x50)
+        leaf_shapes = (
+            (ack, 0x96,
+             "bcdb33d7918091c733d5eebbb9e57029d3c462a11b765161b1a9aba0f032b165",
+             ((lock, (2, 0x1E, 0x54, 0x74)),
+              (unlock, (0x1A, 0x34, 0x6A, 0x8A)),
+              (delay, (0x38,)), (timed_delay, (0x50,)))),
+            (writer, 0xE4,
+             "f1bb5fe4d4979831d36076a4b3591ceffe9905eec0b352152a5cb9f9d926ea04",
+             ((lock, (8, 0x14, 0x36, 0x56, 0x70, 0x92, 0xB2)),
+              (unlock, (0x2C, 0x4E, 0x88, 0xAA, 0xCA, 0xD2)),
+              (delay, (0x52, 0xAE)), (ack, (0xDA,)))),
+            (reader, 0x70,
+             "966f0169bb7ce3de0b0d6bf51bd34de3f27291d366ca03294ca2dedfedc6d333",
+             ((lock, (0xA, 0x10, 0x40)),
+              (unlock, (0x26, 0x56, 0x5E)), (delay, (0x2A,)))),
+        )
+        if (len({lock, unlock, delay, timed_delay}) != 4
+                or any(target is None or not 0 <= target < len(image)
+                       for target in (lock, unlock, delay, timed_delay))):
+            return None, "gpio-line-shape-mismatch"
+        for entry, extent, digest, groups in leaf_shapes:
+            if entry < 0 or entry + extent > len(image):
+                return None, "gpio-line-shape-mismatch"
+            body = bytearray(image[entry:entry + extent])
+            for target, offsets in groups:
+                for offset in offsets:
+                    if thumb_bl_target(image, entry + offset) != target:
+                        return None, "gpio-line-shape-mismatch"
+                    body[offset:offset + 4] = b"\0" * 4
+            if hashlib.sha256(body).hexdigest() != digest:
+                return None, "gpio-line-shape-mismatch"
+        shapes = (
+            (writer, "f0b5071c80260724"),
+            (writer + 0x18, "324a2023918919439181918912681180"),
+            (writer + 0x3A, "2a4a4023918919439181918912681180"),
+            (writer + 0x5A, "224a4023918999439181918912681180"),
+            (writer + 0x74, "1b4a2023918999439181918912681180"),
+            (writer + 0x96, "134a4023918919439181918912681180"),
+            (writer + 0xB6, "0b4a4023918999439181918912681180"),
+            (reader, "f0b500271b4e1a480024"),
+            (reader + 0x14, "b18940221143b181b18932681180"),
+            (reader + 0x36, "0078800901d301200743"),
+            (reader + 0x44, "b18940239943b181b18932681180"),
+            (ack + 0x08, "2023e1899943e181e189a2681180"),
+            (ack + 0x78, "e18920221143e181e189a2681180"),
+            (ack + 0x3C, "616801250988281c890900d2002007063f0e"),
+            (write + 0x74, "0e231840a0221043"),
+            (write + 0x92, "4020"),
+            (write + 0x16A, "2012"),
+            (read + 0x142, "0e231e40a0203043"),
+            (read + 0x14E, "3812"),
+            (read + 0x2F0, "a12030430006000e"),
+        )
+        descriptor = thumb_literal_value(image, writer + 0x18, 2)
+        literals = (
+            (writer + offset, 2, descriptor)
+            for offset in (0x3A, 0x5A, 0x74, 0x96, 0xB6)
+        )
+        if (min(writer, reader, ack) < 0 or descriptor is None
+                or any(image[p:p + len(bytes.fromhex(h))] != bytes.fromhex(h)
+                       for p, h in shapes)
+                or any(thumb_literal_value(image, p, r) != value
+                       for p, r, value in literals)
+                or thumb_literal_value(image, reader + 4, 6) != descriptor
+                or thumb_literal_value(image, reader + 6, 0) != 0x03000720
+                or thumb_literal_value(image, reader + 0x32, 0) != 0x03000720
+                or thumb_literal_value(image, ack + 6, 4) != descriptor
+                or any(thumb_bl_target(image, entry + offset) != target
+                       for entry, offset, target in (
+                           (write, 0x166, writer), (write, 0x16C, writer),
+                           (read, 0x14A, writer), (read, 0x150, writer),
+                           (read, 0x31E, reader), (read, 0x3CE, reader),
+                           (writer, 0xDA, ack)))):
+            return None, "gpio-line-shape-mismatch"
+        linker = find_linker_layout(image, load, required_span=(descriptor, 12))
+        if (linker is None or not linker.data_target <= descriptor
+                <= linker.data_target + linker.data_size - 12):
+            return None, "gpio-descriptor-linkage-mismatch"
+        source = linker.data_source + descriptor - linker.data_target
+        if (source < 0 or source + 12 > len(image)
+                or struct.unpack_from("<III", image, source)
+                != (0x03000720, 0x03000720, 0x0300072C)):
+            return None, "gpio-descriptor-linkage-mismatch"
+        return (0x03000720, 0, 0x20, 0, 0x40, 0xC, 0x8000), None
     x7700 = (
         image[read:read + len(EEPROM_24LCXX_X7700_READ_PREFIX)]
         == EEPROM_24LCXX_X7700_READ_PREFIX

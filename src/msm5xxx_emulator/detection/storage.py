@@ -306,6 +306,14 @@ EEPROM_24LCXX_X7700_INIT_SIGNATURE = bytes.fromhex(
 )
 
 
+# Halfword GPIO compiler class: the read entry keeps the destination in r5
+# and length in r4. Geometry still comes from the common 24LC256 initializer.
+EEPROM_24LCXX_HALFWORD_READ_PREFIX = bytes.fromhex(
+    "f0b5051c141c01235b039942f64802db8278012a02d100260f1c04e0f34ac678"
+    "89180f043f0c011c0088f04bd84202d089780229"
+)
+
+
 FLASH_IDS_BY_SIZE = {
     0x200000: 0x222D0001,  # AMD AM29DL162BT
     0x400000: 0x22500001,  # AMD AM29DL323DT
@@ -1613,6 +1621,27 @@ def find_24lcxx_f7f6_driver(image: bytes) -> tuple[int, int, int] | None:
     return read, write, geometry
 
 
+def find_24lcxx_halfword_driver(image: bytes) -> tuple[int, int, int] | None:
+    """Pair the halfword compiler's entries with one 32 KiB initializer."""
+    if b"nv24lcxx.c\0" not in image.lower():
+        return None
+    writes = find_all(image, EEPROM_24LCXX_X430_WRITE_PREFIX)
+    reads = find_all(image, EEPROM_24LCXX_HALFWORD_READ_PREFIX)
+    initializers = find_all(image, EEPROM_24LCXX_X430_INIT_SIGNATURE)
+    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
+        return None
+    write, read, initializer = writes[0], reads[0], initializers[0]
+    geometry = thumb_literal_value(image, initializer + 2, 1)
+    if (geometry is None or geometry & 3
+            or not 0x00800000 <= geometry < 0x02000000
+            or not _eeprom_24lcxx_variant_geometry_at(
+                image, write, 0xE, 0x3E8, geometry)
+            or not _eeprom_24lcxx_variant_geometry_at(
+                image, read, 0xC, 0x3E8, geometry)):
+        return None
+    return read, write, geometry
+
+
 def find_24lcxx_driver(image: bytes) -> tuple[int, int, int] | None:
     """Return unique read/write offsets and the firmware geometry global."""
     if b"nv24lcxx.c\0" not in image.lower():
@@ -1643,7 +1672,8 @@ def find_24lcxx_driver(image: bytes) -> tuple[int, int, int] | None:
             or find_24lcxx_x270_driver(image)
             or find_24lcxx_f6f7_driver(image)
             or find_24lcxx_x7700_driver(image)
-            or find_24lcxx_f7f6_driver(image))
+            or find_24lcxx_f7f6_driver(image)
+            or find_24lcxx_halfword_driver(image))
 
 
 def fujitsu_x16_bulk_write_mode_at(
