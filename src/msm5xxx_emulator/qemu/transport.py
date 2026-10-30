@@ -17,7 +17,9 @@ from collections import deque
 from dataclasses import asdict
 
 from .gdb_remote import Remote
-from msm5xxx_emulator.core import FirmwareConfig, GenericMSMEmulator
+from msm5xxx_emulator.core import FirmwareConfig
+from .decoder import QemuDecoder
+from ..core.initial_state import REGISTER_NAMES, initial_register_state
 from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO
 from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
@@ -90,7 +92,6 @@ from msm5xxx_emulator.state_io import (
     exclusive_path_lock,
     lock_path,
 )
-from unicorn import arm_const
 
 
 RECORD_SIZE = 16
@@ -112,9 +113,6 @@ AUDIO_PACKET_BYTES = 1796
 AUDIO_SOCKET_SEND_BUFFER = 1048576
 HOST_INPUT = 0x80
 HOST_BOARD_STATUS = 0x81
-REGISTER_NAMES = tuple(f"r{index}" for index in range(13)) + (
-    "sp", "lr", "pc", "cpsr",
-)
 PAUSE_TIMER_ADDRESS = 0x04800020
 PERSISTENT_STATE_FILES = (
     "primary-writable.raw", "secondary.raw", "upper.raw", "upper-x16.raw",
@@ -230,7 +228,9 @@ def qemu_low5_matrix_property(
     return f"matrix-low5={descriptor:x}:{sites[0]:x}:{sites[1]:x}", None
 
 
-def unicorn_state(emulator: GenericMSMEmulator) -> dict[str, int]:
+def unicorn_state(emulator) -> dict[str, int]:
+    from unicorn import arm_const
+
     return {
         name: emulator.uc.reg_read(
             getattr(arm_const, f"UC_ARM_REG_{name.upper()}")
@@ -3400,11 +3400,11 @@ class Transport:
         decoder_options = {"approximate_audio": False}
         if getattr(self.config, "native_nand_profile", None) is not None:
             decoder_options["native_nand"] = True
-        self.decoder = GenericMSMEmulator(self.config, **decoder_options)
+        self.decoder = QemuDecoder(self.config, **decoder_options)
         if self.config.load_address != 0:
             raise ValueError("QEMU PoC requires NOR=0")
         try:
-            initial_state = unicorn_state(self.decoder)
+            initial_state = initial_register_state(self.config)
             memory_profile = qemu_memory_profile(self.config, initial_state)
             ram_reserved = qemu_ram_reserved_property(
                 detector_image, self.config, initial_state["sp"]

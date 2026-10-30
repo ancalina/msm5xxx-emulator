@@ -1,8 +1,12 @@
 """Display methods owned by controller."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from ...core.constants import LCD_MEMORY_WRITE_COMMANDS
-from unicorn import Uc
 
 
 class DisplayControllerMixin:

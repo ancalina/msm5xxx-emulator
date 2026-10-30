@@ -1,18 +1,19 @@
 """Display methods owned by framebuffer."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from ...core.constants import FRAMEBUFFER_FORMATS
-from unicorn.arm_const import UC_ARM_REG_R0
-from unicorn.arm_const import UC_ARM_REG_R1
-from unicorn.arm_const import UC_ARM_REG_R2
-from unicorn.arm_const import UC_ARM_REG_R3
-from unicorn.arm_const import UC_ARM_REG_SP
-from unicorn import Uc
-from unicorn import UcError
 import struct
 
 
 class FramebufferMixin:
+    def _read_framebuffer_memory(self, address: int, size: int) -> bytes:
+        return self.uc.mem_read(address, size)
+
     def set_framebuffer_format(self, framebuffer_format: str) -> None:
         """Apply a verified framebuffer colour interpretation without rebooting."""
         if framebuffer_format not in FRAMEBUFFER_FORMATS:
@@ -46,7 +47,7 @@ class FramebufferMixin:
         changed = False
         for y in range(y0, y1 + 1):
             requested = (x1 - x0 + 1) * 2
-            row = self.uc.mem_read(
+            row = self._read_framebuffer_memory(
                 address + y * self.config.framebuffer_stride + x0 * 2,
                 requested,
             )
@@ -83,6 +84,9 @@ class FramebufferMixin:
 
     def _framebuffer_rows(self, uc: Uc, address: int, size: int,
                           user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
         if uc.reg_read(UC_ARM_REG_R0) != self.config.framebuffer_address:
             return
         self.lcd_writes += 1
@@ -93,6 +97,12 @@ class FramebufferMixin:
 
     def _framebuffer_rect(self, uc: Uc, address: int, size: int,
                           user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn.arm_const import UC_ARM_REG_R3
+        from unicorn.arm_const import UC_ARM_REG_SP
+        from unicorn import UcError
         if uc.reg_read(UC_ARM_REG_R0) != self.config.framebuffer_address:
             return
         try:

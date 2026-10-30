@@ -10,7 +10,6 @@ from ..detection.boot import DMD_DOWNLOAD_5500_SIZE
 from ..detection.boot import FLASH_ID_SIGNATURE
 from ..detection.boot import is_dmd_download_5500
 from ..detection.boot import OPTIONAL_RAM_PROBE_SIGNATURE
-from ..detection.boot import PRIMARY_FLASH_PROBE_SIGNATURE
 from unicorn.arm_const import UC_ARM_REG_CPSR
 from unicorn.arm_const import UC_ARM_REG_PC
 from unicorn.arm_const import UC_ARM_REG_R0
@@ -172,31 +171,5 @@ class DeviceCallsHleMixin:
         self._return_to_lr(uc, address, size, user_data)
 
     def _detect_primary_flash_ids(self) -> tuple[int, int] | None:
-        """Infer NOR autoselect IDs only from one unambiguous firmware descriptor."""
-        address = self.config.primary_flash_probe_address
-        if address is None:
-            return None
-        try:
-            signature = bytes(self.uc.mem_read(address, len(PRIMARY_FLASH_PROBE_SIGNATURE)))
-            _, flash_base_global, table_global = struct.unpack(
-                "<3I", self.uc.mem_read(
-                    address + len(PRIMARY_FLASH_PROBE_SIGNATURE), 12
-                )
-            )
-            flash_base = struct.unpack("<I", self.uc.mem_read(flash_base_global, 4))[0]
-            first, terminator = struct.unpack("<2I", self.uc.mem_read(table_global, 8))
-            manufacturer, device = struct.unpack(
-                "<2H", self.uc.mem_read(first + 0x124, 4)
-            )
-        except (UcError, struct.error):
-            return None
-        flash_end = self.config.load_address + self.config.flash_size
-        ram_end = self.config.ram_base + self.config.ram_size
-        if (signature != PRIMARY_FLASH_PROBE_SIGNATURE or not first or terminator
-                or not self.config.ram_base <= flash_base_global <= ram_end - 4
-                or not self.config.ram_base <= table_global <= ram_end - 8
-                or not self.config.load_address <= flash_base < flash_end
-                or not self.config.load_address <= first <= flash_end - 0x128
-                or manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)):
-            return None
-        return manufacturer, device
+        from unicorn import UcError
+        return self._initial_primary_flash_ids(self.uc.mem_read, (UcError,))

@@ -11,7 +11,6 @@ import tempfile
 
 from PIL import Image, ImageChops
 
-from ..core.emulator import GenericMSMEmulator
 from ..detection.firmware import detect
 
 
@@ -186,6 +185,8 @@ def probe(path: Path, checkpoints: list[int], output_dir: Path,
         result["flash_state"] = config.flash_state
         result["secondary_flash_state"] = config.secondary_flash_state
         result["upper_flash_state"] = getattr(config, "upper_flash_state", "")
+        from ..core.emulator import GenericMSMEmulator
+
         emulator = GenericMSMEmulator(config)
         previous = 0
         try:

@@ -1,11 +1,6 @@
 """Shared emulator core constants."""
 from __future__ import annotations
 
-from unicorn.arm_const import (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
-                               UC_ARM_REG_R3, UC_ARM_REG_R4, UC_ARM_REG_R5,
-                               UC_ARM_REG_R6, UC_ARM_REG_R7)
-
-
 PAGE = 0x1000
 MAX_RAM_SIZE = 0x08000000
 MAX_NAND_DATA_SIZE = 0x08000000
@@ -36,9 +31,6 @@ BYTE_RGB565_BOOT_COMMANDS = bytes.fromhex(
 BYTE_RGB565_BOOT_WIDTH = 96
 BYTE_RGB565_BOOT_HEIGHT = 64
 REX_TICK_INTERVAL = 100_000
-THUMB_LOW_REGISTERS = (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
-                       UC_ARM_REG_R3, UC_ARM_REG_R4, UC_ARM_REG_R5,
-                       UC_ARM_REG_R6, UC_ARM_REG_R7)
 STABLE_MSM_MMIO = (
     # Bit 4 selects normal handset boot on several board revisions; bit 2 is
     # retained for the later 5100/5500 startup code.
@@ -49,3 +41,10 @@ STABLE_MSM_MMIO = (
     (0x03000720, b"\xff\xff"),
     (0x03000724, b"\xff\xff"),
 )
+
+
+def __getattr__(name):
+    if name == "THUMB_LOW_REGISTERS":
+        from unicorn import arm_const
+        return tuple(getattr(arm_const, f"UC_ARM_REG_R{i}") for i in range(8))
+    raise AttributeError(name)

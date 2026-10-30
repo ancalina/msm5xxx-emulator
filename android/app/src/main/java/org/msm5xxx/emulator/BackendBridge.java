@@ -51,16 +51,15 @@ final class BackendBridge {
             JSONObject result = new JSONObject(PythonRuntime.probe(context));
             if (result.getInt("schema") != 1
                     || !"3.14.4".equals(result.getString("python"))
-                    || !"2.1.4".equals(result.getString("unicorn"))
                     || !"2.5.1".equals(result.getString("numpy"))
-                    || !result.getBoolean("unicorn_arm")
+                    || !result.getBoolean("qemu_decoder")
                     || !result.getBoolean("audio_renderer")
                     || !result.getBoolean("detector_entry")
                     || !result.getBoolean("gdb_remote")
                     || !result.getBoolean("qemu_transport")) {
                 return Probe.failure("Python detector runtime validation failed.");
             }
-            return new Probe(true, "CPython 3.14.4, Unicorn 2.1.4 ARM, "
+            return new Probe(true, "CPython 3.14.4, the QEMU decoder, "
                     + "the detector, and QEMU transport are verified.");
         } catch (IOException | JSONException | RuntimeException | LinkageError error) {
             return Probe.failure("Python detector runtime probe failed.");

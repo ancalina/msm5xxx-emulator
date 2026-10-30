@@ -1,10 +1,11 @@
 """Runtime-admitted MSM5000 serial bus register behavior."""
 from __future__ import annotations
 
-from unicorn import UC_HOOK_MEM_READ
-from unicorn import UC_HOOK_MEM_WRITE
-from unicorn import Uc
-from unicorn.arm_const import UC_ARM_REG_PC
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 
 
 SBI_BASE = 0x03000780
@@ -79,6 +80,8 @@ class SbiMixin:
         }
 
     def _install_sbi_hooks(self) -> None:
+        from unicorn import UC_HOOK_MEM_READ
+        from unicorn import UC_HOOK_MEM_WRITE
         self.uc.hook_add(
             UC_HOOK_MEM_WRITE, self._dc0_observer_write,
             begin=DC0_CONTROL, end=DC0_START + 1,
@@ -105,6 +108,7 @@ class SbiMixin:
     def _dc0_observer_write(
             self, uc: Uc, access: int, address: int, size: int,
             value: int, user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_PC
         del access, user_data
         if size != 2 or address not in {DC0_CONTROL, DC0_DATA, DC0_START}:
             return
@@ -154,6 +158,7 @@ class SbiMixin:
     def _dc0_observer_read(
             self, uc: Uc, access: int, address: int, size: int,
             value: int, user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_PC
         del access, value, user_data
         if size != 2 or address not in {DC0_STATUS, DC0_DATA}:
             return

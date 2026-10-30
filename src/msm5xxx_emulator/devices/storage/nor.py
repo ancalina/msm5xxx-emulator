@@ -1,18 +1,14 @@
 """Storage behavior owned by nor."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from ...detection.boot import LEGACY_SECONDARY_FLASH_READ_SIGNATURE
 from ...detection.boot import LEGACY_SECONDARY_FLASH_WRITE_SIGNATURE
 from pathlib import Path
-from unicorn.arm_const import UC_ARM_REG_PC
-from unicorn.arm_const import UC_ARM_REG_R0
-from unicorn.arm_const import UC_ARM_REG_R1
-from unicorn.arm_const import UC_ARM_REG_R2
-from unicorn import Uc
-from unicorn import UcError
-from unicorn import (UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE,
-                     UC_MEM_FETCH_UNMAPPED, UC_MEM_READ_UNMAPPED,
-                     UC_MEM_WRITE_UNMAPPED, UC_PROT_ALL)
 from ...state_io import atomic_write_text
 import base64
 import binascii
@@ -362,6 +358,14 @@ class NorStorageMixin:
         or the canonical first AMD unlock write (base + 0xAAA, 0xAA), is
         sufficient device evidence without relying on a handset name.
         """
+        from unicorn import UC_HOOK_CODE
+        from unicorn import UC_HOOK_MEM_READ
+        from unicorn import UC_HOOK_MEM_WRITE
+        from unicorn import UC_MEM_FETCH_UNMAPPED
+        from unicorn import UC_MEM_READ_UNMAPPED
+        from unicorn import UC_MEM_WRITE_UNMAPPED
+        from unicorn import UC_PROT_ALL
+        from unicorn import UcError
         if self.secondary_flash is not None or access == UC_MEM_FETCH_UNMAPPED:
             return False
         base = self.config.load_address + self.config.flash_size
@@ -503,6 +507,7 @@ class NorStorageMixin:
                                            size: int, value: int,
                                            flash: NORFlash) -> None:
         """Record, but do not emulate, a complete direct Intel NOR ID probe."""
+        from unicorn.arm_const import UC_ARM_REG_PC
         if flash is not self.flash:
             return
         pending = self._parallel_nor_direct_probe
@@ -547,6 +552,10 @@ class NorStorageMixin:
 
     def _secondary_flash_read_fast(self, uc: Uc, address: int, size: int,
                                    user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn import UcError
         known = LEGACY_SECONDARY_FLASH_READ_SIGNATURE
         signature = (known if self._original_runtime_bytes(address, len(known)) == known
                      else None)
@@ -577,6 +586,10 @@ class NorStorageMixin:
 
     def _secondary_flash_write_fast(self, uc: Uc, address: int, size: int,
                                     user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn import UcError
         known = LEGACY_SECONDARY_FLASH_WRITE_SIGNATURE
         base = self.config.secondary_flash_address
         original = self._original_runtime_bytes(

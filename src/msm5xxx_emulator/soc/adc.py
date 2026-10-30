@@ -1,20 +1,22 @@
 """SoC behavior owned by adc."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from ..detection.input import (
     BOARD_ADC_READER_DATA_ADDRESS, BOARD_ADC_READER_EXTENDED_SIZE,
     BOARD_ADC_READER_SIZE,
     BOARD_ADC_READER_VARIANT_SIZE, board_adc_reader_read_offset_at,
 )
-from unicorn.arm_const import UC_ARM_REG_PC
-from unicorn.arm_const import UC_ARM_REG_R0
-from unicorn import Uc
-from unicorn import UcError
 
 
 class AdcMixin:
     def _board_adc_reader_entry(self, uc: Uc, address: int, size: int,
                                 user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
         if not self._thumb_runtime_matches(
                 uc, address, prefix_size=BOARD_ADC_READER_SIZE):
             self._board_adc_reader_channel = None
@@ -25,6 +27,8 @@ class AdcMixin:
 
     def _board_adc_reader_data_read(self, uc: Uc, address: int,
                                     size: int) -> None:
+        from unicorn.arm_const import UC_ARM_REG_PC
+        from unicorn import UcError
         reader = self.config.board_adc_reader_address
         original = (self._original_runtime_bytes(
             reader, BOARD_ADC_READER_EXTENDED_SIZE) if reader is not None else None)

@@ -1,19 +1,15 @@
 """Storage behavior owned by nand."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from ...detection.boot import LEGACY_EFS_PAGE_READ_SIGNATURE
 from ...detection.boot import NAND_BAD_BLOCK_SIGNATURE
 from ...detection.boot import NAND_READ_SIGNATURE
 from ...detection.boot import NAND_WRITE_SIGNATURE
-from unicorn.arm_const import UC_ARM_REG_CPSR
-from unicorn.arm_const import UC_ARM_REG_LR
-from unicorn.arm_const import UC_ARM_REG_PC
-from unicorn.arm_const import UC_ARM_REG_R0
-from unicorn.arm_const import UC_ARM_REG_R1
-from unicorn.arm_const import UC_ARM_REG_R2
-from unicorn.arm_const import UC_ARM_REG_R3
-from unicorn import Uc
-from unicorn import UcError
 from ...state_io import atomic_write_bytes
 from ...state_io import atomic_write_text
 from ...state_io import durable_unlink
@@ -73,6 +69,11 @@ class NandMixin:
     def _legacy_efs_page_read(self, uc: Uc, address: int, size: int,
                               user_data: object) -> None:
         """Read one x16 small-page NAND view backed by the EFS data image."""
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn.arm_const import UC_ARM_REG_R3
+        from unicorn import UcError
         if (self.secondary_flash is None
                 or not self._thumb_runtime_matches(
                     uc, address, LEGACY_EFS_PAGE_READ_SIGNATURE)):
@@ -220,6 +221,10 @@ class NandMixin:
 
     def _nand_bad_block(self, uc: Uc, address: int, size: int,
                         user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_CPSR
+        from unicorn.arm_const import UC_ARM_REG_LR
+        from unicorn.arm_const import UC_ARM_REG_PC
+        from unicorn.arm_const import UC_ARM_REG_R0
         if not self._thumb_runtime_matches(uc, address, NAND_BAD_BLOCK_SIGNATURE):
             return
         page = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFF
@@ -236,6 +241,11 @@ class NandMixin:
 
     def _nand_read_fast(self, uc: Uc, address: int, size: int,
                         user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn.arm_const import UC_ARM_REG_R3
+        from unicorn import UcError
         if not self._thumb_runtime_matches(uc, address, NAND_READ_SIGNATURE):
             return
         destination = uc.reg_read(UC_ARM_REG_R0)
@@ -268,6 +278,11 @@ class NandMixin:
 
     def _nand_write_fast(self, uc: Uc, address: int, size: int,
                          user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn.arm_const import UC_ARM_REG_R3
+        from unicorn import UcError
         if not self._thumb_runtime_matches(uc, address, NAND_WRITE_SIGNATURE):
             return
         source = uc.reg_read(UC_ARM_REG_R0)

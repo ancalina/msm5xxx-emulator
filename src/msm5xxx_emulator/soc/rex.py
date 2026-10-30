@@ -1,27 +1,17 @@
 """SoC behavior owned by rex."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from ..detection.rex import REX_5MS_CALLBACK_SIZE
 from ..detection.rex import REX_IRQ_HANDLER_RUNTIME_SIZE
 from ..detection.rex import REX_IRQ_WRAPPER_RUNTIME_SIZE
 from ..detection.rex import REX_LEGACY_5MS_CALLBACK_SIZE
 from ..core.constants import REX_TICK_INTERVAL
 from ..detection.rex import REX_TICK_SIGNATURE
-from unicorn import UC_HOOK_MEM_READ
-from unicorn import UC_HOOK_MEM_WRITE
-from unicorn.arm_const import UC_ARM_REG_CPSR
-from unicorn.arm_const import UC_ARM_REG_LR
-from unicorn.arm_const import UC_ARM_REG_PC
-from unicorn.arm_const import UC_ARM_REG_R0
-from unicorn.arm_const import UC_ARM_REG_R1
-from unicorn.arm_const import UC_ARM_REG_R12
-from unicorn.arm_const import UC_ARM_REG_R2
-from unicorn.arm_const import UC_ARM_REG_R3
-from unicorn.arm_const import UC_ARM_REG_SP
-from unicorn.arm_const import UC_ARM_REG_SPSR
-from unicorn import UC_PROT_WRITE
-from unicorn import Uc
-from unicorn import UcError
 from ..detection.arm import arm_b_word_target
 from ..detection.rex import rex_5ms_callback_at
 from ..detection.rex import rex_legacy_5ms_callback_shape_at
@@ -34,6 +24,7 @@ class RexMixin:
     _rex_copied_c40_route: dict[str, object] | None = None
 
     def _install_rex_irq_arm_hook(self, config: object) -> None:
+        from unicorn import UC_HOOK_MEM_WRITE
         arm = getattr(config, "rex_irq_arm_address", None)
         route = (
             getattr(config, "rex_tick_ms", None) == 5
@@ -288,6 +279,7 @@ class RexMixin:
     def _rex_irq_shadow_access_allowed(
             uc: Uc, route: dict[str, object] | None) -> bool:
         """Keep C80 controller accesses outside its handler guest-owned."""
+        from unicorn.arm_const import UC_ARM_REG_PC
         if (route is None or route.get("controller_class") not in {
                 "legacy-c80-two-bank-group10-v1",
                 "legacy-c80-three-bank-group14-v1",
@@ -304,6 +296,7 @@ class RexMixin:
 
     def _rex_firmware_matches(self, uc: Uc, target: int, length: int,
                               validator=None) -> bool:
+        from unicorn import UcError
         expected = self._original_runtime_bytes(target, length)
         try:
             return (
@@ -316,6 +309,7 @@ class RexMixin:
 
     @staticmethod
     def _rex_irq_stack_mapped(uc: Uc, stack: int) -> bool:
+        from unicorn import UC_PROT_WRITE
         return (stack & 3 == 0 and any(
             begin <= stack - 0x40 and stack - 1 <= end
             and permissions & UC_PROT_WRITE
@@ -325,6 +319,7 @@ class RexMixin:
     def _rex_copied_c40_runtime_route(
             self, uc: Uc,
     ) -> tuple[dict[str, object] | None, str, bool]:
+        from unicorn import UcError
         observation = getattr(
             self.config, "rex_static_c40_controller_observation", None
         )
@@ -405,6 +400,9 @@ class RexMixin:
         }, "", False
 
     def _rex_try_copied_c40_route(self, uc: Uc) -> bool:
+        from unicorn import UC_HOOK_MEM_READ
+        from unicorn import UC_HOOK_MEM_WRITE
+        from unicorn import UcError
         if self._rex_copied_c40_irq_route() is not None:
             return True
         if (not getattr(self, "_rex_copied_c40_gate_pending", False)
@@ -508,6 +506,9 @@ class RexMixin:
         self.rex_controller_pending_assertions += 1
 
     def _rex_irq_route_valid(self, uc: Uc, *, stack: bool = False) -> bool:
+        from unicorn.arm_const import UC_ARM_REG_CPSR
+        from unicorn.arm_const import UC_ARM_REG_SP
+        from unicorn import UcError
         wrapper = getattr(self.config, "rex_irq_wrapper_address", None)
         handler = getattr(self.config, "rex_irq_handler_address", None)
         handler_slot = getattr(self.config, "rex_irq_handler_slot", None)
@@ -640,6 +641,7 @@ class RexMixin:
             self, uc: Uc,
     ) -> tuple[dict[str, object] | None, str, bool]:
         """Close one static controller candidate against installed state."""
+        from unicorn import UcError
         candidate = getattr(
             self.config, "rex_static_controller_candidate", None
         )
@@ -838,6 +840,9 @@ class RexMixin:
 
     def _rex_try_static_candidate_route(self, uc: Uc) -> bool:
         """Promote a fully installed candidate without weakening fallback."""
+        from unicorn import UC_HOOK_MEM_READ
+        from unicorn import UC_HOOK_MEM_WRITE
+        from unicorn import UcError
         if getattr(self, "_rex_candidate_route", None) is not None:
             return True
         if self._rex_direct_legacy_irq_route() is not None:
@@ -1046,6 +1051,12 @@ class RexMixin:
 
     def _rex_irq_boundary(self, uc: Uc, address: int) -> bool:
         """Enter one latched, enabled IRQ at a firmware block boundary."""
+        from unicorn.arm_const import UC_ARM_REG_CPSR
+        from unicorn.arm_const import UC_ARM_REG_LR
+        from unicorn.arm_const import UC_ARM_REG_PC
+        from unicorn.arm_const import UC_ARM_REG_SP
+        from unicorn.arm_const import UC_ARM_REG_SPSR
+        from unicorn import UcError
         enable = getattr(self.config, "rex_irq_enable_address", None)
         if enable is None or not self._rex_irq_pending[0]:
             return False
@@ -1073,6 +1084,15 @@ class RexMixin:
         return True
 
     def _rex_tick(self, uc: Uc, address: int, size: int, user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_CPSR
+        from unicorn.arm_const import UC_ARM_REG_LR
+        from unicorn.arm_const import UC_ARM_REG_PC
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R12
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn.arm_const import UC_ARM_REG_R3
+        from unicorn import UcError
         if getattr(self, "_rex_tick_return_address", None) == address:
             for register, value in self._rex_tick_context or ():
                 uc.reg_write(register, value)

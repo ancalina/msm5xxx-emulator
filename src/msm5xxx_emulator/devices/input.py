@@ -1,11 +1,15 @@
 """Runtime behavior owned by input."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from collections import Counter
 from collections import deque
 from ..core.config import FirmwareConfig
 from ..core.constants import HANDSET_KEY_COUNT
-from ..core.constants import THUMB_LOW_REGISTERS
 from ..detection.input import detect_input_profile
 from ..detection.input_descriptor import LG_DESCRIPTOR_RAW
 from ..detection.input_descriptor import resolve_lg_descriptor_input
@@ -15,14 +19,6 @@ from ..detection.input_matrix import SAMSUNG_RING32
 from ..detection.input_matrix import resolve_direct_matrix_input
 from ..detection.rex import find_rex_legacy_5ms_irq_route
 from ..detection.rex import find_rex_legacy_5ms_timer_bridge
-from unicorn import UC_HOOK_CODE
-from unicorn import UC_HOOK_MEM_READ
-from unicorn import UC_PROT_ALL
-from unicorn import Uc
-from unicorn import UcError
-from unicorn.arm_const import UC_ARM_REG_LR
-from unicorn.arm_const import UC_ARM_REG_PC
-from unicorn.arm_const import UC_ARM_REG_R0
 import json
 import struct
 import logging
@@ -70,7 +66,8 @@ def _evidenced_key_mapping(
 
 
 class InputMixin:
-    def _init_input_state(self, config: FirmwareConfig) -> None:
+    def _init_input_state(self, config: FirmwareConfig, *,
+                          install_hooks: bool = True) -> None:
         self.held_keys: set[int] = set()
         self.direct_sideband_held_keys: set[int] = set()
         self.direct_sideband_baselines: dict[int, int] = {}
@@ -271,6 +268,14 @@ class InputMixin:
         self.input_error = ""
         self.input_events = 0
         self.firmware_key_events = 0
+        if install_hooks:
+            self._install_input_hooks()
+        elif self.direct_input_profile is not None:
+            self._prepare_direct_sideband_reads()
+
+    def _install_input_hooks(self) -> None:
+        from unicorn import UC_HOOK_CODE
+
         if self.direct_input_profile is not None:
             self._install_dynamic_mapped_matrix_sense()
             self._install_direct_sideband_reads()
@@ -310,6 +315,8 @@ class InputMixin:
 
     def _install_dynamic_mapped_matrix_sense(self) -> None:
         """Map only an explicitly detected keypad sense register."""
+        from unicorn import UC_HOOK_MEM_READ
+        from unicorn import UC_PROT_ALL
         profile = self.direct_input_profile
         if profile is None or profile.get("dynamic_mapped_sense") is not True:
             return
@@ -339,6 +346,7 @@ class InputMixin:
     def _dynamic_mapped_matrix_sense_read(
             self, uc: Uc, access: int, address: int, size: int,
             value: int, user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_PC
         profile = getattr(self, "direct_input_profile", None)
         if (profile is None or profile.get("dynamic_mapped_sense") is not True
                 or address != int(profile["register"])
@@ -362,8 +370,8 @@ class InputMixin:
         if (sense & mask) != (int(profile["no_key"]) & mask):
             self.direct_matrix_active_reads += 1
 
-    def _install_direct_sideband_reads(self) -> None:
-        """Keep accepted physical input bits asserted across guest writes."""
+    def _prepare_direct_sideband_reads(self) -> None:
+        """Group accepted producers without installing CPU hooks."""
         grouped: dict[tuple[int, int], list[dict[str, object]]] = {}
         for producer in self._validated_direct_sideband_producers():
             register = int(producer["register"])
@@ -372,6 +380,12 @@ class InputMixin:
         self._direct_sideband_read_profiles = {
             key: tuple(value) for key, value in grouped.items()
         }
+
+    def _install_direct_sideband_reads(self) -> None:
+        """Keep accepted physical input bits asserted across guest writes."""
+        from unicorn import UC_HOOK_MEM_READ
+
+        self._prepare_direct_sideband_reads()
         for register, width in self._direct_sideband_read_profiles:
             self.uc.hook_add(
                 UC_HOOK_MEM_READ, self._direct_sideband_read,
@@ -915,6 +929,7 @@ class InputMixin:
                      if index not in conflicts)
 
     def _direct_matrix_nibble(self, uc: Uc) -> int | None:
+        from ..core.constants import THUMB_LOW_REGISTERS
         profile = getattr(self, "direct_input_profile", None)
         if profile is None:
             return None
@@ -954,6 +969,8 @@ class InputMixin:
         )
 
     def _descriptor_matrix_sense(self, uc: Uc, pc: int) -> int | None:
+        from ..core.constants import THUMB_LOW_REGISTERS
+        from unicorn import UcError
         profile = getattr(self, "direct_input_profile", None)
         if profile is None or profile.get("family") != LG_DESCRIPTOR_RAW:
             return None
@@ -997,6 +1014,8 @@ class InputMixin:
     def _direct_input_event_observed(
             self, uc: Uc, address: int, size: int, user_data: object) -> None:
         """Confirm the exact scanner argument edge, not another queue caller."""
+        from unicorn.arm_const import UC_ARM_REG_LR
+        from unicorn.arm_const import UC_ARM_REG_R0
         self._direct_matrix_raw_enqueue_marker = None
         profile = self.direct_input_profile
         if profile is None:
@@ -1032,6 +1051,7 @@ class InputMixin:
     def _direct_raw_enqueue_store_observed(
             self, uc: Uc, address: int, size: int, user_data: object) -> None:
         """Observe a validated raw ring store; never change guest state."""
+        from ..core.constants import THUMB_LOW_REGISTERS
         marker = self._direct_matrix_raw_enqueue_marker
         self._direct_matrix_raw_enqueue_marker = None
         profile = self.direct_input_profile
@@ -1049,6 +1069,7 @@ class InputMixin:
     def _direct_raw_dequeue_return_observed(
             self, uc: Uc, address: int, size: int, user_data: object) -> None:
         """Observe only FIFO-head dequeue returns from the proven queue ABI."""
+        from unicorn.arm_const import UC_ARM_REG_R0
         pending = self._direct_matrix_pending_events
         stale = self._direct_matrix_pending_dequeue
         if stale is not None:
@@ -1066,6 +1087,7 @@ class InputMixin:
     def _direct_raw_task_observed(
             self, uc: Uc, address: int, size: int, user_data: object) -> None:
         """Observe task receipt of an already validated dequeue event."""
+        from ..core.constants import THUMB_LOW_REGISTERS
         event = self._direct_matrix_pending_dequeue
         profile = self.direct_input_profile
         if event is None or profile is None:

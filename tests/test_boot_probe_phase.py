@@ -123,7 +123,7 @@ class BootProbePhaseTests(unittest.TestCase):
         )
         with TemporaryDirectory() as directory:
             with mock.patch.object(boot_probe, "detect", return_value=config), \
-                 mock.patch.object(boot_probe, "GenericMSMEmulator", FakeEmulator):
+                 mock.patch("msm5xxx_emulator.core.emulator.GenericMSMEmulator", FakeEmulator):
                 report = boot_probe.probe(
                     Path("test.bin"), [1], Path(directory) / "frames"
                 )

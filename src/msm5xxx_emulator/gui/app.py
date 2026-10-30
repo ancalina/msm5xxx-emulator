@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..core.emulator import GenericMSMEmulator
+
 import argparse
 import hashlib
 import json
@@ -23,7 +28,6 @@ from PIL import Image, ImageTk
 from ..tools.boot_probe import boot_event, boot_phase, visible_pixels
 from ..core.constants import (BUILD_CODENAME, MAX_NAND_BACKING_SIZE,
                               MAX_NAND_DATA_SIZE, MAX_RAM_SIZE, PAGE)
-from ..core.emulator import GenericMSMEmulator
 from ..core.errors import HostBackendFault
 from ..detection.firmware import (DEFAULT_STATE_ROOT, DISABLEABLE_ADDRESS_FIELDS,
                                   MAX_FLASH_SIZE, detect)

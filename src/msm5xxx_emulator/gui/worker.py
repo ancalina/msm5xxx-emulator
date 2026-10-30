@@ -8,7 +8,6 @@ import threading
 import time
 
 from ..tools.boot_probe import visible_pixels
-from ..core.emulator import GenericMSMEmulator
 from ..core.errors import HostBackendFault
 from ..runtime_log import record_exception
 
@@ -91,6 +90,7 @@ class WorkerMixin:
              commands: queue.SimpleQueue[tuple[object, ...]], firmware: Path,
              overrides: dict[str, object],
              prepared: tuple[object, dict[str, object]] | None = None) -> None:
+        from ..core.emulator import GenericMSMEmulator
         emulator: GenericMSMEmulator | None = None
         config = None
         captures = 0

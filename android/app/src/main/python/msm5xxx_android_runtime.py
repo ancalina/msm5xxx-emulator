@@ -20,17 +20,12 @@ def _json(value):
 
 def probe():
     import numpy
-    import unicorn
     from msm5xxx_emulator.qemu.gdb_remote import Remote
     from msm5xxx_emulator.qemu.transport import Transport
-    from unicorn import UC_ARCH_ARM, UC_MODE_ARM, Uc
+    from msm5xxx_emulator.qemu.decoder import QemuDecoder
     from msm5xxx_emulator.detection.firmware import detect
     from msm5xxx_emulator.audio.player import ApproximateSmafPlayer
 
-    engine = Uc(UC_ARCH_ARM, UC_MODE_ARM)
-    engine.mem_map(0x1000, 0x1000)
-    engine.mem_write(0x1000, b"\0\0\0\0")
-    del engine
     return _json({
         "audio_renderer": callable(ApproximateSmafPlayer),
         "detector_entry": callable(detect),
@@ -39,8 +34,7 @@ def probe():
         "python": platform.python_version(),
         "qemu_transport": callable(Transport),
         "schema": 1,
-        "unicorn": unicorn.__version__,
-        "unicorn_arm": True,
+        "qemu_decoder": callable(QemuDecoder),
     })
 
 

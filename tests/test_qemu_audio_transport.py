@@ -593,7 +593,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
             config = SimpleNamespace(native_nand_profile=profile)
             decoder = Mock()
             exec(compile(setup, str(TRANSPORT_SOURCE), "exec"),
-                 {"self": SimpleNamespace(config=config), "GenericMSMEmulator": decoder})
+                 {"self": SimpleNamespace(config=config), "QemuDecoder": decoder})
             expected = {"approximate_audio": False}
             if profile is not None:
                 expected["native_nand"] = True

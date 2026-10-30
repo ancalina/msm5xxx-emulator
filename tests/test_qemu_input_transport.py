@@ -2827,7 +2827,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         uc.mem_write(completion, b"\xaa\xbb\xcc\xdd")
         uc.mem_write(control + 0x0C, b"\xaa\xbb")
         uc.mem_write(dmd + 8, b"\xaa" * 8)
-        registers = MODULE.arm_const
+        from unicorn import arm_const as registers
         uc.reg_write(registers.UC_ARM_REG_CPSR, 0xA0000033)
         uc.reg_write(registers.UC_ARM_REG_SP, 0x01001FF0)
         uc.reg_write(registers.UC_ARM_REG_LR, 0x1201)
@@ -2881,7 +2881,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
             uc.mem_map(load, 0x1000)
             uc.mem_write(entry, patch)
-            registers = MODULE.arm_const
+            from unicorn import arm_const as registers
             uc.reg_write(registers.UC_ARM_REG_CPSR, 0xA0000033)
             uc.reg_write(registers.UC_ARM_REG_SP, 0x1FF0)
             uc.reg_write(registers.UC_ARM_REG_LR, 0x1201)

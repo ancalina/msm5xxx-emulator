@@ -1,6 +1,11 @@
 """Storage behavior owned by eeprom."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unicorn import Uc
+
 from ...detection.storage import EEPROM_24LC64_CLASS_A_READ_PREFIX
 from ...detection.storage import EEPROM_24LC64_CLASS_B_READ_PREFIX
 from ...detection.storage import EEPROM_24LC64_CLASS_B_WRITE_PREFIX
@@ -13,11 +18,6 @@ from ...detection.storage import EEPROM_24LCXX_X430_READ_PREFIX
 from ...detection.storage import EEPROM_24LCXX_X430_WRITE_PREFIX
 from ...detection.storage import EEPROM_24LCXX_X7700_READ_PREFIX
 from ...detection.storage import EEPROM_24LCXX_X7700_WRITE_PREFIX
-from unicorn.arm_const import UC_ARM_REG_R0
-from unicorn.arm_const import UC_ARM_REG_R1
-from unicorn.arm_const import UC_ARM_REG_R2
-from unicorn import Uc
-from unicorn import UcError
 from ...state_io import atomic_write_bytes
 from ...state_io import durable_unlink
 from ...detection.storage import eeprom_24lc64_class_a_write_at
@@ -46,6 +46,7 @@ class EepromMixin:
 
     def _ensure_eeprom(self, uc: Uc) -> bool:
         """Load the proven 24LCxx capacity and its persistent byte image."""
+        from unicorn import UcError
         geometry = self.config.eeprom_geometry_address
         static_capacity = getattr(
             self.config, "eeprom_static_capacity", None
@@ -98,6 +99,10 @@ class EepromMixin:
 
     def _eeprom_read_fast(self, uc: Uc, address: int, size: int,
                           user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn import UcError
         for signature in (EEPROM_24LC64_CLASS_A_READ_PREFIX,
                           EEPROM_24LC64_CLASS_B_READ_PREFIX,
                           EEPROM_24LCXX_X430_READ_PREFIX,
@@ -144,6 +149,10 @@ class EepromMixin:
 
     def _eeprom_write_fast(self, uc: Uc, address: int, size: int,
                            user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_R0
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn import UcError
         signature = None
         original = self._original_runtime_bytes(address, 48)
         if original is not None and eeprom_24lc64_class_a_write_at(original, 0):

@@ -82,7 +82,7 @@ class GuiWorkerCommandDrainTests(unittest.TestCase):
 
         with (patch("msm5xxx_emulator.gui.worker.detect_profile",
                     return_value=(_Config(), {})),
-              patch("msm5xxx_emulator.gui.worker.GenericMSMEmulator",
+              patch("msm5xxx_emulator.core.emulator.GenericMSMEmulator",
                     side_effect=make_emulator),
               patch("msm5xxx_emulator.gui.worker.display_model_name",
                     return_value="test"),
@@ -162,7 +162,7 @@ class GuiWorkerCommandDrainTests(unittest.TestCase):
             config.firmware_sha256 = hashlib.sha256(firmware_data).hexdigest()
             with (patch("msm5xxx_emulator.gui.worker.detect_profile",
                         side_effect=AssertionError("redetect")),
-                  patch("msm5xxx_emulator.gui.worker.GenericMSMEmulator",
+                  patch("msm5xxx_emulator.core.emulator.GenericMSMEmulator",
                         side_effect=_Emulator),
                   patch("msm5xxx_emulator.gui.worker.display_model_name",
                         return_value="test"),

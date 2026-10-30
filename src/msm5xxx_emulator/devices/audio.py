@@ -1,26 +1,27 @@
 """Runtime behavior owned by audio."""
 from __future__ import annotations
 
-from unicorn.arm_const import UC_ARM_REG_CPSR
-from unicorn.arm_const import UC_ARM_REG_PC
-from unicorn.arm_const import UC_ARM_REG_R1
-from unicorn.arm_const import UC_ARM_REG_R2
-from unicorn import UC_HOOK_CODE
-from unicorn import Uc
-from unicorn import UcError
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from unicorn import Uc
 
 class AudioMixin:
+    def _audio_write_pc(self, uc) -> int:
+        from unicorn.arm_const import UC_ARM_REG_PC
+        return uc.reg_read(UC_ARM_REG_PC) & ~1
+
     def _audio_transport_owns_write(
             self, uc: Uc | None, address: int, size: int) -> bool:
         transport = getattr(self, "audio_transport", None)
-        if (uc is None or transport is None
+        if ((uc is None and getattr(self, "_uses_cpu", True))
+                or transport is None
                 or transport.static_status != "accepted"
                 or size != 1
                 or not transport.base <= address
                 <= transport.base + transport.data_offset):
             return False
-        pc = uc.reg_read(UC_ARM_REG_PC) & ~1
+        pc = self._audio_write_pc(uc)
         return transport.owns_write(pc, address, size)
 
     def _audio_transport_telemetry(
@@ -38,12 +39,14 @@ class AudioMixin:
     def _audio_transport_write(
             self, uc: Uc, access: int, address: int, size: int,
             value: int, user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_PC
         pc = uc.reg_read(UC_ARM_REG_PC) & ~1
         self.audio_transport.write(pc, address, size, value)
 
     def _audio_transport_read(
             self, uc: Uc, access: int, address: int, size: int,
             value: int, user_data: object) -> None:
+        from unicorn.arm_const import UC_ARM_REG_PC
         pc = uc.reg_read(UC_ARM_REG_PC) & ~1
         self.audio_transport.read(pc, address, size)
 
@@ -74,6 +77,9 @@ class AudioMixin:
 
     def _play_mmf_arguments(self, uc: Uc, discovery: bool = False,
                             submit: bool = True) -> bool:
+        from unicorn.arm_const import UC_ARM_REG_R1
+        from unicorn.arm_const import UC_ARM_REG_R2
+        from unicorn import UcError
         if self.audio_player is None:
             return False
         pointer = uc.reg_read(UC_ARM_REG_R1)
@@ -99,6 +105,9 @@ class AudioMixin:
         return True
 
     def _probe_audio_call(self, uc: Uc, address: int) -> None:
+        from unicorn.arm_const import UC_ARM_REG_CPSR
+        from unicorn import UC_HOOK_CODE
+        from unicorn import UcError
         if not uc.reg_read(UC_ARM_REG_CPSR) & 0x20:
             return
         try:
