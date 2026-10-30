@@ -65,12 +65,15 @@ from .spi_nv import find_spi_nv_profile
 from .signatures import find_all
 from .storage import (
     EEPROM_24LC64_CLASS_B_READ_PREFIX, EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+    EEPROM_24LCXX_HALFWORD_READ_PREFIX,
+    EEPROM_24LCXX_X430_WRITE_PREFIX,
     find_24lc64_class_b_driver, find_24lcxx_driver,
     find_adjacent_amd_x16_nor, find_adjacent_fujitsu_x16_nor,
     find_compound_fujitsu_layout,
     find_fujitsu_x16_bulk_write,
     find_fs_device_flash_id, flash_id_for_size, primary_probe_x16_nor_profile,
 )
+from .efs_nor import find_inline_efs_nor_profile
 from .upper_nor import UPPER_FLASH_ADDRESS, UPPER_FLASH_SIZE, find_upper_nor
 
 
@@ -1082,6 +1085,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 "24LC64 static-capacity EEPROM candidate rejected: "
                 "marker, read/write pair, or bound guards are incomplete"
             )
+    if (eeprom_driver is None
+            and EEPROM_24LCXX_HALFWORD_READ_PREFIX in primary_image
+            and EEPROM_24LCXX_X430_WRITE_PREFIX in primary_image):
+        detection_notes.append(
+            "24LCxx halfword EEPROM candidate rejected: missing or ambiguous "
+            "paired read/write entries or initialized geometry"
+        )
     clear_positions = [
         *find_all(primary_image, MEMORY_CLEAR_LOOP_SIGNATURE),
         *find_all(primary_image, MEMORY_CLEAR_128_SIGNATURE),
@@ -1348,6 +1358,18 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     internal_secondary_seed = _configure_state_paths(
         config, path, image, overrides
     )
+    inline_efs, inline_efs_reason = find_inline_efs_nor_profile(
+        image[:config.flash_size], config.load_address, config.flash_size, config.ram_base, config.ram_size,
+    )
+    if inline_efs is not None:
+        config.detection_notes.append(
+            "inline EFS AMD x16 NOR admitted from reset-owned copy, RAM selection, "
+            f"descriptor/callback/DQ6 linkage: {inline_efs['base']:x}:"
+            f"{inline_efs['size']:x}:{inline_efs['sector_size']:x}:"
+            f"{inline_efs['id0']:x}:{inline_efs['id1']:x}"
+        )
+    elif inline_efs_reason is not None:
+        config.detection_notes.append(f"inline EFS NOR detector rejected: {inline_efs_reason}")
     _infer_upper_nor(config, primary_image)
     _finalize_dump_status(config, image, internal_secondary_seed)
     return config
