@@ -25,6 +25,7 @@ from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
 from msm5xxx_emulator.detection.boot_keysense import find_boot_keysense_release
 from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
+from msm5xxx_emulator.detection.ready_poll import _find_lcd_halfword_ready_poll_profile
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
@@ -2152,6 +2153,32 @@ def qemu_sbi_raw_input_property(
     return f"sbi-raw-input-profile={read_pc:x}:60:{selected:x}", None
 
 
+def qemu_runtime_ready_poll_property(image: bytes, config: object
+                                     ) -> tuple[str | None, str | None, str | None]:
+    """Prefer a closed display consumer over an incidental UART boot helper.
+
+    The LCD bridge completes writes synchronously. Its status register cannot
+    echo the previous display payload as a persistent busy bit. The native
+    source-PC/selector-bound profile already enforces this ownership.
+    """
+    size = getattr(config, "flash_size", None)
+    if (getattr(config, "load_address", None) == 0
+            and type(size) is int and 0 < size <= 0x02000000
+            and not getattr(config, "nand_enabled", False)
+            and not getattr(config, "upper_flash_size", 0)):
+        # A partial dump may still contain the entire proven controller route.
+        # The matcher bounds every referenced instruction to available bytes.
+        profile = _find_lcd_halfword_ready_poll_profile(image[:size])
+        if profile is not None:
+            argument, reason = qemu_ready_poll_property({
+                **profile, "admission": "temporary-evidence-gated",
+            })
+            if argument is not None:
+                return argument, reason, "indexed-lcd"
+    argument, reason = qemu_ready_poll_property(getattr(config, "ready_poll", None))
+    return argument, reason, None
+
+
 def qemu_sbi_property(config: object) -> tuple[str | None, str | None]:
     """Keep legacy full SBI chip-bound; admit the closed bootstrap wire class."""
     profile = getattr(config, "sbi_bootstrap_profile", None)
@@ -3678,9 +3705,14 @@ class Transport:
                 f"QEMU SBI bridge rejected: {sbi_reject}; "
                 f"{fallback}"
             )
-        ready_property, ready_reject = qemu_ready_poll_property(
-            self.config.ready_poll
+        ready_property, ready_reject, ready_owner = qemu_runtime_ready_poll_property(
+            detector_image, self.config
         )
+        if ready_owner == "indexed-lcd":
+            self.config.detection_notes.append(
+                "QEMU closed indexed LCD bridge status enabled; "
+                "source-PC and selector bound, synchronous display writes"
+            )
         if ready_property is not None:
             machine += f",{ready_property}"
         elif ready_reject is not None:
