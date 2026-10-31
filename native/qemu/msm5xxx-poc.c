@@ -805,6 +805,11 @@ struct MSM5xxxPOCMachineState {
     uint32_t boot_keysense_pc[3], boot_keysense_phase, boot_keysense_reason;
     uint64_t boot_keysense_reads, boot_keysense_releases, boot_keysense_rejections;
     MemoryRegion boot_keysense_region;
+    bool boot_contact_enabled, boot_contact_realized;
+    uint32_t boot_contact_address, boot_contact_pc;
+    unsigned boot_contact_mask, boot_contact_width;
+    uint64_t boot_contact_reads, boot_contact_releases;
+    MemoryRegion boot_contact_region;
     uint32_t spi_nv_source_geometry;
     bool spi_nv_geometry_ready;
     uint64_t spi_nv_geometry_mismatches;
@@ -10237,6 +10242,114 @@ static void msm5xxx_poc_boot_keysense_init(MachineState *machine,
         MSM5XXX_POC_MSM_BASE + 0x694, &s->boot_keysense_region, 1);
 }
 
+/* Diagnostic electrical input: only the explicitly selected guest load sees
+ * released columns. Other readers and all writes retain the underlying RAM. */
+static uint64_t msm5xxx_poc_boot_contact_read(void *opaque, hwaddr offset,
+                                             unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint64_t value = msm5xxx_poc_backing_read(msm,
+        s->boot_contact_address - MSM5XXX_POC_MSM_BASE + offset, size);
+
+    if (!offset && size == s->boot_contact_width &&
+        msm5xxx_poc_boot_storage_guest(s) && s->cpu->env.thumb &&
+        (CPU_GET_CLASS(current_cpu)->get_pc(current_cpu) & ~1u) ==
+            s->boot_contact_pc) {
+        s->boot_contact_reads++;
+        s->boot_contact_releases++;
+        return value | s->boot_contact_mask;
+    }
+    return value;
+}
+
+static void msm5xxx_poc_boot_contact_write(void *opaque, hwaddr offset,
+                                          uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+        s->boot_contact_address - MSM5XXX_POC_MSM_BASE + offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_boot_contact_ops = {
+    .read = msm5xxx_poc_boot_contact_read,
+    .write = msm5xxx_poc_boot_contact_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
+static void msm5xxx_poc_boot_contact_init(MachineState *machine,
+                                         MSM5xxxPOCMachineState *s,
+                                         Error **errp)
+{
+    MemoryRegionSection section;
+    bool conflict;
+
+    s->boot_contact_realized = true;
+    if (!s->boot_contact_enabled) {
+        return;
+    }
+    if (!s->memory_profile_enabled || s->primary_nor_size < 2 ||
+        s->boot_contact_pc > s->primary_nor_size - 2) {
+        error_setg(errp, "experimental-boot-contact requires a primary NOR load PC");
+        return;
+    }
+    section = memory_region_find(get_system_memory(), s->boot_contact_address,
+                                 4);
+    conflict = section.mr != &s->msm ||
+        !int128_eq(section.size, int128_make64(4));
+    memory_region_unref(section.mr);
+    if (conflict) {
+        error_setg(errp, "experimental-boot-contact requires unclaimed GPIO backing");
+        return;
+    }
+    memory_region_init_io(&s->boot_contact_region, OBJECT(machine),
+        &msm5xxx_poc_boot_contact_ops, s, "msm5xxx-poc.boot-contact",
+        4);
+    memory_region_add_subregion_overlap(get_system_memory(),
+        s->boot_contact_address, &s->boot_contact_region, 1);
+}
+
+static char *msm5xxx_poc_get_boot_contact(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->boot_contact_enabled ? g_strdup_printf("%x:%x:%x:%x",
+        s->boot_contact_address, s->boot_contact_pc,
+        s->boot_contact_mask, s->boot_contact_width) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_boot_contact(Object *obj, const char *value,
+                                        Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t fields[4];
+
+    if (s->boot_contact_realized || s->boot_contact_enabled ||
+        !msm5xxx_poc_boot_storage_hex(value, fields, 4) || (fields[1] & 1) ||
+        (fields[0] != 0x0300066c && fields[0] != 0x0300072c) ||
+        !((fields[3] == 1 && (fields[2] == 2 || fields[2] == 4)) ||
+          (fields[3] == 2 && fields[2] == 31))) {
+        error_setg(errp, "experimental-boot-contact needs GPIO:PC:MASK:WIDTH before init");
+        return;
+    }
+    s->boot_contact_address = fields[0];
+    s->boot_contact_pc = fields[1];
+    s->boot_contact_mask = fields[2];
+    s->boot_contact_width = fields[3];
+    s->boot_contact_enabled = true;
+}
+
+static char *msm5xxx_poc_get_boot_contact_state(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return g_strdup_printf("configured=%u reads=%" PRIu64 " releases=%" PRIu64,
+        s->boot_contact_enabled, s->boot_contact_reads, s->boot_contact_releases);
+}
+
 static bool msm5xxx_poc_spi_nv_geometry_bounds(MSM5xxxPOCMachineState *s)
 {
     uint64_t address = s->spi_nv_source_geometry;
@@ -12859,6 +12972,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     msm5xxx_poc_small_nand_init(machine, s, &error_fatal);
     msm5xxx_poc_spi_nv_init(machine, s, &error_fatal);
     msm5xxx_poc_boot_keysense_init(machine, s, &error_fatal);
+    msm5xxx_poc_boot_contact_init(machine, s, &error_fatal);
     if (s->uart_console_rearm_enabled) {
         if (!msm5xxx_poc_uart_rearm_valid(s)) {
             error_report("uart-console-rearm requires FF/DD and an exclusive passive MSM RAM CR underlay");
@@ -16423,6 +16537,10 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "raw-nand-main",
         "Detector-provided main-area-only small-page x16 NAND route");
+    object_class_property_add_str(oc, "experimental-boot-contact",
+        msm5xxx_poc_get_boot_contact, msm5xxx_poc_set_boot_contact);
+    object_class_property_add_str(oc, "boot-contact-state",
+        msm5xxx_poc_get_boot_contact_state, NULL);
     object_class_property_add_str(oc, "boot-keysense-release",
                                    msm5xxx_poc_get_boot_keysense_release,
                                    msm5xxx_poc_set_boot_keysense_release);

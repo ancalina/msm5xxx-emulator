@@ -41,3 +41,13 @@ firmware opened after upgrading.
 Current representative firmware status and release gates are documented in
 [../../docs/QEMU_TCG_BACKEND.md](../../docs/QEMU_TCG_BACKEND.md). A visible frame or live process is not by itself a
 handset-idle pass.
+
+For native boot-input diagnostics, the disabled-by-default machine property
+`experimental-boot-contact=GPIO:PC:MASK:WIDTH` accepts hexadecimal fields. GPIO
+must be `0300066c` or `0300072c`; byte loads support masks `2` and `4`, and
+halfword loads support mask `1f`. The configured Thumb guest load receives the
+released bits while other reads and all writes retain the MSM backing value.
+The entire four-byte register must have no other device owner. Every matching
+load receives the release, including after reset; `boot-contact-state` counters
+accumulate across resets. This experiment has no automatic detector activation
+and requires separate live-guest validation for each proposed source profile.

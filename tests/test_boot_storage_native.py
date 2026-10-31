@@ -110,12 +110,16 @@ static bool int128_eq(uint64_t a,uint64_t b) { return a==b; }
 static uint64_t int128_make64(uint64_t value) { return value; }
 static void memory_region_unref(MemoryRegion *region) { }
 static const int msm5xxx_poc_boot_keysense_ops;
+static const int msm5xxx_poc_boot_contact_ops;
 static unsigned overlays;
-static void memory_region_init_io(MemoryRegion *region,void *owner,const void *ops,void *opaque,const char *name,uint64_t size) { assert(size==1); }
-static void memory_region_add_subregion_overlap(void *root,hwaddr address,MemoryRegion *region,int priority) { assert(address==0x03000694 && priority==1);overlays++; }
+static uint64_t mapped_size,mapped_address;
+static void memory_region_init_io(MemoryRegion *region,void *owner,const void *ops,void *opaque,const char *name,uint64_t size) { assert(size==1 || size==4);mapped_size=size; }
+static void memory_region_add_subregion_overlap(void *root,hwaddr address,MemoryRegion *region,int priority) { assert((address==0x03000694 || address==0x0300066c || address==0x0300072c) && priority==1);mapped_address=address;overlays++; }
 '''
         names = ('boot_storage_guest', 'boot_storage_hex', 'boot_keysense_read',
                  'boot_keysense_write', 'boot_keysense_reset', 'boot_keysense_init',
+                 'boot_contact_read', 'boot_contact_write', 'boot_contact_init',
+                 'get_boot_contact', 'set_boot_contact', 'get_boot_contact_state',
                  'spi_nv_geometry_bounds', 'spi_nv_geometry_valid',
                  'get_boot_keysense_release', 'set_boot_keysense_release',
                  'get_boot_keysense_state', 'get_spi_nv_source_geometry',
@@ -203,6 +207,49 @@ int main(void) {
     setup();found.size=5;geometry_final_check(&state.machine,&state,&err);assert(err);err=NULL;
     setup();state.primary_nor_size=0x100;state.boot_keysense_enabled=true;state.boot_keysense_pc[2]=0x100;
     msm5xxx_poc_boot_keysense_init(&state.machine,&state,&err);assert(err);err=NULL;
+    /* Contact reads preserve backing, debugger scope and other access widths. */
+    setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4};
+    msm5xxx_poc_set_boot_contact(&state,"300066c:100:4:1",&err);assert(!err);
+    msm5xxx_poc_boot_contact_init(&state.machine,&state,&err);assert(!err && mapped_size==4 && mapped_address==0x300066c);
+    text=msm5xxx_poc_get_boot_contact(&state,&err);assert(!strcmp(text,"300066c:100:4:1"));g_free(text);
+    msm5xxx_poc_boot_contact_write(&state,0,0xc0b0a080,4);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x84 && msm[0x66c]==0x80);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,2)==0xa080 && msm5xxx_poc_boot_contact_read(&state,0,4)==0xc0b0a080);
+    assert(msm5xxx_poc_boot_contact_read(&state,1,1)==0xa0);
+    cpu.pc=0x102;assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x80);cpu.pc=0x100;
+    cpu.env.thumb=false;assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x80);cpu.env.thumb=true;
+    vcpu=false;assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x80);vcpu=true;
+    current_cpu=&other_cpu;assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x80);current_cpu=&cpu;
+    cpu.running=false;assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x80);cpu.running=true;
+    cpu.neg.can_do_io=false;assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x80);cpu.neg.can_do_io=true;
+    msm5xxx_poc_boot_contact_write(&state,0,0x11223340,4);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,4)==0x11223340 && msm5xxx_poc_boot_contact_read(&state,0,1)==0x44);
+    text=msm5xxx_poc_get_boot_contact_state(&state,&err);assert(strstr(text,"reads=2") && strstr(text,"releases=2"));g_free(text);
+    msm5xxx_poc_set_boot_contact(&state,"300072c:102:2:1",&err);assert(err && state.boot_contact_address==0x300066c);err=NULL;
+    setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4};
+    msm5xxx_poc_set_boot_contact(&state,"300066c:100:1f:2",&err);assert(!err);
+    msm5xxx_poc_boot_contact_init(&state.machine,&state,&err);assert(!err);
+    msm5xxx_poc_boot_contact_write(&state,0,0xa040,2);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,2)==0xa05f && msm5xxx_poc_boot_contact_read(&state,0,1)==0x40);
+    msm5xxx_poc_boot_contact_write(&state,0,0x110,2);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,2)==0x11f && msm[0x66c]==0x10 && msm[0x66d]==1);
+    setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4};
+    msm5xxx_poc_set_boot_contact(&state,"300072c:100:2:1",&err);assert(!err);
+    msm5xxx_poc_boot_contact_init(&state.machine,&state,&err);assert(!err);
+    msm[0x66c]=0x99;msm5xxx_poc_boot_contact_write(&state,0,0x40,1);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0x42 && msm[0x72c]==0x40 && msm[0x66c]==0x99);
+    const char *bad_contact[]={"","300066c:101:4:1","300066d:100:4:1","300066c:100:1f:1","300066c:100:4:2","300066c:100:4:0","300066c:100:4:1:0","300066c:+100:4:1"};
+    for(unsigned i=0;i<sizeof(bad_contact)/sizeof(*bad_contact);i++) { setup();msm5xxx_poc_set_boot_contact(&state,bad_contact[i],&err);assert(err && !state.boot_contact_enabled);err=NULL; }
+    for(unsigned mode=0;mode<4;mode++) {
+        setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4};
+        msm5xxx_poc_set_boot_contact(&state,"300072c:100:2:1",&err);assert(!err);
+        if(mode==0)found.mr=&memory;
+        if(mode==1)found.size=3;
+        if(mode==2)state.memory_profile_enabled=false;
+        if(mode==3)state.primary_nor_size=0x100;
+        msm5xxx_poc_boot_contact_init(&state.machine,&state,&err);assert(err);err=NULL;
+        msm5xxx_poc_set_boot_contact(&state,"300066c:102:4:1",&err);assert(err);err=NULL;
+    }
     /* Invalid initial geometry does not consume edges; valid needs inactive CS. */
     setup();gpio(0x18,0x40);gpio(0x1c,3);select_cs(false);
     assert(!state.spi_nv_geometry_ready && !state.spi_nv_qualified && !state.spi_nv_geometry_mismatches);
