@@ -176,3 +176,53 @@ class MuxPageRuntimeTests(unittest.TestCase):
         self.assertIsNone(h._lcd_mux_page_panel)
         h = Harness(); h.config.display_geometry_source='manual'; self.bind(h)
         self.assertIsNone(h._lcd_mux_page_panel)
+
+
+class GpioSerialRuntimeTests(unittest.TestCase):
+    def bind(self, h, **kwargs):
+        candidate = dict(signature='source-gpio660-serial89-v1',
+            admission='temporary-evidence-gated', width=89, height=64,
+            access_width=2, port=0x03000660, capture_pcs=(0x100,0x102),
+            code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
+            data_intervals=((0x300,0x320),),ram_intervals=((0x01000000,0x01001000),))
+        original = bytes(0x1000)
+        loaded = kwargs.pop('loaded',original)
+        with patch('msm5xxx_emulator.detection.gpio_serial.find_gpio_serial_profile',
+                   return_value=(candidate,'static-candidate')):
+            return h._lcd_bind_source_gpio(original,loaded,**kwargs)
+
+    def send(self,h,data,values):
+        base=0x100 if data else 0
+        for value in values:
+            for n in range(8):
+                bit=(value>>(n if data else 7-n))&1
+                h._lcd_source_gpio_write(0x03000660,2,base|bit*0x80)
+                h._lcd_source_gpio_write(0x03000660,2,base|bit*0x80|0x40)
+        h._lcd_source_gpio_write(0x03000660,2,base|0x60)
+
+    def test_complete_source_raster_retains_snapshot_and_geometry(self):
+        h=Harness();h.config.chipset='MSM5100'
+        self.assertEqual(self.bind(h),'experimental-gpio660-lcd=100:102')
+        for page in range(8):
+            self.send(h,False,[0x40+page,0,0x80])
+            self.send(h,True,[0xff]*89)
+            self.assertEqual(h.frame_sequence,int(page==7))
+        self.assertTrue(h.gpio_serial_snapshot()['qualified'])
+        expected=(89,64,bytes([255])*(89*64*3))
+        self.assertEqual(h.display_snapshot(),expected)
+        h.framebuffer[:]=bytes(len(h.framebuffer))
+        h._publish_frame()
+        h._set_display_geometry(128,128,source='runtime:unbound',force=True)
+        self.assertEqual(h.frame_sequence,1)
+        self.assertEqual(h.display_snapshot(),expected)
+
+    def test_owner_layout_and_final_seed_boundaries(self):
+        for field,value in [('chipset','MSM6000'),('ram_size',0xfff),
+                            ('load_address',False),('display_geometry_source','manual')]:
+            h=Harness();h.config.chipset='MSM5100';setattr(h.config,field,value)
+            self.assertIsNone(self.bind(h),field)
+            self.assertIsNone(h._lcd_gpio_serial_panel)
+        h=Harness();h.config.chipset='MSM5105'
+        self.assertIsNone(self.bind(h,ram_claimed=True))
+        self.assertIsNone(self.bind(h,loaded=bytes(0xfff)+b'\1'))
+        self.assertIsNotNone(self.bind(h))

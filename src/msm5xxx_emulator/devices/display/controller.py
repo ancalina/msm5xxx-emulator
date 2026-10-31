@@ -21,6 +21,9 @@ class DisplayControllerMixin:
         if (getattr(self, "_lcd_mux_page_owned", False)
                 and not getattr(self, "_lcd_mux_page_publishing", False)):
             return
+        if (getattr(self, '_lcd_gpio_serial_owned', False)
+                and not getattr(self, '_lcd_gpio_serial_publishing', False)):
+            return
         frame = bytes(self.framebuffer)
         with self._display_lock:
             self.display_frame = frame
@@ -42,6 +45,9 @@ class DisplayControllerMixin:
             if (getattr(self, '_lcd_mux_page_owned', False)
                     and source_mux is not None and source_mux.sequence):
                 return 96, 64, source_mux.frame
+            gpio = getattr(self, '_lcd_gpio_serial_panel', None)
+            if getattr(self, '_lcd_gpio_serial_owned', False) and gpio is not None and gpio.sequence:
+                return 89, 64, gpio.frame
             segmented = getattr(self, "_lcd_segmented_panel", None)
             if segmented is not None:
                 candidate = segmented.scanout_snapshot()
@@ -323,6 +329,89 @@ class DisplayControllerMixin:
             column_origin=panel.origin if panel else None, viewport=[96,64], clear_rows=80,
             optical_properties=None, pixel_order='provisional-vertical-lsb-first')
 
+    def _lcd_bind_source_gpio(self, original: bytes, loaded: bytes, *, ram_claimed=False):
+        """Bind a passive native capture and source raster to the final seed."""
+        from ...detection.gpio_serial import find_gpio_serial_profile
+        from .gpio_serial_panel import GpioSerial89Panel
+        self._lcd_gpio_serial_panel = None
+        self._lcd_gpio_serial_owned = False
+        self._lcd_gpio_serial_reason = 'source-layout-unverified'
+        cfg = self.config
+        if (getattr(cfg, 'chipset', None) not in ('MSM5100', 'MSM5105')
+                or getattr(cfg, 'image_kind', None) != 'firmware'
+                or any(type(getattr(cfg, key, None)) is not int for key in
+                       ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size'))
+                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0)
+                or not isinstance(original, bytes) or not isinstance(loaded, bytes)
+                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
+                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size, b'\xff')
+                or ram_claimed or getattr(cfg, 'missing_overlays', None)
+                or getattr(cfg, 'ram_bootstrap_profile', None) is not None):
+            return None
+        profile, reason = find_gpio_serial_profile(original)
+        self._lcd_gpio_serial_reason = reason
+        if profile is None:
+            return None
+        if (profile.get('signature') != 'source-gpio660-serial89-v1'
+                or profile.get('admission') != 'temporary-evidence-gated'
+                or tuple(profile.get(key)for key in ('width','height','access_width','port')) !=
+                   (89,64,2,0x03000660)):
+            self._lcd_gpio_serial_reason = 'source-gpio-contract-unverified'
+            return None
+        pcs = profile.get('capture_pcs', ())
+        spans = profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
+        if (not 0 < len(pcs) <= 64 or len(pcs) != len(set(pcs))
+                or any(type(pc) is not int or pc & 1 or not 0 <= pc < len(original) for pc in pcs)
+                or any(not 0 <= a < b <= min(len(original),len(loaded)) for a,b in spans)
+                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
+                       for a,b in profile['ram_intervals'])):
+            self._lcd_gpio_serial_reason = 'source-memory-owner-unverified'
+            return None
+        if ((cfg.width,cfg.height) != (89,64)
+                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
+            self._lcd_gpio_serial_reason = 'source-geometry-owner-conflict'
+            return None
+        if find_gpio_serial_profile(loaded)[0] != profile:
+            self._lcd_gpio_serial_reason = 'source-loaded-owner-mismatch'
+            return None
+        self._lcd_gpio_serial_panel = GpioSerial89Panel()
+        self._lcd_gpio_serial_reason = 'source-candidate-awaiting-complete-raster'
+        return 'experimental-gpio660-lcd='+':'.join(f'{pc:x}'for pc in pcs)
+
+    def _lcd_source_gpio_write(self, address, size, value):
+        panel = getattr(self, '_lcd_gpio_serial_panel', None)
+        if panel is None or address != 0x03000660:
+            return False
+        with self._display_lock:
+            before = panel.sequence
+            panel.write(address,size,value)
+            commit = panel.sequence != before and panel.qualified and panel.rejection is None
+            frame = panel.frame if commit else None
+        if commit:
+            self._set_display_geometry(89,64,source='runtime:source-gpio-serial89')
+            if (self.config.width,self.config.height) != (89,64):
+                self._lcd_gpio_serial_reason = 'source-geometry-owner-conflict'
+                self._lcd_gpio_serial_panel = None
+                return False
+            self._lcd_gpio_serial_owned = True
+            with self._display_lock:
+                self.framebuffer[:] = frame
+            self._lcd_protocol = 'source-gpio-serial89-provisional-optics'
+            self._lcd_gpio_serial_publishing = True
+            try:
+                self._publish_frame()
+            finally:
+                self._lcd_gpio_serial_publishing = False
+            self._lcd_gpio_serial_reason = 'complete-source-raster'
+        return self._lcd_gpio_serial_owned
+
+    def gpio_serial_snapshot(self):
+        panel = getattr(self, '_lcd_gpio_serial_panel', None)
+        return dict(source_bound=panel is not None, qualified=bool(panel and panel.qualified),
+            reason=getattr(self,'_lcd_gpio_serial_reason',None),
+            rejection=panel.rejection if panel else None, coverage=panel.coverage if panel else 0,
+            sequence=panel.sequence if panel else 0, source_raster=[89,64], optical_properties=None)
+
     def secondary_display_snapshot(self) -> dict[str, object] | None:
         panel = getattr(self, "_lcd_secondary_panel", None)
         if panel is None:
@@ -360,6 +449,9 @@ class DisplayControllerMixin:
             return
         if (getattr(self, '_lcd_mux_page_owned', False)
                 and source != 'runtime:source-mux-page96'):
+            return
+        if (getattr(self, '_lcd_gpio_serial_owned', False)
+                and source != 'runtime:source-gpio-serial89'):
             return
         current_source = getattr(self.config, "display_geometry_source",
                                  "external-config")
@@ -786,7 +878,7 @@ class DisplayControllerMixin:
             return
         if any(getattr(self, name, None) is not None for name in (
                 "_lcd_source_window_panel", "_lcd_packed_cursor12_panel",
-                "_lcd_mux_page_panel",
+                "_lcd_mux_page_panel", "_lcd_gpio_serial_panel",
                 "_lcd_packed2_panel", "_lcd_split18_panel", "_lcd_split565_panel",
                 "_lcd_fa_direct_panel", "_lcd_indexed_byte_panel",
                 "_lcd_segmented_panel", "_lcd_cursor_panel", "_lcd_packed12_panel",
@@ -858,6 +950,8 @@ class DisplayControllerMixin:
         if self._lcd_source_window_write(address, size, value):
             return
         if self._lcd_source_mux_write(address, size, value):
+            return
+        if self._lcd_source_gpio_write(address, size, value):
             return
         self._lcd_observe_shifted_orientation(address, size, value)
         self._lcd_packed_window_observe(address, size, value)
