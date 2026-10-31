@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import threading
 import unittest
 
-from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.detection.display import detect_lcd_width_hint
 from msm5xxx_emulator.detection.display import (find_dual_page_ports,
                                               find_paired_display_state_ports,
@@ -204,7 +204,7 @@ class LCDGeometryTests(unittest.TestCase):
             def __iter__(self):
                 raise AssertionError("same geometry must not scan framebuffer")
 
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator = QemuDecoder.__new__(QemuDecoder)
         emulator.config = SimpleNamespace(width=128, height=160)
         emulator.framebuffer = UnscannableFramebuffer()
         emulator._set_display_geometry(128, 160, source="runtime:test")
@@ -222,7 +222,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual((emulator.config.width, emulator.config.height), (128, 160))
 
     def test_pixel_writes_exact_rgb565_channels_without_touching_neighbours(self) -> None:
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator = QemuDecoder.__new__(QemuDecoder)
         emulator.config = SimpleNamespace(width=2, height=1)
         emulator.framebuffer = bytearray(b"\xaa" * 6)
 
@@ -233,22 +233,22 @@ class LCDGeometryTests(unittest.TestCase):
 
     def test_full_zero_based_gram_window_proves_128_by_160(self) -> None:
         self.assertEqual(
-            GenericMSMEmulator._lcd_full_window_geometry([0, 127], [0, 159]),
+            QemuDecoder._lcd_full_window_geometry([0, 127], [0, 159]),
             (128, 160),
         )
 
     def test_partial_or_offset_window_does_not_change_panel_geometry(self) -> None:
         self.assertIsNone(
-            GenericMSMEmulator._lcd_full_window_geometry([2, 127], [0, 159])
+            QemuDecoder._lcd_full_window_geometry([2, 127], [0, 159])
         )
         self.assertIsNone(
-            GenericMSMEmulator._lcd_full_window_geometry([0, 31], [0, 159])
+            QemuDecoder._lcd_full_window_geometry([0, 31], [0, 159])
         )
 
     def _blank_emulator(self, visible: bool, width: int = 176,
                         height: int = 220, model: str = "",
-                        geometry_source: str | None = None) -> GenericMSMEmulator:
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+                        geometry_source: str | None = None) -> QemuDecoder:
+        emulator = QemuDecoder.__new__(QemuDecoder)
         emulator.config = SimpleNamespace(
             width=width, height=height, model=model,
             display_geometry_source=(geometry_source if geometry_source is not None
@@ -344,7 +344,7 @@ class LCDGeometryTests(unittest.TestCase):
         return emulator
 
     def _routing_emulator(self, *, width: int = 128,
-                          height: int = 128) -> GenericMSMEmulator:
+                          height: int = 128) -> QemuDecoder:
         emulator = self._blank_emulator(False, width, height)
         emulator.lcd_writes = 0
         emulator.lcd_port_writes = Counter()
@@ -444,19 +444,19 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual((near_miss.config.width, near_miss.config.height), (176, 220))
 
     @staticmethod
-    def _write_split_port_word(emulator: GenericMSMEmulator,
+    def _write_split_port_word(emulator: QemuDecoder,
                                address: int, value: int) -> None:
         for lane in (value >> 8, value & 0xFF):
             emulator._lcd_write(None, 0, address, 2, lane, None)
 
-    def _start_split_port_frame(self, emulator: GenericMSMEmulator) -> None:
+    def _start_split_port_frame(self, emulator: QemuDecoder) -> None:
         for command, argument in ((0x16, 0x7F00), (0x17, 0x7F00),
                                   (0x21, 0x0000)):
             self._write_split_port_word(emulator, 0x02000000, command)
             self._write_split_port_word(emulator, 0x02200000, argument)
         self._write_split_port_word(emulator, 0x02000000, 0x22)
 
-    def _start_split_port_init_frame(self, emulator: GenericMSMEmulator) -> None:
+    def _start_split_port_init_frame(self, emulator: QemuDecoder) -> None:
         for command, argument in ((0x16, 0x7F00), (0x17, 0x7F00),
                                   (0x20, 0x0000), (0x21, 0x0000)):
             self._write_split_port_word(emulator, 0x02000000, command)
@@ -517,7 +517,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.frame_sequence, 7)
 
     @staticmethod
-    def _write_028_split16_packet(emulator: GenericMSMEmulator,
+    def _write_028_split16_packet(emulator: QemuDecoder,
                                   command: int, value: int,
                                   high_lane_low: int = 0) -> None:
         high = ((value & 0xF800) | ((value & 0x07FF) >> 1)
@@ -825,7 +825,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.display_frame[:6], bytes((255, 0, 0, 0, 255, 0)))
 
     @staticmethod
-    def _write_byte_row_packet(emulator: GenericMSMEmulator,
+    def _write_byte_row_packet(emulator: QemuDecoder,
                                command: int, word: int) -> None:
         for address, value in ((0x02000000, 0), (0x02000000, command),
                                (0x02000002, word >> 8),
@@ -1014,9 +1014,9 @@ class LCDGeometryTests(unittest.TestCase):
         ))
 
     def test_page_lcd_layout_separates_two_planes_from_physical_width(self) -> None:
-        self.assertEqual(GenericMSMEmulator._lcd_page_layout(256, 128), (128, 2))
-        self.assertEqual(GenericMSMEmulator._lcd_page_layout(128, 128), (128, 1))
-        self.assertEqual(GenericMSMEmulator._lcd_page_layout(256, None), (256, 1))
+        self.assertEqual(QemuDecoder._lcd_page_layout(256, 128), (128, 2))
+        self.assertEqual(QemuDecoder._lcd_page_layout(128, 128), (128, 1))
+        self.assertEqual(QemuDecoder._lcd_page_layout(256, None), (256, 1))
 
     def test_page_descriptor_width_requires_consistent_plane_extent(self) -> None:
         image = bytearray(snippet("test_lcd_geometry", "page_initializer"))
@@ -1248,7 +1248,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator._lcd_028_direct_probe, [])
 
     def test_028_be_word_packets_require_initializer_and_stream_22(self) -> None:
-        def packet(target: GenericMSMEmulator, command: int, data: int) -> None:
+        def packet(target: QemuDecoder, command: int, data: int) -> None:
             for address, value in (
                     (0x02800000, command >> 8),
                     (0x02800000, command & 0xFF),
@@ -1279,7 +1279,7 @@ class LCDGeometryTests(unittest.TestCase):
     def test_028_byte_rgb332_requires_complete_full_window(self) -> None:
         emulator = self._routing_emulator(width=176, height=220)
 
-        def frame(target: GenericMSMEmulator, x1: int, payload: bytes) -> None:
+        def frame(target: QemuDecoder, x1: int, payload: bytes) -> None:
             for address, value in ((0x02800000, 0x75), (0x02800004, 0),
                                    (0x02800004, 159), (0x02800000, 0x15),
                                    (0x02800004, 0), (0x02800004, x1),
@@ -1363,7 +1363,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertFalse(emulator._lcd_028_rgb332_column_major)
 
     def test_qualified_packed_21_cursor_keeps_xy(self) -> None:
-        def write(emulator: GenericMSMEmulator, command: int, value: int) -> None:
+        def write(emulator: QemuDecoder, command: int, value: int) -> None:
             emulator._lcd_write(None, 0, 0x02000000, 2, command, None)
             emulator._lcd_write(None, 0, 0x02000002, 2, value, None)
 
@@ -1537,7 +1537,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(other_port._lcd_lowbyte_page_stage, "")
 
     def test_byte_020_page_scan_requires_zero_column_byte_grammar(self) -> None:
-        def page_scan(emulator: GenericMSMEmulator, size: int,
+        def page_scan(emulator: QemuDecoder, size: int,
                       column_high: int = 0x10, include_low: bool = True) -> None:
             for page in range(16):
                 commands = (0xB0 + page, column_high)
@@ -1609,7 +1609,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator._lcd_raw_frames[port], 1)
 
     def test_paired_fifo_rgb565_requires_every_word_pair(self) -> None:
-        def write_pair(target: GenericMSMEmulator, pixel: int) -> None:
+        def write_pair(target: QemuDecoder, pixel: int) -> None:
             target._capture_raw_lcd_stream(
                 0x02000080, 2, (pixel & 0xF800) | ((pixel & 0x07FF) >> 1)
             )
@@ -1648,7 +1648,7 @@ class LCDGeometryTests(unittest.TestCase):
     def test_shifted_pair_fifo_rgb565_requires_full_relation(self) -> None:
         pixels = 176 * 220
 
-        def write_pair(target: GenericMSMEmulator, address: int,
+        def write_pair(target: QemuDecoder, address: int,
                        pixel: int) -> None:
             target._capture_raw_lcd_stream(
                 address, 2,
@@ -1790,7 +1790,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.display_frame[:3], b"\0\0\xff")
 
     def test_020_raw_120x160_requires_full_word_terminator(self) -> None:
-        def write_frame(target: GenericMSMEmulator, pixel: int) -> None:
+        def write_frame(target: QemuDecoder, pixel: int) -> None:
             for _ in range(120 * 160):
                 target._lcd_write(None, 0, 0x02000002, 2, pixel, None)
             target._lcd_write(None, 0, 0x02000000, 2, 0x1002, None)
@@ -1813,7 +1813,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(near_miss.frame_sequence, 7)
 
     def test_packed_fifo_rgb666_requires_two_bit_first_word(self) -> None:
-        def write_pair(target: GenericMSMEmulator, pixel: int) -> None:
+        def write_pair(target: QemuDecoder, pixel: int) -> None:
             target._capture_raw_lcd_stream(0x02000080, 2, pixel >> 16)
             target._capture_raw_lcd_stream(0x02000080, 2, pixel & 0xFFFF)
 
@@ -1844,7 +1844,7 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(near_miss._lcd_frame_protocol, "raw-fifo@0x02000080")
 
     @staticmethod
-    def _write_window_raw8_separate(emulator: GenericMSMEmulator,
+    def _write_window_raw8_separate(emulator: QemuDecoder,
                                     x0: int, x1: int, y0: int, y1: int,
                                     payload: bytes) -> None:
         for command, values in ((0x07, (x0, x1)), (0x06, (y0, y1)),

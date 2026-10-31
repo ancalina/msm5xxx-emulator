@@ -30,7 +30,7 @@ class AndroidRuntimeCacheTests(unittest.TestCase):
                      tree / 'qemu-10.2.1-android-host.patch', tree / 'msm5xxx-poc.c',
                      assets / 'os.py']
             files += [jni / name for name in ('libqemu-system-arm.so', 'libglib-2.0.so',
-                      'libintl.so', 'libpython3.14.so', 'libunicorn.so', 'libc++_shared.so')]
+                      'libintl.so', 'libpython3.14.so', 'libc++_shared.so')]
             files += [tools / name for name in ('aarch64-linux-android28-clang',
                       'aarch64-linux-android28-clang++', 'clang', 'llvm-strip', 'llvm-readelf')]
             for p in files:

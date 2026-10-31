@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from msm5xxx_emulator.core.emulator import GenericMSMEmulator
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.arm import thumb_bl_target
 from msm5xxx_emulator.detection.rex import (
@@ -17,8 +16,6 @@ from msm5xxx_emulator.detection.rex import (
     find_rex_static_controller_callback_candidate,
     find_rex_static_overlay_controller_callback_candidate,
 )
-from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
-from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_SP
 from corpus import FIRMWARE_ROOT, firmware_path
 
 RAM_5000 = {"ram_base": 0x01000000, "ram_size": 0x00800000}
@@ -319,49 +316,6 @@ class StaticControllerCandidateTests(unittest.TestCase):
             (far_source, target, size, wrapper),
         )
 
-    def test_620_pending_reads_consume_only_addressed_bank(self) -> None:
-        status, enable = 0x03000620, 0x03000628
-        route = {
-            "signature":
-                "experimental-static-msm5000-620-controller-route-v1",
-            "controller_class":
-                "legacy-msm5000-620-two-bank-read-consume-v1",
-            "status": status,
-            "enable": enable,
-            "status_banks": (status, status + 4),
-            "mask_set_banks": (status, status + 4),
-            "mask_output_banks": (enable, enable + 4),
-            "controller_aperture": (status, enable + 8),
-            "status_bank_count": 2,
-            "group_row_size": 12,
-            "pending_read_semantics": "consume-on-read",
-        }
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.config = SimpleNamespace(rex_irq_status_address=status)
-        emulator.direct_input_profile = None
-        emulator._rex_candidate_route = route
-        emulator._rex_irq_pending = [0x0200, 0x0040]
-        emulator.rex_controller_pending_acks = 0
-        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
-        uc.mem_map(0x03000000, 0x10000)
-
-        emulator._rex_irq_status_write(
-            uc, 0, status, 2, 0xFFFF, None
-        )
-        self.assertEqual(emulator._rex_irq_pending, [0x0200, 0x0040])
-        emulator._rex_irq_status_read(uc, 0, enable, 2, 0, None)
-        self.assertEqual(emulator._rex_irq_pending, [0x0200, 0x0040])
-        emulator._rex_irq_status_read(uc, 0, status, 2, 0, None)
-        self.assertEqual(
-            struct.unpack("<H", uc.mem_read(status, 2))[0], 0x0200
-        )
-        self.assertEqual(emulator._rex_irq_pending, [0, 0x0040])
-        emulator._rex_irq_status_read(uc, 0, status + 4, 2, 0, None)
-        self.assertEqual(
-            struct.unpack("<H", uc.mem_read(status + 4, 2))[0], 0x0040
-        )
-        self.assertEqual(emulator._rex_irq_pending, [0, 0])
-        self.assertEqual(emulator.rex_controller_pending_acks, 2)
 
     def test_620_two_peer_exact_class_is_temporary_evidence_gated(self) -> None:
         root = firmware_path()
@@ -894,95 +848,3 @@ class StaticControllerCandidateTests(unittest.TestCase):
                         config.rex_irq_arm_address,
                         config.rex_irq_mask,
                     ), (None, None, None, None, None, None, None, 0))
-
-    def test_runtime_gate_waits_for_installed_route_then_activates(self) -> None:
-        image, offsets = _candidate_image()
-        candidate = find_rex_static_controller_callback_candidate(
-            image, **RAM_5000
-        )
-        assert candidate is not None and candidate["accepted"]
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.config = SimpleNamespace(
-            rex_static_controller_candidate=candidate,
-            rex_static_controller_experimental=False,
-            ram_base=0x01000000, ram_size=0x10000,
-            load_address=0, flash_size=0x2000, overlays=(), linker=None,
-            rex_tick_address=None, rex_irq_wrapper_address=None,
-            rex_irq_handler_address=None, rex_irq_handler_slot=None,
-            rex_irq_callback_slot=None, rex_irq_status_address=None,
-            rex_irq_enable_address=None, rex_irq_arm_address=None,
-            rex_irq_mask=0, rex_tick_ms=1000,
-        )
-        emulator.original_image = bytes(image) + b"\xff" * (0x2000 - len(image))
-        emulator.direct_input_profile = None
-        emulator.instructions = 10
-        emulator._rex_candidate_route = None
-        emulator._rex_candidate_shadow_hooks = []
-        emulator._rex_candidate_gate_terminal = False
-        emulator._rex_candidate_gate_next_instruction = 0
-        emulator._rex_irq_controller_aperture = None
-        emulator._rex_irq_pending = [0, 0]
-        emulator.rex_controller_gate_attempts = 0
-        emulator.rex_controller_gate_accepts = 0
-        emulator.rex_controller_gate_reason = None
-        emulator.rex_controller_activation_instruction = None
-        emulator.rex_controller_pending_assertions = 0
-        emulator.rex_controller_pending_acks = 0
-
-        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
-        uc.mem_map(0, 0x2000)
-        uc.mem_write(0, emulator.original_image)
-        uc.mem_map(0x01000000, 0x10000)
-        uc.mem_map(0x03000000, 0x10000)
-        displacement = (offsets["wrapper"] - 0x01000000 - 8) >> 2
-        uc.mem_write(
-            0x01000000,
-            struct.pack("<I", 0xEA000000 | displacement & 0x00FFFFFF),
-        )
-        uc.mem_write(
-            offsets["handler_slot"],
-            struct.pack("<I", offsets["handler"] | 1),
-        )
-        old = 0xD3
-        uc.reg_write(UC_ARM_REG_CPSR, (old & ~0xBF) | 0x92)
-        uc.reg_write(UC_ARM_REG_SP, 0x0100F000)
-        uc.reg_write(UC_ARM_REG_CPSR, (old & ~0xBF) | 0x9F)
-        uc.reg_write(UC_ARM_REG_SP, 0x0100E000)
-        uc.reg_write(UC_ARM_REG_CPSR, old)
-
-        self.assertFalse(emulator._rex_try_static_candidate_route(uc))
-        self.assertEqual(
-            emulator.rex_controller_gate_reason,
-            "experimental-opt-in-required",
-        )
-        self.assertEqual(emulator.rex_controller_gate_attempts, 0)
-        self.assertEqual(
-            emulator._rex_controller_telemetry()["status"],
-            "experimental-disabled",
-        )
-
-        emulator.config.rex_static_controller_experimental = True
-        self.assertFalse(emulator._rex_try_static_candidate_route(uc))
-        self.assertEqual(
-            emulator.rex_controller_gate_reason,
-            "runtime-callback-not-installed",
-        )
-        self.assertIsNone(emulator.config.rex_tick_address)
-        self.assertEqual(emulator._rex_candidate_shadow_hooks, [])
-
-        uc.mem_write(
-            int(candidate["callback_slot"]),
-            struct.pack("<I", offsets["callback"] | 1),
-        )
-        emulator.instructions = emulator._rex_candidate_gate_next_instruction
-        self.assertTrue(emulator._rex_try_static_candidate_route(uc))
-        self.assertFalse(candidate["active"])
-        self.assertEqual(emulator.rex_controller_gate_attempts, 2)
-        self.assertEqual(emulator.rex_controller_gate_accepts, 1)
-        self.assertEqual(
-            emulator.config.rex_tick_address, offsets["callback"]
-        )
-        self.assertEqual(len(emulator._rex_candidate_shadow_hooks), 2)
-        self.assertEqual(
-            emulator._rex_controller_telemetry()["status"], "active"
-        )

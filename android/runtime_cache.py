@@ -58,12 +58,12 @@ def dependencies():
             if '__pycache__' in p.parts or p.suffix == '.pyc':
                 continue
             files[str(p.relative_to(GENERATED))] = digest(p)
-    for name in ('libpython3.14.so', 'libunicorn.so', 'libc++_shared.so'):
+    for name in ('libpython3.14.so', 'libc++_shared.so'):
         p = GENERATED / 'jniLibs/arm64-v8a' / name
         files[str(p.relative_to(GENERATED))] = digest(p)
     if not files:
         raise RuntimeError('prepared dependency assets missing')
-    return files
+    return {"schema": 2, "files": files}
 
 
 def main(action):

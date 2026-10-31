@@ -1,7 +1,7 @@
 # Experimental QEMU TCG backend
 
-Status: developer preview. Unicorn remains the behavioral oracle; root
-launchers use QEMU.
+Status: developer preview. All guest execution uses QEMU; root launchers
+open the QEMU live display.
 
 ## Boundary
 
@@ -18,14 +18,14 @@ The prototype currently provides:
 - native IRQ, SBI/DC0, LCD, ready-poll, matrix, exact-site MA2 command bus,
   REX timer,
   Fujitsu x16 NOR, and GPIO 24LC256 boundaries;
-- persistent raw NOR/EEPROM images separated from Unicorn state;
+- persistent raw NOR/EEPROM images scoped by firmware SHA-256;
 - a batched full-duplex LCD/input transport;
 - native fallback or rejection when a detector cannot close a protocol class.
 
 The MA2 path currently models the indexed command bus, physical FIFOs,
 virtual-time compact sequencer, channel assignment, controls, and exact
-voice-record decode. It does not yet synthesize native FM/ADPCM PCM; playback
-remains approximate until the chip renderer and PCM transport are proven.
+voice-record decode. Audio output uses the native chip renderer and PCM transport; renderer
+coverage remains experimental.
 
 No detector uses a firmware filename or model-name branch. Device properties
 come from firmware signatures, call shapes, consumers, and runtime readback.

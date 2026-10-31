@@ -19,7 +19,7 @@ def chunks():
         (0x372074,snippet("test_c80_group10", "interrupt_enable_chunk")),
         (0x37208c,snippet("test_c80_group10", "interrupt_disable_chunk")),
         (0x37272c,snippet("test_c80_group10", "interrupt_vector_chunk")),
-        (0x372730,bytes.fromhex('10471847204728473047384778470000000050e31eff2f11600200ea78470000020090e00310a1e01eff2fe178470000020090e0c21fa1e01eff2fe178470000')),
+        (0x372730,snippet("test_c80_group10", "interrupt_veneer_chunk")),
         (0x5c757c,bytes.fromhex('a1c7cdea')),
         (0x5cb210,snippet("test_c80_group10", "group_descriptor_table")),
         (0x13545c,bytes.fromhex('49521300')),

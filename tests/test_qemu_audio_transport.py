@@ -594,7 +594,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
             decoder = Mock()
             exec(compile(setup, str(TRANSPORT_SOURCE), "exec"),
                  {"self": SimpleNamespace(config=config), "QemuDecoder": decoder})
-            expected = {"approximate_audio": False}
+            expected = {}
             if profile is not None:
                 expected["native_nand"] = True
             decoder.assert_called_once_with(config, **expected)
@@ -934,10 +934,6 @@ class QEMUAudioTransportTests(unittest.TestCase):
         decoder = SimpleNamespace(
             _lcd_page_flush_current=lambda: None,
             _flush_indexed_frame=lambda: None,
-            _flush_audio_transport_renderer=lambda: self.fail(
-                "native audio must not call Python renderer"
-            ),
-            audio_player=SimpleNamespace(close=lambda: closed.append(True)),
         )
         transport = self.native_transport()
         transport.decoder = decoder
@@ -952,8 +948,6 @@ class QEMUAudioTransportTests(unittest.TestCase):
         transport._replay_record(telemetry)
         self.assertTrue(transport.audio_native)
         self.assertEqual(transport.audio_stream_status, "native")
-        self.assertEqual(closed, [True])
-        self.assertIsNone(decoder.audio_player)
         pcm_telemetry = bytearray(16)
         pcm_telemetry[0] = AUDIO_PCM_TELEMETRY
         struct.pack_into("<III", pcm_telemetry, 4, 441, 882, 3)
@@ -1063,14 +1057,10 @@ class QEMUAudioTransportTests(unittest.TestCase):
         native = status(AUDIO_STATUS_NATIVE)
         reset = status(AUDIO_STATUS_RESET, 7, 1)
         transport = desktop()
-        player = Mock()
-        transport.decoder.audio_player = player
         transport._replay_record(native)
         self.assertEqual(transport.audio_stream_status, "native")
         self.assertIsNone(transport.audio_stream_reject_reason)
         self.assertTrue(transport.audio_native)
-        player.close.assert_called_once_with()
-        self.assertIsNone(transport.decoder.audio_player)
 
         transport.audio_pcm_underflow_frames = 441
         transport._replay_record(status(AUDIO_STATUS_REJECTED))

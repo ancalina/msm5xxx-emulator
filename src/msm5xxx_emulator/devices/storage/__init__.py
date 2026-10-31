@@ -1,4 +1,4 @@
-"""Persistent storage devices and firmware-facing hooks."""
+"""CPU-free persistent storage devices."""
 
 from .eeprom import EepromMixin
 from .nand import NandMixin

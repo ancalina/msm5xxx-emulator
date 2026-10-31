@@ -14,6 +14,8 @@ QEMU TCG 기반 Qualcomm MSM5000/MSM5100/MSM5500 피처폰 실험용
 
 펌웨어와 저장 state는 포함되지 않습니다.
 
+설치 후 Desktop 명령은 `msm5xxx-qemu` (QEMU live display)입니다.
+
 ## 실행
 
 인자 없이 launcher를 실행하면 펌웨어 선택창이 뜹니다.

@@ -1,63 +1,24 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ..core.emulator import GenericMSMEmulator
-
-import argparse
-import hashlib
-import json
-import locale
 import logging
-import os
 from pathlib import Path
 import queue
-import shutil
-import signal
 import subprocess
-import sys
 import threading
-import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import ImageTk
 
-from ..tools.boot_probe import boot_event, boot_phase, visible_pixels
-from ..core.constants import (BUILD_CODENAME, MAX_NAND_BACKING_SIZE,
-                              MAX_NAND_DATA_SIZE, MAX_RAM_SIZE, PAGE)
-from ..core.errors import HostBackendFault
-from ..detection.firmware import (DEFAULT_STATE_ROOT, DISABLEABLE_ADDRESS_FIELDS,
-                                  MAX_FLASH_SIZE, detect)
-from ..state_io import atomic_write_text, exclusive_path_lock
-from ..runtime_log import install_runtime_logging, record_exception
-from .controls import (
-    ControlsMixin, LAYOUT, METRIC_TEXT,
-    SETTINGS_ENGLISH, can_apply_live_framebuffer_format,
-    merge_settings_overrides, settings_apply_mode,
-)
+from ..core.constants import BUILD_CODENAME
+from ..detection.firmware import DEFAULT_STATE_ROOT
 from ..update import (UpdateError, UpdateInfo, application_root, check_for_update,
                       inplace_update_command, installation_status, prepare_update,
                       remember_update)
-from .display_view import DisplayViewMixin, frame_repaint_needed
-from .worker import WorkerMixin
-from .locale import (
-    UI_LANGUAGE_CHOICES, UI_TEXT, display_model_name, normalize_ui_language,
-    resolve_ui_language, runtime_notice_text, runtime_status_text,
-    system_ui_language,
-)
-from .repro import (create_repro_bundle, finish_repro_bundle,
-                    firmware_telemetry)
-from .telemetry import (
-    TELEMETRY_INSTRUCTION_CADENCE, TELEMETRY_POLL_ESCAPE_CAP,
-    TELEMETRY_SCREENSHOT_CADENCE, TELEMETRY_SCREENSHOT_CAP,
-    _compact_telemetry, _counter, _frame_metrics, _host_hle_telemetry,
-    _mapping, _nonnegative_counter, _phase_state, emit_telemetry,
-    hydrate_host_checkpoint, runtime_telemetry, save_telemetry_frame,
-    telemetry_artifact_due, telemetry_transition,
-)
+from .controls import ControlsMixin, LAYOUT, METRIC_TEXT
+from .display_view import DisplayViewMixin
+from .locale import resolve_ui_language
 
 
 LOGGER = logging.getLogger("gui")
@@ -79,7 +40,7 @@ def choose_firmware() -> Path | None:
     return Path(chosen) if chosen else None
 
 
-class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
+class Window(ControlsMixin, DisplayViewMixin):
     def __init__(self, root: tk.Tk, firmware: Path, *,
                  experimental_c80_controller: bool = False) -> None:
         LOGGER.info("window create firmware=%s build=%s", firmware.name, BUILD_CODENAME)
@@ -91,7 +52,7 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
         self.overrides = self._load_config()
         if experimental_c80_controller:
             self.overrides["rex_static_controller_experimental"] = True
-        self.emulator: GenericMSMEmulator | None = None
+        self.emulator: object | None = None
         self.worker: threading.Thread | None = None
         self.stop = threading.Event()
         self.generation = 0
@@ -281,12 +242,21 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
 
         threading.Thread(target=download, daemon=True).start()
 
+    def _update_launch_args(self) -> tuple[str, ...]:
+        args = ["--qemu", str(self.qemu)]
+        if self.state_dir is not None:
+            args.extend(("--state-dir", str(self.state_dir)))
+        if self.experimental_c80:
+            args.append("--experimental-c80-controller")
+        return tuple(args)
+
     def _launch_update(self, prepared: Path, update: UpdateInfo,
                        discard_modified: bool) -> None:
         try:
             root = application_root()
             command = inplace_update_command(
-                prepared, root, STATE_ROOT, self.firmware, update, discard_modified
+                prepared, root, STATE_ROOT, self.firmware, update, discard_modified,
+                launch_args=self._update_launch_args(),
             )
         except UpdateError as error:
             self.status.set(f"업데이트 준비 실패: {error}")
@@ -319,47 +289,9 @@ class Window(ControlsMixin, DisplayViewMixin, WorkerMixin):
 
 
 def main() -> int:
-    session_log = install_runtime_logging("gui")
-    parser = argparse.ArgumentParser()
-    parser.add_argument("firmware", nargs="?", type=Path)
-    parser.add_argument(
-        "--experimental-c80-controller",
-        action="store_true",
-        help="enable the single-witness experimental C80 timer/IRQ profile",
-    )
-    args = parser.parse_args()
-    firmware = args.firmware
-    if firmware is None:
-        firmware = choose_firmware()
-        if firmware is None:
-            LOGGER.info("firmware selection cancelled log=%s", session_log)
-            return 0
-    root = tk.Tk()
-
-    def callback_exception(error_type: type[BaseException], error: BaseException,
-                           trace: object) -> None:
-        error = error.with_traceback(trace)  # type: ignore[arg-type]
-        record_exception("Tk callback exception", error)
-        sys.__excepthook__(error_type, error, trace)
-
-    root.report_callback_exception = callback_exception
-    window = Window(
-        root, firmware.resolve(),
-        experimental_c80_controller=args.experimental_c80_controller,
-    )
-    LOGGER.info("GUI mainloop start firmware=%s log=%s", firmware.name, session_log.name)
-
-    def close_from_signal(_number: int, _frame: object) -> None:
-        LOGGER.info("signal received number=%d", _number)
-        root.after_idle(window._close)
-
-    signal.signal(signal.SIGINT, close_from_signal)
-    signal.signal(signal.SIGTERM, close_from_signal)
-    try:
-        root.mainloop()
-    finally:
-        window._close()
-    return 0
+    """Compatibility module entry point for the QEMU desktop application."""
+    from ..qemu.live_display import main as qemu_main
+    return qemu_main()
 
 
 if __name__ == "__main__":

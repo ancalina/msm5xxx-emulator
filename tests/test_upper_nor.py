@@ -14,8 +14,7 @@ from msm5xxx_emulator.detection.upper_nor import (
     find_upper_amd_x16_nor,
     find_upper_nor,
 )
-from msm5xxx_emulator.core.emulator import GenericMSMEmulator
-from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1
+from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from corpus import FIRMWARE_ROOT
 
 
@@ -235,47 +234,22 @@ class UpperNorTests(unittest.TestCase):
                 config.flash_state = str(Path(directory) / "primary.json")
                 config.secondary_flash_state = str(Path(directory) / "secondary.json")
                 config.upper_flash_state = str(Path(directory) / "upper.json")
-                emulator = GenericMSMEmulator(config)
+                emulator = QemuDecoder(config)
                 try:
-                    self.assertEqual(emulator.uc.mem_read(0x02800000, 1), b"\xff")
-                    self.assertEqual(emulator.uc.mem_read(0x02FFFFFF, 1), b"\xff")
-                    code = config.ram_base
-                    emulator.uc.mem_write(code, bytes.fromhex("001080e51eff2fe1"))
-                    emulator.uc.reg_write(UC_ARM_REG_CPSR, 0x13)
-                    emulator.uc.reg_write(UC_ARM_REG_LR, code + 8)
-                    for port in (0x02800000, 0x02C00000, 0x02000000):
-                        emulator.uc.reg_write(UC_ARM_REG_R0, port)
-                        emulator.uc.reg_write(UC_ARM_REG_R1, 0xF0)
-                        emulator.uc.emu_start(code, code + 8, count=2)
-                    self.assertEqual(emulator.lcd_writes, 1)
-                    base, flash = emulator.upper_base, emulator.upper_flash
-                    assert base is not None and flash is not None
-                    for address, value in ((base + 0xAAA, 0xAA),
-                                           (base + 0x554, 0x55),
-                                           (base + 0xAAA, 0xA0),
-                                           (base + 0x10, 0x5A)):
-                        emulator._flash_write(emulator.uc, 0, address, 1, value,
-                                              (base, flash))
-                    emulator._restore_flash_once(emulator.uc, 0, 0, None)
-                    self.assertEqual(emulator.uc.mem_read(base + 0x10, 1), b"Z")
-                    self.assertEqual(emulator.lcd_writes, 1)
-                    vector = bytes(emulator.uc.mem_read(config.load_address, 4))
-                    emulator.uc.reg_write(UC_ARM_REG_CPSR, 0xD3)
-                    emulator.uc.emu_start(config.load_address, 0, count=1)
-                    self.assertEqual(emulator.uc.mem_read(base + 0x10, 1), b"Z")
-                    self.assertEqual(
-                        emulator.uc.mem_read(config.load_address, 4), vector
-                    )
+                    self.assertEqual(emulator.initial_memory.read(0x02800000, 1), b"\xff")
+                    self.assertEqual(emulator.initial_memory.read(0x02FFFFFF, 1), b"\xff")
+                    self.assertIsNotNone(emulator.upper_flash)
+                    emulator.upper_flash.program(0x10, b"Z")
                 finally:
                     emulator.close()
-                warm = GenericMSMEmulator(config)
+                warm = QemuDecoder(config)
                 try:
-                    self.assertEqual(warm.uc.mem_read(0x02800010, 1), b"Z")
+                    self.assertEqual(warm.initial_memory.read(0x02800010, 1), b"Z")
                 finally:
                     warm.close()
                 config.upper_flash_state = config.flash_state
                 with self.assertRaisesRegex(ValueError, "path collides"):
-                    GenericMSMEmulator(config)
+                    QemuDecoder(config)
 
 
 if __name__ == "__main__":

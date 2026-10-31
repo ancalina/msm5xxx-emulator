@@ -24,10 +24,8 @@ def probe():
     from msm5xxx_emulator.qemu.transport import Transport
     from msm5xxx_emulator.qemu.decoder import QemuDecoder
     from msm5xxx_emulator.detection.firmware import detect
-    from msm5xxx_emulator.audio.player import ApproximateSmafPlayer
 
     return _json({
-        "audio_renderer": callable(ApproximateSmafPlayer),
         "detector_entry": callable(detect),
         "gdb_remote": callable(getattr(Remote, "command", None)),
         "numpy": numpy.__version__,

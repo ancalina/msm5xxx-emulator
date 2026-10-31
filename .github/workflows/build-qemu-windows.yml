@@ -210,6 +210,8 @@ jobs:
           }
           $bundle = (Resolve-Path "dist/$env:BUNDLE_NAME").Path
           $env:PYTHONPATH = "$bundle/src"
+          python -c "import importlib, pkgutil, msm5xxx_emulator; [importlib.import_module(m.name) for m in pkgutil.walk_packages(msm5xxx_emulator.__path__, msm5xxx_emulator.__name__ + '.')]"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m msm5xxx_emulator.qemu.live_display --help | Out-Null
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

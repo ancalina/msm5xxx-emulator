@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import unittest
 from corpus import snippet
 from unittest import mock
-from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
 
 from msm5xxx_emulator.detection.boot import (
     DMD_DOWNLOAD_5500_LITERALS,
@@ -2792,123 +2791,6 @@ class QEMUInputTransportTests(unittest.TestCase):
             (None, "fixed-helper-ambiguous"),
         )
 
-    def test_legacy_dmd_loader_patch_preserves_call_contract(self) -> None:
-        load = 0x1000
-        entry = load + 0x100
-        completion = 0x01001020
-        control = 0x03000050
-        dmd = 0x030007E0
-        filename = load + 0x600
-        image = bytearray(b"\xff" * 0x1000)
-        signature = MODULE.DMD_DOWNLOAD_SIGNATURE
-        image[0x100:0x100 + len(signature)] = signature
-        image[0x100 + 0xD4:0x100 + 0xD6] = b"\x06\x49"
-        MODULE.struct.pack_into(
-            "<4I", image, 0x100 + 0xE0,
-            completion, control, 0, dmd,
-        )
-        MODULE.struct.pack_into("<I", image, 0x100 + 0xF0, filename)
-        image[0x600:0x60C] = b"dmddown_510"
-        config = SimpleNamespace(
-            dmd_download_address=entry, load_address=load,
-            flash_size=len(image), ram_base=0x01000000, ram_size=0x2000,
-        )
-
-        result = MODULE.legacy_dmd_loader_patch(bytes(image), config)
-        self.assertIsNotNone(result)
-        offset, patch = result
-        self.assertEqual((offset, len(patch)), (0x100, 52))
-
-        uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
-        uc.mem_map(load, 0x1000)
-        uc.mem_map(0x01000000, 0x2000)
-        uc.mem_map(0x03000000, 0x1000)
-        uc.mem_write(entry, patch)
-        uc.mem_write(completion, b"\xaa\xbb\xcc\xdd")
-        uc.mem_write(control + 0x0C, b"\xaa\xbb")
-        uc.mem_write(dmd + 8, b"\xaa" * 8)
-        from unicorn import arm_const as registers
-        uc.reg_write(registers.UC_ARM_REG_CPSR, 0xA0000033)
-        uc.reg_write(registers.UC_ARM_REG_SP, 0x01001FF0)
-        uc.reg_write(registers.UC_ARM_REG_LR, 0x1201)
-        uc.reg_write(registers.UC_ARM_REG_R1, 0x11111111)
-        uc.reg_write(registers.UC_ARM_REG_R2, 0x22222222)
-        flags = uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000
-
-        uc.emu_start(entry | 1, 0, count=14)
-
-        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_PC), 0x1200)
-        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R0), 1)
-        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R1), 0x11111111)
-        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R2), 0x22222222)
-        self.assertEqual(uc.reg_read(registers.UC_ARM_REG_SP), 0x01001FF0)
-        self.assertEqual(
-            uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000, flags
-        )
-        self.assertEqual(bytes(uc.mem_read(completion, 4)),
-                         b"\x02\xbb\xcc\xdd")
-        self.assertEqual(bytes(uc.mem_read(control + 0x0C, 2)),
-                         b"\x01\xbb")
-        self.assertEqual(bytes(uc.mem_read(dmd + 8, 8)),
-                         b"\0" * 6 + b"\xaa" * 2)
-
-        image[0x600] = 0
-        self.assertIsNone(
-            MODULE.legacy_dmd_loader_patch(bytes(image), config)
-        )
-        image[0x600] = ord("d")
-        self.assertIsNone(MODULE.legacy_dmd_loader_patch(
-            bytes(image), config, 0x100 + len(patch) - 1
-        ))
-
-    def test_ma2_loader_patch_preserves_silent_boot_call_contract(self) -> None:
-        load = 0x1000
-        offset = 0x100
-        entry = load + offset
-        image = bytes(b"\xff" * 0x1000)
-        config = SimpleNamespace(
-            ma2_silent_boot_address=entry, load_address=load,
-            flash_size=len(image),
-        )
-        with mock.patch.dict(
-                MODULE.ma2_silent_boot_loader_patch.__globals__,
-                {"find_ma2_silent_boot_wait": lambda _: offset}):
-            result = MODULE.ma2_silent_boot_loader_patch(image, config)
-            self.assertIsNotNone(result)
-            patch_offset, patch = result
-            self.assertEqual((patch_offset, len(patch)), (offset, 8))
-
-            uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
-            uc.mem_map(load, 0x1000)
-            uc.mem_write(entry, patch)
-            from unicorn import arm_const as registers
-            uc.reg_write(registers.UC_ARM_REG_CPSR, 0xA0000033)
-            uc.reg_write(registers.UC_ARM_REG_SP, 0x1FF0)
-            uc.reg_write(registers.UC_ARM_REG_LR, 0x1201)
-            uc.reg_write(registers.UC_ARM_REG_R0, 0xFFFFFFFF)
-            uc.reg_write(registers.UC_ARM_REG_R1, 0x11111111)
-            uc.reg_write(registers.UC_ARM_REG_R7, 0x77777777)
-            flags = uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000
-
-            uc.emu_start(entry | 1, 0, count=2)
-
-            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_PC), 0x1200)
-            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R0), 0)
-            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R1), 0x11111111)
-            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_R7), 0x77777777)
-            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_SP), 0x1FF0)
-            self.assertEqual(uc.reg_read(registers.UC_ARM_REG_LR), 0x1201)
-            self.assertEqual(
-                uc.reg_read(registers.UC_ARM_REG_CPSR) & 0xF0000000, flags
-            )
-
-            self.assertIsNone(MODULE.ma2_silent_boot_loader_patch(
-                image, config, offset + len(patch) - 1
-            ))
-            config.ma2_silent_boot_address += 2
-            self.assertIsNone(
-                MODULE.ma2_silent_boot_loader_patch(image, config)
-            )
 
     def test_c80_route_requires_explicit_closed_candidate(self) -> None:
         status = 0x03000C80
@@ -3221,6 +3103,75 @@ class QEMUInputTransportTests(unittest.TestCase):
         del candidate["pending_ack_semantics"]
         self.assertIsNone(MODULE.w1c_rex_irq_profile(config))
 
+
+    def test_legacy_dmd_loader_patch_preserves_call_contract(self) -> None:
+        load = 0x1000
+        entry = load + 0x100
+        completion = 0x01001020
+        control = 0x03000050
+        dmd = 0x030007E0
+        filename = load + 0x600
+        image = bytearray(b"\xff" * 0x1000)
+        signature = MODULE.DMD_DOWNLOAD_SIGNATURE
+        image[0x100:0x100 + len(signature)] = signature
+        image[0x100 + 0xD4:0x100 + 0xD6] = b"\x06\x49"
+        MODULE.struct.pack_into(
+            "<4I", image, 0x100 + 0xE0,
+            completion, control, 0, dmd,
+        )
+        MODULE.struct.pack_into("<I", image, 0x100 + 0xF0, filename)
+        image[0x600:0x60C] = b"dmddown_510"
+        config = SimpleNamespace(
+            dmd_download_address=entry, load_address=load,
+            flash_size=len(image), ram_base=0x01000000, ram_size=0x2000,
+        )
+
+        result = MODULE.legacy_dmd_loader_patch(bytes(image), config)
+        self.assertIsNotNone(result)
+        offset, patch = result
+        self.assertEqual((offset, len(patch)), (0x100, 52))
+
+        # The generated Thumb stub is passed to the native loader unchanged.
+        self.assertEqual(struct.unpack_from('<6I', patch, 28),
+                         (completion, 2, control, 1, dmd, 0))
+        self.assertEqual(patch[:2], bytes.fromhex('06b4'))  # preserve r1/r2
+        self.assertEqual(patch[22:28], bytes.fromhex('06bc03487047'))
+        image[0x600] = 0
+        self.assertIsNone(
+            MODULE.legacy_dmd_loader_patch(bytes(image), config)
+        )
+        image[0x600] = ord("d")
+        self.assertIsNone(MODULE.legacy_dmd_loader_patch(
+            bytes(image), config, 0x100 + len(patch) - 1
+        ))
+
+    def test_ma2_loader_patch_preserves_silent_boot_call_contract(self) -> None:
+        load = 0x1000
+        offset = 0x100
+        entry = load + offset
+        image = bytes(b"\xff" * 0x1000)
+        config = SimpleNamespace(
+            ma2_silent_boot_address=entry, load_address=load,
+            flash_size=len(image),
+        )
+        with mock.patch.dict(
+                MODULE.ma2_silent_boot_loader_patch.__globals__,
+                {"find_ma2_silent_boot_wait": lambda _: offset}):
+            result = MODULE.ma2_silent_boot_loader_patch(image, config)
+            self.assertIsNotNone(result)
+            patch_offset, patch = result
+            self.assertEqual((patch_offset, len(patch)), (offset, 8))
+
+            self.assertEqual(patch[:2], bytes.fromhex('0048'))  # load return value
+            self.assertEqual(patch[2:4], bytes.fromhex('7047'))
+            self.assertEqual(patch[4:], bytes(4))
+            self.assertIsNone(MODULE.ma2_silent_boot_loader_patch(
+                image, config, offset + len(patch) - 1
+            ))
+            config.ma2_silent_boot_address += 2
+            self.assertIsNone(
+                MODULE.ma2_silent_boot_loader_patch(image, config)
+            )
 
 class RAMBootstrapTransportTests(unittest.TestCase):
     def test_reserved_ram_requires_same_image_layout_and_safe_stack(self):

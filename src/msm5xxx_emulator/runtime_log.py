@@ -28,9 +28,8 @@ _PATH_KEYS = frozenset({"argv", "cwd", "path", "paths", "session"})
 _ABSOLUTE_PATH_TOKEN = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|/)[^\s'\"<>]+")
 _SOURCE_ROOT = Path(__file__).resolve().parent
 _SOURCE_FILES = (
-    ("msm5xxx.py", Path("cli.py")),
+    ("msm5xxx-qemu", Path("qemu/live_display.py")),
     ("gui.py", Path("gui/app.py")),
-    ("boot_probe.py", Path("tools/boot_probe.py")),
     ("runtime_log.py", Path("runtime_log.py")),
 )
 
@@ -86,7 +85,6 @@ def _runtime_metadata() -> dict[str, object]:
         "python": platform.python_version(),
         "platform": platform.platform(),
         "packages": {
-            "unicorn": _package_version("unicorn"),
             "Pillow": _package_version("Pillow"),
         },
         "source": _source_identity(),
@@ -160,14 +158,7 @@ def _stamp() -> str:
 
 
 def _native_fault_logging_enabled() -> bool:
-    """Return whether raw native fault traces are safe and requested.
-
-    Unicorn's Windows backend uses recoverable structured exceptions for some
-    memory-management paths. CPython's faulthandler writes those first-chance
-    events as if they were fatal, even though emulation and the process carry
-    on normally. Preserve the useful native tracing default on POSIX, while
-    making Windows capture an explicit diagnostic opt-in.
-    """
+    """Enable native traces on POSIX; allow explicit Windows diagnostics."""
     if sys.platform != "win32":
         return True
     return os.environ.get("MSM5XXX_NATIVE_FAULT_LOG", "").strip().lower() in {

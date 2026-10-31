@@ -1,10 +1,5 @@
 # Third-party notices
 
-- Unicorn Engine (`unicorn==2.1.4`) is GPLv2. It supplies the native CPU
-  engine used by legacy/offline analysis; current guest execution uses QEMU.
-  A combined distribution must use this
-  project's GPLv2 option. Its LGPL-2.0 public API license text is also
-  included with the Android package.
 - QEMU 10.2.1 is distributed under GPLv2. The Android and desktop preview
   packages use a patched QEMU system emulator. QEMU components under
   LGPL-2.1 include their license text.
@@ -20,15 +15,8 @@
   license. CPython's bundled third-party license notices are included.
 - Pillow (`Pillow>=10,<13`) uses the MIT-CMU License.
 - NumPy (`numpy>=1.26,<3`) uses the BSD 3-Clause License.
-- `src/msm5xxx_emulator/audio/gm.sf2` is TimGM6mb, copyright 2004 Tim
-  Brechbill and 2010 David Bolton, distributed under GPL-2.0-only. The
-  unmodified file comes from Debian source package `timgm6mb-soundfont`
-  1.3-5:
-  <https://sources.debian.org/src/timgm6mb-soundfont/1.3-5/>
-  SHA-256:
-  `c5378b62028c920cb11e4803327983fee2f2cdff5dc89c708e39da417e51c854`.
 
 Desktop Python dependencies are installed by the launcher. Native release
 bundles include their license texts and companion source assets beside the
 bundle. The Android package embeds its notices and license texts. The complete
-GPLv2 text covering this distribution and TimGM6mb is in `LICENSE`.
+GPLv2 text covering this distribution is in `LICENSE`.

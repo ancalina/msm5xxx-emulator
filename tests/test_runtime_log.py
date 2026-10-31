@@ -63,11 +63,11 @@ class NativeFaultLoggingPolicyTests(unittest.TestCase):
             self.assertEqual(document["schema"], 1)
             self.assertEqual(document["kind"], "host-backend-fault")
             self.assertEqual(document["runtime"]["packages"], {
-                "unicorn": "unicorn-version", "Pillow": "Pillow-version",
+                "Pillow": "Pillow-version",
             })
-            self.assertEqual(document["runtime"]["source"]["file"], "msm5xxx.py")
+            self.assertEqual(document["runtime"]["source"]["file"], "msm5xxx-qemu")
             self.assertEqual(set(document["runtime"]["sources"]), {
-                "msm5xxx.py", "gui.py", "boot_probe.py", "runtime_log.py",
+                "msm5xxx-qemu", "gui.py", "runtime_log.py",
                 "source-tree",
             })
             self.assertEqual(document["payload"]["firmware"]["basename"], "firmware.bin")
@@ -78,17 +78,17 @@ class NativeFaultLoggingPolicyTests(unittest.TestCase):
 
     def test_runtime_metadata_is_cached_after_first_lookup(self) -> None:
         with (mock.patch.object(runtime_log, "_source_identity",
-                                return_value={"file": "msm5xxx.py", "sha256": "a"}),
+                                return_value={"file": "msm5xxx-qemu", "sha256": "a"}),
               mock.patch.object(runtime_log, "_source_identities",
-                                return_value={"msm5xxx.py": "a"}),
+                                return_value={"msm5xxx-qemu": "a"}),
               mock.patch.object(runtime_log.metadata, "version",
                                 side_effect=lambda name: f"{name}-version") as version):
             first = runtime_log._runtime_metadata()
             second = runtime_log._runtime_metadata()
 
         self.assertIs(first, second)
-        self.assertEqual(version.call_count, 2)
-        self.assertEqual(first["packages"]["unicorn"], "unicorn-version")
+        self.assertEqual(version.call_count, 1)
+        self.assertEqual(first["packages"]["Pillow"], "Pillow-version")
 
     def test_current_session_log_returns_installed_path(self) -> None:
         path = Path("logs/gui-session.log")

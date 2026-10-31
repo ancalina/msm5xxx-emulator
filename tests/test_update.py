@@ -25,6 +25,25 @@ class UpdateTests(unittest.TestCase):
             json.dumps({"files": payload}), encoding="utf-8"
         )
 
+    def test_update_relaunch_preserves_qemu_options(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        launch_args = ("--qemu", "/custom/qemu-system-arm", "--state-dir",
+                       "/custom/state", "--experimental-c80-controller")
+        command = update.inplace_update_command(
+            Path("prepared"), root, Path("state"), Path("guest image.bin"),
+            update.UpdateInfo(SHA), False, launch_args=launch_args,
+        )
+        with mock.patch("msm5xxx_emulator.update.apply_prepared_update") as apply, \
+             mock.patch("subprocess.Popen") as launch, \
+             mock.patch("sys.argv", command[2:]):
+            # Exercise the helper without replacing files or starting a guest.
+            exec(command[2], {})
+        apply.assert_called_once()
+        self.assertEqual(launch.call_args.args[0][1:], [
+            "-m", "msm5xxx_emulator.qemu.live_display", "guest image.bin",
+            *launch_args,
+        ])
+
     def test_seen_commit_does_not_prompt_twice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "app"
