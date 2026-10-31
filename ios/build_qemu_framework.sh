@@ -12,8 +12,10 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 LINK=$(ninja -C "$BUILD" -t commands qemu-system-arm-unsigned | tail -1)
 case $LINK in *" -o qemu-system-arm-unsigned "*) ;; *) echo "unexpected link command" >&2; exit 1 ;; esac
 LINK=$(printf '%s' "$LINK" | sed "s| -o qemu-system-arm-unsigned | -dynamiclib -install_name @rpath/$NAME.framework/$NAME -Wl,-alias,_main,_qemu_entry -o $OUT/$NAME |")
-(cd "$BUILD" && eval "$LINK")
-nm -gU "$OUT/$NAME" | grep -q ' _qemu_entry$'
+(cd "$BUILD" && nice -n 19 sh -c "$LINK")
+for symbol in qemu_entry msm5xxx_qemu_embedding_abi msm5xxx_qemu_request_quit; do
+    nm -gU "$OUT/$NAME" | grep -q " _$symbol\$" || { echo "missing safe embedding symbol: $symbol" >&2; exit 1; }
+done
 
 MIN_IOS=$(otool -l "$OUT/$NAME" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
 cat > "$OUT/Info.plist" <<PLIST

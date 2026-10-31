@@ -9,9 +9,9 @@ for name in QEMU QEMUTCI; do
     [ -d "$APP_DIR/Frameworks/iphoneos/$name.framework" ] || { echo "missing $name.framework" >&2; exit 1; }
 done
 mkdir -p "$1"; OUT=$(cd "$1" && pwd)
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+WORK=$(mktemp -d "$OUT/package.XXXXXX"); trap 'rm -rf "$WORK"' EXIT
 
-xcodebuild -project "$APP_DIR/MSM5xEmu.xcodeproj" -target MSM5xEmu -configuration Release \
+nice -n 19 xcodebuild -jobs 2 -project "$APP_DIR/MSM5xEmu.xcodeproj" -target MSM5xEmu -configuration Release \
     -sdk iphoneos -arch arm64 CODE_SIGNING_ALLOWED=NO SYMROOT="$WORK/build" build >"$WORK/xcodebuild.log" 2>&1 \
     || { tail -20 "$WORK/xcodebuild.log" >&2; exit 1; }
 APP="$WORK/build/Release-iphoneos/MSM5xEmu.app"

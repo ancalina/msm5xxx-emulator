@@ -37,3 +37,5 @@ reports/
 # iOS build outputs
 /ios/app/Frameworks/
 xcuserdata/
+
+/ios/app/Python.xcframework/

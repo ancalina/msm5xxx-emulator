@@ -95,6 +95,59 @@ from msm5xxx_emulator.state_io import (
 )
 
 
+class IOSLauncher:
+    """Launch through the app's built-in module, never through subprocess.
+
+    The host owns one QEMU thread and must guard QEMU's exit paths. Its
+    start(argv), poll(), terminate(), kill(), wait(timeout) methods form the
+    process contract; wait raises TimeoutError on timeout. No POSIX signals or
+    thread cancellation may be used by the host. stdout/stderr go to app logs.
+    """
+
+    supports_pass_fds = False
+
+    def __init__(self, host=None):
+        if host is None:
+            import _msm5xxx_ios_host as host
+        self.host = host
+
+    def __call__(self, argv, **options):
+        if options.get("pass_fds"):
+            raise ValueError("iOS launcher requires TCP audio chardevs")
+        arguments = list(argv)
+        if not arguments or any(not isinstance(arg, str) or "\0" in arg
+                                for arg in arguments):
+            raise ValueError("invalid in-process QEMU arguments")
+        self.host.start(arguments)
+        return _IOSProcess(self.host, arguments)
+
+
+class _IOSProcess:
+    def __init__(self, host, args):
+        self.host = host
+        self.args = args
+
+    def poll(self):
+        return self.host.poll()
+
+    def terminate(self):
+        self.host.terminate()
+
+    def kill(self):
+        self.host.kill()
+
+    def wait(self, timeout=None):
+        try:
+            return self.host.wait(timeout)
+        except TimeoutError as error:
+            raise subprocess.TimeoutExpired(self.args, timeout) from error
+
+
+def launch_qemu(argv, *, launcher=None, **options):
+    """Keep subprocess as the desktop/Android default; hosts opt in explicitly."""
+    return (subprocess.Popen if launcher is None else launcher)(argv, **options)
+
+
 RECORD_SIZE = 16
 LCD_WRITE = 1
 TELEMETRY = 2
@@ -3329,7 +3382,8 @@ class Transport:
                  experimental_ma5_clki_hz: int | None = None,
                  experimental_ma5_target_rate_hz: int | None = None,
                  experimental_ma5_irq: bool = False,
-                 experimental_ma5_pcm_output: bool = False) -> None:
+                 experimental_ma5_pcm_output: bool = False,
+                 launcher=None) -> None:
         if type(experimental_ma5_irq) is not bool:
             raise ValueError("invalid experimental MA5 IRQ setting")
         if type(experimental_ma5_pcm_output) is not bool:
@@ -3549,7 +3603,8 @@ class Transport:
         try:
             input_listener = loopback_listener()
             if audio_stream and audio_pcm:
-                if os.name == "posix":
+                if (os.name == "posix"
+                        and getattr(launcher, "supports_pass_fds", True)):
                     audio_host_socket, audio_qemu_socket = \
                         bounded_audio_socket_pair()
                     self.audio_socket_send_buffer = audio_qemu_socket.getsockopt(
@@ -4858,7 +4913,7 @@ class Transport:
                 {"pass_fds": (audio_qemu_socket.fileno(),)}
                 if audio_qemu_socket is not None else {}
             )
-            self.process = subprocess.Popen(
+            self.process = launch_qemu(
                 [
                     *qemu_prefix, str(qemu), "-M", machine, "-cpu", "ti925t",
                     "-m", qemu_ram_argument(self.config.ram_size),
@@ -4901,6 +4956,7 @@ class Transport:
                     "-icount", f"shift={icount_shift},align=on,sleep=on",
                     "-no-shutdown",
                 ],
+                launcher=launcher,
                 stdout=subprocess.DEVNULL,
                 stderr=self.stderr,
                 text=True,
