@@ -25,7 +25,9 @@ from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
 from msm5xxx_emulator.detection.boot_keysense import find_boot_keysense_release
 from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
-from msm5xxx_emulator.detection.ready_poll import _find_lcd_halfword_ready_poll_profile
+from msm5xxx_emulator.detection.ready_poll import (
+    _find_lcd_halfword_ready_poll_profile, find_arm_tx_empty_ready_poll_profile,
+)
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
@@ -1984,7 +1986,8 @@ def qemu_ready_poll_property(
             if (not isinstance(variant, dict) or variant.get("signature") not in (
                     "thumb-lsrs-bhs-pulse-v1",
                     "thumb-lsrs-bcc-pulse-rotated-v1",
-                    "thumb-uart-csr-sr-rx-empty-v1")):
+                    "thumb-uart-csr-sr-rx-empty-v1",
+                    "arm-byte-tx-empty-pulse-v1")):
                 return None, "unsupported-variant"
             if tuple(variant.get(field) for field in fields) != common:
                 return None, "variant-contract-mismatch"
@@ -2051,7 +2054,8 @@ def qemu_ready_poll_property(
         )
         if "uart_rx_empty_frame_read_pc_offset" in profile:
             fields += ("uart_rx_empty_frame_read_pc_offset",)
-    elif (signature == "thumb-lsrs-bcc-pulse-rotated-v1"
+    elif (signature in ("thumb-lsrs-bcc-pulse-rotated-v1",
+                        "arm-byte-tx-empty-pulse-v1")
           and profile.get("admission") == "temporary-evidence-gated"):
         property_name = "ready-poll"
         fields = (
@@ -2160,7 +2164,9 @@ def qemu_runtime_ready_poll_property(image: bytes, config: object
 
     The LCD bridge completes writes synchronously. Its status register cannot
     echo the previous display payload as a persistent busy bit. The native
-    source-PC/selector-bound profile already enforces this ownership.
+    source-PC/selector-bound profile already enforces this ownership. An ARM
+    boot TX drain may join an already-closed Thumb UART/RX-empty contract;
+    it cannot independently grant receive or configuration semantics.
     """
     size = getattr(config, "flash_size", None)
     if (getattr(config, "load_address", None) == 0
@@ -2176,7 +2182,29 @@ def qemu_runtime_ready_poll_property(image: bytes, config: object
             })
             if argument is not None:
                 return argument, reason, "indexed-lcd"
-    argument, reason = qemu_ready_poll_property(getattr(config, "ready_poll", None))
+    original = getattr(config, "ready_poll", None)
+    if (getattr(config, "load_address", None) == 0 and type(size) is int
+            and size > 0 and getattr(config, "uart_console", None) is None):
+        arm = find_arm_tx_empty_ready_poll_profile(image[:size])
+        fields = ("status_address", "mask", "pulse_address")
+        members = original.get("variants", [original]) if isinstance(original, dict) else []
+        rx_closed = isinstance(members, list) and any(
+            isinstance(member, dict)
+            and member.get("signature") == "thumb-uart-csr-sr-rx-empty-v1"
+            for member in members
+        )
+        if (arm is not None and rx_closed and isinstance(original, dict)
+                and all(original.get(key) == arm[key] for key in fields)):
+            combined = {
+                "signature": "thumb-byte-ready-pulse-variants-v1",
+                "admission": "temporary-evidence-gated",
+                **{key: arm[key] for key in fields},
+                "variants": [*original.get("variants", [original]), arm],
+            }
+            argument, reason = qemu_ready_poll_property(combined)
+            if argument is not None:
+                return argument, reason, "arm-tx"
+    argument, reason = qemu_ready_poll_property(original)
     return argument, reason, None
 
 
@@ -3740,6 +3768,11 @@ class Transport:
             self.config.detection_notes.append(
                 "QEMU closed indexed LCD bridge status enabled; "
                 "source-PC and selector bound, synchronous display writes"
+            )
+        elif ready_owner == "arm-tx":
+            self.config.detection_notes.append(
+                "QEMU source-closed ARM UART TX-empty pulse enabled; "
+                "existing Thumb consumer retained, no inbound RX data"
             )
         if ready_property is not None:
             machine += f",{ready_property}"
