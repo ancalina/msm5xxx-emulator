@@ -270,3 +270,34 @@ def _thumb_callable_entry(
                 or not _thumb_successors(image, current, len(image))):
             return prologue
     return prologue
+
+
+def thumb_normalized_source_shape(image, at, shape):
+    """Check a bounded Thumb body, retaining every nonrelocatable operand."""
+    size, digest, call_offsets, literal_offsets = shape
+    if at < 0 or at & 1 or at + size > len(image):
+        return None
+    code = bytearray(image[at:at+size]); calls = {}; literals = {}; pools = []
+    offset = 0
+    while offset < size:
+        word = struct.unpack_from('<H', code, offset)[0]
+        if (word & 0xf800 == 0xf000 and offset + 4 <= size
+                and struct.unpack_from('<H', code, offset+2)[0] & 0xf800 == 0xf800):
+            target = thumb_bl_target(image, at+offset)
+            if target is None or target & 1 or not 0 <= target <= len(image)-2:
+                return None
+            calls[offset] = target; code[offset:offset+4] = bytes(4)
+            offset += 4; continue
+        if word & 0xf800 == 0x4800:
+            value = thumb_literal_value(image, at+offset, word >> 8 & 7)
+            if value is None:
+                return None
+            literals[offset] = value
+            pool = ((at+offset+4) & ~3) + (word & 255)*4
+            pools.append((pool, pool+4))
+            struct.pack_into('<H', code, offset, word & 0xff00)
+        offset += 2
+    if (tuple(calls) != call_offsets or tuple(literals) != literal_offsets
+            or hashlib.sha256(code).hexdigest() != digest):
+        return None
+    return calls, literals, pools

@@ -18,6 +18,18 @@ class DisplayControllerMixin:
         if (getattr(self, "_lcd_source_window_owned", False)
                 and not getattr(self, "_lcd_source_window_publishing", False)):
             return
+        if (getattr(self, "_lcd_mux_page_owned", False)
+                and not getattr(self, "_lcd_mux_page_publishing", False)):
+            return
+        if (getattr(self, '_lcd_gpio_serial_owned', False)
+                and not getattr(self, '_lcd_gpio_serial_publishing', False)):
+            return
+        if (getattr(self, '_lcd_boot_page_owned', False)
+                and not getattr(self, '_lcd_boot_page_publishing', False)):
+            return
+        if (getattr(self, '_lcd_bytepair565_owned', False)
+                and not getattr(self, '_lcd_bytepair565_publishing', False)):
+            return
         frame = bytes(self.framebuffer)
         with self._display_lock:
             self.display_frame = frame
@@ -35,6 +47,19 @@ class DisplayControllerMixin:
             if (getattr(self, "_lcd_source_window_owned", False)
                     and source_window is not None and source_window.sequence):
                 return source_window.width, source_window.height, source_window.frame
+            source_mux = getattr(self, '_lcd_mux_page_panel', None)
+            if (getattr(self, '_lcd_mux_page_owned', False)
+                    and source_mux is not None and source_mux.sequence):
+                return 96, 64, source_mux.frame
+            gpio = getattr(self, '_lcd_gpio_serial_panel', None)
+            if getattr(self, '_lcd_gpio_serial_owned', False) and gpio is not None and gpio.sequence:
+                return 89, 64, gpio.frame
+            boot_page = getattr(self, '_lcd_boot_page_panel', None)
+            if getattr(self, '_lcd_boot_page_owned', False) and boot_page is not None and boot_page.sequence:
+                return boot_page.width, boot_page.height, boot_page.frame
+            bytepair = getattr(self, '_lcd_bytepair565_panel', None)
+            if getattr(self, '_lcd_bytepair565_owned', False) and bytepair is not None and bytepair.sequence:
+                return bytepair.width, bytepair.height, bytepair.frame
             segmented = getattr(self, "_lcd_segmented_panel", None)
             if segmented is not None:
                 candidate = segmented.scanout_snapshot()
@@ -148,6 +173,10 @@ class DisplayControllerMixin:
         self._lcd_source_window_reason = reason
         if profile is None:
             return
+        if (profile.get("writer_layout") == "arm-loop-count-tail-rom-content-v1"
+                and getattr(cfg, "chipset", None) not in ("MSM5100", "MSM5105")):
+            self._lcd_source_window_reason = "source-writer-chipset-scope-unclosed"
+            return
         if (ram_claimed or getattr(cfg, "ram_bootstrap_profile", None) is not None
                 or getattr(cfg, "missing_overlays", None)):
             self._lcd_source_window_reason = "source-memory-owner-unclosed"
@@ -229,6 +258,313 @@ class DisplayControllerMixin:
             self._lcd_source_window_reason = "complete-source-window"
         return owned
 
+    def _lcd_bind_source_mux(self, original: bytes, loaded: bytes, *, ram_claimed=False) -> None:
+        from ...detection.mux_page import find_mux_page_profile
+        from .mux_page_panel import MuxPagePanel
+        self._lcd_mux_page_panel = None
+        self._lcd_mux_page_owned = False
+        self._lcd_mux_page_reason = 'source-layout-unverified'
+        cfg = self.config
+        if (getattr(cfg, 'chipset', None) not in ('MSM5100', 'MSM5105')
+                or getattr(cfg, 'image_kind', None) != 'firmware'
+                or any(type(getattr(cfg, key, None)) is not int for key in
+                       ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size'))
+                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0)
+                or not isinstance(original, bytes) or not isinstance(loaded, bytes)
+                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
+                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size, b'\xff')
+                or ram_claimed or getattr(cfg, 'missing_overlays', None)
+                or getattr(cfg, 'ram_bootstrap_profile', None) is not None):
+            return
+        profile, reason = find_mux_page_profile(original)
+        self._lcd_mux_page_reason = reason
+        if profile is None:
+            return
+        if (profile.get('signature') != 'source-external-bit4-mono96-page-v1'
+                or profile.get('admission') != 'temporary-evidence-gated'
+                or tuple(profile.get(key) for key in ('width', 'height', 'clear_pages',
+                    'clear_row_bytes', 'command_port', 'data_port', 'mode_port',
+                    'mode_mask', 'access_width')) !=
+                   (96, 64, 10, 96, 0x02000000, 0x02000000, 0x02800000, 0x10, 1)):
+            self._lcd_mux_page_reason = 'source-mux-contract-unverified'
+            return
+        if ((cfg.width, cfg.height) != (96, 64)
+                and getattr(cfg, 'display_geometry_source', 'external-config') != 'auto-default'):
+            self._lcd_mux_page_reason = 'source-geometry-owner-conflict'
+            return
+        spans = profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
+        if (any(not 0 <= a < b <= min(len(original), len(loaded)) for a,b in spans)
+                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
+                       for a,b in profile['ram_intervals'])
+                or any(not 0x03800000 <= a < b <= 0x03a00000 for a,b in profile['iram_intervals'])):
+            self._lcd_mux_page_reason = 'source-memory-owner-unverified'
+            return
+        if loaded is not original and find_mux_page_profile(loaded)[0] != profile:
+            self._lcd_mux_page_reason = 'source-loaded-owner-mismatch'
+            return
+        self._lcd_mux_page_panel = MuxPagePanel()
+        self._lcd_mux_page_reason = 'source-candidate-awaiting-ten-page-clear'
+
+    def _lcd_source_mux_write(self, address, size, value):
+        panel = getattr(self, '_lcd_mux_page_panel', None)
+        if panel is None or not (0x02000000 <= address < 0x02001000 or address == 0x02800000):
+            return False
+        with self._display_lock:
+            before = panel.sequence
+            panel.write(address, size, value)
+            commit = panel.sequence != before and panel.qualified and panel.rejection is None
+            frame = panel.frame if commit else None
+        if commit:
+            self._set_display_geometry(96, 64, source='runtime:source-mux-page96')
+            if (self.config.width, self.config.height) != (96, 64):
+                self._lcd_mux_page_reason = 'source-geometry-owner-conflict'
+                self._lcd_mux_page_panel = None
+                return False
+            self._lcd_mux_page_owned = True
+            with self._display_lock:
+                self.framebuffer[:] = frame
+            self._lcd_protocol = 'source-mux-page96-provisional-optics'
+            self._lcd_mux_page_publishing = True
+            try:
+                self._publish_frame()
+            finally:
+                self._lcd_mux_page_publishing = False
+            self._lcd_mux_page_reason = 'complete-source-mono-clear'
+        return self._lcd_mux_page_owned
+
+    def mux_page_snapshot(self):
+        panel = getattr(self, '_lcd_mux_page_panel', None)
+        return dict(source_bound=panel is not None, qualified=bool(panel and panel.qualified),
+            rejection=panel.rejection if panel else getattr(self, '_lcd_mux_page_reason', None),
+            reason=getattr(self, '_lcd_mux_page_reason', None),
+            enabled_command=panel.enabled if panel else None,
+            column_origin=panel.origin if panel else None, viewport=[96,64], clear_rows=80,
+            optical_properties=None, pixel_order='provisional-vertical-lsb-first')
+
+    def _lcd_bind_source_gpio(self, original: bytes, loaded: bytes, *, ram_claimed=False):
+        """Bind a passive native capture and source raster to the final seed."""
+        from ...detection.gpio_serial import find_gpio_serial_profile
+        from .gpio_serial_panel import GpioSerial89Panel
+        self._lcd_gpio_serial_panel = None
+        self._lcd_gpio_serial_owned = False
+        self._lcd_gpio_serial_reason = 'source-layout-unverified'
+        cfg = self.config
+        if (getattr(cfg, 'chipset', None) not in ('MSM5100', 'MSM5105')
+                or getattr(cfg, 'image_kind', None) != 'firmware'
+                or any(type(getattr(cfg, key, None)) is not int for key in
+                       ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size'))
+                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0)
+                or not isinstance(original, bytes) or not isinstance(loaded, bytes)
+                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
+                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size, b'\xff')
+                or ram_claimed or getattr(cfg, 'missing_overlays', None)
+                or getattr(cfg, 'ram_bootstrap_profile', None) is not None):
+            return None
+        profile, reason = find_gpio_serial_profile(original)
+        self._lcd_gpio_serial_reason = reason
+        if profile is None:
+            return None
+        if (profile.get('signature') != 'source-gpio660-serial89-v1'
+                or profile.get('admission') != 'temporary-evidence-gated'
+                or tuple(profile.get(key)for key in ('width','height','access_width','port')) !=
+                   (89,64,2,0x03000660)):
+            self._lcd_gpio_serial_reason = 'source-gpio-contract-unverified'
+            return None
+        pcs = profile.get('capture_pcs', ())
+        spans = profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
+        if (not 0 < len(pcs) <= 64 or len(pcs) != len(set(pcs))
+                or any(type(pc) is not int or pc & 1 or not 0 <= pc < len(original) for pc in pcs)
+                or any(not 0 <= a < b <= min(len(original),len(loaded)) for a,b in spans)
+                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
+                       for a,b in profile['ram_intervals'])):
+            self._lcd_gpio_serial_reason = 'source-memory-owner-unverified'
+            return None
+        if ((cfg.width,cfg.height) != (89,64)
+                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
+            self._lcd_gpio_serial_reason = 'source-geometry-owner-conflict'
+            return None
+        if find_gpio_serial_profile(loaded)[0] != profile:
+            self._lcd_gpio_serial_reason = 'source-loaded-owner-mismatch'
+            return None
+        self._lcd_gpio_serial_panel = GpioSerial89Panel()
+        self._lcd_gpio_serial_reason = 'source-candidate-awaiting-complete-raster'
+        return 'experimental-gpio660-lcd='+':'.join(f'{pc:x}'for pc in pcs)
+
+    def _lcd_source_gpio_write(self, address, size, value):
+        panel = getattr(self, '_lcd_gpio_serial_panel', None)
+        if panel is None or address != 0x03000660:
+            return False
+        with self._display_lock:
+            before = panel.sequence
+            panel.write(address,size,value)
+            commit = panel.sequence != before and panel.qualified and panel.rejection is None
+            frame = panel.frame if commit else None
+        if commit:
+            self._set_display_geometry(89,64,source='runtime:source-gpio-serial89')
+            if (self.config.width,self.config.height) != (89,64):
+                self._lcd_gpio_serial_reason = 'source-geometry-owner-conflict'
+                self._lcd_gpio_serial_panel = None
+                return False
+            self._lcd_gpio_serial_owned = True
+            with self._display_lock:
+                self.framebuffer[:] = frame
+            self._lcd_protocol = 'source-gpio-serial89-provisional-optics'
+            self._lcd_gpio_serial_publishing = True
+            try:
+                self._publish_frame()
+            finally:
+                self._lcd_gpio_serial_publishing = False
+            self._lcd_gpio_serial_reason = 'complete-source-raster'
+        return self._lcd_gpio_serial_owned
+
+    def gpio_serial_snapshot(self):
+        panel = getattr(self, '_lcd_gpio_serial_panel', None)
+        return dict(source_bound=panel is not None, qualified=bool(panel and panel.qualified),
+            reason=getattr(self,'_lcd_gpio_serial_reason',None),
+            rejection=panel.rejection if panel else None, coverage=panel.coverage if panel else 0,
+            sequence=panel.sequence if panel else 0, source_raster=[89,64],
+            pixel_order='source-input-bit-permutation-v1',optical_properties=None)
+
+    def _lcd_bind_source_boot_page(self, original: bytes, loaded: bytes, *, ram_claimed=False):
+        from ...detection.boot_page import find_boot_page_profile
+        from .boot_page_panel import BootPagePanel
+        self._lcd_boot_page_panel = None
+        self._lcd_boot_page_owned = False
+        self._lcd_boot_page_reason = 'source-layout-unverified'
+        cfg=self.config
+        if (getattr(cfg,'chipset',None) not in ('MSM5100','MSM5105')
+                or getattr(cfg,'image_kind',None) != 'firmware'
+                or any(type(getattr(cfg,key,None)) is not int for key in
+                       ('load_address','image_offset','entry','flash_size','ram_base','ram_size'))
+                or (cfg.load_address,cfg.image_offset,cfg.entry) != (0,0,0)
+                or not isinstance(original,bytes) or not isinstance(loaded,bytes)
+                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
+                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size,b'\xff')
+                or ram_claimed or getattr(cfg,'missing_overlays',None)
+                or getattr(cfg,'ram_bootstrap_profile',None) is not None):
+            return False
+        profile,reason=find_boot_page_profile(original)
+        self._lcd_boot_page_reason=reason
+        if profile is None:return False
+        if (profile.get('signature') != 'source-halfword-boot-page128-v1'
+                or profile.get('admission') != 'temporary-evidence-gated'
+                or tuple(profile.get(k)for k in ('width','command_port','data_port','access_width')) !=
+                   (128,0x02000000,0x02000002,2)
+                or (profile.get('clear_pages'),profile.get('planes')) not in ((9,1),(16,2))
+                or profile.get('height') != profile['clear_pages']*8):
+            self._lcd_boot_page_reason='source-boot-page-contract-unverified';return False
+        spans=profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
+        if (any(not 0 <= a < b <= min(len(original),len(loaded))for a,b in spans)
+                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
+                       for a,b in profile['ram_intervals'])):
+            self._lcd_boot_page_reason='source-memory-owner-unverified';return False
+        if ((cfg.width,cfg.height) != (128,profile['height'])
+                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
+            self._lcd_boot_page_reason='source-geometry-owner-conflict';return False
+        if find_boot_page_profile(loaded)[0] != profile:
+            self._lcd_boot_page_reason='source-loaded-owner-mismatch';return False
+        self._lcd_boot_page_panel=BootPagePanel(profile['clear_pages'],profile['planes'])
+        self._lcd_boot_page_reason='source-candidate-awaiting-complete-clear'
+        return True
+
+    def _lcd_source_boot_page_write(self,address,size,value):
+        panel=getattr(self,'_lcd_boot_page_panel',None)
+        if panel is None or address not in (0x02000000,0x02000002):return False
+        with self._display_lock:
+            before=panel.sequence;panel.write(address,size,value)
+            commit=panel.sequence != before and panel.qualified and panel.rejection is None
+            frame=panel.frame if commit else None
+        if commit:
+            self._set_display_geometry(panel.width,panel.height,source='runtime:source-boot-page128')
+            if (self.config.width,self.config.height) != (panel.width,panel.height):
+                self._lcd_boot_page_reason='source-geometry-owner-conflict'
+                self._lcd_boot_page_panel=None;return False
+            self._lcd_boot_page_owned=True
+            with self._display_lock:self.framebuffer[:]=frame
+            self._lcd_protocol='source-boot-page128-provisional-optics'
+            self._lcd_boot_page_publishing=True
+            try:self._publish_frame()
+            finally:self._lcd_boot_page_publishing=False
+            self._lcd_boot_page_reason='complete-source-zero-clear'
+        return self._lcd_boot_page_owned
+
+    def boot_page_snapshot(self):
+        panel=getattr(self,'_lcd_boot_page_panel',None)
+        return dict(source_bound=panel is not None,qualified=bool(panel and panel.qualified),
+            reason=getattr(self,'_lcd_boot_page_reason',None),rejection=panel.rejection if panel else None,
+            clear_pages=panel.clear_next if panel else 0,sequence=panel.sequence if panel else 0,
+            optical_properties=None)
+
+    def _lcd_bind_source_bytepair565(self, original: bytes, loaded: bytes, *, ram_claimed=False):
+        from ...detection.bytepair565 import find_bytepair565_profile
+        from .bytepair565_panel import BytePair565Panel
+        self._lcd_bytepair565_panel = None
+        self._lcd_bytepair565_owned = False
+        self._lcd_bytepair565_reason = 'source-layout-unverified'
+        cfg=self.config
+        if (getattr(cfg,'chipset',None) not in ('MSM5100','MSM5105')
+                or getattr(cfg,'image_kind',None) != 'firmware'
+                or any(type(getattr(cfg,key,None)) is not int for key in
+                       ('load_address','image_offset','entry','flash_size','ram_base','ram_size'))
+                or (cfg.load_address,cfg.image_offset,cfg.entry) != (0,0,0)
+                or not isinstance(original,bytes) or not isinstance(loaded,bytes)
+                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
+                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size,b'\xff')
+                or ram_claimed or getattr(cfg,'missing_overlays',None)
+                or getattr(cfg,'ram_bootstrap_profile',None) is not None):
+            return False
+        profile,reason=find_bytepair565_profile(original)
+        self._lcd_bytepair565_reason=reason
+        if profile is None:return False
+        if (profile.get('signature') != 'source-halfword-bytepair565-104-v1'
+                or profile.get('admission') != 'temporary-evidence-gated'
+                or tuple(profile.get(k)for k in ('width','height','pixel_port','command_port','access_width')) !=
+                   (104,80,0x02400000,0x02000000,2)):
+            self._lcd_bytepair565_reason='source-rgb565-boot-contract-unverified';return False
+        spans=profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
+        if (any(not 0 <= a < b <= min(len(original),len(loaded))for a,b in spans)
+                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
+                       for a,b in profile['ram_intervals'])
+                or any(not 0x03800000 <= a < b <= 0x03810000
+                       for a,b in profile['iram_intervals'])):
+            self._lcd_bytepair565_reason='source-memory-owner-unverified';return False
+        if ((cfg.width,cfg.height) != (104,profile['height'])
+                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
+            self._lcd_bytepair565_reason='source-geometry-owner-conflict';return False
+        if find_bytepair565_profile(loaded)[0] != profile:
+            self._lcd_bytepair565_reason='source-loaded-owner-mismatch';return False
+        self._lcd_bytepair565_panel=BytePair565Panel()
+        self._lcd_bytepair565_reason='source-candidate-awaiting-complete-blit'
+        return True
+
+    def _lcd_source_bytepair565_write(self,address,size,value):
+        panel=getattr(self,'_lcd_bytepair565_panel',None)
+        if panel is None or address not in (0x02000000,0x02400000):return False
+        with self._display_lock:
+            before=panel.sequence;panel.write(address,size,value)
+            commit=panel.sequence != before and panel.qualified and panel.rejection is None
+            frame=panel.frame if commit else None
+        if commit:
+            self._set_display_geometry(panel.width,panel.height,source='runtime:source-bytepair565-104')
+            if (self.config.width,self.config.height) != (panel.width,panel.height):
+                self._lcd_bytepair565_reason='source-geometry-owner-conflict'
+                self._lcd_bytepair565_panel=None;return False
+            self._lcd_bytepair565_owned=True
+            with self._display_lock:self.framebuffer[:]=frame
+            self._lcd_protocol='source-bytepair565-104-source-canvas'
+            self._lcd_bytepair565_publishing=True
+            try:self._publish_frame()
+            finally:self._lcd_bytepair565_publishing=False
+            self._lcd_bytepair565_reason='complete-source-bytepair565-raster'
+        return self._lcd_bytepair565_owned
+
+    def bytepair565_snapshot(self):
+        panel=getattr(self,'_lcd_bytepair565_panel',None)
+        return dict(source_bound=panel is not None,qualified=bool(panel and panel.qualified),
+            reason=getattr(self,'_lcd_bytepair565_reason',None),rejection=panel.rejection if panel else None,
+            pixels=panel.pixels if panel else 0,sequence=panel.sequence if panel else 0,
+            physical_viewport=None)
+
     def secondary_display_snapshot(self) -> dict[str, object] | None:
         panel = getattr(self, "_lcd_secondary_panel", None)
         if panel is None:
@@ -264,6 +600,18 @@ class DisplayControllerMixin:
         """Adopt a controller-proven panel geometry before its first visible frame."""
         if (getattr(self, "_lcd_source_window_owned", False)
                 and source != "runtime:source-copied-half128"):
+            return
+        if (getattr(self, '_lcd_mux_page_owned', False)
+                and source != 'runtime:source-mux-page96'):
+            return
+        if (getattr(self, '_lcd_gpio_serial_owned', False)
+                and source != 'runtime:source-gpio-serial89'):
+            return
+        if (getattr(self, '_lcd_bytepair565_owned', False)
+                and source != 'runtime:source-bytepair565-104'):
+            return
+        if (getattr(self, '_lcd_boot_page_owned', False)
+                and source != 'runtime:source-boot-page128'):
             return
         current_source = getattr(self.config, "display_geometry_source",
                                  "external-config")
@@ -691,6 +1039,7 @@ class DisplayControllerMixin:
             return
         if any(getattr(self, name, None) is not None for name in (
                 "_lcd_source_window_panel", "_lcd_packed_cursor12_panel",
+                "_lcd_mux_page_panel", "_lcd_gpio_serial_panel", "_lcd_boot_page_panel",
                 "_lcd_packed2_panel", "_lcd_split18_panel", "_lcd_split565_panel",
                 "_lcd_fa_direct_panel", "_lcd_indexed_byte_panel",
                 "_lcd_segmented_panel", "_lcd_cursor_panel", "_lcd_packed12_panel",
@@ -760,6 +1109,14 @@ class DisplayControllerMixin:
     def _lcd_write_slow(self, uc: object, access: int, address: int, size: int,
                         value: int, user_data: object) -> None:
         if self._lcd_source_window_write(address, size, value):
+            return
+        if self._lcd_source_mux_write(address, size, value):
+            return
+        if self._lcd_source_gpio_write(address, size, value):
+            return
+        if self._lcd_source_boot_page_write(address, size, value):
+            return
+        if self._lcd_source_bytepair565_write(address, size, value):
             return
         self._lcd_observe_shifted_orientation(address, size, value)
         self._lcd_packed_window_observe(address, size, value)

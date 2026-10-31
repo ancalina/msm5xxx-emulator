@@ -1110,6 +1110,16 @@ _PROBE_SPECS = {
     'apply': ('f0b5071c????????0404240c2c22391c????????????????0321090247183d883e8a0420????????????????????????????????????798a3f2352889b0219409205920d11437982798a????9180002801d1????????????????39890907090f03229203114339813989????203a1182002801d1????????3d803e82????????3988????39803988203a1180002801d1????????????????398a????3982398a1180002801d1????????????????002c00d001e0????????f0bc08bc1847', (4, 18, 36, 40, 44, 48, 82, 86, 116, 124, 144, 148, 166, 170, 180), ((16, 0), (22, 0), (52, 2), (74, 2), (106, 2), (130, 2), (154, 2))),
     'clockclear': ('f0b5c4000026????0321????090228598f1800280dd0????????39882a599143314339803988????1180002801d1????????6419606800280ed0????????398a6268914331433982398a????20321180002801d1????????f0bc08bc1847', (22, 46, 58, 84), ((6, 5), (10, 2), (38, 2), (74, 2))),
 }
+# Configuration error arm: MOVS r0,#0x3b; LSLS r0,#5; LDR r1; BL; B.
+# The active configuration prefix is identical; keep the actual longer tail.
+_PROBE_CONFIG_SHIFTED_LINE = (
+    _PROBE_SPECS['config'][0][:0x56 * 2]
+        + struct.pack('<2H', 0x2000 | 0x3b, 5 << 6).hex()
+        + '??49????????'
+        + struct.pack('<H', 0xe000 | (((0x32-0x60-4)//2) & 0x7ff)).hex(),
+    (0x14, 0x2e, 0x38, 0x5c),
+    ((2, 5), (6, 2), (0x1a, 3), (0x3e, 3), (0x5a, 1)),
+)
 _PROBE_RESET = bytes.fromhex('58429fe5010014e354e29f1554e29f0514ff2fe1784700004c429fe5010014e348e29f1548e29f0514ff2fe17847000040429fe5010014e33ce29f153ce29f0514ff2fe17847000034429fe5010014e330e29f1530e29f0514ff2fe178470000000050e31600001ad7f021e3c8d19fe5dbf021e314d29fe5d3f021e310d29fe510429fe5010014e30ce29f150ce29f0514ff2fe17847000004429fe5010014e300e29f1500e29f0514ff2fe178470000000050e30100000a9c019fe510ff2fe1045c07ead3f021e3c4d19fe57c119fe5010011e3d4e19f15d4e19f0511ff2fe1784700005419a0e30000a0e10000a0e10000a0e1c0319fe50140a0e3004083e50040a0e3004083e5011041e2000051e3f4ffff1aa4119fe5010011e394e19f159ce19f0511ff2fe17847000078470000d3f021e358d19fe58c419fe5010014e380e19f1584e19f0514ff2fe1784700001eff2fe178470000')
 _PROBE_APP = bytes.fromhex('d2f021e328d09fe5dff021e324d09fe5d1f021e30dd02de01cd09fe5d3f021e318209fe512ff2fe1')
 _PROBE_TEMPLATE = bytes.fromhex('6755a8000004faef020a550150f10208290003008000a3026000000002000000007d00001000020001000000')
@@ -1226,10 +1236,24 @@ def _probe_u32(image, at):
     return struct.unpack_from('<I', image, at)[0]
 
 
-def _probe_specs(role, ffcc=False):
+def _probe_specs(role, ffcc=False, config_shifted=False, clock_2022=False):
+    if role == 'config' and config_shifted:
+        return _PROBE_CONFIG_SHIFTED_LINE
     if role in _CLOCK_SPECS:
         key = role + '_old' if not ffcc and role in ('clock_select_b','clock_select_c') else role
-        return _CLOCK_SPECS[key]
+        spec = _CLOCK_SPECS[key]
+        if clock_2022 and role in ('clock_select_a', 'clock_select_b', 'clock_select_c'):
+            _probe_need(ffcc, 'clock-2022-uart-owner')
+            pattern = bytearray.fromhex(spec[0].replace('??', '00'))
+            # Three coherent selector layouts retain all other source operands.
+            struct.pack_into('<H', pattern, 0x44, 0x3811)
+            if role != 'clock_select_a':
+                struct.pack_into('<H', pattern, 0x28,
+                                 0x3011 if role == 'clock_select_b' else 0x3021)
+            mask = ''.join('??' if spec[0][i*2:i*2+2] == '??' else f'{b:02x}'
+                           for i, b in enumerate(pattern))
+            return mask, spec[1], spec[2]
+        return spec
     if ffcc and role == 'root':
         return _FFCC_ROOT
     if ffcc and role == 'copy':
@@ -1240,8 +1264,8 @@ def _probe_specs(role, ffcc=False):
     return (_PROBE_SPECS if role in _PROBE_SPECS else _FF_SPECS)[role]
 
 
-def _probe_shape(image, at, role, ffcc=False):
-    mask,calls,literals = _probe_specs(role,ffcc)
+def _probe_shape(image, at, role, ffcc=False, clock_2022=False):
+    mask,calls,literals = _probe_specs(role,ffcc,clock_2022=clock_2022)
     pattern = bytearray.fromhex(mask.replace('??','00'))
     # Diagnostic line immediates differ; the fixed template selects argument2,
     # so this out-of-range diagnostic path is not an active clock operation.
@@ -1252,6 +1276,10 @@ def _probe_shape(image, at, role, ffcc=False):
         _probe_need(shift is not None and shift & 0xf83f == 0,'clock-diagnostic-shift')
         struct.pack_into('<2H',pattern,0x54,line,shift)
     found = _source_thumb_shape(image, at, bytes(pattern), calls, literals)
+    if found is None and role == 'config' and ffcc:
+        mask, calls, literals = _probe_specs(role, ffcc, config_shifted=True)
+        found = _source_thumb_shape(image, at,
+            bytes.fromhex(mask.replace('??', '00')), calls, literals)
     _probe_need(found is not None, role + '-body')
     return found
 
@@ -1273,9 +1301,10 @@ def _probe_clock_closure(image, entries, shapes, copies, zeros, timeout, delay_s
         _probe_need(value,'clock-'+reason)
     def zero(address, size):
         return _ff_ram(address,size) and any(a<=address and address+size<=b for a,b in zeros)
+    clock_2022 = False
     def add(role, address):
         need(address not in entries.values(),'callee-alias')
-        entries[role]=address;shapes[role]=_probe_shape(image,address,role,ffcc)
+        entries[role]=address;shapes[role]=_probe_shape(image,address,role,ffcc,clock_2022=clock_2022)
         return shapes[role]
     apply, av=shapes['apply'];cs,cl=shapes['clockset'];clear,clv=shapes['clockclear'];pin,pv=shapes['pinset']
     need(apply[4]==irqsave and apply[0x12]==memcpy and apply[0x24]==entries['clockset'],'apply-links')
@@ -1308,11 +1337,18 @@ def _probe_clock_closure(image, entries, shapes, copies, zeros, timeout, delay_s
     need(vl[2]==params and vl[4]==0x03000640 and version[0x28]==entries['delay'],'version-domain')
     need(ml[2]==params+0x1c and ml[0x10]==ml[0x14]==ml[0xca]==params+0x38,'commit-state')
     word1=0x1033 if ffcc else 0x833
-    diagnostic=shapes['config'][0][0x5a]
+    diagnostic_offset = 0x5c if 0x5c in shapes['config'][0] else 0x5a
+    diagnostic=shapes['config'][0][diagnostic_offset]
+    if ffcc:
+        try:
+            _probe_shape(image, commit[0x98], 'clock_select_a', ffcc)
+        except _ProbeUnclosed:
+            _probe_shape(image, commit[0x98], 'clock_select_a', ffcc, clock_2022=True)
+            clock_2022 = True
     for role,offset in (('clock_select_a',0x98),('clock_select_b',0x30),('clock_select_c',0x3a)):
         calls,values=add(role,commit[offset])
         need(len(calls)==1 and next(iter(calls.values()))==diagnostic,'selector-diagnostic-link')
-        need(all(values[o]==0x2033 for o in (0x16,0x26,0x36,0x42)) and
+        need(all(values[o]==(0x2022 if clock_2022 else 0x2033) for o in (0x16,0x26,0x36,0x42)) and
              all(values[o]==0x04800080 for o in (0x18,0x2a,0x38,0x46)) and
              all(values[o]==word1 for o in (0x1c,0x2e,0x3c,0x4a)),'selector-literals')
     update,uv=add('clock_update',commit[0xc4]);get,gl=add('clock_version_get',version[0xa])
@@ -1348,9 +1384,12 @@ def _probe_clock_closure(image, entries, shapes, copies, zeros, timeout, delay_s
     need(actual==expected,'divide-nonzero-abi')
     code.append((raw,raw+len(_PROBE_DIVIDE)))
     if owner=='copied':iram.append((target,target+len(_PROBE_DIVIDE)))
-    return dict(parameter_state=params,update_state=uv[0xa],version_cache=gl[0],version_output=gl[0x10],
+    result = dict(parameter_state=params,update_state=uv[0xa],version_cache=gl[0],version_output=gl[0x10],
                 selector_table=table,selector_indices=[1,4],division_entry=target,
                 division_source=raw,division_veneer=veneer)
+    if clock_2022:
+        result['selector_layout'] = 'coherent-2022-1033-v1'
+    return result
 
 
 def _probe_profile(image, console, console_shape, ffcc=False):
@@ -1434,7 +1473,7 @@ def _probe_profile(image, console, console_shape, ffcc=False):
     ic,iv=shapes['init'];setup,config=ic[4],ic[0x12]
     _probe_need(ic[0x16]==primary,'init-drain-link')
     for role,at in (('setup',setup),('config',config)):
-        entries[role]=at;shapes[role]=_probe_shape(image,at,role)
+        entries[role]=at;shapes[role]=_probe_shape(image,at,role,ffcc)
     _probe_need(set(iv.values())=={0x03000f40,pulse},'init-domain')
     base=0x03000f0c
     pl=shapes['primary'][1];tl=shapes['tx'][1]
@@ -1449,6 +1488,20 @@ def _probe_profile(image, console, console_shape, ffcc=False):
     _probe_need(image[timeout_source]==1,'receive-timeout-source')
     ram.append((timeout,timeout+1));data.append((timeout_source,timeout_source+1))
     sc,sv=shapes['setup'];fc,fl=shapes['config']
+    config_diagnostic = None
+    if 0x5c in fc:
+        filename = fl[0x5a]
+        _probe_need(0 <= filename < len(image), 'config-diagnostic-filename')
+        end = image.find(b'\0', filename, min(len(image), filename + 256))
+        _probe_need(end > filename and
+                    all(32 <= byte <= 126 for byte in image[filename:end]),
+                    'config-diagnostic-filename')
+        data.append((filename, end + 1))
+        config_diagnostic = dict(layout='immediate-line-shift-v1',
+            entry=config, call_pc=config+0x5c, target=fc[0x5c],
+            filename_literal_pc=config+0x5a, filename_address=filename,
+            line=0x3b << 5, code_interval=[config, config+0x62],
+            policy='inactive-for-fixed-configuration-argument')
     irqsave,irqrestore=fc[0x14],fc[0x2e]
     _probe_need(fc[0x38]==irqsave and image[irqsave:irqsave+24]==_FF_IRQ_SAVE and
                 image[irqrestore:irqrestore+24]==_FF_IRQ_RESTORE,'irq-source')
@@ -1507,7 +1560,8 @@ def _probe_profile(image, console, console_shape, ffcc=False):
         _probe_need(image[app-1:app+3]==bytes.fromhex('0fb50022'),'application-thumb-entry')
     code.extend(((normal,normal+len(_PROBE_APP)),(app-1,app-1+app_size)))
     for role,at in entries.items():
-        spec=_probe_specs(role,ffcc)
+        spec=_probe_specs(role,ffcc,config_shifted=(role == 'config' and 0x5c in shapes[role][0]),
+                          clock_2022=clock_metadata.get('selector_layout') == 'coherent-2022-1033-v1')
         code.append((at,at+len(spec[0])//2))
         for off,_ in spec[2]:
             op=_word(image,at+off);pool=((at+off+4)&~3)+(op&255)*4;pools.append((pool,pool+4))
@@ -1535,6 +1589,8 @@ def _probe_profile(image, console, console_shape, ffcc=False):
         reset_entry=reset,copy_entry=copy,application_entry=app-1,setup_entry=setup,setup_template=template,
         setup_memcpy_entry=memcpy,delay_entry=entries['delay'],delay_state=delay_state,delay_state_source=delay_source,
         runtime_source_policy='defer-until-postpatch-primary-reparse-and-immutable-byte-match')
+    if config_diagnostic is not None:
+        clock_metadata['config_diagnostic'] = config_diagnostic
     profile.update(clock_guard=clock_metadata)
     if ffcc:
         profile.update(outside_config_drains=[4,4,2],lf_stages=[True,True,False],

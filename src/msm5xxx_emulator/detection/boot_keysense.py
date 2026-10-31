@@ -107,6 +107,11 @@ def find_boot_keysense_release(image: bytes) -> tuple[dict | None, str]:
                 shape = _shape(image, at, pattern, literals)
             if shape:
                 candidates.append((at, layout))
+    if not candidates and not partial:
+        from .boot_contact_5100 import find_boot_contact_release
+        profile, reason = find_boot_contact_release(image)
+        if profile is not None:
+            return profile, reason
     if len(candidates) != 1 or partial:
         return None, ('predicate-ambiguous' if len(candidates) > 1 else
                       'prefix-callee-contract-unclosed' if partial else 'predicate-not-closed')

@@ -109,17 +109,25 @@ def _copy_owner(image):
     return reset,copy,copies,zeros,code,pools,data,ram
 
 
-def _profile(image, owner, init, init_shape, full):
+def _profile(image, owner, init, init_shape, full, *, rom_content=False):
     reset,copy,copies,zeros,code,pools,data,ram=owner
     code=list(code);pools=list(pools);data=list(data);ram=list(ram)
     c=copies[2];runtime=c['target']+full-c['source']
-    _need(not runtime&3 and image[full:full+len(_FULL)]==_FULL and
-          image[full+0x64:full+0xe4]==_PARTIAL and
-          image[full+0xe4:full+0x154]==_CONTIGUOUS and full+0x154<=c['source']+c['size'],'writer-bundle')
-    count_table=_word(image,full+0x60)
+    if rom_content:
+        from .copied_window_variant import writer_bundle, content_owner
+        count_table=writer_bundle(image,full,c['source']+c['size'])
+        _need(not runtime&3 and count_table is not None,'rom-writer-bundle')
+        count_offset,partial_offset,contiguous_offset,end_offset=0x58,0x5c,0xd0,0x138
+    else:
+        _need(not runtime&3 and image[full:full+len(_FULL)]==_FULL and
+              image[full+0x64:full+0xe4]==_PARTIAL and
+              image[full+0xe4:full+0x154]==_CONTIGUOUS and full+0x154<=c['source']+c['size'],'writer-bundle')
+        count_offset,partial_offset,contiguous_offset,end_offset=0x60,0x64,0xe4,0x154
+        count_table=_word(image,full+count_offset)
     _need(not count_table&3 and _word(image,count_table)==0x4000,'pixel-count')
-    code.extend(((full,full+0x60),(full+0x64,full+0xe4),(full+0xe4,full+0x154)))
-    pools.append((full+0x60,full+0x64));data.append((count_table,count_table+4))
+    code.extend(((full,full+count_offset),(full+partial_offset,full+contiguous_offset),
+                 (full+contiguous_offset,full+end_offset)))
+    pools.append((full+count_offset,full+partial_offset));data.append((count_table,count_table+4))
     calls,_=init_shape;delay=calls[10];command=calls[4]
     _need(all(calls[o]==delay for o in(10,28,130)) and
           all(target==command for o,target in calls.items()if o not in(10,28,130)),'init-call-links')
@@ -144,7 +152,11 @@ def _profile(image, owner, init, init_shape, full):
         blit=calls[28]
         if image[blit:blit+8]!=_VENEER:continue
         blit_target=_word(image,blit+8)
-        if blit_target&3 or not c['target']<=blit_target<blit_target+4<=c['target']+c['size']:continue
+        if blit_target&3:continue
+        if rom_content:
+            content=content_owner(image,blit_target,values[26],ram)
+            if content is None:continue
+        elif not c['target']<=blit_target<blit_target+4<=c['target']+c['size']:continue
         if not 0<=values[26]<=len(image)-4:continue
         logos.append((at,shape,veneer,blit,blit_target))
     _need(len(logos)==1,'full-caller-owner')
@@ -153,19 +165,34 @@ def _profile(image, owner, init, init_shape, full):
     context=shape[1][2];ram.append((context,context+0x28))
     code.extend(((veneer,veneer+8),(blit,blit+8),(delay,delay+2)))
     pools.extend(((veneer+8,veneer+12),(blit+8,blit+12)))
-    # The blitter executes naturally; only its copied entry ownership is claimed.
-    blit_source=c['source']+blit_target-c['target'];code.append((blit_source,blit_source+4))
+    # Both content routines execute naturally; the new ROM class owns its
+    # bounded prefix, header reader and scalar stores only.
+    content_metadata=None
+    if rom_content:
+        content=content_owner(image,blit_target,shape[1][26],ram)
+        _need(content is not None,'rom-content-owner')
+        broad_ram=[(v['target'],v['target']+v['size'])for v in copies]+list(zeros)
+        specific_ram=[v for v in ram if v not in broad_ram]
+        _need(not any(_overlap(a,b)for a in content['ram']for b in specific_ram),
+              'rom-content-scalar-alias')
+        code.extend(content['code']);pools.extend(content['pools']);data.extend(content['data'])
+        ram.extend(content['ram']);content_metadata=content['metadata']
+    else:
+        blit_source=c['source']+blit_target-c['target'];code.append((blit_source,blit_source+4))
     for role,at in roles.items():
         spec=_SPEC[role];code.append((at,at+len(spec[0])//2))
         for off,_ in spec[2]:
             op=struct.unpack_from('<H',image,at+off)[0];pool=((at+off+4)&~3)+(op&255)*4;pools.append((pool,pool+4))
     _need(len(set(roles.values()))==len(roles) and not any(_overlap(a,b)for i,a in enumerate(code)for b in code[i+1:]),'code-alias')
     _need(all(0<=a<b<=len(image)and not any(_overlap((a,b),v)for v in code)for a,b in pools),'literal-owner')
+    if rom_content:
+        _need(not any(_overlap(a,b)for a in content['data']for b in code+pools),
+              'rom-content-header-alias')
     _need(all(0<=a<b<=len(image)for a,b in data),'data-bounds')
     base=min(v[0]for v in ram)
     _need(all(b<=base for a,b in code+pools+data),'rom-ram-overlap')
     code=sorted(set(code));pools=sorted(set(pools));data=sorted(set(data));guards=sorted(set(code+pools+data))
-    return dict(signature='copied-byte-range-half128-v1',admission='temporary-evidence-gated',
+    result=dict(signature='copied-byte-range-half128-v1',admission='temporary-evidence-gated',
         role='main',code_basis='low-primary-nor',protocol='copied-half128',width=128,height=128,command_port=0x02000000,
         data_port=0x02000002,command_width=1,access_width=2,bits_per_pixel=16,
         mode_control=0x40,entry_mode=1,pixel_control=0x10,pixel_mode=2,
@@ -177,13 +204,18 @@ def _profile(image, owner, init, init_shape, full):
         content_blitter='copied-entry-only-natural-guest-execution-not-replaced',
         command_arity='unclaimed-exact-source-sequences-only',pixel_convention='existing-rgb565-optics-unqualified',
         physical_controller=None,optical_properties=None,source_pcs=roles,
-        full_entry=runtime,partial_entry=runtime+0x64,contiguous_entry=runtime+0xe4,
+        full_entry=runtime,partial_entry=runtime+partial_offset,contiguous_entry=runtime+contiguous_offset,
         count_table=count_table,framebuffer_pointer_cell=context+0x24,
         copy_entry=copy,reset_entry=reset,copy_layouts=copies,zero_ranges=[list(v)for v in zeros],
         code_intervals=[list(v)for v in code],literal_intervals=[list(v)for v in pools],
         data_intervals=[list(v)for v in data],boot_guard_intervals=[[0,4],[reset,reset+len(_RESET)]],
         guard_intervals=[list(v)for v in guards],ram_intervals=[list(v)for v in sorted(set(ram))],
         iram_intervals=[[c['target'],c['target']+c['size']]])
+    if rom_content:
+        result.update(writer_layout='arm-loop-count-tail-rom-content-v1',
+            content_blitter='primary-ROM-prefix-only-natural-guest-execution-not-replaced',
+            content_prefix=content_metadata)
+    return result
 
 
 def find_copied_window_profile(image: bytes) -> tuple[dict | None, str]:
@@ -193,10 +225,18 @@ def find_copied_window_profile(image: bytes) -> tuple[dict | None, str]:
     candidates=[];failures=[];c=owner[2][2];start=c['source']
     fulls=[]
     while (full:=image.find(_FULL,start,c['source']+c['size']))>=0:
-        fulls.append(full);start=full+1
+        fulls.append((full,False));start=full+1
+    # Semantic ARM MOV r1,#0x43 anchor; the complete normalized bundle and
+    # linked content prefix must pass before this variant becomes a candidate.
+    start=c['source'];anchor=struct.pack('<I',0xe3a01043)
+    from .copied_window_variant import writer_bundle
+    while (full:=image.find(anchor,start,c['source']+c['size']))>=0:
+        start=full+1
+        if writer_bundle(image,full,c['source']+c['size']) is not None:
+            fulls.append((full,True))
     for init,shape in _hits(image,'init'):
-        for full in fulls:
-            try:candidates.append(_profile(image,owner,init,shape,full))
+        for full,rom_content in fulls:
+            try:candidates.append(_profile(image,owner,init,shape,full,rom_content=rom_content))
             except (_Unclosed,struct.error)as error:failures.append(str(error))
     if len(candidates)>1:return None,'copied-window-complete-groups-ambiguous'
     if candidates:return candidates[0],'accepted-static-runtime-unqualified'

@@ -461,6 +461,11 @@ struct MSM5xxxPOCMachineState {
     bool search2_probe_done, search2_probe_rejected;
     MemoryRegion dc0;
     MemoryRegion lcd_aperture;
+    MemoryRegion lcd029_region;
+    bool lcd029_enabled, lcd029_realized;
+    uint8_t lcd029_backing[0x38];
+    uint64_t lcd029_reads, lcd029_writes;
+
     MemoryRegion audio_opaque;
     MemoryRegion lcd[MSM5XXX_POC_LCD_PORTS];
     MemoryRegion lcd_trace;
@@ -472,6 +477,8 @@ struct MSM5xxxPOCMachineState {
     bool dmd5100_enabled, dmd5100_mapped, dmd5100_ram_verified;
     bool dmd5100_barrier, dmd5100_half_pending;
     uint32_t dmd5100_entry, dmd5100_descriptor, dmd5100_payload, dmd5100_count;
+    uint32_t dmd5100_read_base, dmd5100_layout;
+    bool dmd5100_reset_released;
     uint32_t dmd5100_phase, dmd5100_pairs, dmd5100_even_reads, dmd5100_odd_reads;
     uint64_t dmd5100_rejections;
     bool dmd5100_first_rejection, dmd5100_rejection_write, dmd5100_rejection_value_valid;
@@ -548,6 +555,9 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion uart_console_rearm_region;
     /* FF/DD seals at 5; FF/CC/99 adds LF/RX at 5, drains/config at 6/7, seal 8. */
     uint8_t uart_console_probe_stage, uart_console_probe_step, uart_console_probe_drains;
+    bool uart_console_halfword_controls;
+    bool uart_console_register_file;
+    uint16_t uart_console_ipr;
     bool uart_console_initialized, uart_console_tx_enabled, uart_console_rx_enabled;
     bool uart_console_empty;
     uint32_t uart_console_base;
@@ -756,6 +766,9 @@ struct MSM5xxxPOCMachineState {
     bool ma2_audio_timer_rejected;
     bool rex_irq_enabled;
     bool rex_irq_c80;
+    bool rex_irq_copied;
+    uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size;
+    uint32_t rex_irq_vector_rom, rex_irq_halfword_arm_pc;
     bool rex_irq_read_consume;
     uint32_t rex_irq_status_address;
     uint32_t rex_irq_enable_address;
@@ -805,6 +818,16 @@ struct MSM5xxxPOCMachineState {
     uint32_t boot_keysense_pc[3], boot_keysense_phase, boot_keysense_reason;
     uint64_t boot_keysense_reads, boot_keysense_releases, boot_keysense_rejections;
     MemoryRegion boot_keysense_region;
+    bool boot_contact_enabled, boot_contact_realized;
+    uint32_t boot_contact_address, boot_contact_pc;
+    unsigned boot_contact_mask, boot_contact_width;
+    uint64_t boot_contact_reads, boot_contact_releases;
+    MemoryRegion boot_contact_region;
+    bool gpio_lcd_enabled, gpio_lcd_realized;
+    uint32_t gpio_lcd_pcs[64];
+    unsigned gpio_lcd_pc_count;
+    uint64_t gpio_lcd_captures;
+    MemoryRegion gpio_lcd_region;
     uint32_t spi_nv_source_geometry;
     bool spi_nv_geometry_ready;
     uint64_t spi_nv_geometry_mismatches;
@@ -1321,6 +1344,7 @@ static void msm5xxx_poc_uart_console_reset(void *opaque)
     s->uart_console_empty = true;
     s->uart_console_config = s->uart_console_cr_step = 0;
     s->uart_console_mr1 = s->uart_console_mr2 = s->uart_console_csr = 0;
+    s->uart_console_ipr = 0;
     s->uart_console_imr = s->uart_console_tfwr = s->uart_console_rfwr = 0;
     s->uart_console_accepted = 0;
     s->uart_console_last_byte = 0;
@@ -1416,12 +1440,114 @@ static uint8_t msm5xxx_poc_uart_console_isr(MSM5xxxPOCMachineState *s)
            pending <= s->uart_console_tfwr ? 1 : 0;
 }
 
+/* Opt-in legacy UART register experiment. Register aliases and control bits
+ * agree with Linux drivers/tty/serial/msm_serial.c and the observed 5100
+ * application/diagnostic producers. No RX source or IRQ is synthesized. */
+static MemTxResult msm5xxx_poc_uart_register_file_read(void *opaque,
+    hwaddr offset, uint64_t *value, unsigned size, MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (s->uart_console_rejected) {
+        return msm5xxx_poc_uart_console_forward(s, offset, value, size, attrs, false);
+    }
+    if ((size != 1 && size != 2) || offset & 3 || offset > 0x20) {
+        goto reject;
+    }
+    switch (offset) {
+    case 0: *value = s->uart_console_mr1; break;
+    case 4: *value = s->uart_console_mr2; break;
+    case 8: *value = (s->uart_console_empty ? 8 : 0) |
+                    (s->uart_console_tx_enabled && s->uart_console_empty ? 4 : 0); break;
+    case 0x0c: *value = 0; break;
+    case 0x10: *value = msm5xxx_poc_uart_console_isr(s) & s->uart_console_imr; break;
+    case 0x14: *value = msm5xxx_poc_uart_console_isr(s); break;
+    case 0x18: *value = s->uart_console_ipr; break;
+    case 0x1c: *value = s->uart_console_tfwr; break;
+    case 0x20: *value = s->uart_console_rfwr; break;
+    default: goto reject;
+    }
+    *value &= size == 1 ? UINT8_MAX : UINT16_MAX;
+    return MEMTX_OK;
+reject:
+    msm5xxx_poc_uart_console_reject(s, "unsupported-register-file-read");
+    return msm5xxx_poc_uart_console_forward(s, offset, value, size, attrs, false);
+}
+
+static MemTxResult msm5xxx_poc_uart_register_file_write(void *opaque,
+    hwaddr offset, uint64_t value, unsigned size, MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    MemTxResult result;
+    if (s->uart_console_rejected) {
+        return msm5xxx_poc_uart_console_forward(s, offset, &value, size, attrs, true);
+    }
+    if ((size != 1 && size != 2) || offset & 3 || offset > 0x20 ||
+        value > UINT16_MAX || (size == 1 && value > UINT8_MAX)) {
+        goto reject;
+    }
+    if (offset == 0x10) {
+        unsigned control = value & 15;
+        if (value > UINT8_MAX || (control & 3) == 3 || (control & 12) == 12) {
+            goto reject;
+        }
+        switch (value & 0xf0) {
+        case 0: break;
+        case 0x10: break; /* Reset the already empty receive FIFO. */
+        case 0x20: s->uart_console_empty = true; break;
+        case 0x30: break; /* No receive errors in the isolated empty source. */
+        case 0xe0: break; /* RFR output changes no disconnected RX input. */
+        default: goto reject;
+        }
+        if (control & 1) s->uart_console_rx_enabled = true;
+        if (control & 2) s->uart_console_rx_enabled = false;
+        if (control & 4) s->uart_console_tx_enabled = true;
+        if (control & 8) s->uart_console_tx_enabled = false;
+        s->uart_console_initialized = s->uart_console_rx_enabled || s->uart_console_tx_enabled;
+        return MEMTX_OK;
+    }
+    if (offset == 0x0c) {
+        if (value > UINT8_MAX || !s->uart_console_tx_enabled || !s->uart_console_empty) {
+            goto reject;
+        }
+        s->uart_console_last_byte = value;
+        if (s->uart_console_accepted != UINT64_MAX) {
+            s->uart_console_accepted++;
+        }
+        return MEMTX_OK; /* Provisional synchronous null TX sink. */
+    }
+    if (offset != 0 && offset != 0x18 && offset != 0x1c && offset != 0x20 &&
+        value > UINT8_MAX) {
+        goto reject;
+    }
+    result = msm5xxx_poc_uart_console_mirror(s, offset, value, size, attrs);
+    if (result != MEMTX_OK || s->uart_console_rejected) {
+        return result;
+    }
+    switch (offset) {
+    case 0: s->uart_console_mr1 = value; break;
+    case 4: s->uart_console_mr2 = value; break;
+    case 8: s->uart_console_csr = value; break;
+    case 0x14: s->uart_console_imr = value; break;
+    case 0x18: s->uart_console_ipr = value; break;
+    case 0x1c: s->uart_console_tfwr = value; break;
+    case 0x20: s->uart_console_rfwr = value; break;
+    default: goto reject;
+    }
+    return MEMTX_OK;
+reject:
+    msm5xxx_poc_uart_console_reject(s, "unsupported-register-file-write");
+    return msm5xxx_poc_uart_console_forward(s, offset, &value, size, attrs, true);
+}
+
 static MemTxResult msm5xxx_poc_uart_console_read_fixed(void *opaque, hwaddr offset,
                                                 uint64_t *value, unsigned size,
                                                 MemTxAttrs attrs)
 {
     MSM5xxxPOCMachineState *s = opaque;
 
+    if (s->uart_console_register_file) {
+        return msm5xxx_poc_uart_register_file_read(opaque, offset, value, size, attrs);
+    }
     if (s->uart_console_rejected) {
         return msm5xxx_poc_uart_console_forward(s, offset, value, size, attrs, false);
     }
@@ -1460,20 +1586,24 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
     uint8_t *byte_latch = NULL;
     uint16_t *wide_latch = NULL;
     unsigned config_bit = 0;
+    unsigned control_width = s->uart_console_halfword_controls ? 2 : 1;
 
+    if (s->uart_console_register_file) {
+        return msm5xxx_poc_uart_register_file_write(opaque, offset, value, size, attrs);
+    }
     if (s->uart_console_rejected) {
         return msm5xxx_poc_uart_console_forward(s, offset, &value, size, attrs, true);
     }
     if (offset == 0 && size == s->uart_console_register_width && value == 0) {
         wide_latch = &s->uart_console_mr1;
         config_bit = 1;
-    } else if (offset == 4 && size == 1 && value == 0x34) {
+    } else if (offset == 4 && size == control_width && value == 0x34) {
         byte_latch = &s->uart_console_mr2;
         config_bit = 2;
-    } else if (offset == 8 && size == 1 && value == s->uart_console_expected_csr) {
+    } else if (offset == 8 && size == control_width && value == s->uart_console_expected_csr) {
         byte_latch = &s->uart_console_csr;
         config_bit = 4;
-    } else if (offset == 0x14 && size == 1 && value == 0) {
+    } else if (offset == 0x14 && size == control_width && value == 0) {
         byte_latch = &s->uart_console_imr;
         config_bit = 8;
     } else if (offset == 0x1c && size == s->uart_console_tfwr_width && value == 30) {
@@ -1482,7 +1612,7 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
     } else if (offset == 0x20 && size == s->uart_console_register_width && value == 0) {
         wide_latch = &s->uart_console_rfwr;
         config_bit = 32;
-    } else if (offset == 0x10 && size == 1 &&
+    } else if (offset == 0x10 && size == control_width &&
                (value == 0x10 || value == 0x20 || value == 0x30 ||
                 value == 1 || value == 4)) {
         if (!s->uart_console_initialized) {
@@ -1507,7 +1637,7 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
         } else if (value == 4) {
             s->uart_console_tx_enabled = true;
         }
-    } else if (offset == 0x0c && size == 1 && value <= UINT8_MAX) {
+    } else if (offset == 0x0c && size == control_width && value <= UINT8_MAX) {
         if (!s->uart_console_initialized || !s->uart_console_tx_enabled ||
             !s->uart_console_empty) {
             reason = "tx-before-initialized-capacity";
@@ -1952,6 +2082,45 @@ malformed:
 }
 
 
+static char *msm5xxx_poc_get_uart_halfword_console(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup(s->uart_console_halfword_controls ? "3000f0c" : "");
+}
+
+static void msm5xxx_poc_set_uart_halfword_console(Object *obj,
+                                                 const char *value,
+                                                 Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (strcmp(value, "3000f0c") || s->uart_console_realized ||
+        s->uart_console_enabled) {
+        error_setg(errp, "experimental-uart-halfword-console requires 3000f0c before UART configuration");
+        return;
+    }
+    msm5xxx_poc_set_uart_console(obj, "3000f0c:2:ff", errp);
+    s->uart_console_halfword_controls = true;
+}
+
+static char *msm5xxx_poc_get_uart_register_file(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->uart_console_register_file ? g_strdup_printf("%x", s->uart_console_base) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_uart_register_file(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if ((strcmp(value, "30007ac") && strcmp(value, "3000f0c")) ||
+        s->uart_console_enabled || s->uart_console_realized) {
+        error_setg(errp, "experimental-uart-register-file requires 30007ac or 3000f0c before initialization");
+        return;
+    }
+    msm5xxx_poc_set_uart_console(obj, !strcmp(value, "30007ac") ? "30007ac:2:ff" : "3000f0c:2:ff", errp);
+    s->uart_console_register_file = true;
+}
+
 static char *msm5xxx_poc_get_uart_console_probe(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -2119,13 +2288,14 @@ static char *msm5xxx_poc_get_uart_console_status(Object *obj, Error **errp)
     return g_strdup_printf(
         "{\"policy\":\"provisional-uncalibrated-synchronous-null-tx-rx-empty\","
         "\"configured\":%s,\"initialized\":%s,\"rejected\":%s,"
-        "\"classwidth\":%u,\"expectedcsr\":%u,"
+        "\"classwidth\":%u,\"expectedcsr\":%u,\"registerfile\":%s,\"csr\":%u,"
         "\"txenabled\":%s,\"rxenabled\":%s,\"empty\":%s,"
         "\"acceptedcount\":%" G_GUINT64_FORMAT ",\"lastbyte\":%u,\"rejectreason\":\"%s\"}",
         s->uart_console_enabled ? "true" : "false",
         s->uart_console_initialized ? "true" : "false",
         s->uart_console_rejected ? "true" : "false",
         s->uart_console_register_width, s->uart_console_expected_csr,
+        s->uart_console_register_file ? "true" : "false", s->uart_console_csr,
         s->uart_console_tx_enabled ? "true" : "false",
         s->uart_console_rx_enabled ? "true" : "false",
         s->uart_console_empty ? "true" : "false", s->uart_console_accepted,
@@ -2406,6 +2576,17 @@ static const MemoryRegionOps msm5xxx_poc_ready_control_ops = {
     .valid.max_access_size = 1,
 };
 
+static uint32_t msm5xxx_poc_dmd5100_read_base(MSM5xxxPOCMachineState *s)
+{
+    return s->dmd5100_read_base ? s->dmd5100_read_base : 0x030007e0;
+}
+
+static hwaddr msm5xxx_poc_dmd5100_port_address(MSM5xxxPOCMachineState *s, unsigned index)
+{
+    return index < 3 ? dmd5100_ports[index] :
+        msm5xxx_poc_dmd5100_read_base(s) + (index == 3 ? 8 : 12);
+}
+
 static bool msm5xxx_poc_dmd5100_active(MSM5xxxPOCMachineState *s)
 {
     return s->dmd5100_phase >= DMD5100_HOLD && s->dmd5100_phase <= DMD5100_ODD_DONE;
@@ -2490,6 +2671,7 @@ static void msm5xxx_poc_dmd5100_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
     s->dmd5100_phase = DMD5100_IDLE;
+    s->dmd5100_reset_released = false;
     s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
     s->dmd5100_rejections = 0;
     s->dmd5100_first_rejection = false;
@@ -2509,6 +2691,10 @@ static void msm5xxx_poc_dmd5100_reset(void *opaque)
 static bool msm5xxx_poc_dmd5100_pc(MSM5xxxPOCMachineState *s, unsigned offset)
 {
     uint32_t pc;
+    if ((s->dmd5100_layout == 1 || s->dmd5100_layout == 2) &&
+        offset >= 0x5e && offset <= 0xb8) {
+        offset += 6;
+    }
     return msm5xxx_poc_boot_storage_guest(s) && s->cpu->env.thumb &&
         !(s->cpu->env.cp15.sctlr_el[1] & 1) && !s->cpu->env.cp15.fcseidr_ns &&
         !s->cpu->env.cp15.fcseidr_s && msm5xxx_poc_mmio_access_pc(s, &pc) &&
@@ -2522,12 +2708,12 @@ static MemTxResult msm5xxx_poc_dmd5100_forward(MSM5xxxPOCDMD5100Port *port,
     uint8_t bytes[8] = {0};
     MemTxResult result;
     if (port->index >= 5 || !size || size > sizeof(bytes) ||
-        offset > UINT64_MAX - dmd5100_ports[port->index]) {
+        offset > UINT64_MAX - msm5xxx_poc_dmd5100_port_address(s, port->index)) {
         return MEMTX_ERROR;
     }
     if (s->dmd5100_ram_verified && offset < 4 && size <= 4 - offset) {
         uint8_t *ram = memory_region_get_ram_ptr(&s->msm);
-        uint64_t at = dmd5100_ports[port->index] - MSM5XXX_POC_MSM_BASE + offset;
+        uint64_t at = msm5xxx_poc_dmd5100_port_address(s, port->index) - MSM5XXX_POC_MSM_BASE + offset;
         if (write) {
             msm5xxx_poc_backing_write(ram, at, *value, size);
             memory_region_set_dirty(&s->msm, at, size);
@@ -2540,10 +2726,10 @@ static MemTxResult msm5xxx_poc_dmd5100_forward(MSM5xxxPOCDMD5100Port *port,
     if (write) {
         msm5xxx_poc_backing_write(bytes, 0, *value, size);
         result = address_space_write(&address_space_memory,
-            dmd5100_ports[port->index] + offset, attrs, bytes, size);
+            msm5xxx_poc_dmd5100_port_address(s, port->index) + offset, attrs, bytes, size);
     } else {
         result = address_space_read(&address_space_memory,
-            dmd5100_ports[port->index] + offset, attrs, bytes, size);
+            msm5xxx_poc_dmd5100_port_address(s, port->index) + offset, attrs, bytes, size);
         if (result == MEMTX_OK) {
             *value = msm5xxx_poc_backing_read(bytes, 0, size);
         }
@@ -2560,10 +2746,12 @@ static bool msm5xxx_poc_dmd5100_write_next(MSM5xxxPOCMachineState *s,
     if (port == 2 && size == 1 && value == 0 &&
         msm5xxx_poc_dmd5100_pc(s, 0x1a) && r[7] == 0) {
         s->dmd5100_phase = DMD5100_HOLD;
+        s->dmd5100_reset_released = false;
         s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
         s->dmd5100_barrier = s->dmd5100_half_pending = false;
     } else if (port == 0 && size == 2 && value == 0 && p == DMD5100_HOLD &&
-               msm5xxx_poc_dmd5100_pc(s, 0x24) && r[3] == s->dmd5100_descriptor && !r[7]) {
+               msm5xxx_poc_dmd5100_pc(s, 0x24) && !r[7] &&
+               (s->dmd5100_layout >= 2 ? !r[0] : r[3] == s->dmd5100_descriptor)) {
         s->dmd5100_phase = DMD5100_PROGRAM;
     } else if (port == 1 && size == 2 && value <= UINT16_MAX && p == DMD5100_PROGRAM &&
                r[3] == s->dmd5100_descriptor && r[7] == 2 * s->dmd5100_pairs &&
@@ -2581,23 +2769,31 @@ static bool msm5xxx_poc_dmd5100_write_next(MSM5xxxPOCMachineState *s,
         } else {
             return false;
         }
+    } else if (port == 2 && size == 1 && value == 1 && p == DMD5100_FULL &&
+               (s->dmd5100_layout == 1 || s->dmd5100_layout == 2) &&
+               !s->dmd5100_reset_released && msm5xxx_poc_dmd5100_pc(s, 0x56) && r[7] == 2 * n) {
+        s->dmd5100_reset_released = true;
     } else if (port == 3 && size == 1 && value == 0x0e && p == DMD5100_FULL &&
-               msm5xxx_poc_dmd5100_pc(s, 0x5e) && r[7] == 2 * n && r[6] == 0x030007e0) {
+               ((s->dmd5100_layout != 1 && s->dmd5100_layout != 2) || s->dmd5100_reset_released) &&
+               msm5xxx_poc_dmd5100_pc(s, 0x5e) && r[7] == 2 * n && r[6] == msm5xxx_poc_dmd5100_read_base(s)) {
         s->dmd5100_phase = DMD5100_MODE;
     } else if (port == 4 && size == 1 && value == 0 && p == DMD5100_MODE &&
-               msm5xxx_poc_dmd5100_pc(s, 0x62) && r[7] == 2 * n && r[6] == 0x030007e0) {
+               msm5xxx_poc_dmd5100_pc(s, 0x62) && r[7] == 2 * n && r[6] == msm5xxx_poc_dmd5100_read_base(s)) {
         s->dmd5100_phase = DMD5100_EVEN;
         s->dmd5100_barrier = false;
     } else if (port == 4 && size == 1 && value == 0 && p == DMD5100_EVEN_DONE &&
                msm5xxx_poc_dmd5100_pc(s, 0x8e) && r[7] == s->dmd5100_descriptor &&
-               r[4] == 2 * n && r[2] == 0x030007e0) {
+               r[4] == 2 * n && r[2] == msm5xxx_poc_dmd5100_read_base(s)) {
         s->dmd5100_phase = DMD5100_ODD;
         s->dmd5100_barrier = false;
     } else if (port == 3 && size == 1 && value == 0 && p == DMD5100_ODD_DONE &&
                msm5xxx_poc_dmd5100_pc(s, 0xb8) && r[7] == n &&
-               r[4] == s->dmd5100_payload && r[1] == 2 * n && !r[0] && r[2] == 0x030007e0) {
+               r[4] == s->dmd5100_payload && r[1] == 2 * n &&
+               (s->dmd5100_layout == 2 ? (!r[3] && r[0] == n) : !r[0]) &&
+               r[2] == msm5xxx_poc_dmd5100_read_base(s)) {
         s->dmd5100_phase = DMD5100_CLOSED;
     } else if (!(port == 2 && size == 1 && value == 1 && p == DMD5100_CLOSED &&
+                 s->dmd5100_layout != 1 && s->dmd5100_layout != 2 &&
                  msm5xxx_poc_dmd5100_pc(s, 0xc8) && r[7] == n && r[4] == s->dmd5100_payload)) {
         return false;
     }
@@ -2643,7 +2839,7 @@ static MemTxResult msm5xxx_poc_dmd5100_read(void *opaque, hwaddr offset,
             ((even && msm5xxx_poc_dmd5100_pc(s, 0x78) && r[7] == s->dmd5100_descriptor &&
               r[2] == s->dmd5100_payload && r[4] == 2 * i && r[0] == i && r[3] == s->dmd5100_count) ||
              (odd && msm5xxx_poc_dmd5100_pc(s, 0xa4) && r[7] == s->dmd5100_count &&
-              r[4] == s->dmd5100_payload && r[1] == 2 * j && r[0] == j && r[2] == 0x030007e0))) {
+              r[4] == s->dmd5100_payload && r[1] == 2 * j && r[0] == j && r[2] == msm5xxx_poc_dmd5100_read_base(s)))) {
             *value = even ? s->dmd5100_even[i++] : s->dmd5100_odd[j++];
             s->dmd5100_even_reads = i;
             s->dmd5100_odd_reads = j;
@@ -2659,9 +2855,9 @@ static MemTxResult msm5xxx_poc_dmd5100_read(void *opaque, hwaddr offset,
     if (guest && msm5xxx_poc_dmd5100_active(s)) {
         bool barrier = !offset && size == 1 && port->index == 3 && !s->dmd5100_barrier &&
             ((p == DMD5100_EVEN && !i && msm5xxx_poc_dmd5100_pc(s, 0x64) &&
-              r[7] == 2 * s->dmd5100_count && r[6] == 0x030007e0) ||
+              r[7] == 2 * s->dmd5100_count && r[6] == msm5xxx_poc_dmd5100_read_base(s)) ||
              (p == DMD5100_ODD && !j && msm5xxx_poc_dmd5100_pc(s, 0x90) &&
-              r[7] == s->dmd5100_descriptor && r[2] == 0x030007e0));
+              r[7] == s->dmd5100_descriptor && r[2] == msm5xxx_poc_dmd5100_read_base(s)));
         if (result == MEMTX_OK && barrier) {
             s->dmd5100_barrier = true;
         } else {
@@ -2715,6 +2911,57 @@ malformed:
     error_setg(errp, "dmd5100-program requires bounded ENTRY:DESCRIPTOR:PAYLOAD:PAIR_COUNT before realization");
 }
 
+static void msm5xxx_poc_set_dmd5100_760(Object *obj, const char *value, Error **errp)
+{
+    Error *local_error = NULL;
+    msm5xxx_poc_set_dmd5100(obj, value, &local_error);
+    if (local_error) {
+        error_propagate(errp, local_error);
+        return;
+    }
+    MSM5XXX_POC_MACHINE(obj)->dmd5100_read_base = 0x03000760;
+}
+
+static char *msm5xxx_poc_get_dmd5100_760_layout(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->dmd5100_enabled ? g_strdup_printf("%x:%x:%x:%x:%x", s->dmd5100_entry,
+        s->dmd5100_descriptor, s->dmd5100_payload, s->dmd5100_count, s->dmd5100_layout) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_dmd5100_760_layout(Object *obj, const char *value, Error **errp)
+{
+    uint32_t v[5];
+    const char *part = value, *end;
+    unsigned long parsed;
+    if (!part) {
+        goto malformed;
+    }
+    for (unsigned i = 0; i < 5; i++) {
+        if (!g_ascii_isxdigit(*part) || qemu_strtoul(part, &end, 16, &parsed) || parsed > UINT32_MAX ||
+            (i < 4 ? *end != ':' : *end != '\0')) {
+            goto malformed;
+        }
+        v[i] = parsed;
+        part = end + (i < 4);
+    }
+    if (v[4] > 3) {
+        goto malformed;
+    }
+    char *legacy = g_strdup_printf("%x:%x:%x:%x", v[0], v[1], v[2], v[3]);
+    Error *local_error = NULL;
+    msm5xxx_poc_set_dmd5100_760(obj, legacy, &local_error);
+    g_free(legacy);
+    if (local_error) {
+        error_propagate(errp, local_error);
+        return;
+    }
+    MSM5XXX_POC_MACHINE(obj)->dmd5100_layout = v[4];
+    return;
+malformed:
+    error_setg(errp, "dmd5100-program-760-layout requires ENTRY:DESCRIPTOR:PAYLOAD:PAIR_COUNT:LAYOUT(0..3)");
+}
+
 static char *msm5xxx_poc_get_dmd5100_stats(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -2756,7 +3003,7 @@ static bool msm5xxx_poc_dmd5100_topology(MSM5xxxPOCMachineState *s)
         return false;
     }
     for (unsigned i = 0; i < 8; i++) {
-        uint64_t address = i < 3 ? bases[i] : dmd5100_ports[i - 3];
+        uint64_t address = i < 3 ? bases[i] : msm5xxx_poc_dmd5100_port_address(s, i - 3);
         unsigned length = i < 3 ? lengths[i] : 4;
         if (i < 3 && address + length > s->primary_nor_size) {
             return false;
@@ -5397,9 +5644,36 @@ static bool msm5xxx_poc_rex_static_gate(MSM5xxxPOCMachineState *s)
         s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
         return false;
     }
-    if (!msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(target), target,
-                                  &target) ||
-        target != s->rex_irq_wrapper_address) {
+    if (s->rex_irq_copied) {
+        uint8_t loaded[512], original[512];
+        uint32_t veneer;
+
+        /* This class has a copied B -> LDR pc veneer, not a direct B. */
+        if (!msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(target),
+                                      target, &veneer) ||
+            veneer != target + 8 ||
+            msm5xxx_poc_guest_u32(veneer) != 0xe51ff004 ||
+            msm5xxx_poc_guest_u32(veneer + 4) != s->rex_irq_wrapper_address) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
+            return false;
+        }
+        cpu_physical_memory_read(target, loaded, 16);
+        cpu_physical_memory_read(s->rex_irq_vector_rom, original, 16);
+        if (memcmp(loaded, original, 16)) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
+            return false;
+        }
+        cpu_physical_memory_read(s->rex_irq_wrapper_address, loaded,
+                                 s->rex_irq_wrapper_size);
+        cpu_physical_memory_read(s->rex_irq_wrapper_rom, original,
+                                 s->rex_irq_wrapper_size);
+        if (memcmp(loaded, original, s->rex_irq_wrapper_size)) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
+            return false;
+        }
+    } else if (!msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(target), target,
+                                         &target) ||
+               target != s->rex_irq_wrapper_address) {
         s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
         return false;
     }
@@ -5658,6 +5932,50 @@ static void msm5xxx_poc_rex_irq_arm_write(void *opaque, hwaddr offset,
         msm5xxx_poc_rex_irq_schedule(s);
     }
 }
+
+static uint64_t msm5xxx_poc_rex_copied_arm_read(void *opaque, hwaddr offset,
+                                                unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                   0x7a0 + offset, size);
+}
+
+static void msm5xxx_poc_rex_copied_arm_write(void *opaque, hwaddr offset,
+                                           uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc;
+    uint8_t opcode[2];
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                             0x7a0 + offset, value, size);
+    memory_region_set_dirty(&s->msm, 0x7a0 + offset, size);
+    if (offset || size != 2 || value != 2 || !s->cpu->env.thumb ||
+        !msm5xxx_poc_boot_storage_guest(s) ||
+        !msm5xxx_poc_mmio_access_pc(s, &pc) ||
+        pc != s->rex_irq_halfword_arm_pc ||
+        s->cpu->env.regs[1] != 0x030007a0 ||
+        (s->cpu->env.regs[0] & UINT16_MAX) != 2 || s->rex_irq_armed) {
+        return;
+    }
+    cpu_physical_memory_read(pc, opcode, 2);
+    if (lduw_le_p(opcode) != 0x8008) { /* STRH r0, [r1] */
+        return;
+    }
+    s->rex_irq_armed = true;
+    s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      s->rex_irq_interval;
+    msm5xxx_poc_rex_irq_schedule(s);
+}
+
+static const MemoryRegionOps msm5xxx_poc_rex_copied_arm_ops = {
+    .read = msm5xxx_poc_rex_copied_arm_read,
+    .write = msm5xxx_poc_rex_copied_arm_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
 
 static const MemoryRegionOps msm5xxx_poc_rex_irq_ops = {
     .read = msm5xxx_poc_rex_irq_read,
@@ -8885,6 +9203,55 @@ static bool msm5xxx_poc_audio_packet_write(MSM5xxxPOCMachineState *s,
     return true;
 }
 
+/* Source-qualified diagnostic experiment. No status or incoming data is
+ * synthesized; all reads return the register backing written by the guest. */
+static uint64_t msm5xxx_poc_lcd029_read(void *opaque, hwaddr offset,
+                                      unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (size != 2 || offset & 1 || offset > 0x36) {
+        return 0;
+    }
+    s->lcd029_reads++;
+    return msm5xxx_poc_backing_read(s->lcd029_backing, offset, size);
+}
+
+static void msm5xxx_poc_lcd029_write(void *opaque, hwaddr offset,
+                                    uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (size != 2 || offset & 1 || offset > 0x36) {
+        return;
+    }
+    s->lcd029_writes++;
+    msm5xxx_poc_backing_write(s->lcd029_backing, offset, value, size);
+    msm5xxx_poc_lcd_trace_write(s, 0x02900000 + offset, value & UINT16_MAX, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_lcd029_ops = {
+    .read = msm5xxx_poc_lcd029_read,
+    .write = msm5xxx_poc_lcd029_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+    .impl = { .min_access_size = 2, .max_access_size = 2 },
+};
+
+static char *msm5xxx_poc_get_lcd029(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup(s->lcd029_enabled ? "1" : "");
+}
+
+static void msm5xxx_poc_set_lcd029(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (s->lcd029_enabled || s->lcd029_realized || strcmp(value, "1")) {
+        error_setg(errp, "experimental-lcd029 requires 1 before initialization");
+        return;
+    }
+    s->lcd029_enabled = true;
+}
+
 static uint64_t msm5xxx_poc_lcd_aperture_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
@@ -10260,6 +10627,247 @@ static void msm5xxx_poc_boot_keysense_init(MachineState *machine,
         MSM5XXX_POC_MSM_BASE + 0x694, &s->boot_keysense_region, 1);
 }
 
+/* Diagnostic electrical input: only the explicitly selected guest load sees
+ * released columns. Other readers and all writes retain the underlying RAM. */
+static uint64_t msm5xxx_poc_boot_contact_read(void *opaque, hwaddr offset,
+                                             unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint64_t value = msm5xxx_poc_backing_read(msm,
+        s->boot_contact_address - MSM5XXX_POC_MSM_BASE + offset, size);
+
+    if (!offset && size == s->boot_contact_width &&
+        msm5xxx_poc_boot_storage_guest(s) && s->cpu->env.thumb &&
+        (CPU_GET_CLASS(current_cpu)->get_pc(current_cpu) & ~1u) ==
+            s->boot_contact_pc) {
+        s->boot_contact_reads++;
+        s->boot_contact_releases++;
+        return value | s->boot_contact_mask;
+    }
+    return value;
+}
+
+static void msm5xxx_poc_boot_contact_write(void *opaque, hwaddr offset,
+                                          uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+        s->boot_contact_address - MSM5XXX_POC_MSM_BASE + offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_boot_contact_ops = {
+    .read = msm5xxx_poc_boot_contact_read,
+    .write = msm5xxx_poc_boot_contact_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
+static void msm5xxx_poc_boot_contact_init(MachineState *machine,
+                                         MSM5xxxPOCMachineState *s,
+                                         Error **errp)
+{
+    MemoryRegionSection section;
+    bool conflict;
+
+    s->boot_contact_realized = true;
+    if (!s->boot_contact_enabled) {
+        return;
+    }
+    if (!s->memory_profile_enabled || s->primary_nor_size < 2 ||
+        s->boot_contact_pc > s->primary_nor_size - 2) {
+        error_setg(errp, "experimental-boot-contact requires a primary NOR load PC");
+        return;
+    }
+    section = memory_region_find(get_system_memory(), s->boot_contact_address,
+                                 4);
+    conflict = section.mr != &s->msm ||
+        !int128_eq(section.size, int128_make64(4));
+    memory_region_unref(section.mr);
+    if (conflict) {
+        error_setg(errp, "experimental-boot-contact requires unclaimed GPIO backing");
+        return;
+    }
+    memory_region_init_io(&s->boot_contact_region, OBJECT(machine),
+        &msm5xxx_poc_boot_contact_ops, s, "msm5xxx-poc.boot-contact",
+        4);
+    memory_region_add_subregion_overlap(get_system_memory(),
+        s->boot_contact_address, &s->boot_contact_region, 1);
+}
+
+static char *msm5xxx_poc_get_boot_contact(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->boot_contact_enabled ? g_strdup_printf("%x:%x:%x:%x",
+        s->boot_contact_address, s->boot_contact_pc,
+        s->boot_contact_mask, s->boot_contact_width) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_boot_contact(Object *obj, const char *value,
+                                        Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t fields[4];
+
+    if (s->boot_contact_realized || s->boot_contact_enabled ||
+        !msm5xxx_poc_boot_storage_hex(value, fields, 4) || (fields[1] & 1) ||
+        (fields[0] != 0x0300066c && fields[0] != 0x0300072c) ||
+        !((fields[3] == 1 && (fields[2] == 2 || fields[2] == 4)) ||
+          (fields[3] == 2 && (fields[2] == 8 || fields[2] == 31)))) {
+        error_setg(errp, "experimental-boot-contact needs GPIO:PC:MASK:WIDTH before init");
+        return;
+    }
+    s->boot_contact_address = fields[0];
+    s->boot_contact_pc = fields[1];
+    s->boot_contact_mask = fields[2];
+    s->boot_contact_width = fields[3];
+    s->boot_contact_enabled = true;
+}
+
+static char *msm5xxx_poc_get_boot_contact_state(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return g_strdup_printf("configured=%u reads=%" PRIu64 " releases=%" PRIu64,
+        s->boot_contact_enabled, s->boot_contact_reads, s->boot_contact_releases);
+}
+
+/* Passive, opt-in source-PC observer. GPIO values are never synthesized. */
+static uint64_t msm5xxx_poc_gpio_lcd_read(void *opaque, hwaddr offset,
+                                        unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                   0x660 + offset, size);
+}
+
+static void msm5xxx_poc_gpio_lcd_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc;
+    unsigned i;
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                             0x660 + offset, value, size);
+    memory_region_set_dirty(&s->msm, 0x660 + offset, size);
+    if (offset || size != 2 || !s->cpu->env.thumb ||
+        !msm5xxx_poc_boot_storage_guest(s) || !msm5xxx_poc_mmio_access_pc(s, &pc)) {
+        return;
+    }
+    for (i = 0; i < s->gpio_lcd_pc_count; i++) {
+        if (pc == s->gpio_lcd_pcs[i]) {
+            s->gpio_lcd_captures++;
+            msm5xxx_poc_lcd_trace_write(s, 0x03000660, value & UINT16_MAX, size);
+            return;
+        }
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_gpio_lcd_ops = {
+    .read = msm5xxx_poc_gpio_lcd_read,
+    .write = msm5xxx_poc_gpio_lcd_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static void msm5xxx_poc_gpio_lcd_init(MachineState *machine,
+                                      MSM5xxxPOCMachineState *s, Error **errp)
+{
+    MemoryRegionSection section;
+    bool conflict;
+    unsigned i;
+    s->gpio_lcd_realized = true;
+    if (!s->gpio_lcd_enabled) {
+        return;
+    }
+    if (!s->memory_profile_enabled || s->primary_nor_size < 2) {
+        goto invalid;
+    }
+    for (i = 0; i < s->gpio_lcd_pc_count; i++) {
+        if (s->gpio_lcd_pcs[i] > s->primary_nor_size - 2) {
+            goto invalid;
+        }
+    }
+    section = memory_region_find(get_system_memory(), 0x03000660, 4);
+    conflict = section.mr != &s->msm ||
+               section.offset_within_region != 0x660 ||
+               !int128_eq(section.size, int128_make64(4));
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    if (conflict) {
+        goto invalid;
+    }
+    memory_region_init_io(&s->gpio_lcd_region, OBJECT(machine),
+        &msm5xxx_poc_gpio_lcd_ops, s, "msm5xxx-poc.gpio660-lcd", 4);
+    memory_region_add_subregion_overlap(get_system_memory(), 0x03000660,
+                                       &s->gpio_lcd_region, 1);
+    return;
+invalid:
+    error_setg(errp, "GPIO LCD observer requires primary NOR PCs and exclusive GPIO660 backing");
+}
+
+static char *msm5xxx_poc_get_gpio_lcd(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *value = g_string_new("");
+    for (unsigned i = 0; i < s->gpio_lcd_pc_count; i++) {
+        g_string_append_printf(value, "%s%x", i ? ":" : "", s->gpio_lcd_pcs[i]);
+    }
+    return g_string_free(value, false);
+}
+
+static void msm5xxx_poc_set_gpio_lcd(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t pcs[64];
+    unsigned count = 0, i;
+    const char *cursor = value, *end;
+    unsigned long parsed;
+    if (s->gpio_lcd_realized || s->gpio_lcd_enabled || !cursor) {
+        goto invalid;
+    }
+    while (*cursor) {
+        if (count == ARRAY_SIZE(pcs) || !g_ascii_isxdigit(*cursor) ||
+            qemu_strtoul(cursor, &end, 16, &parsed) || parsed > UINT32_MAX || (parsed & 1)) {
+            goto invalid;
+        }
+        for (i = 0; i < count; i++) {
+            if (pcs[i] == parsed) {
+                goto invalid;
+            }
+        }
+        pcs[count++] = parsed;
+        if (!*end) {
+            break;
+        }
+        if (*end != ':' || !end[1]) {
+            goto invalid;
+        }
+        cursor = end + 1;
+    }
+    if (!count) {
+        goto invalid;
+    }
+    memcpy(s->gpio_lcd_pcs, pcs, count * sizeof(pcs[0]));
+    s->gpio_lcd_pc_count = count;
+    s->gpio_lcd_enabled = true;
+    return;
+invalid:
+    error_setg(errp, "experimental-gpio660-lcd requires 1..64 unique even hexadecimal source PCs before init");
+}
+
+static char *msm5xxx_poc_get_gpio_lcd_state(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup_printf("configured=%u captures=%" PRIu64,
+                           s->gpio_lcd_enabled, s->gpio_lcd_captures);
+}
+
 static bool msm5xxx_poc_spi_nv_geometry_bounds(MSM5xxxPOCMachineState *s)
 {
     uint64_t address = s->spi_nv_source_geometry;
@@ -11112,6 +11720,8 @@ static void msm5xxx_poc_reset(void *opaque)
     memset(s->dc0_backing, 0, sizeof(s->dc0_backing));
     s->dc0_board_adc_phase = 0;
     s->dc0_board_adc_responses = 0;
+    memset(s->lcd029_backing, 0, sizeof(s->lcd029_backing));
+    s->lcd029_reads = s->lcd029_writes = 0;
     memset(s->lcd_aperture_backing, 0,
            sizeof(s->lcd_aperture_backing));
     s->lcd_aperture_reads = 0;
@@ -11705,9 +12315,13 @@ static void msm5xxx_poc_init(MachineState *machine)
                 s->rex_irq_handler_address;
         bool vector_invalid = s->rex_irq_vector_target < s->ram_base ||
             s->rex_irq_vector_target > ram_end - 4;
+        bool wrapper_invalid = s->rex_irq_copied ?
+            (s->rex_irq_wrapper_address < 0x03800000 ||
+             (uint64_t)s->rex_irq_wrapper_address + s->rex_irq_wrapper_size >
+                 0x03810000) :
+            s->rex_irq_wrapper_address >= s->primary_nor_size;
 
-        if (vector_invalid ||
-                s->rex_irq_wrapper_address >= s->primary_nor_size ||
+        if (vector_invalid || wrapper_invalid ||
                 (!handler_in_nor && !handler_in_iram) ||
                 s->rex_irq_callback_address >= s->primary_nor_size ||
                 s->rex_irq_handler_slot < s->ram_base ||
@@ -12214,6 +12828,38 @@ static void msm5xxx_poc_init(MachineState *machine)
             s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                               s->rex_irq_interval;
             msm5xxx_poc_rex_irq_schedule(s);
+        } else if (s->rex_irq_copied) {
+            MemoryRegionSection section;
+            uint64_t ram_end = (uint64_t)s->ram_base + machine->ram_size;
+            bool conflict;
+
+            section = memory_region_find(get_system_memory(), 0x030007a0, 4);
+            conflict = section.mr != &s->msm ||
+                       section.offset_within_region != 0x7a0 ||
+                       !int128_eq(section.size, int128_make64(4));
+            if (section.mr) {
+                memory_region_unref(section.mr);
+            }
+            if (conflict || !s->memory_profile_enabled ||
+                s->rex_irq_wrapper_rom + (uint64_t)s->rex_irq_wrapper_size > s->primary_nor_size ||
+                s->rex_irq_vector_rom + (uint64_t)16 > s->primary_nor_size ||
+                s->rex_irq_halfword_arm_pc + (uint64_t)2 > s->primary_nor_size ||
+                s->rex_irq_handler_address + (uint64_t)s->rex_irq_handler_size > s->primary_nor_size ||
+                s->rex_irq_callback_address + (uint64_t)2 > s->primary_nor_size ||
+                s->rex_irq_vector_target < s->ram_base ||
+                s->rex_irq_vector_target + (uint64_t)16 > ram_end ||
+                s->rex_irq_handler_slot < s->ram_base ||
+                s->rex_irq_handler_slot + (uint64_t)4 > ram_end ||
+                s->rex_irq_callback_slot < s->ram_base ||
+                s->rex_irq_callback_slot + (uint64_t)4 > ram_end) {
+                error_report("Copied IRQ route requires bounded primary sources, RAM slots and exclusive arm backing");
+                exit(EXIT_FAILURE);
+            }
+            memory_region_init_io(&s->rex_irq_arm, OBJECT(machine),
+                &msm5xxx_poc_rex_copied_arm_ops, s,
+                "msm5xxx-poc.rex-copied-arm", 4);
+            memory_region_add_subregion_overlap(get_system_memory(),
+                0x030007a0, &s->rex_irq_arm, 1);
         } else {
             memory_region_init_io(&s->rex_irq_arm, OBJECT(machine),
                                   &msm5xxx_poc_rex_irq_arm_ops, s,
@@ -12270,6 +12916,23 @@ static void msm5xxx_poc_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(),
                                     s->raw_nand_command_address,
                                     &s->raw_nand_command);
+    }
+    s->lcd029_realized = true;
+    if (s->lcd029_enabled) {
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), 0x02900000, sizeof(s->lcd029_backing));
+        bool conflict = section.mr != NULL || s->raw_nand_main_enabled;
+        if (section.mr) {
+            memory_region_unref(section.mr);
+        }
+        if (conflict) {
+            error_report("LCD029 experiment conflicts with an existing memory/NAND owner");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_io(&s->lcd029_region, OBJECT(machine),
+            &msm5xxx_poc_lcd029_ops, s, "msm5xxx-poc.lcd029", sizeof(s->lcd029_backing));
+        memory_region_add_subregion(get_system_memory(), 0x02900000,
+                                     &s->lcd029_region);
     }
     memory_region_init_io(&s->lcd_aperture, OBJECT(machine),
                           &msm5xxx_poc_lcd_aperture_ops, s,
@@ -12882,6 +13545,8 @@ static void msm5xxx_poc_init(MachineState *machine)
     msm5xxx_poc_small_nand_init(machine, s, &error_fatal);
     msm5xxx_poc_spi_nv_init(machine, s, &error_fatal);
     msm5xxx_poc_boot_keysense_init(machine, s, &error_fatal);
+    msm5xxx_poc_boot_contact_init(machine, s, &error_fatal);
+    msm5xxx_poc_gpio_lcd_init(machine, s, &error_fatal);
     if (s->uart_console_rearm_enabled) {
         if (!msm5xxx_poc_uart_rearm_valid(s)) {
             error_report("uart-console-rearm requires FF/DD and an exclusive passive MSM RAM CR underlay");
@@ -12907,7 +13572,7 @@ static void msm5xxx_poc_init(MachineState *machine)
             memory_region_init_io(&s->dmd5100_region[index], OBJECT(machine),
                 &msm5xxx_poc_dmd5100_ops, &s->dmd5100_port[index], "msm5xxx-poc.dmd5100", 4);
             memory_region_set_enabled(&s->dmd5100_region[index], false);
-            memory_region_add_subregion_overlap(get_system_memory(), dmd5100_ports[index],
+            memory_region_add_subregion_overlap(get_system_memory(), msm5xxx_poc_dmd5100_port_address(s, index),
                 &s->dmd5100_region[index], 3);
         }
         s->dmd5100_mapped = true;
@@ -15147,6 +15812,62 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
     s->rex_irq_enabled = true;
 }
 
+static char *msm5xxx_poc_get_rex_copied_c80(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (!s->rex_irq_copied) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x",
+        s->rex_irq_interval, s->rex_irq_vector_target,
+        s->rex_irq_wrapper_address, s->rex_irq_handler_slot,
+        s->rex_irq_handler_address, s->rex_irq_handler_size,
+        s->rex_irq_callback_slot, s->rex_irq_callback_address,
+        s->rex_irq_wrapper_rom, s->rex_irq_wrapper_size,
+        s->rex_irq_vector_rom, s->rex_irq_halfword_arm_pc);
+}
+
+static void msm5xxx_poc_set_rex_copied_c80(Object *obj, const char *value,
+                                          Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned interval, vector, wrapper, slot, handler, size, callback_slot;
+    unsigned callback, wrapper_rom, wrapper_size, vector_rom, arm_pc;
+    int consumed = -1;
+    int fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%n",
+        &interval, &vector, &wrapper, &slot, &handler, &size, &callback_slot,
+        &callback, &wrapper_rom, &wrapper_size, &vector_rom, &arm_pc, &consumed);
+
+    if (fields != 12 || consumed < 0 || value[consumed] || s->rex_irq_enabled ||
+        !interval || vector & 3 || wrapper & 3 || slot & 3 || callback_slot & 3 ||
+        handler & 1 || callback & 1 || !size || wrapper_rom & 3 || vector_rom & 3 ||
+        arm_pc & 1 || wrapper_size < 4 || wrapper_size > 512 || wrapper_size & 3 ||
+        wrapper < 0x03800000 || (uint64_t)wrapper + wrapper_size > 0x03810000) {
+        error_setg(errp, "experimental-rex-copied-c80 requires INTERVAL:VECTOR:TCM_WRAPPER:HANDLER_SLOT:HANDLER:SIZE:CALLBACK_SLOT:CALLBACK:WRAPPER_ROM:WRAPPER_SIZE:VECTOR_ROM:ARM_PC");
+        return;
+    }
+    s->rex_irq_status_address = 0x03000c80;
+    s->rex_irq_enable_address = 0x03000c94;
+    s->rex_irq_arm_address = 0x030007a0;
+    s->rex_irq_mask = 0x200;
+    s->rex_irq_interval = interval;
+    s->rex_irq_vector_target = vector;
+    s->rex_irq_wrapper_address = wrapper;
+    s->rex_irq_handler_slot = slot;
+    s->rex_irq_handler_address = handler;
+    s->rex_irq_handler_size = size;
+    s->rex_irq_callback_slot = callback_slot;
+    s->rex_irq_callback_address = callback;
+    s->rex_irq_wrapper_rom = wrapper_rom;
+    s->rex_irq_wrapper_size = wrapper_size;
+    s->rex_irq_vector_rom = vector_rom;
+    s->rex_irq_halfword_arm_pc = arm_pc;
+    s->rex_irq_controller_size = MSM5XXX_POC_REX_C80_CONTROLLER_SIZE;
+    s->rex_irq_bank_count = 2;
+    s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
+    s->rex_irq_enabled = s->rex_irq_c80 = s->rex_irq_copied = true;
+}
+
 static char *msm5xxx_poc_get_rex_static_read_consume(Object *obj,
                                                       Error **errp)
 {
@@ -16166,6 +16887,10 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_ram_reserved);
     object_class_property_set_description(
         oc, "ram-reserved", "Unmapped interior RAM aperture BASE:SIZE in hexadecimal");
+    object_class_property_add_str(oc, "experimental-uart-register-file",
+        msm5xxx_poc_get_uart_register_file, msm5xxx_poc_set_uart_register_file);
+    object_class_property_add_str(oc, "experimental-uart-halfword-console",
+        msm5xxx_poc_get_uart_halfword_console, msm5xxx_poc_set_uart_halfword_console);
     object_class_property_add_str(oc, "uart-console", msm5xxx_poc_get_uart_console,
                                   msm5xxx_poc_set_uart_console);
     object_class_property_set_description(oc, "uart-console",
@@ -16224,6 +16949,17 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_board_revision);
     object_class_property_set_description(
         oc, "board-revision", "Detector-provided fixed revision readback");
+    object_class_property_add_str(oc, "dmd5100-program-760",
+        msm5xxx_poc_get_dmd5100, msm5xxx_poc_set_dmd5100_760);
+    object_class_property_add_str(oc, "dmd5100-program-760-layout",
+        msm5xxx_poc_get_dmd5100_760_layout, msm5xxx_poc_set_dmd5100_760_layout);
+
+    object_class_property_add_str(oc, "experimental-lcd029",
+        msm5xxx_poc_get_lcd029, msm5xxx_poc_set_lcd029);
+    object_class_property_add_str(oc, "experimental-gpio660-lcd",
+        msm5xxx_poc_get_gpio_lcd, msm5xxx_poc_set_gpio_lcd);
+    object_class_property_add_str(oc, "gpio660-lcd-state",
+        msm5xxx_poc_get_gpio_lcd_state, NULL);
     object_class_property_add_str(oc, "dmd5100-program",
                                   msm5xxx_poc_get_dmd5100, msm5xxx_poc_set_dmd5100);
     object_class_property_add_str(oc, "dmd5100-stats",
@@ -16419,6 +17155,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_rex_irq);
     object_class_property_set_description(
         oc, "rex-irq", "Detector-provided REX periodic IRQ route");
+    object_class_property_add_str(oc, "experimental-rex-copied-c80",
+        msm5xxx_poc_get_rex_copied_c80, msm5xxx_poc_set_rex_copied_c80);
     object_class_property_add_str(oc, "rex-static-c80",
                                   msm5xxx_poc_get_rex_static_c80,
                                   msm5xxx_poc_set_rex_static_c80);
@@ -16446,6 +17184,10 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "raw-nand-main",
         "Detector-provided main-area-only small-page x16 NAND route");
+    object_class_property_add_str(oc, "experimental-boot-contact",
+        msm5xxx_poc_get_boot_contact, msm5xxx_poc_set_boot_contact);
+    object_class_property_add_str(oc, "boot-contact-state",
+        msm5xxx_poc_get_boot_contact_state, NULL);
     object_class_property_add_str(oc, "boot-keysense-release",
                                    msm5xxx_poc_get_boot_keysense_release,
                                    msm5xxx_poc_set_boot_keysense_release);

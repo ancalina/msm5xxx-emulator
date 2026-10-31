@@ -69,6 +69,22 @@ class PageProtocolMixin:
                     profile, reason = None, "paired-page-loaded-source-mismatch"
                 elif loaded is not image and find_byte_lane_page_profile(loaded)[0] != profile:
                     profile, reason = None, "paired-page-loaded-owner-mismatch"
+            if (profile and profile.get("class_name") == "source-byte-paired-plane-page-v1"
+                    and getattr(self.config, "chipset", None) not in ("MSM5100", "MSM5105")):
+                profile, reason = None, "paired-plane-chipset-scope-unclosed"
+            if profile and profile.get("class_name") == "source-byte-paired-plane-page-v1":
+                loaded = getattr(self, "_lcd_page_loaded_image", image)
+                base, length = getattr(self.config, "ram_base", None), getattr(self.config, "ram_size", None)
+                spans = profile["code_intervals"] + profile["literal_intervals"] + profile["data_intervals"]
+                if (type(base) is not int or type(length) is not int or
+                        not all(base <= a < b <= base + length for a, b in profile["ram_intervals"])):
+                    profile, reason = None, "paired-plane-RAM-layout-unverified"
+                elif (not isinstance(loaded, bytes) or
+                      any(not 0 <= a < b <= min(len(image), len(loaded)) or
+                          image[a:b] != loaded[a:b] for a, b in spans)):
+                    profile, reason = None, "paired-plane-loaded-source-mismatch"
+                elif loaded is not image and find_odd_byte_page_profile(loaded)[0] != profile:
+                    profile, reason = None, "paired-plane-loaded-owner-mismatch"
             if profile and (type(profile.get("page_step", 1)) is not int or
                             profile.get("page_step", 1) not in (-1, 1)):
                 profile, reason = None, "source-page-step-unverified"
@@ -90,7 +106,9 @@ class PageProtocolMixin:
                 self._lcd_odd_page_reject(state, "foreign-aperture-owner")
             return False
         if (self._lcd_page_qualified
-                and (not state["acquired"] or self._lcd_page_port != command)):
+                and (not state["acquired"] or (self._lcd_page_port != command and not
+                    (profile.get("class_name") == "source-byte-paired-plane-page-v1"
+                     and self._lcd_page_source_profile is profile)))):
             state["blocked"], state["reason"] = True, "qualified-foreign-page-owner"
             return False
         if size != profile["access_width"] or not 0 <= value <= 255:
@@ -98,7 +116,9 @@ class PageProtocolMixin:
             return False
         prefix = profile.get("init_commands", ())
         position = state["init_position"]
-        if (profile.get("page_step") == -1 and address == command and prefix
+        if ((profile.get("page_step") == -1 or
+             profile.get("class_name") == "source-byte-paired-plane-page-v1")
+                and address == command and prefix
                 and value == prefix[0] and position == len(prefix)):
             state.update(acquired=False, init_position=0, icon=False,
                          high=None, column=None, argument=None)
@@ -108,7 +128,7 @@ class PageProtocolMixin:
             self._lcd_odd_page_reject(state, "incomplete-page-plane-pair")
             return False
         if position < len(prefix):
-            if address != command or value != prefix[position]:
+            if address != command or (prefix[position] is not None and value != prefix[position]):
                 if position:
                     self._lcd_odd_page_reject(state, "init-command-sequence-mismatch")
                 return False
@@ -182,7 +202,7 @@ class PageProtocolMixin:
                                 if state.get("profile") else None),
                 "optical_polarity": None}
         if (state.get("profile") or {}).get("bits_per_pixel") == 2:
-            result.update(logical_y_reverse=True, logical_plane_weights=[2, 1],
+            result.update(logical_y_reverse=state["profile"].get("logical_y_reverse", True), logical_plane_weights=[2, 1],
                           physical_calibration=None)
         return result
 
@@ -442,7 +462,10 @@ class PageProtocolMixin:
             self._lcd_page_data_count = 0
             self._lcd_page_dirty = False
             return
-        whole_row = (self._lcd_page_start_column == 0 and count in (128, 256))
+        profile = getattr(self, "_lcd_page_source_profile", None)
+        whole_row = (self._lcd_page_start_column == 0 and (count in (128, 256) or
+            (profile and profile.get("class_name") == "source-byte-paired-plane-page-v1"
+             and count == profile.get("init_row_bytes") == 240)))
         profile = getattr(self, "_lcd_page_source_profile", None)
         step = profile.get("page_step", 1) if profile else 1
         if whole_row:

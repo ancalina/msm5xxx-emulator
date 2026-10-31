@@ -54,6 +54,7 @@ typedef MSM5xxxPOCMachineState Object;
 #define MSM5XXX_POC_MACHINE(p) (p)
 typedef struct {int unused;} Error;
 static Error failure;
+static void error_propagate(Error **err,Error *value){*err=value;}
 static void error_setg(Error **err,const char *fmt,...){*err=&failure;}
 static int qemu_strtoul(const char *text,const char **end,int base,unsigned long *value){
  char *tail;errno=0;*value=strtoul(text,&tail,base);*end=tail;return errno ? -errno : tail==text ? -EINVAL : 0;
@@ -107,10 +108,10 @@ static MemTxResult address_space_read(AddressSpace *as,uint64_t at,MemTxAttrs at
  if(bus_error){return MEMTX_ERROR;}memcpy(bytes,backing+at-MSM5XXX_POC_MSM_BASE,size);return MEMTX_OK;
 }
 '''
-        names=('backing_read','backing_write','dmd5100_active','dmd5100_regions','dmd5100_record_rejection','dmd5100_reject',
+        names=('backing_read','backing_write','dmd5100_read_base','dmd5100_port_address','dmd5100_active','dmd5100_regions','dmd5100_record_rejection','dmd5100_reject',
                'dmd5100_reset','dmd5100_pc','dmd5100_forward','dmd5100_write_next',
                'dmd5100_write','dmd5100_read','get_dmd5100','set_dmd5100',
-               'get_dmd5100_stats','get_dmd5100_rejection','dmd5100_topology')
+               'set_dmd5100_760','get_dmd5100_760_layout','set_dmd5100_760_layout','get_dmd5100_stats','get_dmd5100_rejection','dmd5100_topology')
         code+='\n'.join(function('msm5xxx_poc_'+name)for name in names)
         code+=r'''
 static ARMCPU cpu;
@@ -129,7 +130,7 @@ static void wr(MSM5xxxPOCMachineState *s,unsigned port,unsigned rel,uint64_t val
  context(s,rel);unsigned before=forwarded+dirty;
  assert(msm5xxx_poc_dmd5100_write(&s->dmd5100_port[port],0,value,width,(MemTxAttrs){73})==MEMTX_OK);
  assert(forwarded+dirty==before+1);
- if(s->dmd5100_ram_verified && width<=4){assert(dirty_address==dmd5100_ports[port]-MSM5XXX_POC_MSM_BASE && dirty_size==width);}else{assert(forwarded_address==dmd5100_ports[port] && forwarded_size==width && forwarded_attrs==73);}
+ if(s->dmd5100_ram_verified && width<=4){assert(dirty_address==msm5xxx_poc_dmd5100_port_address(s,port)-MSM5XXX_POC_MSM_BASE && dirty_size==width);}else{assert(forwarded_address==msm5xxx_poc_dmd5100_port_address(s,port) && forwarded_size==width && forwarded_attrs==73);}
 }
 static uint64_t rd(MSM5xxxPOCMachineState *s,unsigned port,unsigned rel,unsigned width){
  context(s,rel);uint64_t value=0;assert(msm5xxx_poc_dmd5100_read(&s->dmd5100_port[port],0,&value,width,(MemTxAttrs){91})==MEMTX_OK);return value;
@@ -149,7 +150,7 @@ static void program(MSM5xxxPOCMachineState *s){
  assert(s->dmd5100_pairs==3 && s->dmd5100_phase==DMD5100_FULL);
 }
 static void mode_rewind(MSM5xxxPOCMachineState *s){
- cpu.env.regs[7]=6;cpu.env.regs[6]=0x030007e0;wr(s,3,0x5e,0xe,1);wr(s,4,0x62,0,1);
+ cpu.env.regs[7]=6;cpu.env.regs[6]=msm5xxx_poc_dmd5100_read_base(s);wr(s,3,0x5e,0xe,1);wr(s,4,0x62,0,1);
  assert(s->dmd5100_phase==DMD5100_EVEN && !s->dmd5100_barrier);
 }
 static void even_context(MSM5xxxPOCMachineState *s,unsigned i){
@@ -158,10 +159,10 @@ static void even_context(MSM5xxxPOCMachineState *s,unsigned i){
 }
 static void odd_context(MSM5xxxPOCMachineState *s,unsigned i){
  cpu.env.regs[7]=3;cpu.env.regs[4]=s->dmd5100_payload;cpu.env.regs[1]=2*i;
- cpu.env.regs[0]=i;cpu.env.regs[2]=0x030007e0;cpu.env.regs[3]=0xbeef;
+ cpu.env.regs[0]=i;cpu.env.regs[2]=msm5xxx_poc_dmd5100_read_base(s);cpu.env.regs[3]=0xbeef;
 }
 static void even_pass(MSM5xxxPOCMachineState *s){
- cpu.env.regs[7]=6;cpu.env.regs[6]=0x030007e0;assert(rd(s,3,0x64,1)==backing[0x7e8]);
+ cpu.env.regs[7]=6;cpu.env.regs[6]=msm5xxx_poc_dmd5100_read_base(s);assert(rd(s,3,0x64,1)==backing[msm5xxx_poc_dmd5100_read_base(s)-MSM5XXX_POC_MSM_BASE+8]);
  for(unsigned i=0;i<3;i++){even_context(s,i);unsigned before=forwarded;assert(rd(s,3,0x78,2)==even(i));assert(forwarded==before);}
  assert(s->dmd5100_phase==DMD5100_EVEN_DONE);
 }
@@ -202,6 +203,27 @@ int main(void){
  assert(s.dmd5100_phase==DMD5100_ODD_DONE);cpu.env.regs[7]=3;cpu.env.regs[4]=s.dmd5100_payload;cpu.env.regs[1]=6;cpu.env.regs[0]=0;
  wr(&s,3,0xb8,0,1);wr(&s,2,0xc8,1,1);assert(s.dmd5100_phase==DMD5100_CLOSED);
  text=msm5xxx_poc_get_dmd5100_stats(&s,NULL);assert(strstr(text,"pairs=3 even=3 odd=3"));g_free(text);
+ /* Same actual word protocol on the distinct source-qualified 760 bank. */
+ MSM5xxxPOCMachineState bank={0};err=NULL;
+ msm5xxx_poc_set_dmd5100_760(&bank,"1000:2000:3000:3",&err);
+ assert(!err && bank.dmd5100_read_base==0x03000760);
+ saved=bank;msm5xxx_poc_set_dmd5100_760(&bank,"1000:2000:3000:3",&err);
+ assert(err && !memcmp(&bank,&saved,sizeof(bank)));
+ bank=(MSM5xxxPOCMachineState){0};saved=bank;err=NULL;
+ msm5xxx_poc_set_dmd5100_760(&bank,"1001:2000:3000:3",&err);
+ assert(err && !memcmp(&bank,&saved,sizeof(bank)));
+ s=fresh();s.dmd5100_read_base=0x03000760;select_state(&s);
+ assert(msm5xxx_poc_dmd5100_topology(&s));
+ assert(msm5xxx_poc_dmd5100_port_address(&s,3)==0x03000768);
+ assert(msm5xxx_poc_dmd5100_port_address(&s,4)==0x0300076c);
+ program(&s);mode_rewind(&s);even_pass(&s);
+ cpu.env.regs[7]=s.dmd5100_descriptor;cpu.env.regs[4]=6;cpu.env.regs[2]=0x03000760;
+ wr(&s,4,0x8e,0,1);rd(&s,3,0x90,1);
+ for(unsigned i=0;i<3;i++){odd_context(&s,i);assert(rd(&s,4,0xa4,2)==odd(i));}
+ cpu.env.regs[7]=3;cpu.env.regs[4]=s.dmd5100_payload;cpu.env.regs[1]=6;cpu.env.regs[0]=0;
+ wr(&s,3,0xb8,0,1);wr(&s,2,0xc8,1,1);assert(s.dmd5100_phase==DMD5100_CLOSED);
+ /* Restore default bank for the unchanged legacy guard cases below. */
+ s=fresh();program(&s);mode_rewind(&s);even_pass(&s);
  /* New hold invalidates epoch validity; unwritten/debugger observations fall back. */
  cpu.env.regs[7]=0;wr(&s,2,0x1a,0,1);actual_guest=false;uint64_t raw=msm5xxx_poc_backing_read(backing,0x7e8,2);
  assert(rd(&s,3,0x78,2)==raw && !s.dmd5100_pairs);actual_guest=true;
@@ -319,6 +341,54 @@ int main(void){
   assert(msm5xxx_poc_dmd5100_write(&s.dmd5100_port[1],0,even(0),2,(MemTxAttrs){73})==MEMTX_OK);
   assert(!memcmp(&cpu.env,&cpu_before,sizeof(cpu.env)) && !s.dmd5100_pairs && s.dmd5100_phase==DMD5100_REJECTED);
   assert(s.dmd5100_first_rejection && s.dmd5100_rejection_pc==s.dmd5100_entry+0x42);
+ }
+
+ /* Four fixed source layouts; PC constants are independently taken from their
+    source contracts, and actual captured words must survive both read passes. */
+ for(unsigned layout=0;layout<4;layout++){
+  MSM5xxxPOCMachineState typed={0};char option[80];
+  snprintf(option,sizeof(option),"1000:2000:3000:3:%x",layout);err=NULL;
+  msm5xxx_poc_set_dmd5100_760_layout(&typed,option,&err);
+  assert(!err && typed.dmd5100_layout==layout && typed.dmd5100_read_base==0x03000760);
+  text=msm5xxx_poc_get_dmd5100_760_layout(&typed,NULL);assert(!strcmp(text,option));g_free(text);
+  saved=typed;msm5xxx_poc_set_dmd5100_760_layout(&typed,option,&err);assert(err && !memcmp(&saved,&typed,sizeof(typed)));
+  s=fresh();s.dmd5100_layout=layout;s.dmd5100_read_base=0x03000760;program(&s);
+  cpu.env.regs[7]=6;cpu.env.regs[6]=0x03000760;
+  if(layout==1 || layout==2){
+   wr(&s,2,0x56,1,1);assert(s.dmd5100_reset_released && s.dmd5100_phase==DMD5100_FULL);
+   wr(&s,3,0x64,0xe,1);wr(&s,4,0x68,0,1);rd(&s,3,0x6a,1);
+   for(unsigned i=0;i<3;i++){even_context(&s,i);assert(rd(&s,3,0x7e,2)==even(i));}
+   assert(s.dmd5100_phase==DMD5100_EVEN_DONE);
+   cpu.env.regs[7]=s.dmd5100_descriptor;cpu.env.regs[4]=6;cpu.env.regs[2]=0x03000760;
+   wr(&s,4,0x94,0,1);rd(&s,3,0x96,1);
+   for(unsigned i=0;i<3;i++){odd_context(&s,i);assert(rd(&s,4,0xaa,2)==odd(i));}
+   cpu.env.regs[7]=3;cpu.env.regs[4]=s.dmd5100_payload;cpu.env.regs[1]=6;
+   cpu.env.regs[0]=layout==2 ? 3 : 0;cpu.env.regs[3]=0;
+   wr(&s,3,0xbe,0,1);
+  }else{
+   mode_rewind(&s);even_pass(&s);cpu.env.regs[7]=s.dmd5100_descriptor;cpu.env.regs[4]=6;cpu.env.regs[2]=0x03000760;
+   wr(&s,4,0x8e,0,1);rd(&s,3,0x90,1);
+   for(unsigned i=0;i<3;i++){odd_context(&s,i);assert(rd(&s,4,0xa4,2)==odd(i));}
+   cpu.env.regs[7]=3;cpu.env.regs[4]=s.dmd5100_payload;cpu.env.regs[1]=6;cpu.env.regs[0]=0;
+   wr(&s,3,0xb8,0,1);wr(&s,2,0xc8,1,1);
+  }
+  assert(s.dmd5100_phase==DMD5100_CLOSED && s.dmd5100_pairs==3 && s.dmd5100_even_reads==3 && s.dmd5100_odd_reads==3 && !s.dmd5100_rejections);
+ }
+ const char *invalid_layouts[]={NULL,"","1000:2000:3000:3","1000:2000:3000:3:4","1000:2000:3000:3:100000000","1000:2000:3000:3:1:","1001:2000:3000:3:1"};
+ for(unsigned i=0;i<sizeof(invalid_layouts)/sizeof(*invalid_layouts);i++){
+  MSM5xxxPOCMachineState t={0},copy=t;err=NULL;
+  msm5xxx_poc_set_dmd5100_760_layout(&t,invalid_layouts[i],&err);assert(err && !memcmp(&t,&copy,sizeof(t)));
+ }
+ /* An early layout cannot enter read mode without the real reset release,
+    accept the legacy PC, duplicate a release, or use a halfword reset write. */
+ for(unsigned kind=0;kind<4;kind++){
+  s=fresh();s.dmd5100_layout=1;s.dmd5100_read_base=0x03000760;program(&s);
+  cpu.env.regs[7]=6;cpu.env.regs[6]=0x03000760;
+  if(kind==0){wr(&s,3,0x64,0xe,1);}
+  if(kind==1){wr(&s,2,0x56,1,1);wr(&s,3,0x5e,0xe,1);}
+  if(kind==2){wr(&s,2,0x56,1,1);wr(&s,2,0x56,1,1);}
+  if(kind==3){wr(&s,2,0x56,1,2);}
+  assert(s.dmd5100_phase==DMD5100_REJECTED && !s.dmd5100_even_reads && !s.dmd5100_odd_reads);
  }
  puts("DMD5100 actual-C variable program/readback/barrier/context/topology/reset PASS");return 0;
 }
