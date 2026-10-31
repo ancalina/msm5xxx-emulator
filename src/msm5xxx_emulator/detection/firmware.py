@@ -687,14 +687,19 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(status_72c_note)
     board_status_input = find_board_status_input(primary_image, detection_notes)
     if board_status_input is not None:
-        detection_notes.append(
-            "Thumb byte-status mask/branch/debounce shape detected board-status input"
+        boot_release = (
+            "closed active-low boot-download GPIO: released key default"
+            in detection_notes
         )
-        if board_status_input.mask == 0x04:
+        if not boot_release:
             detection_notes.append(
-                "experimental offset-byte status profile: asserted default; "
-                "physical fold polarity and runtime switch response unverified"
+                "Thumb byte-status mask/branch/debounce shape detected board-status input"
             )
+            if board_status_input.mask == 0x04:
+                detection_notes.append(
+                    "experimental offset-byte status profile: asserted default; "
+                    "physical fold polarity and runtime switch response unverified"
+                )
     width, height = 176, 220
     page_width = find_page_plane_width(primary_image)
     if page_width is not None:

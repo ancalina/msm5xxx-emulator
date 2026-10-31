@@ -7,6 +7,8 @@ import struct
 from ..core.config import BoardStatusInput
 
 from .arm import thumb_bl_target, thumb_literal_value
+from .sbi_arm import find_arm_sbi_bootstraps
+from .boot_download import find_boot_download_inputs
 from .input_scanner import scanner_at
 from .input_scanner_direct import direct_scanner_at
 from .input_scanner_gated import gated_scanner_at
@@ -238,6 +240,25 @@ def _sbi_bootstrap_layout_at(image: bytes, position: int) -> str | None:
                 (0x32, 0, SBI_BOOTSTRAP_BASE),
             ))):
         return "thumb-sbi-bootstrap-literal-arithmetic-v1"
+    # Literal-plus-immediate compiler spelling of the same typed bus writes.
+    arithmetic_words = {
+        0: 0x2045, 4: 0x7008, 6: 0x20C5, 8: 0x7008,
+        0x0C: 0x3039, 0x0E: 0x8088, 0x12: 0x8188,
+        0x14: 0x2000, 0x18: 0x3110, 0x1A: 0x7008,
+        0x1C: 0x2001, 0x1E: 0x7008,
+        0x22: 0x8800, 0x24: 0x0840, 0x26: 0xD2FB,
+        0x2A: 0x30DA, 0x2E: 0x8188,
+        0x32: 0x8800, 0x34: 0x0840, 0x36: 0xD2FB,
+    }
+    if (_sbi_words_match(image, position, arithmetic_words)
+            and _sbi_literals_match(image, position, (
+                (2, 1, SBI_BOOTSTRAP_BASE), (0x0A, 0, 0x0826),
+                (0x10, 0, 0x041F), (0x16, 1, SBI_BOOTSTRAP_BASE),
+                (0x20, 0, SBI_BOOTSTRAP_BASE), (0x28, 0, 0x0826),
+                (0x2C, 1, SBI_BOOTSTRAP_BASE),
+                (0x30, 0, SBI_BOOTSTRAP_BASE),
+            ))):
+        return "thumb-sbi-bootstrap-add-literal-v1"
     sd100_words = {
         0: 0x2045, 4: 0x7008, 6: 0x20C5, 8: 0x7008,
         0x0C: 0x8088, 0x10: 0x8188, 0x12: 0x2000, 0x16: 0x7008,
@@ -317,6 +338,11 @@ def find_sbi_bootstrap_profile(image: bytes) -> dict[str, object] | None:
                 continue
             if (layout := _sbi_bootstrap_layout_at(image, candidate)) is not None:
                 matches.append((candidate, layout))
+    # Keep an existing closed Thumb producer authoritative; a second ARM
+    # boot stage must not revoke that already-admitted wire contract.
+    if not matches:
+        matches.extend((at, "arm-sbi-bootstrap-immediate-v1")
+                       for at in find_arm_sbi_bootstraps(image))
     if len(matches) != 1:
         return None
     entry, layout = matches[0]
@@ -529,7 +555,8 @@ def _board_status_and_flags(image: bytes, start: int) -> bool:
 def find_board_status_input(image: bytes, notes: list[str] | None = None
                             ) -> BoardStatusInput | None:
     """Accept one unique Thumb byte-status mask/branch/debounce control shape."""
-    found: set[BoardStatusInput] = set()
+    boot_inputs = find_boot_download_inputs(image)
+    found: set[BoardStatusInput] = set(boot_inputs)
     # This compiler layout loads the GPIO literal before saving registers.
     for match in re.finditer(b"\xb0\xb5\x00\x78", image):
         start = match.start() - 2
@@ -611,4 +638,7 @@ def find_board_status_input(image: bytes, notes: list[str] | None = None
         offset += 2
     if len(found) > 1 and notes is not None:
         notes.append("board-status input rejected: ambiguous descriptors")
-    return next(iter(found)) if len(found) == 1 else None
+    result = next(iter(found)) if len(found) == 1 else None
+    if result is not None and result in boot_inputs and notes is not None:
+        notes.append("closed active-low boot-download GPIO: released key default")
+    return result
