@@ -472,7 +472,8 @@ struct MSM5xxxPOCMachineState {
     bool dmd5100_enabled, dmd5100_mapped, dmd5100_ram_verified;
     bool dmd5100_barrier, dmd5100_half_pending;
     uint32_t dmd5100_entry, dmd5100_descriptor, dmd5100_payload, dmd5100_count;
-    uint32_t dmd5100_read_base;
+    uint32_t dmd5100_read_base, dmd5100_layout;
+    bool dmd5100_reset_released;
     uint32_t dmd5100_phase, dmd5100_pairs, dmd5100_even_reads, dmd5100_odd_reads;
     uint64_t dmd5100_rejections;
     bool dmd5100_first_rejection, dmd5100_rejection_write, dmd5100_rejection_value_valid;
@@ -2512,6 +2513,7 @@ static void msm5xxx_poc_dmd5100_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
     s->dmd5100_phase = DMD5100_IDLE;
+    s->dmd5100_reset_released = false;
     s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
     s->dmd5100_rejections = 0;
     s->dmd5100_first_rejection = false;
@@ -2531,6 +2533,10 @@ static void msm5xxx_poc_dmd5100_reset(void *opaque)
 static bool msm5xxx_poc_dmd5100_pc(MSM5xxxPOCMachineState *s, unsigned offset)
 {
     uint32_t pc;
+    if ((s->dmd5100_layout == 1 || s->dmd5100_layout == 2) &&
+        offset >= 0x5e && offset <= 0xb8) {
+        offset += 6;
+    }
     return msm5xxx_poc_boot_storage_guest(s) && s->cpu->env.thumb &&
         !(s->cpu->env.cp15.sctlr_el[1] & 1) && !s->cpu->env.cp15.fcseidr_ns &&
         !s->cpu->env.cp15.fcseidr_s && msm5xxx_poc_mmio_access_pc(s, &pc) &&
@@ -2582,10 +2588,12 @@ static bool msm5xxx_poc_dmd5100_write_next(MSM5xxxPOCMachineState *s,
     if (port == 2 && size == 1 && value == 0 &&
         msm5xxx_poc_dmd5100_pc(s, 0x1a) && r[7] == 0) {
         s->dmd5100_phase = DMD5100_HOLD;
+        s->dmd5100_reset_released = false;
         s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
         s->dmd5100_barrier = s->dmd5100_half_pending = false;
     } else if (port == 0 && size == 2 && value == 0 && p == DMD5100_HOLD &&
-               msm5xxx_poc_dmd5100_pc(s, 0x24) && r[3] == s->dmd5100_descriptor && !r[7]) {
+               msm5xxx_poc_dmd5100_pc(s, 0x24) && !r[7] &&
+               (s->dmd5100_layout >= 2 ? !r[0] : r[3] == s->dmd5100_descriptor)) {
         s->dmd5100_phase = DMD5100_PROGRAM;
     } else if (port == 1 && size == 2 && value <= UINT16_MAX && p == DMD5100_PROGRAM &&
                r[3] == s->dmd5100_descriptor && r[7] == 2 * s->dmd5100_pairs &&
@@ -2603,7 +2611,12 @@ static bool msm5xxx_poc_dmd5100_write_next(MSM5xxxPOCMachineState *s,
         } else {
             return false;
         }
+    } else if (port == 2 && size == 1 && value == 1 && p == DMD5100_FULL &&
+               (s->dmd5100_layout == 1 || s->dmd5100_layout == 2) &&
+               !s->dmd5100_reset_released && msm5xxx_poc_dmd5100_pc(s, 0x56) && r[7] == 2 * n) {
+        s->dmd5100_reset_released = true;
     } else if (port == 3 && size == 1 && value == 0x0e && p == DMD5100_FULL &&
+               ((s->dmd5100_layout != 1 && s->dmd5100_layout != 2) || s->dmd5100_reset_released) &&
                msm5xxx_poc_dmd5100_pc(s, 0x5e) && r[7] == 2 * n && r[6] == msm5xxx_poc_dmd5100_read_base(s)) {
         s->dmd5100_phase = DMD5100_MODE;
     } else if (port == 4 && size == 1 && value == 0 && p == DMD5100_MODE &&
@@ -2617,9 +2630,12 @@ static bool msm5xxx_poc_dmd5100_write_next(MSM5xxxPOCMachineState *s,
         s->dmd5100_barrier = false;
     } else if (port == 3 && size == 1 && value == 0 && p == DMD5100_ODD_DONE &&
                msm5xxx_poc_dmd5100_pc(s, 0xb8) && r[7] == n &&
-               r[4] == s->dmd5100_payload && r[1] == 2 * n && !r[0] && r[2] == msm5xxx_poc_dmd5100_read_base(s)) {
+               r[4] == s->dmd5100_payload && r[1] == 2 * n &&
+               (s->dmd5100_layout == 2 ? (!r[3] && r[0] == n) : !r[0]) &&
+               r[2] == msm5xxx_poc_dmd5100_read_base(s)) {
         s->dmd5100_phase = DMD5100_CLOSED;
     } else if (!(port == 2 && size == 1 && value == 1 && p == DMD5100_CLOSED &&
+                 s->dmd5100_layout != 1 && s->dmd5100_layout != 2 &&
                  msm5xxx_poc_dmd5100_pc(s, 0xc8) && r[7] == n && r[4] == s->dmd5100_payload)) {
         return false;
     }
@@ -2746,6 +2762,46 @@ static void msm5xxx_poc_set_dmd5100_760(Object *obj, const char *value, Error **
         return;
     }
     MSM5XXX_POC_MACHINE(obj)->dmd5100_read_base = 0x03000760;
+}
+
+static char *msm5xxx_poc_get_dmd5100_760_layout(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->dmd5100_enabled ? g_strdup_printf("%x:%x:%x:%x:%x", s->dmd5100_entry,
+        s->dmd5100_descriptor, s->dmd5100_payload, s->dmd5100_count, s->dmd5100_layout) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_dmd5100_760_layout(Object *obj, const char *value, Error **errp)
+{
+    uint32_t v[5];
+    const char *part = value, *end;
+    unsigned long parsed;
+    if (!part) {
+        goto malformed;
+    }
+    for (unsigned i = 0; i < 5; i++) {
+        if (!g_ascii_isxdigit(*part) || qemu_strtoul(part, &end, 16, &parsed) || parsed > UINT32_MAX ||
+            (i < 4 ? *end != ':' : *end != '\0')) {
+            goto malformed;
+        }
+        v[i] = parsed;
+        part = end + (i < 4);
+    }
+    if (v[4] > 3) {
+        goto malformed;
+    }
+    char *legacy = g_strdup_printf("%x:%x:%x:%x", v[0], v[1], v[2], v[3]);
+    Error *local_error = NULL;
+    msm5xxx_poc_set_dmd5100_760(obj, legacy, &local_error);
+    g_free(legacy);
+    if (local_error) {
+        error_propagate(errp, local_error);
+        return;
+    }
+    MSM5XXX_POC_MACHINE(obj)->dmd5100_layout = v[4];
+    return;
+malformed:
+    error_setg(errp, "dmd5100-program-760-layout requires ENTRY:DESCRIPTOR:PAYLOAD:PAIR_COUNT:LAYOUT(0..3)");
 }
 
 static char *msm5xxx_poc_get_dmd5100_stats(Object *obj, Error **errp)
@@ -16479,6 +16535,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         oc, "board-revision", "Detector-provided fixed revision readback");
     object_class_property_add_str(oc, "dmd5100-program-760",
         msm5xxx_poc_get_dmd5100, msm5xxx_poc_set_dmd5100_760);
+    object_class_property_add_str(oc, "dmd5100-program-760-layout",
+        msm5xxx_poc_get_dmd5100_760_layout, msm5xxx_poc_set_dmd5100_760_layout);
+
     object_class_property_add_str(oc, "experimental-gpio660-lcd",
         msm5xxx_poc_get_gpio_lcd, msm5xxx_poc_set_gpio_lcd);
     object_class_property_add_str(oc, "gpio660-lcd-state",

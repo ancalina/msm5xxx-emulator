@@ -70,3 +70,13 @@ The whole four-byte register must have exclusive MSM backing at its correct offs
 no input, status, clock, GPIO or pixel value is synthesized. `gpio660-lcd-state`
 reports captures. Source graph/loaded-image admission and serial decoding are
 separate requirements before automatic use.
+
+`dmd5100-program-760-layout=ENTRY:DESCRIPTOR:PAYLOAD:PAIR_COUNT:LAYOUT`
+extends the opt-in paired readback controller with four fixed source layouts.
+Layout 0 retains the original late reset release; layout 1 observes release at
++56 before verification and the six-byte shifted readback block. Layout 2 also
+uses the alternate program-address and close register roles; layout 3 retains
+late release with the alternate address register. Values are hexadecimal.
+No layout preloads DSP words or skips guest comparisons. All captured halfwords,
+barriers, widths, source PCs and register contexts remain required. This property
+has no automatic source admission yet.

@@ -111,7 +111,7 @@ static MemTxResult address_space_read(AddressSpace *as,uint64_t at,MemTxAttrs at
         names=('backing_read','backing_write','dmd5100_read_base','dmd5100_port_address','dmd5100_active','dmd5100_regions','dmd5100_record_rejection','dmd5100_reject',
                'dmd5100_reset','dmd5100_pc','dmd5100_forward','dmd5100_write_next',
                'dmd5100_write','dmd5100_read','get_dmd5100','set_dmd5100',
-               'set_dmd5100_760','get_dmd5100_stats','get_dmd5100_rejection','dmd5100_topology')
+               'set_dmd5100_760','get_dmd5100_760_layout','set_dmd5100_760_layout','get_dmd5100_stats','get_dmd5100_rejection','dmd5100_topology')
         code+='\n'.join(function('msm5xxx_poc_'+name)for name in names)
         code+=r'''
 static ARMCPU cpu;
@@ -341,6 +341,54 @@ int main(void){
   assert(msm5xxx_poc_dmd5100_write(&s.dmd5100_port[1],0,even(0),2,(MemTxAttrs){73})==MEMTX_OK);
   assert(!memcmp(&cpu.env,&cpu_before,sizeof(cpu.env)) && !s.dmd5100_pairs && s.dmd5100_phase==DMD5100_REJECTED);
   assert(s.dmd5100_first_rejection && s.dmd5100_rejection_pc==s.dmd5100_entry+0x42);
+ }
+
+ /* Four fixed source layouts; PC constants are independently taken from their
+    source contracts, and actual captured words must survive both read passes. */
+ for(unsigned layout=0;layout<4;layout++){
+  MSM5xxxPOCMachineState typed={0};char option[80];
+  snprintf(option,sizeof(option),"1000:2000:3000:3:%x",layout);err=NULL;
+  msm5xxx_poc_set_dmd5100_760_layout(&typed,option,&err);
+  assert(!err && typed.dmd5100_layout==layout && typed.dmd5100_read_base==0x03000760);
+  text=msm5xxx_poc_get_dmd5100_760_layout(&typed,NULL);assert(!strcmp(text,option));g_free(text);
+  saved=typed;msm5xxx_poc_set_dmd5100_760_layout(&typed,option,&err);assert(err && !memcmp(&saved,&typed,sizeof(typed)));
+  s=fresh();s.dmd5100_layout=layout;s.dmd5100_read_base=0x03000760;program(&s);
+  cpu.env.regs[7]=6;cpu.env.regs[6]=0x03000760;
+  if(layout==1 || layout==2){
+   wr(&s,2,0x56,1,1);assert(s.dmd5100_reset_released && s.dmd5100_phase==DMD5100_FULL);
+   wr(&s,3,0x64,0xe,1);wr(&s,4,0x68,0,1);rd(&s,3,0x6a,1);
+   for(unsigned i=0;i<3;i++){even_context(&s,i);assert(rd(&s,3,0x7e,2)==even(i));}
+   assert(s.dmd5100_phase==DMD5100_EVEN_DONE);
+   cpu.env.regs[7]=s.dmd5100_descriptor;cpu.env.regs[4]=6;cpu.env.regs[2]=0x03000760;
+   wr(&s,4,0x94,0,1);rd(&s,3,0x96,1);
+   for(unsigned i=0;i<3;i++){odd_context(&s,i);assert(rd(&s,4,0xaa,2)==odd(i));}
+   cpu.env.regs[7]=3;cpu.env.regs[4]=s.dmd5100_payload;cpu.env.regs[1]=6;
+   cpu.env.regs[0]=layout==2 ? 3 : 0;cpu.env.regs[3]=0;
+   wr(&s,3,0xbe,0,1);
+  }else{
+   mode_rewind(&s);even_pass(&s);cpu.env.regs[7]=s.dmd5100_descriptor;cpu.env.regs[4]=6;cpu.env.regs[2]=0x03000760;
+   wr(&s,4,0x8e,0,1);rd(&s,3,0x90,1);
+   for(unsigned i=0;i<3;i++){odd_context(&s,i);assert(rd(&s,4,0xa4,2)==odd(i));}
+   cpu.env.regs[7]=3;cpu.env.regs[4]=s.dmd5100_payload;cpu.env.regs[1]=6;cpu.env.regs[0]=0;
+   wr(&s,3,0xb8,0,1);wr(&s,2,0xc8,1,1);
+  }
+  assert(s.dmd5100_phase==DMD5100_CLOSED && s.dmd5100_pairs==3 && s.dmd5100_even_reads==3 && s.dmd5100_odd_reads==3 && !s.dmd5100_rejections);
+ }
+ const char *invalid_layouts[]={NULL,"","1000:2000:3000:3","1000:2000:3000:3:4","1000:2000:3000:3:100000000","1000:2000:3000:3:1:","1001:2000:3000:3:1"};
+ for(unsigned i=0;i<sizeof(invalid_layouts)/sizeof(*invalid_layouts);i++){
+  MSM5xxxPOCMachineState t={0},copy=t;err=NULL;
+  msm5xxx_poc_set_dmd5100_760_layout(&t,invalid_layouts[i],&err);assert(err && !memcmp(&t,&copy,sizeof(t)));
+ }
+ /* An early layout cannot enter read mode without the real reset release,
+    accept the legacy PC, duplicate a release, or use a halfword reset write. */
+ for(unsigned kind=0;kind<4;kind++){
+  s=fresh();s.dmd5100_layout=1;s.dmd5100_read_base=0x03000760;program(&s);
+  cpu.env.regs[7]=6;cpu.env.regs[6]=0x03000760;
+  if(kind==0){wr(&s,3,0x64,0xe,1);}
+  if(kind==1){wr(&s,2,0x56,1,1);wr(&s,3,0x5e,0xe,1);}
+  if(kind==2){wr(&s,2,0x56,1,1);wr(&s,2,0x56,1,1);}
+  if(kind==3){wr(&s,2,0x56,1,2);}
+  assert(s.dmd5100_phase==DMD5100_REJECTED && !s.dmd5100_even_reads && !s.dmd5100_odd_reads);
  }
  puts("DMD5100 actual-C variable program/readback/barrier/context/topology/reset PASS");return 0;
 }
