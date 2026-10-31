@@ -29,6 +29,7 @@ from msm5xxx_emulator.detection.ready_poll import (
     _find_lcd_halfword_ready_poll_profile, find_arm_tx_empty_ready_poll_profile,
 )
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
+from msm5xxx_emulator.detection.middle_nand import find_middle_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
@@ -419,6 +420,19 @@ def qemu_raw_nand_main_profile(
     """Admit the closed, main-area-only small-page x16 NAND class."""
     if not getattr(config, "nand_enabled", False):
         return None, None
+    middle = find_middle_nand_profile(image)
+    if middle is not None:
+        if (getattr(config, "chipset", None) != "MSM5500"
+                or getattr(config, "flash_size", None) != 0x800000
+                or getattr(config, "load_address", None) != 0
+                or getattr(config, "ram_base", None) != 0x01000000
+                or getattr(config, "ram_size", None) != 0x800000
+                or getattr(config, "upper_flash_address", None) is not None):
+            return None, "middle-aperture-mapping-conflict"
+        if tuple(getattr(config, name, None) for name in (
+                "nand_data_size", "nand_page_size", "nand_pages_per_block", "nand_bus_width")) != (0x1000000, 512, 32, 2):
+            return None, "middle-main-geometry-conflict"
+        return (0x01800000, 0x01900000, 0x01A00000, 0x1000000, 512, 32, 2), None
     if b"fs_ks_nand.c" not in image.lower():
         return None, "marker-missing"
     if getattr(config, "upper_flash_address", None) is not None:
@@ -5291,6 +5305,18 @@ class Transport:
         elif raw_nand_profile is not None and eeprom_profile is not None:
             raw_nand_profile = None
             raw_nand_reject = "mtd-owner-conflict"
+        middle_nand_ready = None
+        if raw_nand_profile is not None and raw_nand_profile[0] == 0x01800000:
+            source_profile = find_middle_nand_profile(detector_image)
+            loaded_profile = find_middle_nand_profile(primary_seed[:len(detector_image)])
+            if source_profile is None or source_profile != loaded_profile:
+                raw_nand_profile, raw_nand_reject = None, "middle-loaded-source-mismatch"
+            else:
+                start, end = source_profile["source_interval"]
+                if primary_seed[start:end] != detector_image[start:end]:
+                    raw_nand_profile, raw_nand_reject = None, "middle-loaded-overlay-mismatch"
+                else:
+                    middle_nand_ready = (source_profile["ready_address"], source_profile["ready_mask"])
         if raw_nand_reject is not None:
             self.config.detection_notes.append(
                 f"QEMU raw NAND bridge rejected: {raw_nand_reject}; "
@@ -5312,6 +5338,9 @@ class Transport:
                 f"{data_size:x}:{page_size:x}:{pages_per_block:x}:"
                 f"{bus_width:x}"
             )
+            if middle_nand_ready is not None:
+                ready_address, ready_mask = middle_nand_ready
+                machine += f",raw-nand-ready={ready_address:x}:{ready_mask:x}"
             storage_args.extend((
                 "-drive",
                 f"file={raw_nand_state},if=none,format=raw,"

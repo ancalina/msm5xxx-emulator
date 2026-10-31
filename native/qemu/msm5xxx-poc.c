@@ -153,6 +153,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_RAW_NAND_LOW_PORT_DATA_BASE 0x00800000
 #define MSM5XXX_POC_RAW_NAND_LOW_PORT_ADDRESS_BASE 0x00900000
 #define MSM5XXX_POC_RAW_NAND_LOW_PORT_COMMAND_BASE 0x00a00000
+#define MSM5XXX_POC_RAW_NAND_MIDDLE_DATA_BASE 0x01800000
+#define MSM5XXX_POC_RAW_NAND_MIDDLE_ADDRESS_BASE 0x01900000
+#define MSM5XXX_POC_RAW_NAND_MIDDLE_COMMAND_BASE 0x01a00000
 #define MSM5XXX_POC_RAW_NAND_DATA_SIZE (8 * MiB)
 #define MSM5XXX_POC_RAW_NAND_PAGE_SIZE 0x200
 #define MSM5XXX_POC_RAW_NAND_PAGES_PER_BLOCK 0x20
@@ -337,6 +340,8 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion raw_nand_data;
     MemoryRegion raw_nand_address;
     MemoryRegion raw_nand_command;
+    MemoryRegion raw_nand_ready;
+    uint32_t raw_nand_ready_address, raw_nand_ready_mask;
     MemoryRegion bootstrap;
     MemoryRegion msm;
     bool small_nand_enabled;
@@ -8952,6 +8957,43 @@ static uint64_t msm5xxx_poc_raw_nand_control_read(
     return UINT8_MAX;
 }
 
+/* The middle-aperture boards wire R/B to a source-declared GPIO input. Other
+ * bits retain their output/backing state; stores cannot drive the NAND input.
+ * This main-area model completes operations synchronously, so its ready bit
+ * follows the same device status returned by command 0x70. */
+static uint64_t msm5xxx_poc_raw_nand_ready_read(
+    void *opaque, hwaddr offset, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+
+    uint64_t value = msm5xxx_poc_backing_read(msm,
+        s->raw_nand_ready_address - MSM5XXX_POC_MSM_BASE + offset, size);
+    uint32_t mask = s->raw_nand_ready_mask >> (offset * 8);
+
+    return (value & ~mask) | ((s->raw_nand_status & 0x40) ? mask : 0);
+}
+
+static void msm5xxx_poc_raw_nand_ready_write(
+    void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+
+    msm5xxx_poc_backing_write(msm,
+        s->raw_nand_ready_address - MSM5XXX_POC_MSM_BASE + offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_raw_nand_ready_ops = {
+    .read = msm5xxx_poc_raw_nand_ready_read,
+    .write = msm5xxx_poc_raw_nand_ready_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 2,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 2,
+};
+
 static void msm5xxx_poc_raw_nand_command_write(
     void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
@@ -12735,6 +12777,12 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("raw-nand-main conflicts with upper NOR or EEPROM MTD");
         exit(EXIT_FAILURE);
     }
+    if (s->raw_nand_ready_address &&
+        (!s->raw_nand_main_enabled ||
+         s->raw_nand_data_address != MSM5XXX_POC_RAW_NAND_MIDDLE_DATA_BASE)) {
+        error_report("raw-nand-ready requires the middle NAND controller");
+        exit(EXIT_FAILURE);
+    }
     if (s->rex_irq_c80) {
         uint64_t ram_end = s->ram_base + machine->ram_size;
         bool handler_in_nor =
@@ -13359,6 +13407,7 @@ static void msm5xxx_poc_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(),
                                     s->raw_nand_command_address,
                                     &s->raw_nand_command);
+
     }
     s->lcd029_realized = true;
     if (s->lcd029_enabled) {
@@ -14056,6 +14105,35 @@ static void msm5xxx_poc_init(MachineState *machine)
             s->watchdog_register, &s->watchdog_region, 4);
         qemu_register_reset(msm5xxx_poc_watchdog_reset, s);
         msm5xxx_poc_watchdog_reset(s);
+    }
+    if (s->raw_nand_main_enabled &&
+        s->raw_nand_data_address == MSM5XXX_POC_RAW_NAND_MIDDLE_DATA_BASE) {
+        MemoryRegionSection section;
+        bool conflict;
+
+        if (!s->raw_nand_ready_address || s->matrix_input_loop ||
+            s->matrix_input_row_mask ||
+            (s->board_status_input_enabled &&
+             s->board_status_input_address < s->raw_nand_ready_address + 2 &&
+             s->raw_nand_ready_address < s->board_status_input_address + 2)) {
+            error_report("middle raw NAND requires an exclusive source-declared ready input");
+            exit(EXIT_FAILURE);
+        }
+        /* Inspect the final map: never shadow another GPIO device, even partly. */
+        section = memory_region_find(get_system_memory(),
+                                     s->raw_nand_ready_address, 2);
+        conflict = section.mr != &s->msm ||
+                   !int128_eq(section.size, int128_make64(2));
+        memory_region_unref(section.mr);
+        if (conflict) {
+            error_report("middle raw NAND ready input requires the whole passive MSM RAM aperture");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_io(&s->raw_nand_ready, OBJECT(machine),
+                              &msm5xxx_poc_raw_nand_ready_ops, s,
+                              "msm5xxx-poc.raw-nand-ready", 2);
+        memory_region_add_subregion_overlap(get_system_memory(),
+            s->raw_nand_ready_address, &s->raw_nand_ready, 1);
     }
     if (s->memory_profile_enabled) {
         qemu_register_reset(msm5xxx_poc_reset, s);
@@ -16609,18 +16687,26 @@ static void msm5xxx_poc_set_raw_nand_main(Object *obj, const char *value,
     unsigned data, address, command, data_size, page_size, pages_per_block;
     unsigned bus_width;
     char trailing;
+    bool middle;
 
     if (sscanf(value, "%x:%x:%x:%x:%x:%x:%x%c",
                &data, &address, &command, &data_size, &page_size,
-        &pages_per_block, &bus_width, &trailing) != 7 ||
+        &pages_per_block, &bus_width, &trailing) != 7) {
+        error_setg(errp, "raw-nand-main requires seven hexadecimal fields");
+        return;
+    }
+    middle = data == MSM5XXX_POC_RAW_NAND_MIDDLE_DATA_BASE &&
+             address == MSM5XXX_POC_RAW_NAND_MIDDLE_ADDRESS_BASE &&
+             command == MSM5XXX_POC_RAW_NAND_MIDDLE_COMMAND_BASE;
+    if (
         s->raw_nand_main_enabled ||
-        ((data != MSM5XXX_POC_RAW_NAND_DATA_BASE ||
+        (!middle && (data != MSM5XXX_POC_RAW_NAND_DATA_BASE ||
           address != MSM5XXX_POC_RAW_NAND_ADDRESS_BASE ||
           command != MSM5XXX_POC_RAW_NAND_COMMAND_BASE) &&
          (data != MSM5XXX_POC_RAW_NAND_LOW_PORT_DATA_BASE ||
           address != MSM5XXX_POC_RAW_NAND_LOW_PORT_ADDRESS_BASE ||
           command != MSM5XXX_POC_RAW_NAND_LOW_PORT_COMMAND_BASE)) ||
-        data_size != MSM5XXX_POC_RAW_NAND_DATA_SIZE ||
+        data_size != (middle ? 16 * MiB : MSM5XXX_POC_RAW_NAND_DATA_SIZE) ||
         page_size != MSM5XXX_POC_RAW_NAND_PAGE_SIZE ||
         pages_per_block != MSM5XXX_POC_RAW_NAND_PAGES_PER_BLOCK ||
         bus_width != MSM5XXX_POC_RAW_NAND_BUS_WIDTH) {
@@ -16639,6 +16725,32 @@ static void msm5xxx_poc_set_raw_nand_main(Object *obj, const char *value,
     s->raw_nand_pages_per_block = pages_per_block;
     s->raw_nand_bus_width = bus_width;
     s->raw_nand_main_enabled = true;
+}
+
+static char *msm5xxx_poc_get_raw_nand_ready(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->raw_nand_ready_address ? g_strdup_printf("%x:%x",
+        s->raw_nand_ready_address, s->raw_nand_ready_mask) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_raw_nand_ready(Object *obj, const char *value,
+                                         Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned address, mask;
+    char trailing;
+
+    if (s->msm.name || s->raw_nand_ready_address ||
+        sscanf(value, "%x:%x%c", &address, &mask, &trailing) != 2 ||
+        !((address == 0x03000728 && mask == 1) ||
+          (address == 0x03000720 && mask == 0x10))) {
+        error_setg(errp, "raw-nand-ready requires a closed middle NAND GPIO ADDRESS:MASK");
+        return;
+    }
+    s->raw_nand_ready_address = address;
+    s->raw_nand_ready_mask = mask;
 }
 
 static char *msm5xxx_poc_get_eeprom_gpio(Object *obj, Error **errp)
@@ -17873,6 +17985,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "raw-nand-main",
                                   msm5xxx_poc_get_raw_nand_main,
                                   msm5xxx_poc_set_raw_nand_main);
+    object_class_property_add_str(oc, "raw-nand-ready",
+                                  msm5xxx_poc_get_raw_nand_ready,
+                                  msm5xxx_poc_set_raw_nand_ready);
     object_class_property_set_description(
         oc, "raw-nand-main",
         "Detector-provided main-area-only small-page x16 NAND route");

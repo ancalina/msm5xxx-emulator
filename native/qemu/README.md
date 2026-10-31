@@ -104,3 +104,17 @@ two x8 lanes (`0x8080`). The new mode enables confirmed erase: `20` arms an
 operation and a valid `D0` in the same sector is required to modify the array.
 All supplied primary bytes remain immutable. These properties do not infer
 physical geometry or reconstruct missing NV records.
+
+The copied middle-aperture x16 NAND class uses data/address/command ports at
+`0x01800000`/`0x01900000`/`0x01a00000`, with 16 MiB of main data, 512-byte pages
+and 32-page erase blocks. Automatic binding requires a reset-linked copy table,
+closed producer instruction contracts, matching loaded source, and a compatible
+NOR/RAM map. It does not use a model name or whole-image hash allowlist.
+
+This class also requires `raw-nand-ready=ADDRESS:MASK`: the source-owned GPIO
+input is either `03000728:1` or `03000720:10`. It follows NAND status bit 6;
+other GPIO bits and backing writes are retained. The final memory map must leave
+the entire halfword on the passive MSM RAM underlay. Operations in this existing
+main-area bridge complete synchronously. Original NAND contents, spare/OOB
+storage and physical timing are not supplied; an erased virtual main area can
+legitimately lead firmware to a missing-data error screen.
