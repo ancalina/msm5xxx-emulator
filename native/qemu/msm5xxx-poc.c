@@ -292,6 +292,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t mapped_primary_x16_nor_sector_size;
     /* The mutually exclusive direct CFI01/CFI02 profiles share geometry. */
     bool intel_x16_nor_enabled;
+    bool intel_adjacent_nv;
     uint32_t intel_x16_nor_base;
     uint32_t intel_x16_nor_size;
     uint32_t intel_x16_nor_sector_size;
@@ -9135,6 +9136,26 @@ static const MemoryRegionOps msm5xxx_poc_ma5_shared_lcd_ops = {
 
 /* Explicit adjacent NV mode retains the primary ROM and RAM boundaries.
  * It cannot consume the LCD/MMIO aperture or another storage/audio owner. */
+/* Explicit compatible Intel experiment: two x8 status lanes, one x16 bus.
+ * Geometry/part identity must be qualified by the caller, not inferred here. */
+static bool msm5xxx_poc_intel_adjacent_valid(const MSM5xxxPOCMachineState *s)
+{
+    uint64_t base = s->intel_x16_nor_base;
+    uint64_t end = base + (uint64_t)s->intel_x16_nor_size;
+    uint64_t audio_end = (uint64_t)s->audio_base + s->audio_data_offset + 1;
+    return s->intel_adjacent_nv && s->intel_x16_nor_enabled &&
+           s->memory_profile_enabled && s->intel_x16_nor_size &&
+           base == s->primary_nor_size && end <= s->ram_base &&
+           end <= MSM5XXX_POC_LCD_APERTURE_BASE &&
+           !s->amd_x16_nor_enabled && !s->amd_adjacent_nv &&
+           !s->fujitsu_x16_nor_enabled && !s->primary_x16_nor_enabled &&
+           !s->record_x16_nor_enabled && !s->mapped_primary_x16_nor_enabled &&
+           !s->whole_primary_x16_enabled && !s->protected_nor_enabled &&
+           !s->upper_x8_nor_enabled && !s->upper_x16_nor_enabled &&
+           !s->raw_nand_main_enabled && !s->small_nand_enabled &&
+           (!s->audio_enabled || !(s->audio_base < end && audio_end > base));
+}
+
 static bool msm5xxx_poc_amd_mapping_valid(const MSM5xxxPOCMachineState *s,
                                          uint64_t ram_size)
 {
@@ -11555,7 +11576,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     unsigned i;
 
     if (s->direct_lcd_enabled && (upper_nor_enabled ||
-        (direct_x16_nor_enabled && !s->amd_adjacent_nv) ||
+        (direct_x16_nor_enabled && !s->amd_adjacent_nv && !s->intel_adjacent_nv) ||
         s->raw_nand_main_enabled || s->small_nand_enabled ||
         s->fujitsu_x16_nor_enabled || s->primary_x16_nor_enabled ||
         s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
@@ -11665,7 +11686,11 @@ static void msm5xxx_poc_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
     }
-    if (s->intel_x16_nor_enabled) {
+    if (s->intel_adjacent_nv && !msm5xxx_poc_intel_adjacent_valid(s)) {
+        error_report("intel-adjacent-nv requires exclusive contiguous ROM/NV/RAM layout");
+        exit(EXIT_FAILURE);
+    }
+    if (s->intel_x16_nor_enabled && !s->intel_adjacent_nv) {
         uint64_t base = s->intel_x16_nor_base;
         uint64_t windows = s->mapped_primary_x16_nor_enabled ? 2 : 1;
         uint64_t end = base + windows * s->intel_x16_nor_size;
@@ -12089,8 +12114,8 @@ static void msm5xxx_poc_init(MachineState *machine)
                               s->amd_x16_nor_options & 1);
         } else {
             qdev_prop_set_uint8(dev, "width", 2);
-            qdev_prop_set_uint8(dev, "device-width", 2);
-            qdev_prop_set_uint8(dev, "max-device-width", 2);
+            qdev_prop_set_uint8(dev, "device-width", s->intel_adjacent_nv ? 1 : 2);
+            qdev_prop_set_uint8(dev, "max-device-width", s->intel_adjacent_nv ? 1 : 2);
             qdev_prop_set_bit(dev, "big-endian", false);
         }
         qdev_prop_set_uint16(dev, "id0", s->intel_x16_nor_id0);
@@ -15211,6 +15236,50 @@ static void msm5xxx_poc_set_intel_x16_nor(Object *obj, const char *value,
     s->intel_x16_nor_enabled = true;
 }
 
+static char *msm5xxx_poc_get_intel_adjacent_nv(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->intel_adjacent_nv ? g_strdup_printf("%x:%x:%x:%x:%x",
+        s->intel_x16_nor_base, s->intel_x16_nor_size,
+        s->intel_x16_nor_sector_size, s->intel_x16_nor_id0,
+        s->intel_x16_nor_id1) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_intel_adjacent_nv(Object *obj, const char *value,
+                                             Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) fields = g_strsplit(value, ":", -1);
+    uint32_t parsed[5];
+    if (g_strv_length(fields) != 5 || s->intel_x16_nor_enabled ||
+        s->amd_x16_nor_enabled) {
+        error_setg(errp, "intel-adjacent-nv requires exclusive BASE:SIZE:SECTOR:ID0:ID1");
+        return;
+    }
+    for (unsigned i = 0; i < 5; i++) {
+        unsigned long number;
+        if (qemu_strtoul(fields[i], NULL, 16, &number) || number > UINT32_MAX) {
+            error_setg(errp, "invalid intel-adjacent-nv number");
+            return;
+        }
+        parsed[i] = number;
+    }
+    if (!parsed[0] || !parsed[1] || parsed[1] > UINT32_MAX - parsed[0] ||
+        parsed[2] < 0x1000 || (parsed[2] & (parsed[2] - 1)) ||
+        parsed[0] % parsed[2] || parsed[1] % parsed[2] ||
+        parsed[3] > UINT16_MAX || parsed[4] > UINT16_MAX) {
+        error_setg(errp, "invalid intel-adjacent-nv geometry");
+        return;
+    }
+    s->intel_x16_nor_base = parsed[0];
+    s->intel_x16_nor_size = parsed[1];
+    s->intel_x16_nor_sector_size = parsed[2];
+    s->intel_x16_nor_id0 = parsed[3];
+    s->intel_x16_nor_id1 = parsed[4];
+    s->intel_adjacent_nv = true;
+    s->intel_x16_nor_enabled = true;
+}
+
 static bool msm5xxx_poc_get_amd_adjacent_nv(Object *obj, Error **errp)
 {
     return MSM5XXX_POC_MACHINE(obj)->amd_adjacent_nv;
@@ -16683,6 +16752,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "intel-x16-nor",
         "Detector-provided external direct-command Intel x16 NOR");
+    object_class_property_add_str(oc, "intel-adjacent-nv",
+                                 msm5xxx_poc_get_intel_adjacent_nv,
+                                 msm5xxx_poc_set_intel_adjacent_nv);
+    object_class_property_set_description(oc, "intel-adjacent-nv",
+        "Explicit adjacent Intel compatible NV experiment with two x8 status lanes");
     object_class_property_add_bool(oc, "amd-adjacent-nv",
                                   msm5xxx_poc_get_amd_adjacent_nv,
                                   msm5xxx_poc_set_amd_adjacent_nv);
