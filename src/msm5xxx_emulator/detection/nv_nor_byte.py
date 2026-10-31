@@ -172,7 +172,12 @@ def find_byte_offset_nv_nor(image: bytes, ram_base: int, ram_size: int) -> tuple
         return None
     scatter = scatters[0]
     table = lit(scatter, 126, 0)
-    if type(table) is not int or table & 3 or lit(scatter, 116, 0) != table + 4 or (lit(scatter, 120, 1) != table + 8):
+    if (type(table) is not int or table & 3
+            or any(lit(scatter, offset, register) != table + delta
+                   for offset, register, delta in (
+                       (116, 0, 4), (120, 1, 8),
+                       (130, 0, 4), (172, 0, 12),
+                       (176, 1, 16), (182, 0, 12)))):
         return None
     source, target, length = (word(table), word(table + 4), word(table + 8))
     if any((type(x) is not int or x & 3 for x in (source, target, length))) or source + length > len(image) or (not ram_base <= target <= target + length <= ram_base + ram_size):
