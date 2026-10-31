@@ -45,7 +45,7 @@ handset-idle pass.
 For native boot-input diagnostics, the disabled-by-default machine property
 `experimental-boot-contact=GPIO:PC:MASK:WIDTH` accepts hexadecimal fields. GPIO
 must be `0300066c` or `0300072c`; byte loads support masks `2` and `4`, and
-halfword loads support mask `1f`. The configured Thumb guest load receives the
+halfword loads support masks `8` and `1f`. The configured Thumb guest load receives the
 released bits while other reads and all writes retain the MSM backing value.
 The entire four-byte register must have no other device owner. Every matching
 load receives the release, including after reset; `boot-contact-state` counters

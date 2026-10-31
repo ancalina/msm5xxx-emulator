@@ -10354,7 +10354,7 @@ static void msm5xxx_poc_set_boot_contact(Object *obj, const char *value,
         !msm5xxx_poc_boot_storage_hex(value, fields, 4) || (fields[1] & 1) ||
         (fields[0] != 0x0300066c && fields[0] != 0x0300072c) ||
         !((fields[3] == 1 && (fields[2] == 2 || fields[2] == 4)) ||
-          (fields[3] == 2 && fields[2] == 31))) {
+          (fields[3] == 2 && (fields[2] == 8 || fields[2] == 31)))) {
         error_setg(errp, "experimental-boot-contact needs GPIO:PC:MASK:WIDTH before init");
         return;
     }

@@ -234,6 +234,13 @@ int main(void) {
     msm5xxx_poc_boot_contact_write(&state,0,0x110,2);
     assert(msm5xxx_poc_boot_contact_read(&state,0,2)==0x11f && msm[0x66c]==0x10 && msm[0x66d]==1);
     setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4};
+    msm5xxx_poc_set_boot_contact(&state,"300066c:100:8:2",&err);assert(!err);
+    msm5xxx_poc_boot_contact_init(&state.machine,&state,&err);assert(!err);
+    msm5xxx_poc_boot_contact_write(&state,0,0x47f7,2);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,2)==0x47ff);
+    assert(msm5xxx_poc_boot_contact_read(&state,0,1)==0xf7 && msm[0x66c]==0xf7 && msm[0x66d]==0x47);
+    cpu.pc=0x102;assert(msm5xxx_poc_boot_contact_read(&state,0,2)==0x47f7);
+    setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4};
     msm5xxx_poc_set_boot_contact(&state,"300072c:100:2:1",&err);assert(!err);
     msm5xxx_poc_boot_contact_init(&state.machine,&state,&err);assert(!err);
     msm[0x66c]=0x99;msm5xxx_poc_boot_contact_write(&state,0,0x40,1);
