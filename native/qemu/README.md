@@ -80,3 +80,27 @@ late release with the alternate address register. Values are hexadecimal.
 No layout preloads DSP words or skips guest comparisons. All captured halfwords,
 barriers, widths, source PCs and register contexts remain required. This property
 has no automatic source admission yet.
+
+The optional `sharp-primary-nv=BASE:SIZE:SECTOR:ID0:ID1` machine property maps an
+exclusive writable x16 CFI01 partition inside the primary ROM envelope. It is
+experimental and disabled by default. The caller must preserve all supplied
+bytes in the drive seed and exclude that range from raw loader writes.
+
+Its `sharp-pcr` flash capability records matching halfword `60/04` transactions
+and reads back address-latched partition bits through identifier word 6. The
+flash property `sharp-pcr-reset` chooses a compatible bottom (`0x100`, default)
+or top (`0x400`) reset value; this choice does not identify the original part.
+The `sharp-locks` capability tracks lock and lock-down bits per block, including
+identifier readback and protection for single-word program, buffered program,
+and erase. Blocks reset to locked. The machine mode enables this capability;
+`sharp-nv-wp-high=on` explicitly selects a compatible WP# high pin level (the
+default is low). This fixed virtual pin does not establish original GPIO wiring.
+Partition timing and read-while-write execution remain unimplemented.
+
+`intel-adjacent-nv16=BASE:SIZE:SECTOR:ID0:ID1` selects a single x16 CFI01 device
+between the primary ROM end and RAM, with the same exclusive-owner checks as
+`intel-adjacent-nv`. Its status lane is `0x80`; the older adjacent mode retains
+two x8 lanes (`0x8080`). The new mode enables confirmed erase: `20` arms an
+operation and a valid `D0` in the same sector is required to modify the array.
+All supplied primary bytes remain immutable. These properties do not infer
+physical geometry or reconstruct missing NV records.

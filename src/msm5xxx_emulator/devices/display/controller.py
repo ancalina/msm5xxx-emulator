@@ -43,6 +43,10 @@ class DisplayControllerMixin:
     def display_snapshot(self) -> tuple[int, int, bytes]:
         """Return a geometry/frame triple which is safe for a GUI consumer."""
         with self._display_lock:
+            legacy = getattr(self, "_lcd_legacy_panel", None)
+            if (getattr(self, "_lcd_source_window_owned", False)
+                    and legacy is not None and legacy.qualified and legacy.sequence):
+                return legacy.width, legacy.height, legacy.frame
             source_window = getattr(self, "_lcd_source_window_panel", None)
             if (getattr(self, "_lcd_source_window_owned", False)
                     and source_window is not None and source_window.sequence):
@@ -148,6 +152,74 @@ class DisplayControllerMixin:
                     "qualified": bool(panel and panel.qualified),
                     "rejection": panel.rejection if panel else None,
                     "sequence": panel.sequence if panel else 0}
+
+    def _lcd_bind_legacy_panel(self, original: bytes, loaded: bytes, *,
+                               ram_claimed: bool = False) -> str | None:
+        """Bind original and loaded producer graphs; defer ownership to bus coverage."""
+        from ...detection.legacy_lcd import find_legacy_lcd_profile
+        from .legacy_panel import LegacyPanel
+        self._lcd_legacy_panel = None
+        cfg = self.config
+        if (ram_claimed or getattr(self, "_lcd_source_window_panel", None) is not None
+                or getattr(cfg, "image_kind", None) != "firmware"
+                or any(type(getattr(cfg, key, None)) is not int
+                       for key in ("load_address", "image_offset", "entry", "flash_size"))
+                or cfg.flash_size <= 0
+                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0,0,0)
+                or len(loaded) != cfg.flash_size
+                or getattr(cfg, "ram_bootstrap_profile", None) is not None
+                or getattr(cfg, "missing_overlays", None)):
+            return None
+        protocol = find_legacy_lcd_profile(original, cfg.ram_base, cfg.ram_size)
+        if protocol is None or find_legacy_lcd_profile(loaded, cfg.ram_base, cfg.ram_size) != protocol:
+            return None
+        panel = LegacyPanel(protocol)
+        if ((cfg.width,cfg.height) != (panel.width,panel.height)
+                and getattr(cfg, "display_geometry_source", None) != "auto-default"):
+            return None
+        self._lcd_legacy_panel = panel
+        return protocol
+
+    def legacy_panel_snapshot(self) -> dict[str, object]:
+        with self._display_lock:
+            panel = getattr(self, "_lcd_legacy_panel", None)
+            return {"admitted": panel is not None,
+                    "protocol": panel.protocol if panel else None,
+                    "qualified": bool(panel and panel.qualified),
+                    "sequence": panel.sequence if panel else 0,
+                    "coverage": panel.coverage if panel else 0,
+                    "optical_properties": "temporary RGB preview"}
+
+    def _lcd_legacy_write(self, address: int, size: int, value: int) -> bool:
+        panel = getattr(self, "_lcd_legacy_panel", None)
+        if panel is None:
+            return False
+        selected = (panel.port <= address < panel.port+0x12e80
+                    or 0x02820000 <= address < 0x02820028) if panel.protocol == "direct16" else address in (panel.port,panel.port+(2 if panel.protocol == "half43" else 4))
+        if not selected:
+            return False
+        owned = getattr(self, "_lcd_source_window_owned", False)
+        with self._display_lock:
+            before = panel.sequence
+            panel.write(address, size, value)
+            frame = panel.frame if panel.sequence != before and panel.qualified else None
+        if frame is not None:
+            if not owned:
+                self._set_display_geometry(panel.width, panel.height,
+                    source="runtime:source-legacy-"+panel.protocol, force=True)
+                if (self.config.width,self.config.height) != (panel.width,panel.height):
+                    self._lcd_legacy_panel = None
+                    return False
+                self._lcd_source_window_owned = owned = True
+            with self._display_lock:
+                self.framebuffer[:] = frame
+            self._lcd_protocol = "source-legacy-"+panel.protocol
+            self._lcd_source_window_publishing = True
+            try:
+                self._publish_frame()
+            finally:
+                self._lcd_source_window_publishing = False
+        return owned
 
     def _lcd_bind_source_window(self, original: bytes, loaded: bytes, *,
                                 ram_claimed: bool = False) -> None:
@@ -599,7 +671,8 @@ class DisplayControllerMixin:
                               source: str, force: bool = False) -> None:
         """Adopt a controller-proven panel geometry before its first visible frame."""
         if (getattr(self, "_lcd_source_window_owned", False)
-                and source != "runtime:source-copied-half128"):
+                and source != "runtime:source-copied-half128"
+                and not source.startswith("runtime:source-legacy-")):
             return
         if (getattr(self, '_lcd_mux_page_owned', False)
                 and source != 'runtime:source-mux-page96'):
@@ -1038,7 +1111,7 @@ class DisplayControllerMixin:
         if not (parallel_data or page_data or secondary_data):
             return
         if any(getattr(self, name, None) is not None for name in (
-                "_lcd_source_window_panel", "_lcd_packed_cursor12_panel",
+                "_lcd_legacy_panel", "_lcd_source_window_panel", "_lcd_packed_cursor12_panel",
                 "_lcd_mux_page_panel", "_lcd_gpio_serial_panel", "_lcd_boot_page_panel",
                 "_lcd_packed2_panel", "_lcd_split18_panel", "_lcd_split565_panel",
                 "_lcd_fa_direct_panel", "_lcd_indexed_byte_panel",
@@ -1108,6 +1181,8 @@ class DisplayControllerMixin:
 
     def _lcd_write_slow(self, uc: object, access: int, address: int, size: int,
                         value: int, user_data: object) -> None:
+        if self._lcd_legacy_write(address, size, value):
+            return
         if self._lcd_source_window_write(address, size, value):
             return
         if self._lcd_source_mux_write(address, size, value):

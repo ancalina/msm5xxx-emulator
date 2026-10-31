@@ -725,3 +725,49 @@ def find_ready_poll_profile(image: bytes) -> dict[str, object] | None:
         if lcd is not None:
             profiles.append(lcd)
     return profiles[0] if len(profiles) == 1 else None
+
+
+def find_arm_tx_empty_ready_poll_profile(image: bytes) -> dict[str, object] | None:
+    """Close an ARM byte TX-empty poll and both watchdog pulse producers."""
+    # ARMv4 immediate addressing, explicit byte accesses, backward loop and
+    # conditional exit. Bit3 is TX empty; no RX-available bit is asserted.
+    program = (
+        0xE3A00403,  # MOV r0, #0x03000000
+        0xE5D007B4,  # LDRB r0, [r0, #0x7b4]
+        0xE3100008,  # TST r0, #8
+        0x1A000006,  # BNE return
+        0xE3A00001, 0xE3A01403, 0xE5C10600,
+        0xE3A01000, 0xE3A00403, 0xE5C01600,
+        0xEAFFFFF4, 0xE1A0F00E,  # B loop; MOV pc, lr
+    )
+    marker = struct.pack('<2I', *program[:2])
+    entries, cursor = [], 0
+    while (cursor := image.find(marker, cursor)) >= 0:
+        at = cursor
+        cursor += 4
+        if (at & 3 or at + 4 * len(program) > len(image)
+                or struct.unpack_from('<12I', image, at) != program):
+            continue
+        # Calls prove this is executable code owned by the boot UART path.
+        callers = 0
+        for call in range(0, len(image) - 3, 4):
+            word = struct.unpack_from('<I', image, call)[0]
+            if word >> 24 != 0xEB:
+                continue
+            delta = word & 0xFFFFFF
+            if delta & 0x800000:
+                delta -= 0x1000000
+            callers += call + 8 + delta * 4 == at
+        if callers >= 2:
+            entries.append(at)
+    if len(entries) != 1:
+        return None
+    return {
+        'signature': 'arm-byte-tx-empty-pulse-v1',
+        'admission': 'temporary-evidence-gated',
+        'status_address': 0x030007B4, 'mask': 8,
+        'pulse_address': 0x03000600,
+        'status_read_pc_offset': 4,
+        'pulse_set_pc_offset': 0x18, 'pulse_clear_pc_offset': 0x24,
+        'entries': entries,
+    }

@@ -143,6 +143,26 @@ class InputRuntimeTests(unittest.TestCase):
                     ValueError, "key register overlaps stable MSM MMIO"):
                 QemuDecoder(config)
 
+    def test_boot_key_refines_only_the_board_strap_bit(self) -> None:
+        from msm5xxx_emulator.core.config import BoardStatusInput
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            firmware = root / "firmware.bin"
+            image = bytearray(b"\xff" * 0x1000)
+            for offset in range(0, 32, 4):
+                struct.pack_into("<I", image, offset, 0xEA000000)
+            firmware.write_bytes(image)
+            config = detect(firmware)
+            config.flash_state = str(root / "flash.json")
+            config.board_status_input = BoardStatusInput(0x03000694, 4, 4)
+            decoder = QemuDecoder(config)
+            self.assertEqual(decoder.initial_memory.read(0x03000694, 1), b"\x14")
+            for address, mask in [(0x03000694, 8), (0x0300072C, 4)]:
+                config.board_status_input = BoardStatusInput(address, mask, mask)
+                with self.assertRaisesRegex(ValueError, "board status input overlaps"):
+                    QemuDecoder(config)
+
     def test_manual_event_requires_a_unique_detected_cell(self):
         decoder = self._direct_emulator()
         self.assertFalse(decoder.can_set_key(5))

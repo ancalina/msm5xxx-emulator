@@ -415,6 +415,14 @@ class DeviceStateMixin:
                          *register_ranges[:index]]
             for other_start, other_end, other_label in conflicts:
                 if max(start, other_start) < min(end, other_end):
+                    # The explicit boot-key bit refines the stable board
+                    # strap byte; its other bits retain their seeded values.
+                    if (label == "board status input"
+                            and other_label == "stable MSM MMIO"
+                            and start == other_start == 0x03000694
+                            and end == other_end == start + 1
+                            and config.board_status_input.mask == 0x04):
+                        continue
                     # SCH-E470 partial dumps reference code in the upper half
                     # of a 16 MiB NOR while also decoding the board-revision
                     # latch at 0x00DFFFDC.  The physical board uses that small

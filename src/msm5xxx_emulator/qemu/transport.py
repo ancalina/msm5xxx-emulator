@@ -25,6 +25,9 @@ from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
 from msm5xxx_emulator.detection.boot_keysense import find_boot_keysense_release
 from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
+from msm5xxx_emulator.detection.ready_poll import (
+    _find_lcd_halfword_ready_poll_profile, find_arm_tx_empty_ready_poll_profile,
+)
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
@@ -48,6 +51,11 @@ from msm5xxx_emulator.detection.firmware_image import load_firmware_image
 from msm5xxx_emulator.detection.memory_layout import restore_sparse_nor_gap
 from msm5xxx_emulator.detection.audio import find_audio_transport, find_ma5_readback_candidate
 from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
+from msm5xxx_emulator.detection.rex_stack_w1c import find_stack_w1c_irq_profile
+from msm5xxx_emulator.detection.nv_nor_word import find_word_offset_nv_nor
+from msm5xxx_emulator.detection.nv_nor_byte import find_byte_offset_nv_nor
+from msm5xxx_emulator.detection.sbi_arm import find_arm_sbi_bootstraps
+from msm5xxx_emulator.detection.input import _sbi_bootstrap_layout_at
 from msm5xxx_emulator.detection.rex import (
     UIS_IDLE_BODY_DELTAS, find_rex_static_controller_callback_candidate,
     find_rex_legacy_row0_profile,
@@ -2061,7 +2069,8 @@ def qemu_ready_poll_property(
             if (not isinstance(variant, dict) or variant.get("signature") not in (
                     "thumb-lsrs-bhs-pulse-v1",
                     "thumb-lsrs-bcc-pulse-rotated-v1",
-                    "thumb-uart-csr-sr-rx-empty-v1")):
+                    "thumb-uart-csr-sr-rx-empty-v1",
+                    "arm-byte-tx-empty-pulse-v1")):
                 return None, "unsupported-variant"
             if tuple(variant.get(field) for field in fields) != common:
                 return None, "variant-contract-mismatch"
@@ -2128,7 +2137,8 @@ def qemu_ready_poll_property(
         )
         if "uart_rx_empty_frame_read_pc_offset" in profile:
             fields += ("uart_rx_empty_frame_read_pc_offset",)
-    elif (signature == "thumb-lsrs-bcc-pulse-rotated-v1"
+    elif (signature in ("thumb-lsrs-bcc-pulse-rotated-v1",
+                        "arm-byte-tx-empty-pulse-v1")
           and profile.get("admission") == "temporary-evidence-gated"):
         property_name = "ready-poll"
         fields = (
@@ -2231,6 +2241,86 @@ def qemu_sbi_raw_input_property(
     return f"sbi-raw-input-profile={read_pc:x}:60:{selected:x}", None
 
 
+def qemu_runtime_ready_poll_property(image: bytes, config: object
+                                     ) -> tuple[str | None, str | None, str | None]:
+    """Prefer a closed display consumer over an incidental UART boot helper.
+
+    The LCD bridge completes writes synchronously. Its status register cannot
+    echo the previous display payload as a persistent busy bit. The native
+    source-PC/selector-bound profile already enforces this ownership. An ARM
+    boot TX drain may join an already-closed Thumb UART/RX-empty contract;
+    it cannot independently grant receive or configuration semantics.
+    """
+    size = getattr(config, "flash_size", None)
+    if (getattr(config, "load_address", None) == 0
+            and type(size) is int and 0 < size <= 0x02000000
+            and not getattr(config, "nand_enabled", False)
+            and not getattr(config, "upper_flash_size", 0)):
+        # A partial dump may still contain the entire proven controller route.
+        # The matcher bounds every referenced instruction to available bytes.
+        profile = _find_lcd_halfword_ready_poll_profile(image[:size])
+        if profile is not None:
+            argument, reason = qemu_ready_poll_property({
+                **profile, "admission": "temporary-evidence-gated",
+            })
+            if argument is not None:
+                return argument, reason, "indexed-lcd"
+    original = getattr(config, "ready_poll", None)
+    if (getattr(config, "load_address", None) == 0 and type(size) is int
+            and size > 0 and getattr(config, "uart_console", None) is None):
+        arm = find_arm_tx_empty_ready_poll_profile(image[:size])
+        fields = ("status_address", "mask", "pulse_address")
+        members = original.get("variants", [original]) if isinstance(original, dict) else []
+        rx_closed = isinstance(members, list) and any(
+            isinstance(member, dict)
+            and member.get("signature") == "thumb-uart-csr-sr-rx-empty-v1"
+            for member in members
+        )
+        if (arm is not None and rx_closed and isinstance(original, dict)
+                and all(original.get(key) == arm[key] for key in fields)):
+            combined = {
+                "signature": "thumb-byte-ready-pulse-variants-v1",
+                "admission": "temporary-evidence-gated",
+                **{key: arm[key] for key in fields},
+                "variants": [*original.get("variants", [original]), arm],
+            }
+            argument, reason = qemu_ready_poll_property(combined)
+            if argument is not None:
+                return argument, reason, "arm-tx"
+    argument, reason = qemu_ready_poll_property(original)
+    return argument, reason, None
+
+
+def qemu_uart2_tx_property(original: bytes, loaded: bytes, config: object,
+                           *, claimed: bool = False) -> str | None:
+    from ..detection.uart2_tx import find_uart2_tx_ready_pc
+    ready = getattr(config, "ready_poll", None)
+    expected_ready = {
+        "signature": "thumb-uart-csr-sr-rx-empty-v1",
+        "admission": "temporary-evidence-gated",
+        "status_address": 0x030007b4, "mask": 8,
+        "pulse_address": 0x03000600, "status_read_pc_offset": 2,
+        "pulse_set_pc_offset": 0xc, "pulse_clear_pc_offset": 0x10,
+        "uart_rx_empty_read_pc_offset": 0x90, "entries": [0x1dac],
+    }
+    if (claimed or getattr(config, "image_kind", None) != "firmware"
+            or any(type(getattr(config, key, None)) is not int
+                   for key in ("load_address", "image_offset", "entry"))
+            or getattr(config, "load_address", None) != 0
+            or getattr(config, "image_offset", None) != 0
+            or getattr(config, "entry", None) != 0
+            or getattr(config, "uart_console", None) is not None
+            or type(getattr(config, "flash_size", None)) is not int
+            or len(loaded) != config.flash_size
+            or not isinstance(ready, dict)
+            or ready != expected_ready):
+        return None
+    pc = find_uart2_tx_ready_pc(original)
+    if pc is None or find_uart2_tx_ready_pc(loaded) != pc:
+        return None
+    return f"uart2-tx-ready={pc:x}"
+
+
 def qemu_sbi_property(config: object) -> tuple[str | None, str | None]:
     """Keep legacy full SBI chip-bound; admit the closed bootstrap wire class."""
     profile = getattr(config, "sbi_bootstrap_profile", None)
@@ -2271,6 +2361,27 @@ def qemu_sbi_property(config: object) -> tuple[str | None, str | None]:
     if raw is not None:
         return "sbi=on," + raw, None
     return "sbi=on,sbi-bootstrap-only=on", raw_reject
+
+
+def qemu_sbi_repeat_property(image: bytes, config: object) -> str | None:
+    """Bind repeated initialization to a closed Thumb write after an ARM stage."""
+    size = getattr(config, "flash_size", None)
+    if (type(getattr(config, "load_address", None)) is not int
+            or config.load_address != 0 or type(size) is not int
+            or not 0 < size <= 0x2000000
+            or qemu_sbi_property(config)[0] != "sbi=on,sbi-bootstrap-only=on"):
+        return None
+    profile = config.sbi_bootstrap_profile
+    entries = profile["entries"]
+    if len(entries) != 1 or profile.get("layout") != "thumb-sbi-bootstrap-direct-literal-v1":
+        return None
+    source = image[:size]
+    entry = entries[0]
+    if (_sbi_bootstrap_layout_at(source, entry) != profile["layout"]
+            or len(find_arm_sbi_bootstraps(source)) != 1):
+        return None
+    # This exact layout's fresh BYTE 0x45 producer is STRB at entry+4.
+    return f"{entry + 4:x}"
 
 
 def qemu_board_revision_property(
@@ -2434,6 +2545,58 @@ def qemu_dmd5100_property(
     values = (profile["entry_file_offset"], profile["descriptor_file_offset"],
               profile["payload_file_offset"], profile["pair_count"])
     return ("dmd5100-program-760=" if read_760 else "dmd5100-program=") + ":".join(f"{value:x}" for value in values), None
+
+
+def qemu_dmd5000_property(original: bytes, loaded: bytes, config: object, *,
+                          layout_claimed: bool = False, input_profile: dict | None = None,
+                          eeprom_window: tuple[int, int] | None = None,
+                          immutable_limit: int | None = None) -> tuple[str | None, str | None]:
+    """Admit the unchanged dual-descriptor driver with passive, exclusive ports."""
+    from ..detection.dmd5000 import find_dmd5000_profile
+    profile = find_dmd5000_profile(original)
+    if profile is None:
+        return None, None
+    fields = ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size')
+    if (any(type(getattr(config, key, None)) is not int for key in fields)
+            or config.image_kind != 'firmware'
+            or (config.load_address, config.image_offset, config.entry) != (0, 0, 0)
+            or not isinstance(loaded, bytes) or len(loaded) != config.flash_size
+            or not 0 < len(original) <= config.flash_size <= 0x02000000
+            or loaded[:len(original)] != original
+            or find_dmd5000_profile(loaded) != profile
+            or not 0 <= config.ram_base <= profile['completion'] <
+                   config.ram_base + config.ram_size <= 0x100000000
+            or layout_claimed or immutable_limit is not None
+            or getattr(config, 'ram_bootstrap_profile', None) is not None
+            or getattr(config, 'missing_overlays', None)
+            or getattr(config, 'ram_image_size', 0)):
+        return None, 'dmd5000-loaded-source-or-memory-owner-unclosed'
+    windows = []
+    status = getattr(config, 'board_status_input', None)
+    if status is not None:
+        windows.append((getattr(status, 'address', None), getattr(status, 'width', 1)))
+    if getattr(config, 'key_register', None) is not None:
+        windows.append((config.key_register, 4))
+    uart = getattr(config, 'uart_console', None)
+    if isinstance(uart, dict):
+        windows.extend(((uart.get('base'), 0x24), (uart.get('pulse_address'), 1)))
+    if input_profile is not None:
+        if not isinstance(input_profile, dict):
+            return None, 'dmd5000-input-owner-unclosed'
+        width = (2 if str(input_profile.get('grammar', '')).startswith('indirect-halfword')
+                 else input_profile.get('register_width', 1))
+        windows.append((input_profile.get('register', input_profile.get('sense_address')), width))
+    if eeprom_window is not None:
+        windows.append(eeprom_window)
+    ports = (0x0300004c, 0x03000050, 0x0300005c, 0x03000768, 0x0300076c)
+    for start, size in windows:
+        if (type(start) is not int or type(size) is not int
+                or not 0 <= start < start + size <= 0x100000000
+                or any(start < port+4 and port < start+size for port in ports)):
+            return None, 'dmd5000-input-owner-conflict'
+    values = (profile['entry'], profile['descriptors'][0], profile['payloads'][0],
+              profile['descriptors'][1], profile['payloads'][1], profile['pairs'])
+    return 'dmd5000-program=' + ':'.join(f'{value:x}' for value in values), None
 
 
 def qemu_dmd_5500_property(
@@ -3114,6 +3277,82 @@ def w1c_rex_irq_profile(config: object) -> str | None:
     return ":".join(profile.split(":")[:5]) if profile is not None else None
 
 
+def qemu_stack_w1c_property(image: bytes, config: object, *,
+                             loaded: bytes | None = None) -> str | None:
+    """Bind W1C and narrowly correct the automatic read-consume selection."""
+    from ..detection.rex_power_w1c import find_power_stack_w1c_irq_profile
+    from ..detection.rex import _find_rex_620_static_controller_callback_candidate
+    size = getattr(config, "flash_size", None)
+    candidate = getattr(config, "rex_static_controller_candidate", None)
+    if (getattr(config, "load_address", None) != 0
+            or type(size) is not int or size <= 0
+            or getattr(config, "rex_irq_mask", 0)
+            or getattr(config, "rex_basic_irq_profile", None) is not None
+            or any(getattr(config, key, None) is not None for key in (
+                "rex_irq_status_address", "rex_irq_enable_address", "rex_irq_arm_address"))
+            or loaded is not None and (not isinstance(loaded,bytes) or len(loaded)!=size)):
+        return None
+    ram_base,ram_size = getattr(config,"ram_base",None),getattr(config,"ram_size",None)
+    power = find_power_stack_w1c_irq_profile(image[:size],ram_base,ram_size)
+    if power is not None and candidate is not None:
+        if (not isinstance(candidate,dict) or type(candidate.get("accepted")) is not bool
+                or candidate.get("active") is not False
+                or candidate != _find_rex_620_static_controller_callback_candidate(
+                    image[:size],ram_base=ram_base,ram_size=ram_size)):
+            return None
+    if isinstance(candidate,dict) and candidate.get("accepted") is True:
+        if (power is None
+                or candidate.get("signature") != "static-msm5000-620-controller-callback-v1"
+                or candidate.get("controller_class") != "legacy-msm5000-620-two-bank-read-consume-v1"):
+            return None
+        # Every ownership edge in old telemetry must agree with the new typed
+        # W1C graph. Unknown extra/native claims fail canonical equality above.
+        for key in ("status","enable","mask","vector","vector_target",
+                    "vector_copy_source","vector_copy_size","wrapper_file_offset",
+                    "handler_file_offset","callback_file_offset","registrar_file_offset",
+                    "handler_slot","callback_slot","descriptor_file_offset",
+                    "descriptor_runtime_address","mask_table"):
+            if type(candidate.get(key)) is not int or candidate[key] != power[key]:
+                return None
+    profile = power or find_stack_w1c_irq_profile(image[:size],ram_base,ram_size)
+    if profile is None:
+        return None
+    if loaded is not None:
+        current = (find_power_stack_w1c_irq_profile(loaded,ram_base,ram_size) if power
+                   else find_stack_w1c_irq_profile(loaded,ram_base,ram_size))
+        if current != profile:
+            return None
+    return ":".join(f"{profile[key]:x}" for key in (
+        "status", "enable", "arm", "mask", "interval_ns"))
+
+
+def qemu_legacy_nv_nor_profile(
+        image: bytes, config: object, *, claimed: bool = False,
+) -> tuple[str, tuple[int, ...]] | None:
+    """Select one source-closed missing NV bank without displacing an owner."""
+    if (claimed or type(getattr(config, "load_address", None)) is not int
+            or config.load_address != 0
+            or type(getattr(config, "flash_size", None)) is not int
+            or config.flash_size != 0x400000 or len(image) > config.flash_size
+            or any(getattr(config, key, None) is not None for key in (
+                "secondary_flash_address", "secondary_flash_write_address",
+                "secondary_flash_image", "upper_flash_address", "nand_image",
+                "native_nand_profile", "primary_flash_probe_address",
+                "flash_id_address"))):
+        return None
+    if find_embedded_fujitsu_x16_nor(image, config.flash_size) is not None:
+        return None
+    ram = (getattr(config, "ram_base", None), getattr(config, "ram_size", None))
+    profiles = [
+        (kind, profile)
+        for kind, profile in (
+            ("word-offset-uniform", find_word_offset_nv_nor(image, *ram)),
+            ("byte-offset-boot-sectors", find_byte_offset_nv_nor(image, *ram)))
+        if profile is not None
+    ]
+    return profiles[0] if len(profiles) == 1 else None
+
+
 def eeprom_gpio_profile(
         image: bytes, config: object,
         ) -> tuple[tuple[int, int, int, int, int, int, int] | None,
@@ -3595,6 +3834,22 @@ class Transport:
             self.config, experimental_c80
         )
         self.rex_w1c_profile = w1c_rex_irq_profile(self.config)
+        self.rex_stack_w1c_profile = None
+        self.rex_stack_corrected_automatic = False
+        if self.rex_c80_profile is None and self.rex_w1c_profile is None:
+            stack_candidate = qemu_stack_w1c_property(detector_image,self.config)
+            if self.rex_read_consume_profile is None:
+                self.rex_stack_w1c_profile = stack_candidate
+            elif (stack_candidate is not None and not experimental_c80
+                    and not self.config.rex_static_controller_experimental):
+                # Canonical accepted telemetry can reach this branch only
+                # through the exact power-task source proof above. Preserve
+                # explicit controller choices; correct this automatic tag.
+                self.rex_read_consume_profile = None
+                self.rex_stack_corrected_automatic = True
+                self.rex_stack_w1c_profile = stack_candidate
+                self.config.detection_notes.append(
+                    "source ACK/W1C proof supersedes automatic read-consume telemetry")
         self.config.rex_static_controller_experimental = (
             self.rex_c80_profile is not None
             or self.rex_read_consume_profile is not None
@@ -3792,15 +4047,32 @@ class Transport:
         sbi_property, sbi_reject = qemu_sbi_property(self.config)
         if sbi_property is not None:
             machine += f",{sbi_property}"
+            repeat_pc = qemu_sbi_repeat_property(detector_image, self.config)
+            if repeat_pc is not None:
+                machine += f",sbi-bootstrap-repeat={repeat_pc}"
+                self.config.detection_notes.append(
+                    "QEMU source-closed repeated SBI bootstrap enabled at its write PC; "
+                    "full revalidation required, later general SBI transfers unqualified"
+                )
         if sbi_reject is not None:
             fallback = "bootstrap-only retained" if sbi_property else "native fallback retained"
             self.config.detection_notes.append(
                 f"QEMU SBI bridge rejected: {sbi_reject}; "
                 f"{fallback}"
             )
-        ready_property, ready_reject = qemu_ready_poll_property(
-            self.config.ready_poll
+        ready_property, ready_reject, ready_owner = qemu_runtime_ready_poll_property(
+            detector_image, self.config
         )
+        if ready_owner == "indexed-lcd":
+            self.config.detection_notes.append(
+                "QEMU closed indexed LCD bridge status enabled; "
+                "source-PC and selector bound, synchronous display writes"
+            )
+        elif ready_owner == "arm-tx":
+            self.config.detection_notes.append(
+                "QEMU source-closed ARM UART TX-empty pulse enabled; "
+                "existing Thumb consumer retained, no inbound RX data"
+            )
         if ready_property is not None:
             machine += f",{ready_property}"
         elif ready_reject is not None:
@@ -4190,6 +4462,12 @@ class Transport:
             )
         if self.rex_w1c_profile is not None:
             machine += f",rex-irq={self.rex_w1c_profile}"
+        elif self.rex_stack_w1c_profile is not None:
+            machine += f",rex-irq={self.rex_stack_w1c_profile}"
+            self.config.detection_notes.append(
+                "QEMU source-closed stack W1C timer route enabled; "
+                "firmware enable/acknowledgement retained, physical cadence approximated at 5 ms"
+            )
         primary_profile = find_primary_fsd_amd_x16_nor(
             detector_image[:self.config.flash_size],
             self.config.flash_id_address, self.config.flash_size,
@@ -4316,6 +4594,20 @@ class Transport:
                 self.config.upper_flash_address, self.config.secondary_flash_address,
                 self.config.native_nand_profile, self.config.nand_image)),
         )
+        if dmd5100_property is None:
+            dmd5100_property, dual_reject = qemu_dmd5000_property(
+                detector_image, primary_seed, self.config,
+                immutable_limit=primary_profile[0] if primary_profile is not None else None,
+                input_profile=self.matrix_input_profile,
+                eeprom_window=(eeprom_profile[0], 32) if eeprom_profile is not None else None,
+                layout_claimed=ma2_patch is not None or any(value is not None for value in (
+                    ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                    upper_x16_profile, intel_profile, amd_profile,
+                    self.config.upper_flash_address, self.config.secondary_flash_address,
+                    self.config.native_nand_profile, self.config.nand_image)),
+            )
+            if dual_reject is not None:
+                dmd5100_reject = dual_reject
         self.dmd5100_program_property = dmd5100_property
         self.dmd5100_program_reject = dmd5100_reject
         if dmd5100_property is not None:
@@ -4366,6 +4658,20 @@ class Transport:
                 f"QEMU watchdog rejected: {watchdog_reject}")
         if len(primary_seed) != self.config.flash_size:
             raise ValueError("primary seed size does not match flash size")
+        if (self.rex_stack_w1c_profile is not None and
+                qemu_stack_w1c_property(detector_image,self.config,loaded=primary_seed)
+                != self.rex_stack_w1c_profile):
+            if self.rex_stack_corrected_automatic:
+                for channel in (lcd_listener,input_listener,gdb_listener,
+                                audio_listener,audio_host_socket,audio_qemu_socket):
+                    if channel is not None:
+                        channel.close()
+                self.decoder.close()
+                self.temporary.cleanup()
+                raise ValueError("loaded W1C source route changed; refusing automatic controller correction")
+            machine = machine.replace(",rex-irq="+self.rex_stack_w1c_profile,"",1)
+            self.rex_stack_w1c_profile = None
+            self.config.detection_notes.append("W1C source IRQ rejected: loaded route changed")
         # New source-bound page producers must match the image actually loaded.
         if primary_seed != self.decoder.image:
             self.decoder._lcd_page_loaded_image = primary_seed
@@ -4428,6 +4734,22 @@ class Transport:
             elif contact_reject is not None:
                 self.config.detection_notes.append(
                     f"QEMU boot contact rejected: {contact_reject}; native fallback retained")
+        legacy_panel_protocol = self.decoder._lcd_bind_legacy_panel(
+            detector_image, primary_seed, ram_claimed=ram_reserved is not None)
+        if legacy_panel_protocol == "direct16":
+            if (direct_protocol_conflict or any(value is not None for value in (
+                    primary_profile, record_profile, mapped_primary_profile,
+                    upper_x16_profile, intel_profile, amd_profile,
+                    self.config.upper_flash_address, self.config.secondary_flash_address,
+                    self.config.native_nand_profile, self.config.nand_image))):
+                self.decoder._lcd_legacy_panel = None
+            else:
+                machine += ",direct-lcd=on"
+        uart2_tx_property = qemu_uart2_tx_property(
+            detector_image, primary_seed, self.config,
+            claimed=ram_reserved is not None)
+        if uart2_tx_property is not None:
+            machine += "," + uart2_tx_property
         if uart_property is not None and uart_deferred:
             loaded_uart, loaded_uart_reject = qemu_loaded_uart_console_property(
                 self.config.uart_console, detector_image, primary_seed, self.config,
@@ -4479,6 +4801,26 @@ class Transport:
             self.config.detection_notes.append(
                 f"QEMU bounded AMD bank rejected: {self.amd_bank_reject_reason}; "
                 "native fallback retained"
+            )
+        legacy_nv_profile = qemu_legacy_nv_nor_profile(
+            detector_image, self.config,
+            claimed=(direct_protocol_conflict or upper_nor_present
+                     or primary_seed[:len(detector_image)] != detector_image)
+            or any(value is not None for value in (
+                profile_reject, primary_profile, probe_profile, record_profile,
+                mapped_primary_profile, intel_profile, amd_profile, catalog_profile,
+                self.amd_bank_source_profile, self.protected_nor_source_profile,
+                ram_reserved, upper_x16_profile, dmd5100_property,
+            )),
+        )
+        if legacy_nv_profile is not None:
+            kind, profile = legacy_nv_profile
+            if kind == "word-offset-uniform":
+                amd_profile = profile
+            self.config.detection_notes.append(
+                "temporary source-closed missing NV NOR bank enabled; "
+                "physical geometry and logical bounds kept distinct; "
+                "compatible virtual device, original chip identity unverified"
             )
         loader = temporary / "primary.raw"
         loader.write_bytes(primary_seed)
@@ -4679,6 +5021,8 @@ class Transport:
                 "probe/caller/ordered-descriptor linkage"
             )
         if amd_profile is not None:
+            if legacy_nv_profile is not None and legacy_nv_profile[0] == "word-offset-uniform":
+                machine += ",amd-adjacent-nv=on"
             base, size, sector_size, id0, id1, options = amd_profile
             amd_state = ((state_dir / "amd-x16.raw")
                          if state_dir is not None else
@@ -4705,6 +5049,7 @@ class Transport:
         secondary_base = self.config.secondary_flash_address
         secondary_size = self.config.secondary_flash_size
         catalog_secondary = False
+        legacy_nv_secondary = False
         if secondary_base is None and catalog_profile is not None:
             secondary_base, secondary_size, _ = catalog_profile
             catalog_secondary = True
@@ -4721,6 +5066,10 @@ class Transport:
                 loader_exclude = (
                     secondary_base, secondary_base + secondary_size,
                 )
+        if (secondary_base is None and legacy_nv_profile is not None
+                and legacy_nv_profile[0] == "byte-offset-boot-sectors"):
+            secondary_base, secondary_size, id0, id1 = legacy_nv_profile[1]
+            legacy_nv_secondary = True
         if (secondary_base is None
                 and self.config.secondary_flash_write_address is not None):
             candidate = self.config.load_address + self.config.flash_size
@@ -4735,7 +5084,7 @@ class Transport:
                 secondary_base = candidate
         secondary_ids = (
             (0xFFFF, 0xFFFF) if catalog_secondary else
-            (id0, id1) if embedded_secondary is not None else
+            (id0, id1) if embedded_secondary is not None or legacy_nv_secondary else
             fujitsu_x16_flash_ids(
                 detector_image, self.config.secondary_flash_write_address,
                 self.config.load_address, int(secondary_base or 0),
