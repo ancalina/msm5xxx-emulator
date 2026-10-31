@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var importing = false
     @State private var message = ""
     @State private var lastKey = ""
+    @State private var jit = QEMUEngine.jitAvailable
 
     private let keys = [["Soft1", "Up", "Soft2"], ["Left", "OK", "Right"], ["Send", "Down", "End"],
                         ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"]]
@@ -39,7 +40,7 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(engine.status)
-                Text(QEMUEngine.jitAvailable ? "JIT: available (TCG)" : "JIT: unavailable (TCI only)")
+                Text(jit ? "JIT: available (TCG)" : "JIT: unavailable (TCI only)")
                 if !lastKey.isEmpty { Text("Key: \(lastKey)") }
                 if !message.isEmpty { Text(message) }
             }
@@ -47,6 +48,14 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding()
+        // JIT can be granted while running (TrollStore "Open with JIT", Dopamine); poll cheaply.
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            let now = QEMUEngine.jitAvailable
+            if now != jit || QEMUEngine.codeSigningFlags & 0x1000_0000 != 0 && !now {
+                jit = now
+                NSLog("MSM5xEmu JIT %@ (cs flags 0x%08x)", now ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
+            }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             switch result {
             case .success(let url): importFirmware(url)

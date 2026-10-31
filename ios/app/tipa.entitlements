@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>application-identifier</key><string>me.ancal.msm5xemu</string>
-  <!-- TrollStore honours this: JIT without a debugger -->
-  <key>dynamic-codesigning</key><true/>
+  <!-- dynamic-codesigning is banned on A12+ iOS 15 and kills the app at launch; JIT comes from
+       TrollStore "Open with JIT" or Dopamine's "Allow JIT in Apps", which need get-task-allow -->
   <key>get-task-allow</key><true/>
 </dict></plist>
