@@ -2328,13 +2328,27 @@ def qemu_dmd5100_property(
         return None, "dmd5100-760-chipset-scope-unclosed"
     if read_760 and not allow_read_760:
         return None, "dmd5100-760-runtime-validation-pending"
+    legacy_padded_console = False
+    uart = getattr(config, "uart_console", None)
+    if (not read_760 and isinstance(loaded, bytes)
+            and type(getattr(config, "flash_size", None)) is int
+            and len(original) < config.flash_size
+            and getattr(config, "chipset", None) in ("MSM5100", "MSM5105")
+            and isinstance(uart, dict) and uart.get("signature") == _UART_PROBE_FF_CC_SIGNATURE):
+        # This independently checks the complete reset/copy/console source,
+        # present guard spans, canonical FF tail, and final memory ownership.
+        # Keeping the native DSP bridge avoids a legacy ROM patch invalidating
+        # that same loaded-source contract later in the launch pipeline.
+        console_wire, _ = qemu_loaded_uart_console_property(
+            uart, original, loaded, config, ram_claimed=layout_claimed)
+        legacy_padded_console = console_wire is not None
     fields = ("load_address", "image_offset", "entry", "flash_size", "ram_base", "ram_size")
     if (any(type(getattr(config, name, None)) is not int for name in fields)
             or getattr(config, "image_kind", None) != "firmware"
             or (config.load_address, config.image_offset, config.entry) != (0, 0, 0)
             or not isinstance(loaded, bytes)
             or not 0 < config.flash_size <= 0xFFFFFFFF
-            or (not read_760 and config.flash_size > len(original))
+            or (not read_760 and not legacy_padded_console and config.flash_size > len(original))
             or not 0 <= config.ram_base < 0x100000000
             or not 0 < config.ram_size <= 0x100000000 - config.ram_base
             or len(loaded) != config.flash_size):
@@ -2373,7 +2387,7 @@ def qemu_dmd5100_property(
     if type(limit) is not int or not 0 < limit <= config.flash_size:
         return None, "dmd5100-immutable-prefix-unclosed"
     # Keep every active callee byte pristine, not just the typed entry spans.
-    expected = original[:limit].ljust(limit, b"\xff") if read_760 else original[:limit]
+    expected = original[:limit].ljust(limit, b"\xff") if (read_760 or legacy_padded_console) else original[:limit]
     if expected != loaded[:limit]:
         return None, "dmd5100-loaded-immutable-source-changed"
     if (profile.get("signature") != ("dmd5100-paired-program-readback-760-v1" if read_760 else "dmd5100-paired-program-readback-v1")
