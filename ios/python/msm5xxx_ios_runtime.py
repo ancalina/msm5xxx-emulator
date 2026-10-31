@@ -50,7 +50,8 @@ def start_session(request_json):
         state.mkdir(parents=True, exist_ok=True)
     transport = Transport(
         Path(request["qemu"]), firmware, state, request["experimental_rex"],
-        config=config, audio_stream=False, virtual_cell=virtual_cell_scenario(False),
+        config=config, audio_stream=False, audio_pcm=False,  # no iOS audio backend yet
+        virtual_cell=virtual_cell_scenario(False),
         launcher=IOSLauncher(),
     )
     stop = threading.Event()
