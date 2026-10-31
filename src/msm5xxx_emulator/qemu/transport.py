@@ -49,6 +49,7 @@ from msm5xxx_emulator.detection.firmware_image import load_firmware_image
 from msm5xxx_emulator.detection.memory_layout import restore_sparse_nor_gap
 from msm5xxx_emulator.detection.audio import find_audio_transport, find_ma5_readback_candidate
 from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
+from msm5xxx_emulator.detection.rex_stack_w1c import find_stack_w1c_irq_profile
 from msm5xxx_emulator.detection.rex import (
     UIS_IDLE_BODY_DELTAS, find_rex_static_controller_callback_candidate,
     find_rex_legacy_row0_profile,
@@ -3021,6 +3022,27 @@ def w1c_rex_irq_profile(config: object) -> str | None:
     return ":".join(profile.split(":")[:5]) if profile is not None else None
 
 
+def qemu_stack_w1c_property(image: bytes, config: object) -> str | None:
+    """Admit a complete alternate W1C route without replacing another owner."""
+    size = getattr(config, "flash_size", None)
+    candidate = getattr(config, "rex_static_controller_candidate", None)
+    if (getattr(config, "load_address", None) != 0
+            or type(size) is not int or size <= 0
+            or getattr(config, "rex_irq_mask", 0)
+            or getattr(config, "rex_basic_irq_profile", None) is not None
+            or isinstance(candidate, dict) and candidate.get("accepted") is True
+            or any(getattr(config, key, None) is not None for key in (
+                "rex_irq_status_address", "rex_irq_enable_address", "rex_irq_arm_address"))):
+        return None
+    profile = find_stack_w1c_irq_profile(
+        image[:size], getattr(config, "ram_base", None),
+        getattr(config, "ram_size", None))
+    if profile is None:
+        return None
+    return ":".join(f"{profile[key]:x}" for key in (
+        "status", "enable", "arm", "mask", "interval_ns"))
+
+
 def eeprom_gpio_profile(
         image: bytes, config: object,
         ) -> tuple[tuple[int, int, int, int, int, int, int] | None,
@@ -3502,6 +3524,12 @@ class Transport:
             self.config, experimental_c80
         )
         self.rex_w1c_profile = w1c_rex_irq_profile(self.config)
+        self.rex_stack_w1c_profile = (
+            qemu_stack_w1c_property(detector_image, self.config)
+            if all(profile is None for profile in (
+                self.rex_c80_profile, self.rex_read_consume_profile,
+                self.rex_w1c_profile)) else None
+        )
         self.config.rex_static_controller_experimental = (
             self.rex_c80_profile is not None
             or self.rex_read_consume_profile is not None
@@ -4102,6 +4130,12 @@ class Transport:
             )
         if self.rex_w1c_profile is not None:
             machine += f",rex-irq={self.rex_w1c_profile}"
+        elif self.rex_stack_w1c_profile is not None:
+            machine += f",rex-irq={self.rex_stack_w1c_profile}"
+            self.config.detection_notes.append(
+                "QEMU source-closed stack W1C timer route enabled; "
+                "firmware enable/acknowledgement retained, physical cadence approximated at 5 ms"
+            )
         primary_profile = find_primary_fsd_amd_x16_nor(
             detector_image[:self.config.flash_size],
             self.config.flash_id_address, self.config.flash_size,
