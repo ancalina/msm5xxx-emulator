@@ -73,7 +73,7 @@ diff --git a/system/main.c b/system/main.c
 diff --git a/system/runstate.c b/system/runstate.c
 --- a/system/runstate.c
 +++ b/system/runstate.c
-@@ -803,6 +803,30 @@
+@@ -803,6 +803,32 @@
      qemu_notify_event();
  }
  
@@ -88,6 +88,8 @@ diff --git a/system/runstate.c b/system/runstate.c
 +static void msm5xxx_ios_quit_bh(void *opaque)
 +{
 +    (void)opaque;
++    /* As qmp_quit: host quit must exit even under -no-shutdown (pause action). */
++    shutdown_action = SHUTDOWN_ACTION_POWEROFF;
 +    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
 +}
 +
