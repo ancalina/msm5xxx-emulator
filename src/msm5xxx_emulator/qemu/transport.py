@@ -4733,6 +4733,14 @@ class Transport:
                 upper_x16_profile, intel_profile, amd_profile,
                 self.config.upper_flash_address, self.config.secondary_flash_address,
                 self.config.native_nand_profile, self.config.nand_image)))
+        self.decoder._lcd_bind_source_rgb565_boot(
+            detector_image, primary_seed,
+            allowed_patch=dmd_patch,
+            ram_claimed=any(value is not None for value in (
+                ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                upper_x16_profile, intel_profile, amd_profile,
+                self.config.upper_flash_address, self.config.secondary_flash_address,
+                self.config.native_nand_profile, self.config.nand_image)))
         self.decoder._lcd_bind_source_bytepair565(
             detector_image, primary_seed,
             ram_claimed=any(value is not None for value in (
