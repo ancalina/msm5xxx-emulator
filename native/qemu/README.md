@@ -61,3 +61,12 @@ actual uploaded words, preserve backing writes, and require the typed transfer
 sequence, source PCs, descriptor/payload registers, and readback counters.
 Automatic selection of the new bank also requires the matching reset-linked
 boot-contact source class. Live guest validation is required for each family.
+
+`experimental-gpio660-lcd=PC[:PC...]` is a disabled passive GPIO observer. It
+accepts up to 64 unique even source PCs in primary NOR. Only Thumb guest
+halfword writes at those PCs to03000660 enter the existing LCD trace stream.
+All access widths, other writers and reads retain the actual backing bytes.
+The whole four-byte register must have exclusive MSM backing at its correct offset;
+no input, status, clock, GPIO or pixel value is synthesized. `gpio660-lcd-state`
+reports captures. Source graph/loaded-image admission and serial decoding are
+separate requirements before automatic use.

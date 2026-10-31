@@ -811,6 +811,11 @@ struct MSM5xxxPOCMachineState {
     unsigned boot_contact_mask, boot_contact_width;
     uint64_t boot_contact_reads, boot_contact_releases;
     MemoryRegion boot_contact_region;
+    bool gpio_lcd_enabled, gpio_lcd_realized;
+    uint32_t gpio_lcd_pcs[64];
+    unsigned gpio_lcd_pc_count;
+    uint64_t gpio_lcd_captures;
+    MemoryRegion gpio_lcd_region;
     uint32_t spi_nv_source_geometry;
     bool spi_nv_geometry_ready;
     uint64_t spi_nv_geometry_mismatches;
@@ -10373,6 +10378,139 @@ static char *msm5xxx_poc_get_boot_contact_state(Object *obj, Error **errp)
         s->boot_contact_enabled, s->boot_contact_reads, s->boot_contact_releases);
 }
 
+/* Passive, opt-in source-PC observer. GPIO values are never synthesized. */
+static uint64_t msm5xxx_poc_gpio_lcd_read(void *opaque, hwaddr offset,
+                                        unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                   0x660 + offset, size);
+}
+
+static void msm5xxx_poc_gpio_lcd_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc;
+    unsigned i;
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                             0x660 + offset, value, size);
+    memory_region_set_dirty(&s->msm, 0x660 + offset, size);
+    if (offset || size != 2 || !s->cpu->env.thumb ||
+        !msm5xxx_poc_boot_storage_guest(s) || !msm5xxx_poc_mmio_access_pc(s, &pc)) {
+        return;
+    }
+    for (i = 0; i < s->gpio_lcd_pc_count; i++) {
+        if (pc == s->gpio_lcd_pcs[i]) {
+            s->gpio_lcd_captures++;
+            msm5xxx_poc_lcd_trace_write(s, 0x03000660, value & UINT16_MAX, size);
+            return;
+        }
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_gpio_lcd_ops = {
+    .read = msm5xxx_poc_gpio_lcd_read,
+    .write = msm5xxx_poc_gpio_lcd_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static void msm5xxx_poc_gpio_lcd_init(MachineState *machine,
+                                      MSM5xxxPOCMachineState *s, Error **errp)
+{
+    MemoryRegionSection section;
+    bool conflict;
+    unsigned i;
+    s->gpio_lcd_realized = true;
+    if (!s->gpio_lcd_enabled) {
+        return;
+    }
+    if (!s->memory_profile_enabled || s->primary_nor_size < 2) {
+        goto invalid;
+    }
+    for (i = 0; i < s->gpio_lcd_pc_count; i++) {
+        if (s->gpio_lcd_pcs[i] > s->primary_nor_size - 2) {
+            goto invalid;
+        }
+    }
+    section = memory_region_find(get_system_memory(), 0x03000660, 4);
+    conflict = section.mr != &s->msm ||
+               section.offset_within_region != 0x660 ||
+               !int128_eq(section.size, int128_make64(4));
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    if (conflict) {
+        goto invalid;
+    }
+    memory_region_init_io(&s->gpio_lcd_region, OBJECT(machine),
+        &msm5xxx_poc_gpio_lcd_ops, s, "msm5xxx-poc.gpio660-lcd", 4);
+    memory_region_add_subregion_overlap(get_system_memory(), 0x03000660,
+                                       &s->gpio_lcd_region, 1);
+    return;
+invalid:
+    error_setg(errp, "GPIO LCD observer requires primary NOR PCs and exclusive GPIO660 backing");
+}
+
+static char *msm5xxx_poc_get_gpio_lcd(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *value = g_string_new("");
+    for (unsigned i = 0; i < s->gpio_lcd_pc_count; i++) {
+        g_string_append_printf(value, "%s%x", i ? ":" : "", s->gpio_lcd_pcs[i]);
+    }
+    return g_string_free(value, false);
+}
+
+static void msm5xxx_poc_set_gpio_lcd(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t pcs[64];
+    unsigned count = 0, i;
+    const char *cursor = value, *end;
+    unsigned long parsed;
+    if (s->gpio_lcd_realized || s->gpio_lcd_enabled || !cursor) {
+        goto invalid;
+    }
+    while (*cursor) {
+        if (count == ARRAY_SIZE(pcs) || !g_ascii_isxdigit(*cursor) ||
+            qemu_strtoul(cursor, &end, 16, &parsed) || parsed > UINT32_MAX || (parsed & 1)) {
+            goto invalid;
+        }
+        for (i = 0; i < count; i++) {
+            if (pcs[i] == parsed) {
+                goto invalid;
+            }
+        }
+        pcs[count++] = parsed;
+        if (!*end) {
+            break;
+        }
+        if (*end != ':' || !end[1]) {
+            goto invalid;
+        }
+        cursor = end + 1;
+    }
+    if (!count) {
+        goto invalid;
+    }
+    memcpy(s->gpio_lcd_pcs, pcs, count * sizeof(pcs[0]));
+    s->gpio_lcd_pc_count = count;
+    s->gpio_lcd_enabled = true;
+    return;
+invalid:
+    error_setg(errp, "experimental-gpio660-lcd requires 1..64 unique even hexadecimal source PCs before init");
+}
+
+static char *msm5xxx_poc_get_gpio_lcd_state(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup_printf("configured=%u captures=%" PRIu64,
+                           s->gpio_lcd_enabled, s->gpio_lcd_captures);
+}
+
 static bool msm5xxx_poc_spi_nv_geometry_bounds(MSM5xxxPOCMachineState *s)
 {
     uint64_t address = s->spi_nv_source_geometry;
@@ -12996,6 +13134,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     msm5xxx_poc_spi_nv_init(machine, s, &error_fatal);
     msm5xxx_poc_boot_keysense_init(machine, s, &error_fatal);
     msm5xxx_poc_boot_contact_init(machine, s, &error_fatal);
+    msm5xxx_poc_gpio_lcd_init(machine, s, &error_fatal);
     if (s->uart_console_rearm_enabled) {
         if (!msm5xxx_poc_uart_rearm_valid(s)) {
             error_report("uart-console-rearm requires FF/DD and an exclusive passive MSM RAM CR underlay");
@@ -16340,6 +16479,10 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         oc, "board-revision", "Detector-provided fixed revision readback");
     object_class_property_add_str(oc, "dmd5100-program-760",
         msm5xxx_poc_get_dmd5100, msm5xxx_poc_set_dmd5100_760);
+    object_class_property_add_str(oc, "experimental-gpio660-lcd",
+        msm5xxx_poc_get_gpio_lcd, msm5xxx_poc_set_gpio_lcd);
+    object_class_property_add_str(oc, "gpio660-lcd-state",
+        msm5xxx_poc_get_gpio_lcd_state, NULL);
     object_class_property_add_str(oc, "dmd5100-program",
                                   msm5xxx_poc_get_dmd5100, msm5xxx_poc_set_dmd5100);
     object_class_property_add_str(oc, "dmd5100-stats",

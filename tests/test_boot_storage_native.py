@@ -68,6 +68,11 @@ static int qemu_strtou64(const char *text, const char **end, int base, uint64_t 
     char *tail; errno=0; *out=strtoull(text,&tail,base); *end=tail;
     return errno ? -errno : tail==text ? -EINVAL : 0;
 }
+static int qemu_strtoul(const char *text,const char **end,int base,unsigned long *out) {
+    char *tail;errno=0;*out=strtoul(text,&tail,base);*end=tail;
+    return errno ? -errno : tail==text ? -EINVAL : 0;
+}
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define MSM5XXX_POC_MSM_BASE 0x03000000u
 #define MSM5XXX_SPI_NV_BASE 0x03000660u
 #define MSM5XXX_SPI_NV_WINDOW 0x20u
@@ -102,7 +107,7 @@ static uint64_t msm5xxx_poc_backing_read(const uint8_t *data,hwaddr offset,unsig
 static void msm5xxx_poc_backing_write(uint8_t *data,hwaddr offset,uint64_t value,unsigned size) {
     for(unsigned i=0;i<size;i++)data[offset+i]=value>>(i*8);
 }
-typedef struct { uint64_t size; MemoryRegion *mr; } MemoryRegionSection;
+typedef struct { uint64_t size,offset_within_region; MemoryRegion *mr; } MemoryRegionSection;
 static MemoryRegionSection found;
 static void *get_system_memory(void) { return NULL; }
 static MemoryRegionSection memory_region_find(void *root,hwaddr address,uint64_t size) { return found; }
@@ -111,15 +116,27 @@ static uint64_t int128_make64(uint64_t value) { return value; }
 static void memory_region_unref(MemoryRegion *region) { }
 static const int msm5xxx_poc_boot_keysense_ops;
 static const int msm5xxx_poc_boot_contact_ops;
+static const int msm5xxx_poc_gpio_lcd_ops;
+static bool unwind_valid=true;
+static unsigned gpio_emits;
+static uint64_t gpio_trace_address,gpio_trace_value;
+static unsigned gpio_trace_size;
+static bool msm5xxx_poc_mmio_access_pc(MSM5xxxPOCMachineState *s,uint32_t *pc) { *pc=s->cpu->pc;return unwind_valid; }
+static void memory_region_set_dirty(MemoryRegion *region,uint64_t offset,unsigned size) { assert(offset+size<=0x1000); }
+static void msm5xxx_poc_lcd_trace_write(MSM5xxxPOCMachineState *s,uint64_t address,uint64_t value,unsigned size) {
+    gpio_emits++;gpio_trace_address=address;gpio_trace_value=value;gpio_trace_size=size;
+}
 static unsigned overlays;
 static uint64_t mapped_size,mapped_address;
 static void memory_region_init_io(MemoryRegion *region,void *owner,const void *ops,void *opaque,const char *name,uint64_t size) { assert(size==1 || size==4);mapped_size=size; }
-static void memory_region_add_subregion_overlap(void *root,hwaddr address,MemoryRegion *region,int priority) { assert((address==0x03000694 || address==0x0300066c || address==0x0300072c) && priority==1);mapped_address=address;overlays++; }
+static void memory_region_add_subregion_overlap(void *root,hwaddr address,MemoryRegion *region,int priority) { assert((address==0x03000694 || address==0x0300066c || address==0x0300072c || address==0x03000660) && priority==1);mapped_address=address;overlays++; }
 '''
         names = ('boot_storage_guest', 'boot_storage_hex', 'boot_keysense_read',
                  'boot_keysense_write', 'boot_keysense_reset', 'boot_keysense_init',
                  'boot_contact_read', 'boot_contact_write', 'boot_contact_init',
                  'get_boot_contact', 'set_boot_contact', 'get_boot_contact_state',
+                 'gpio_lcd_read', 'gpio_lcd_write', 'gpio_lcd_init',
+                 'get_gpio_lcd', 'set_gpio_lcd', 'get_gpio_lcd_state',
                  'spi_nv_geometry_bounds', 'spi_nv_geometry_valid',
                  'get_boot_keysense_release', 'set_boot_keysense_release',
                  'get_boot_keysense_state', 'get_spi_nv_source_geometry',
@@ -142,7 +159,7 @@ static void setup(void) {
     memset(&state,0,sizeof(state));memset(msm,0,sizeof(msm));memset(ram,0,sizeof(ram));
     memset(image,0xff,sizeof(image));memset(&timer,0,sizeof(timer));
     cpu=(CPUState){.running=true,.neg={.can_do_io=true},.env={.thumb=true},.pc=0x100};
-    current_cpu=&cpu;vcpu=true;now=0;
+    current_cpu=&cpu;vcpu=true;now=0;gpio_emits=0;unwind_valid=true;
     state.cpu=&cpu;state.msm.data=msm;state.machine.ram=&memory;
     state.machine.ram_size=sizeof(ram);state.ram_base=0x1000000;
     state.primary_nor_size=0x200000;state.memory_profile_enabled=true;
@@ -256,6 +273,47 @@ int main(void) {
         if(mode==3)state.primary_nor_size=0x100;
         msm5xxx_poc_boot_contact_init(&state.machine,&state,&err);assert(err);err=NULL;
         msm5xxx_poc_set_boot_contact(&state,"300066c:102:4:1",&err);assert(err);err=NULL;
+    }
+    /* Passive GPIO observer never alters bus values or captures non-source IO. */
+    setup();unsigned before_overlays=overlays;
+    msm5xxx_poc_gpio_lcd_init(&state.machine,&state,&err);assert(!err && overlays==before_overlays);
+    msm5xxx_poc_set_gpio_lcd(&state,"100",&err);assert(err);err=NULL;
+    setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4,.offset_within_region=0x660};
+    msm5xxx_poc_set_gpio_lcd(&state,"100:102",&err);assert(!err);
+    text=msm5xxx_poc_get_gpio_lcd(&state,&err);assert(!strcmp(text,"100:102"));g_free(text);
+    msm5xxx_poc_gpio_lcd_init(&state.machine,&state,&err);assert(!err && mapped_address==0x3000660);
+    msm[0x66c]=0xaa;msm5xxx_poc_gpio_lcd_write(&state,0,0x120,2);
+    assert(gpio_emits==1 && gpio_trace_address==0x3000660 && gpio_trace_value==0x120 && gpio_trace_size==2);
+    assert(msm5xxx_poc_gpio_lcd_read(&state,0,2)==0x120 && msm[0x66c]==0xaa);
+    cpu.pc=0x104;msm5xxx_poc_gpio_lcd_write(&state,0,0x160,2);assert(gpio_emits==1);
+    cpu.pc=0x100;msm5xxx_poc_gpio_lcd_write(&state,0,0x11223344,4);
+    assert(gpio_emits==1 && msm5xxx_poc_gpio_lcd_read(&state,0,4)==0x11223344);
+    msm5xxx_poc_gpio_lcd_write(&state,1,0xabcd,2);assert(gpio_emits==1);
+    cpu.env.thumb=false;msm5xxx_poc_gpio_lcd_write(&state,0,0x40,2);cpu.env.thumb=true;
+    vcpu=false;msm5xxx_poc_gpio_lcd_write(&state,0,0x60,2);vcpu=true;
+    unwind_valid=false;msm5xxx_poc_gpio_lcd_write(&state,0,0x80,2);unwind_valid=true;
+    assert(gpio_emits==1 && msm5xxx_poc_gpio_lcd_read(&state,0,2)==0x80);
+    text=msm5xxx_poc_get_gpio_lcd_state(&state,&err);assert(strstr(text,"captures=1"));g_free(text);
+    msm5xxx_poc_set_gpio_lcd(&state,"104",&err);assert(err && state.gpio_lcd_pc_count==2);err=NULL;
+    const char *bad_gpio[]={"","100:","101","100:100",":100","+100","100::102"};
+    for(unsigned i=0;i<ARRAY_SIZE(bad_gpio);i++) {
+        setup();msm5xxx_poc_set_gpio_lcd(&state,bad_gpio[i],&err);
+        assert(err && !state.gpio_lcd_enabled && !state.gpio_lcd_pc_count);err=NULL;
+    }
+    setup();GString *overflow=g_string_new("");
+    for(unsigned i=0;i<65;i++)g_string_append_printf(overflow,"%s%x",i?":":"",2*i);
+    msm5xxx_poc_set_gpio_lcd(&state,overflow->str,&err);
+    assert(err && !state.gpio_lcd_enabled);err=NULL;g_string_free(overflow,true);
+    for(unsigned mode=0;mode<6;mode++) {
+        setup();found=(MemoryRegionSection){.mr=&state.msm,.size=4,.offset_within_region=0x660};
+        msm5xxx_poc_set_gpio_lcd(&state,"100",&err);assert(!err);
+        if(mode==0)found.mr=&memory;
+        if(mode==1)found.size=3;
+        if(mode==2)found.offset_within_region++;
+        if(mode==3)state.memory_profile_enabled=false;
+        if(mode==4)state.primary_nor_size=0x100;
+        if(mode==5)found.mr=NULL;
+        msm5xxx_poc_gpio_lcd_init(&state.machine,&state,&err);assert(err);err=NULL;
     }
     /* Invalid initial geometry does not consume edges; valid needs inactive CS. */
     setup();gpio(0x18,0x40);gpio(0x1c,3);select_cs(false);
