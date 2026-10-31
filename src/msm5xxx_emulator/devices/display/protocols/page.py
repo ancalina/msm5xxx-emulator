@@ -1349,7 +1349,7 @@ class PageProtocolMixin:
         return True
 
     def _lcd_byte_020_row_reset(self, *, replay: bool) -> None:
-        """Reject an incomplete byte-row candidate without swallowing traffic."""
+        """Reject an incomplete byte-page candidate without swallowing traffic."""
         events = tuple(self._lcd_byte_020_row_events)
         self._lcd_byte_020_row_probe.clear()
         self._lcd_byte_020_row_events.clear()
@@ -1360,50 +1360,78 @@ class PageProtocolMixin:
             for address, size, value in events:
                 self._lcd_route_write(None, 0, address, size, value, None)
 
+    def _lcd_byte_020_row_publish(self) -> bool:
+        """Publish a bounded column run of eight-pixel, interleaved 2bpp words."""
+        self._set_display_geometry(
+            128, 160, source="runtime:byte-page-2bpp",
+            force=getattr(self.config, "display_geometry_source", "") in
+            ("auto-default", "runtime:byte-page-2bpp"),
+        )
+        if (self.config.width, self.config.height) != (128, 160):
+            return False
+        address = self._lcd_byte_020_row_y
+        x0, page = address >> 5, (address & 0x1F) - 1
+        for x, word in enumerate(self._lcd_byte_020_row_words, x0):
+            for bit in range(8):
+                level = (word >> (2 * bit) & 3) * 85
+                offset = ((page * 8 + bit) * 128 + x) * 3
+                self.framebuffer[offset:offset + 3] = bytes((level,)) * 3
+        self._lcd_byte_020_row_events.clear()
+        self._lcd_byte_020_row_words.clear()
+        self._lcd_byte_020_row_y = -1
+        self._lcd_byte_020_row_stage = "ready"
+        self._lcd_protocol = "byte-page-2bpp"
+        self._publish_frame()
+        return True
+
     def _lcd_byte_020_row_commit(self, command: int, word: int) -> bool:
-        """Consume one proven byte-row packet, or fail closed to legacy LCD paths."""
-        if command == 0x05 and word == 0x14 and self._lcd_byte_020_row_stage in ("", "ready"):
+        """Decode BE register packets after page-count and write-mask setup.
+
+        Register 11 packs the column above a one-based five-bit page address;
+        register 12 contains eight vertical pixels, least significant pair first.
+        A new address or setup can terminate a partial column run. Unsupported
+        packets replay through the legacy paths without publishing that run.
+        """
+        stage = self._lcd_byte_020_row_stage
+        valid_address = word >> 5 < 128 and 1 <= (word & 0x1F) <= 20
+        boundary = ((command == 0x11 and valid_address)
+                    or (command == 0x05 and word == 0x14))
+        if stage == "data" and self._lcd_byte_020_row_words and boundary:
+            packet = self._lcd_byte_020_row_events[-4:]
+            if not self._lcd_byte_020_row_publish():
+                self._lcd_byte_020_row_reset(replay=True)
+                return True
+            self._lcd_byte_020_row_events.extend(packet)
+            stage = "ready"
+        if command == 0x05 and word == 0x14 and stage in ("", "ready"):
             self._lcd_byte_020_row_stage = "x"
             return True
-        if command == 0x10 and word == 0 and self._lcd_byte_020_row_stage == "x":
+        if command == 0x10 and word == 0 and stage in ("x", "ready"):
             self._lcd_byte_020_row_stage = "y"
             return True
-        if (command == 0x11 and self._lcd_byte_020_row_stage == "y"
-                and self.config.width >= 128 and 0 <= word < self.config.height):
+        if command == 0x11 and stage in ("y", "ready") and valid_address:
             self._lcd_byte_020_row_y = word
             self._lcd_byte_020_row_stage = "data"
-            self._lcd_byte_020_row_words.clear()
             return True
-        if command == 0x12 and self._lcd_byte_020_row_stage == "data":
+        if command == 0x12 and stage == "data":
             words = self._lcd_byte_020_row_words
             words.append(word)
-            if len(words) < 128:
+            if len(words) < 128 - (self._lcd_byte_020_row_y >> 5):
                 return True
-            if len(words) == 128:
-                y, row = self._lcd_byte_020_row_y, tuple(words)
-                self._lcd_byte_020_row_events.clear()
-                self._lcd_byte_020_row_stage = "ready"
-                self._lcd_byte_020_row_y = -1
-                words.clear()
-                was_published = self._lcd_protocol == "byte-row-rgb565"
-                for x, pixel in enumerate(row):
-                    self._pixel(y * self.config.width + x, pixel)
-                if any(row) or was_published:
-                    self._lcd_protocol = "byte-row-rgb565"
-                    self._publish_frame()
+            if self._lcd_byte_020_row_publish():
                 return True
         self._lcd_byte_020_row_reset(replay=True)
         return True
 
     def _lcd_byte_020_row_write(self, address: int, size: int, value: int) -> bool:
-        """Recognise exact 0x02000000/+2 byte-row RGB565 packets."""
+        """Recognise 0x02000000/+2 byte-bus register and packed-page packets."""
         event = (address, size, value)
         probe = self._lcd_byte_020_row_probe
         expected = ((0x02000000, 1), (0x02000000, 1),
                     (0x02000002, 1), (0x02000002, 1))
         if not probe:
             if (address, size, value) != (0x02000000, 1, 0):
-                if self._lcd_byte_020_row_stage not in ("", "ready"):
+                if self._lcd_byte_020_row_stage:
                     self._lcd_byte_020_row_events.append(event)
                     self._lcd_byte_020_row_reset(replay=True)
                     return True
