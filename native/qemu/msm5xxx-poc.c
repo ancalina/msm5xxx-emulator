@@ -472,6 +472,8 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion pause_timer;
     MemoryRegion board_revision;
     bool dmd5100_enabled, dmd5100_mapped, dmd5100_ram_verified;
+    bool dmd5000_dual, dmd5000_released;
+    uint32_t dmd5000_descriptor[2], dmd5000_payload[2], dmd5000_selected;
     bool dmd5100_barrier, dmd5100_half_pending;
     uint32_t dmd5100_entry, dmd5100_descriptor, dmd5100_payload, dmd5100_count;
     uint32_t dmd5100_phase, dmd5100_pairs, dmd5100_even_reads, dmd5100_odd_reads;
@@ -2420,6 +2422,14 @@ static const MemoryRegionOps msm5xxx_poc_ready_control_ops = {
     .valid.max_access_size = 1,
 };
 
+/* The dual-descriptor legacy driver uses the 760 readback aperture.  The
+ * program/hold ports remain 4c/50/5c; this does not model DSP execution. */
+static hwaddr msm5xxx_poc_dmd5100_port_address(MSM5xxxPOCMachineState *s, unsigned port)
+{
+    return s->dmd5000_dual && port >= 3 ?
+        0x03000768 + (port - 3) * 4 : dmd5100_ports[port];
+}
+
 static bool msm5xxx_poc_dmd5100_active(MSM5xxxPOCMachineState *s)
 {
     return s->dmd5100_phase >= DMD5100_HOLD && s->dmd5100_phase <= DMD5100_ODD_DONE;
@@ -2504,6 +2514,8 @@ static void msm5xxx_poc_dmd5100_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
     s->dmd5100_phase = DMD5100_IDLE;
+    s->dmd5000_released = false;
+    s->dmd5000_selected = 2;
     s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
     s->dmd5100_rejections = 0;
     s->dmd5100_first_rejection = false;
@@ -2536,12 +2548,12 @@ static MemTxResult msm5xxx_poc_dmd5100_forward(MSM5xxxPOCDMD5100Port *port,
     uint8_t bytes[8] = {0};
     MemTxResult result;
     if (port->index >= 5 || !size || size > sizeof(bytes) ||
-        offset > UINT64_MAX - dmd5100_ports[port->index]) {
+        offset > UINT64_MAX - msm5xxx_poc_dmd5100_port_address(s, port->index)) {
         return MEMTX_ERROR;
     }
     if (s->dmd5100_ram_verified && offset < 4 && size <= 4 - offset) {
         uint8_t *ram = memory_region_get_ram_ptr(&s->msm);
-        uint64_t at = dmd5100_ports[port->index] - MSM5XXX_POC_MSM_BASE + offset;
+        uint64_t at = msm5xxx_poc_dmd5100_port_address(s, port->index) - MSM5XXX_POC_MSM_BASE + offset;
         if (write) {
             msm5xxx_poc_backing_write(ram, at, *value, size);
             memory_region_set_dirty(&s->msm, at, size);
@@ -2554,10 +2566,10 @@ static MemTxResult msm5xxx_poc_dmd5100_forward(MSM5xxxPOCDMD5100Port *port,
     if (write) {
         msm5xxx_poc_backing_write(bytes, 0, *value, size);
         result = address_space_write(&address_space_memory,
-            dmd5100_ports[port->index] + offset, attrs, bytes, size);
+            msm5xxx_poc_dmd5100_port_address(s, port->index) + offset, attrs, bytes, size);
     } else {
         result = address_space_read(&address_space_memory,
-            dmd5100_ports[port->index] + offset, attrs, bytes, size);
+            msm5xxx_poc_dmd5100_port_address(s, port->index) + offset, attrs, bytes, size);
         if (result == MEMTX_OK) {
             *value = msm5xxx_poc_backing_read(bytes, 0, size);
         }
@@ -2566,11 +2578,127 @@ static MemTxResult msm5xxx_poc_dmd5100_forward(MSM5xxxPOCDMD5100Port *port,
     return result;
 }
 
+/* Loader devices fill ROM after machine initialization. Validate content only
+ * at a qualified guest hold, while topology was already checked at init. */
+static bool msm5xxx_poc_dmd5000_descriptors_valid(MSM5xxxPOCMachineState *s)
+{
+    const uint8_t *rom = memory_region_get_ram_ptr(&s->nor);
+    for (unsigned i = 0; i < 2; i++) {
+        uint64_t desc = s->dmd5000_descriptor[i], payload = s->dmd5000_payload[i];
+        if (desc + 8 > s->primary_nor_size ||
+            payload + 4ULL * s->dmd5100_count > s->primary_nor_size ||
+            ldl_le_p(rom + desc) != payload || lduw_le_p(rom + desc + 4) != 0 ||
+            lduw_le_p(rom + desc + 6) != 2 * s->dmd5100_count) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool msm5xxx_poc_dmd5000_write_next(MSM5xxxPOCMachineState *s,
+    unsigned port, uint64_t value, unsigned size)
+{
+    uint32_t *r = s->cpu->env.regs;
+    unsigned p = s->dmd5100_phase, n = s->dmd5100_count;
+    if (port == 2 && size == 1 && value == 0 && r[7] == 0 &&
+        msm5xxx_poc_dmd5100_pc(s, 0x1a)) {
+        if (!msm5xxx_poc_dmd5000_descriptors_valid(s)) {
+            return false;
+        }
+        s->dmd5100_phase = DMD5100_HOLD;
+        s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
+        s->dmd5100_barrier = s->dmd5100_half_pending = false;
+        s->dmd5000_released = false;
+        s->dmd5000_selected = 2;
+        return true;
+    }
+    if (port == 0 && size == 2 && value == 0 && p == DMD5100_HOLD &&
+        r[7] == 0 && msm5xxx_poc_dmd5100_pc(s, 0x32)) {
+        for (unsigned i = 0; i < 2; i++) {
+            if (r[3] == s->dmd5000_descriptor[i]) {
+                s->dmd5000_selected = i;
+                s->dmd5100_descriptor = s->dmd5000_descriptor[i];
+                s->dmd5100_payload = s->dmd5000_payload[i];
+                s->dmd5100_phase = DMD5100_PROGRAM;
+                return true;
+            }
+        }
+        return false;
+    }
+    if (s->dmd5000_selected > 1) {
+        return false;
+    }
+    unsigned branch = s->dmd5000_selected == 0 ? 0x20 : 0;
+    if (port == 1 && size == 2 && value <= UINT16_MAX && p == DMD5100_PROGRAM &&
+        r[3] == s->dmd5100_descriptor && r[7] == 2 * s->dmd5100_pairs &&
+        s->dmd5100_pairs < n) {
+        if (!s->dmd5100_half_pending && msm5xxx_poc_dmd5100_pc(s, 0x52 + branch)) {
+            s->dmd5100_odd[s->dmd5100_pairs] = value;
+            s->dmd5100_half_pending = true;
+            return true;
+        }
+        if (s->dmd5100_half_pending && msm5xxx_poc_dmd5100_pc(s, 0x58 + branch) &&
+            r[2] == s->dmd5100_payload) {
+            s->dmd5100_even[s->dmd5100_pairs++] = value;
+            s->dmd5100_half_pending = false;
+            if (s->dmd5100_pairs == n) {
+                s->dmd5100_phase = DMD5100_FULL;
+            }
+            return true;
+        }
+        return false;
+    }
+    if (port == 2 && size == 1 && value == 1 && p == DMD5100_FULL &&
+        !s->dmd5000_released && msm5xxx_poc_dmd5100_pc(s, 0x8a)) {
+        s->dmd5000_released = true;
+    } else if (port == 3 && size == 1 && value == 0x0e && p == DMD5100_FULL &&
+        s->dmd5000_released && msm5xxx_poc_dmd5100_pc(s, 0x98)) {
+        s->dmd5100_phase = DMD5100_MODE;
+    } else if (port == 4 && size == 1 && value == 0 && p == DMD5100_MODE &&
+        msm5xxx_poc_dmd5100_pc(s, 0x9c)) {
+        s->dmd5100_phase = DMD5100_EVEN;
+        s->dmd5100_barrier = false;
+    } else if (port == 4 && size == 1 && value == 0 && p == DMD5100_EVEN_DONE &&
+        msm5xxx_poc_dmd5100_pc(s, 0xfa)) {
+        s->dmd5100_phase = DMD5100_ODD;
+        s->dmd5100_barrier = false;
+    } else if (port == 3 && size == 1 && value == 0 && p == DMD5100_ODD_DONE &&
+        msm5xxx_poc_dmd5100_pc(s, 0x160)) {
+        s->dmd5100_phase = DMD5100_CLOSED;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool msm5xxx_poc_dmd5000_read_context(MSM5xxxPOCMachineState *s, bool even,
+                                            unsigned index)
+{
+    uint32_t *r = s->cpu->env.regs;
+    unsigned branch = s->dmd5000_selected == 0 ? 0x24 : 0;
+    if (s->dmd5000_selected > 1 || r[0] != index ||
+        !msm5xxx_poc_dmd5100_pc(s, (even ? 0xbc : 0x120) +
+                                     (even ? branch : (branch ? 0x28 : 0)))) {
+        return false;
+    }
+    if (even) {
+        return r[7] == 0x03000760 && r[4] == 2 * index &&
+            (s->dmd5000_selected == 0 ?
+             r[1] == s->dmd5100_payload && r[2] == s->dmd5100_count :
+             r[2] == s->dmd5100_payload && r[1] == s->dmd5100_count);
+    }
+    return r[6] == 2 * index && r[2] == s->dmd5100_payload &&
+        r[1] == s->dmd5100_count;
+}
+
 static bool msm5xxx_poc_dmd5100_write_next(MSM5xxxPOCMachineState *s,
                                           unsigned port, uint64_t value, unsigned size)
 {
     uint32_t *r = s->cpu->env.regs;
     uint32_t n = s->dmd5100_count, p = s->dmd5100_phase;
+    if (s->dmd5000_dual) {
+        return msm5xxx_poc_dmd5000_write_next(s, port, value, size);
+    }
     if (port == 2 && size == 1 && value == 0 &&
         msm5xxx_poc_dmd5100_pc(s, 0x1a) && r[7] == 0) {
         s->dmd5100_phase = DMD5100_HOLD;
@@ -2654,10 +2782,11 @@ static MemTxResult msm5xxx_poc_dmd5100_read(void *opaque, hwaddr offset,
             return MEMTX_OK;
         }
         if (s->dmd5100_barrier &&
-            ((even && msm5xxx_poc_dmd5100_pc(s, 0x78) && r[7] == s->dmd5100_descriptor &&
+            ((s->dmd5000_dual && msm5xxx_poc_dmd5000_read_context(s, even, even ? i : j)) ||
+             (!s->dmd5000_dual && ((even && msm5xxx_poc_dmd5100_pc(s, 0x78) && r[7] == s->dmd5100_descriptor &&
               r[2] == s->dmd5100_payload && r[4] == 2 * i && r[0] == i && r[3] == s->dmd5100_count) ||
              (odd && msm5xxx_poc_dmd5100_pc(s, 0xa4) && r[7] == s->dmd5100_count &&
-              r[4] == s->dmd5100_payload && r[1] == 2 * j && r[0] == j && r[2] == 0x030007e0))) {
+              r[4] == s->dmd5100_payload && r[1] == 2 * j && r[0] == j && r[2] == 0x030007e0))))) {
             *value = even ? s->dmd5100_even[i++] : s->dmd5100_odd[j++];
             s->dmd5100_even_reads = i;
             s->dmd5100_odd_reads = j;
@@ -2672,10 +2801,13 @@ static MemTxResult msm5xxx_poc_dmd5100_read(void *opaque, hwaddr offset,
     MemTxResult result = msm5xxx_poc_dmd5100_forward(port, offset, value, size, attrs, false);
     if (guest && msm5xxx_poc_dmd5100_active(s)) {
         bool barrier = !offset && size == 1 && port->index == 3 && !s->dmd5100_barrier &&
-            ((p == DMD5100_EVEN && !i && msm5xxx_poc_dmd5100_pc(s, 0x64) &&
+            ((s->dmd5000_dual &&
+              ((p == DMD5100_EVEN && !i && msm5xxx_poc_dmd5100_pc(s, 0x9e)) ||
+               (p == DMD5100_ODD && !j && msm5xxx_poc_dmd5100_pc(s, 0xfc)))) ||
+             (!s->dmd5000_dual && ((p == DMD5100_EVEN && !i && msm5xxx_poc_dmd5100_pc(s, 0x64) &&
               r[7] == 2 * s->dmd5100_count && r[6] == 0x030007e0) ||
              (p == DMD5100_ODD && !j && msm5xxx_poc_dmd5100_pc(s, 0x90) &&
-              r[7] == s->dmd5100_descriptor && r[2] == 0x030007e0));
+              r[7] == s->dmd5100_descriptor && r[2] == 0x030007e0))));
         if (result == MEMTX_OK && barrier) {
             s->dmd5100_barrier = true;
         } else {
@@ -2729,6 +2861,47 @@ malformed:
     error_setg(errp, "dmd5100-program requires bounded ENTRY:DESCRIPTOR:PAYLOAD:PAIR_COUNT before realization");
 }
 
+static char *msm5xxx_poc_get_dmd5000(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->dmd5000_dual ? g_strdup_printf("%x:%x:%x:%x:%x:%x", s->dmd5100_entry,
+        s->dmd5000_descriptor[0], s->dmd5000_payload[0], s->dmd5000_descriptor[1],
+        s->dmd5000_payload[1], s->dmd5100_count) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_dmd5000(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t v[6];
+    const char *part = value, *end;
+    unsigned long parsed;
+    if (s->cpu || s->dmd5100_enabled || !part) {
+        goto malformed;
+    }
+    for (unsigned i = 0; i < 6; i++) {
+        if (!g_ascii_isxdigit(*part) || qemu_strtoul(part, &end, 16, &parsed) ||
+            parsed > UINT32_MAX || (i < 5 ? *end != ':' : *end != '\0')) {
+            goto malformed;
+        }
+        v[i] = parsed;
+        part = end + (i < 5);
+    }
+    if (!v[0] || v[0] & 1 || v[0] > 0x02000000 - 0x184 ||
+        v[1] & 3 || v[3] & 3 || v[2] & 1 || v[4] & 1 ||
+        v[1] == v[3] || !v[5] || v[5] > 0x7fff) {
+        goto malformed;
+    }
+    s->dmd5100_entry = v[0];
+    s->dmd5100_descriptor = s->dmd5000_descriptor[0] = v[1];
+    s->dmd5100_payload = s->dmd5000_payload[0] = v[2];
+    s->dmd5000_descriptor[1] = v[3]; s->dmd5000_payload[1] = v[4];
+    s->dmd5100_count = v[5];
+    s->dmd5000_dual = s->dmd5100_enabled = true;
+    return;
+malformed:
+    error_setg(errp, "dmd5000-program requires ENTRY:DESC0:PAYLOAD0:DESC1:PAYLOAD1:PAIR_COUNT");
+}
+
 static char *msm5xxx_poc_get_dmd5100_stats(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -2765,12 +2938,12 @@ static char *msm5xxx_poc_get_dmd5100_rejection(Object *obj, Error **errp)
 static bool msm5xxx_poc_dmd5100_topology(MSM5xxxPOCMachineState *s)
 {
     const uint32_t bases[] = {s->dmd5100_entry, s->dmd5100_descriptor, s->dmd5100_payload};
-    const uint32_t lengths[] = {244, 8, 4 * s->dmd5100_count};
+    const uint32_t lengths[] = {s->dmd5000_dual ? 0x184 : 244, 8, 4 * s->dmd5100_count};
     if (!s->memory_profile_enabled || !memory_region_is_rom(&s->nor)) {
         return false;
     }
     for (unsigned i = 0; i < 8; i++) {
-        uint64_t address = i < 3 ? bases[i] : dmd5100_ports[i - 3];
+        uint64_t address = i < 3 ? bases[i] : msm5xxx_poc_dmd5100_port_address(s, i - 3);
         unsigned length = i < 3 ? lengths[i] : 4;
         if (i < 3 && address + length > s->primary_nor_size) {
             return false;
@@ -2784,6 +2957,27 @@ static bool msm5xxx_poc_dmd5100_topology(MSM5xxxPOCMachineState *s)
         }
         if (!valid) {
             return false;
+        }
+    }
+    if (s->dmd5000_dual) {
+        for (unsigned i = 0; i < 2; i++) {
+            const uint64_t addresses[] = {s->dmd5000_descriptor[i], s->dmd5000_payload[i]};
+            const unsigned sizes[] = {8, 4 * s->dmd5100_count};
+            for (unsigned j = 0; j < 2; j++) {
+                if (addresses[j] + sizes[j] > s->primary_nor_size) {
+                    return false;
+                }
+                MemoryRegionSection section = memory_region_find(get_system_memory(), addresses[j], sizes[j]);
+                bool valid = section.mr == &s->nor &&
+                    section.offset_within_region == addresses[j] &&
+                    int128_eq(section.size, int128_make64(sizes[j]));
+                if (section.mr) {
+                    memory_region_unref(section.mr);
+                }
+                if (!valid) {
+                    return false;
+                }
+            }
         }
     }
     return true;
@@ -13126,7 +13320,7 @@ static void msm5xxx_poc_init(MachineState *machine)
             memory_region_init_io(&s->dmd5100_region[index], OBJECT(machine),
                 &msm5xxx_poc_dmd5100_ops, &s->dmd5100_port[index], "msm5xxx-poc.dmd5100", 4);
             memory_region_set_enabled(&s->dmd5100_region[index], false);
-            memory_region_add_subregion_overlap(get_system_memory(), dmd5100_ports[index],
+            memory_region_add_subregion_overlap(get_system_memory(), msm5xxx_poc_dmd5100_port_address(s, index),
                 &s->dmd5100_region[index], 3);
         }
         s->dmd5100_mapped = true;
@@ -16591,6 +16785,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_board_revision);
     object_class_property_set_description(
         oc, "board-revision", "Detector-provided fixed revision readback");
+    object_class_property_add_str(oc, "dmd5000-program",
+                                  msm5xxx_poc_get_dmd5000, msm5xxx_poc_set_dmd5000);
     object_class_property_add_str(oc, "dmd5100-program",
                                   msm5xxx_poc_get_dmd5100, msm5xxx_poc_set_dmd5100);
     object_class_property_add_str(oc, "dmd5100-stats",

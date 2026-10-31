@@ -2427,6 +2427,58 @@ def qemu_dmd5100_property(
     return "dmd5100-program=" + ":".join(f"{value:x}" for value in values), None
 
 
+def qemu_dmd5000_property(original: bytes, loaded: bytes, config: object, *,
+                          layout_claimed: bool = False, input_profile: dict | None = None,
+                          eeprom_window: tuple[int, int] | None = None,
+                          immutable_limit: int | None = None) -> tuple[str | None, str | None]:
+    """Admit the unchanged dual-descriptor driver with passive, exclusive ports."""
+    from ..detection.dmd5000 import find_dmd5000_profile
+    profile = find_dmd5000_profile(original)
+    if profile is None:
+        return None, None
+    fields = ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size')
+    if (any(type(getattr(config, key, None)) is not int for key in fields)
+            or config.image_kind != 'firmware'
+            or (config.load_address, config.image_offset, config.entry) != (0, 0, 0)
+            or not isinstance(loaded, bytes) or len(loaded) != config.flash_size
+            or not 0 < len(original) <= config.flash_size <= 0x02000000
+            or loaded[:len(original)] != original
+            or find_dmd5000_profile(loaded) != profile
+            or not 0 <= config.ram_base <= profile['completion'] <
+                   config.ram_base + config.ram_size <= 0x100000000
+            or layout_claimed or immutable_limit is not None
+            or getattr(config, 'ram_bootstrap_profile', None) is not None
+            or getattr(config, 'missing_overlays', None)
+            or getattr(config, 'ram_image_size', 0)):
+        return None, 'dmd5000-loaded-source-or-memory-owner-unclosed'
+    windows = []
+    status = getattr(config, 'board_status_input', None)
+    if status is not None:
+        windows.append((getattr(status, 'address', None), getattr(status, 'width', 1)))
+    if getattr(config, 'key_register', None) is not None:
+        windows.append((config.key_register, 4))
+    uart = getattr(config, 'uart_console', None)
+    if isinstance(uart, dict):
+        windows.extend(((uart.get('base'), 0x24), (uart.get('pulse_address'), 1)))
+    if input_profile is not None:
+        if not isinstance(input_profile, dict):
+            return None, 'dmd5000-input-owner-unclosed'
+        width = (2 if str(input_profile.get('grammar', '')).startswith('indirect-halfword')
+                 else input_profile.get('register_width', 1))
+        windows.append((input_profile.get('register', input_profile.get('sense_address')), width))
+    if eeprom_window is not None:
+        windows.append(eeprom_window)
+    ports = (0x0300004c, 0x03000050, 0x0300005c, 0x03000768, 0x0300076c)
+    for start, size in windows:
+        if (type(start) is not int or type(size) is not int
+                or not 0 <= start < start + size <= 0x100000000
+                or any(start < port+4 and port < start+size for port in ports)):
+            return None, 'dmd5000-input-owner-conflict'
+    values = (profile['entry'], profile['descriptors'][0], profile['payloads'][0],
+              profile['descriptors'][1], profile['payloads'][1], profile['pairs'])
+    return 'dmd5000-program=' + ':'.join(f'{value:x}' for value in values), None
+
+
 def qemu_dmd_5500_property(
         image: bytes, config: object,
         immutable_limit: int | None = None,
@@ -4420,6 +4472,20 @@ class Transport:
                 self.config.upper_flash_address, self.config.secondary_flash_address,
                 self.config.native_nand_profile, self.config.nand_image)),
         )
+        if dmd5100_property is None:
+            dmd5100_property, dual_reject = qemu_dmd5000_property(
+                detector_image, primary_seed, self.config,
+                immutable_limit=primary_profile[0] if primary_profile is not None else None,
+                input_profile=self.matrix_input_profile,
+                eeprom_window=(eeprom_profile[0], 32) if eeprom_profile is not None else None,
+                layout_claimed=ma2_patch is not None or any(value is not None for value in (
+                    ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                    upper_x16_profile, intel_profile, amd_profile,
+                    self.config.upper_flash_address, self.config.secondary_flash_address,
+                    self.config.native_nand_profile, self.config.nand_image)),
+            )
+            if dual_reject is not None:
+                dmd5100_reject = dual_reject
         self.dmd5100_program_property = dmd5100_property
         self.dmd5100_program_reject = dmd5100_reject
         if dmd5100_property is not None:
