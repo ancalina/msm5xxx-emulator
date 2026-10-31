@@ -550,6 +550,7 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion uart_console_rearm_region;
     /* FF/DD seals at 5; FF/CC/99 adds LF/RX at 5, drains/config at 6/7, seal 8. */
     uint8_t uart_console_probe_stage, uart_console_probe_step, uart_console_probe_drains;
+    bool uart_console_halfword_controls;
     bool uart_console_initialized, uart_console_tx_enabled, uart_console_rx_enabled;
     bool uart_console_empty;
     uint32_t uart_console_base;
@@ -1475,6 +1476,7 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
     uint8_t *byte_latch = NULL;
     uint16_t *wide_latch = NULL;
     unsigned config_bit = 0;
+    unsigned control_width = s->uart_console_halfword_controls ? 2 : 1;
 
     if (s->uart_console_rejected) {
         return msm5xxx_poc_uart_console_forward(s, offset, &value, size, attrs, true);
@@ -1482,13 +1484,13 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
     if (offset == 0 && size == s->uart_console_register_width && value == 0) {
         wide_latch = &s->uart_console_mr1;
         config_bit = 1;
-    } else if (offset == 4 && size == 1 && value == 0x34) {
+    } else if (offset == 4 && size == control_width && value == 0x34) {
         byte_latch = &s->uart_console_mr2;
         config_bit = 2;
-    } else if (offset == 8 && size == 1 && value == s->uart_console_expected_csr) {
+    } else if (offset == 8 && size == control_width && value == s->uart_console_expected_csr) {
         byte_latch = &s->uart_console_csr;
         config_bit = 4;
-    } else if (offset == 0x14 && size == 1 && value == 0) {
+    } else if (offset == 0x14 && size == control_width && value == 0) {
         byte_latch = &s->uart_console_imr;
         config_bit = 8;
     } else if (offset == 0x1c && size == s->uart_console_tfwr_width && value == 30) {
@@ -1497,7 +1499,7 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
     } else if (offset == 0x20 && size == s->uart_console_register_width && value == 0) {
         wide_latch = &s->uart_console_rfwr;
         config_bit = 32;
-    } else if (offset == 0x10 && size == 1 &&
+    } else if (offset == 0x10 && size == control_width &&
                (value == 0x10 || value == 0x20 || value == 0x30 ||
                 value == 1 || value == 4)) {
         if (!s->uart_console_initialized) {
@@ -1966,6 +1968,27 @@ malformed:
                      "aligned in MSM with class 2:99, 2:dd or 1:ff");
 }
 
+
+static char *msm5xxx_poc_get_uart_halfword_console(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup(s->uart_console_halfword_controls ? "3000f0c" : "");
+}
+
+static void msm5xxx_poc_set_uart_halfword_console(Object *obj,
+                                                 const char *value,
+                                                 Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (strcmp(value, "3000f0c") || s->uart_console_realized ||
+        s->uart_console_enabled) {
+        error_setg(errp, "experimental-uart-halfword-console requires 3000f0c before UART configuration");
+        return;
+    }
+    msm5xxx_poc_set_uart_console(obj, "3000f0c:2:ff", errp);
+    s->uart_console_halfword_controls = true;
+}
 
 static char *msm5xxx_poc_get_uart_console_probe(Object *obj, Error **errp)
 {
@@ -16637,6 +16660,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_ram_reserved);
     object_class_property_set_description(
         oc, "ram-reserved", "Unmapped interior RAM aperture BASE:SIZE in hexadecimal");
+    object_class_property_add_str(oc, "experimental-uart-halfword-console",
+        msm5xxx_poc_get_uart_halfword_console, msm5xxx_poc_set_uart_halfword_console);
     object_class_property_add_str(oc, "uart-console", msm5xxx_poc_get_uart_console,
                                   msm5xxx_poc_set_uart_console);
     object_class_property_set_description(oc, "uart-console",

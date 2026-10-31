@@ -6,6 +6,70 @@ from pathlib import Path
 
 
 class CopiedIRQTests(unittest.TestCase):
+    def test_property_parser_bounds_and_exclusive_owner(self):
+        source = (Path(__file__).resolve().parents[1] /
+                  'native/qemu/msm5xxx-poc.c').read_text()
+        at = source.index('static void msm5xxx_poc_set_rex_copied_c80(')
+        end = source.index('\nstatic ', at + 1)
+        code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+typedef int Error;
+typedef struct {
+    bool rex_irq_enabled, rex_irq_c80, rex_irq_copied;
+    uint32_t rex_irq_status_address, rex_irq_enable_address, rex_irq_arm_address;
+    uint32_t rex_irq_mask, rex_irq_interval, rex_irq_vector_target;
+    uint32_t rex_irq_wrapper_address, rex_irq_handler_slot, rex_irq_handler_address;
+    uint32_t rex_irq_handler_size, rex_irq_callback_slot, rex_irq_callback_address;
+    uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size, rex_irq_vector_rom;
+    uint32_t rex_irq_halfword_arm_pc, rex_irq_controller_size;
+    uint32_t rex_irq_bank_count, rex_irq_gate_status;
+} MSM5xxxPOCMachineState;
+typedef MSM5xxxPOCMachineState Object;
+#define MSM5XXX_POC_MACHINE(o) (o)
+#define MSM5XXX_POC_REX_C80_CONTROLLER_SIZE 0x1a
+#define MSM5XXX_POC_REX_GATE_VECTOR_WAIT 1
+static void error_setg(Error **err, const char *message) {
+    static Error value; assert(message); *err=&value;
+}
+''' + source[at:end] + r'''
+int main(void) {
+    const char *valid = "4c4b40:1000000:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc0";
+    const char *bad[] = {
+        "", "0:1000000:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc0",
+        "1:1000001:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc0",
+        "1:1000000:37fffc0:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc0",
+        "1:1000000:380ffc0:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc0",
+        "1:1000000:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:204:345b80:106fc0",
+        "1:1000000:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:102:345b80:106fc0",
+        "1:1000000:380ddc8:10cca24:1d1dc8:0:1007824:106f2c:35e040:104:345b80:106fc0",
+        "1:1000000:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc1",
+        "1:1000000:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc0:0",
+        "1:1000000:380ddc8:10cca24:1d1dc8:188:1007824:106f2c:35e040:104:345b80:106fc0junk"
+    };
+    for (unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++) {
+        MSM5xxxPOCMachineState s={0}; Error *err=0;
+        msm5xxx_poc_set_rex_copied_c80(&s,bad[i],&err);
+        assert(err && !s.rex_irq_enabled && !s.rex_irq_copied);
+    }
+    MSM5xxxPOCMachineState s={0}; Error *err=0;
+    msm5xxx_poc_set_rex_copied_c80(&s,valid,&err);
+    assert(!err && s.rex_irq_enabled && s.rex_irq_copied && s.rex_irq_c80);
+    assert(s.rex_irq_arm_address==0x30007a0 && s.rex_irq_mask==0x200);
+    assert(s.rex_irq_wrapper_size==0x104 && s.rex_irq_handler_size==0x188);
+    assert(s.rex_irq_interval==5000000 && s.rex_irq_bank_count==2);
+    msm5xxx_poc_set_rex_copied_c80(&s,valid,&err); assert(err);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory); (path/'check.c').write_text(code)
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',
+                            str(path/'check.c'),'-o',str(path/'check')],check=True)
+            subprocess.run([str(path/'check')],check=True)
+
     def test_live_copies_slots_arm_width_pc_and_backing(self):
         source = (Path(__file__).resolve().parents[1] /
                   'native/qemu/msm5xxx-poc.c').read_text()
