@@ -8,8 +8,15 @@ _PAGE_BITS = tuple(bytes(255 if value & (1 << bit) else 0
 
 
 class PagePanel:
-    def __init__(self, port: int) -> None:
+    data_offset = 4
+
+    def __init__(self, port: int, *, data_offset: int | None = None) -> None:
         self.port = port
+        if data_offset is not None:
+            if data_offset not in (2, 4):
+                raise ValueError("unsupported page data offset")
+            self.data_offset = data_offset
+        self.sequence = 0
         self.ram = bytearray(8 * 256)
         self.page = -1
         self.high: int | None = None
@@ -44,7 +51,7 @@ class PagePanel:
         if size not in (1, 2) or not 0 <= value <= 255:
             self.rejection = "non-byte page transfer"
             return False
-        if address == self.port + 4:
+        if address == self.port + self.data_offset:
             if self.column is None or self.page < 0 or self.column >= 256:
                 self.rejection = "data without bounded page/column"
                 return False
@@ -103,4 +110,5 @@ class PagePanel:
                 frame[offset + 1:end:3] = shades
                 frame[offset + 2:end:3] = shades
         self.frame = bytes(frame)
+        self.sequence += 1
         self.dirty = False

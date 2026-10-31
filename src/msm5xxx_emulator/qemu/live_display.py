@@ -372,7 +372,12 @@ class LiveWindow(Window):
         self.metric_values["run"].set(f"{transport.instructions:,}")
         self.metric_values["pc"].set(f"0x{transport.pc:08X}")
         self.metric_values["lcd"].set(f"{emulator.lcd_writes:,}")
-        self.metric_values["frame"].set(str(emulator.frame_sequence))
+        secondary = emulator.secondary_display_snapshot()
+        sub_frames = secondary.get("sequence", 0) if secondary else 0
+        frames = str(emulator.frame_sequence)
+        if sub_frames:
+            frames += f" + {sub_frames} sub"
+        self.metric_values["frame"].set(frames)
         self.root.after(100, self._refresh_qemu_metrics)
 
     def _refresh_display(self) -> None:

@@ -12,6 +12,29 @@ from msm5xxx_emulator.detection.display import find_byte_main_page_secondary
 
 
 class SecondaryPagePanelTests(unittest.TestCase):
+    def test_halfword_data_lane_and_secondary_publication_count(self):
+        controller, fallback = self.controller()
+        panel = PagePanel(0x02800000, data_offset=2)
+        controller._lcd_secondary_panel = panel
+        controller._lcd_secondary_reason = 'synthetic-halfword-page'
+        controller.frame_sequence = 0
+        for page in range(3):
+            for value in (0xb0 + page, 0x10, 4):
+                controller._lcd_write(None, 0, panel.port, 2, value, None)
+            for _ in range(96):
+                controller._lcd_write(None, 0, panel.port + 2, 2, 0x55, None)
+        panel.flush()
+        snapshot = controller.secondary_display_snapshot()
+        self.assertTrue(snapshot['qualified'])
+        self.assertEqual(snapshot['column_offset'], 4)
+        self.assertGreater(snapshot['sequence'], 0)
+        sequence = snapshot['sequence']
+        panel.flush()
+        self.assertEqual(panel.sequence, sequence)
+        self.assertEqual(controller.frame_sequence, 0)
+        self.assertFalse(fallback)
+        self.assertFalse(panel.write(panel.port + 4, 2, 0))
+
     def test_color_byte_page_contract_requires_shared_object_and_unique_links(self):
         # Synthetic instructions and relocated links, not a firmware fixture.
         image = bytearray(0x1000)
