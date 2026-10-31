@@ -129,8 +129,6 @@ class CopiedWindowRuntimeTests(unittest.TestCase):
         self.assertIsNone(h._lcd_source_window_panel)
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class MuxPageRuntimeTests(unittest.TestCase):
@@ -264,3 +262,7 @@ class BootPageRuntimeTests(unittest.TestCase):
         h=Harness();h.config.chipset='MSM5105'
         self.assertFalse(self.bind(h,ram_claimed=True))
         self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
+
+
+if __name__ == '__main__':
+    unittest.main()
