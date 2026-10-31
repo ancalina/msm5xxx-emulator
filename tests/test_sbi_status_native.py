@@ -34,6 +34,10 @@ typedef uint64_t hwaddr;
 typedef struct {
 ''' + fields + r'''
 } MSM5xxxPOCMachineState;
+static uint32_t test_pc;
+static bool msm5xxx_poc_mmio_access_pc(MSM5xxxPOCMachineState *s, uint32_t *pc) {
+    (void)s; *pc=test_pc; return true;
+}
 /* This fixture verifies the legacy modes with raw-input capability disabled. */
 static bool msm5xxx_poc_sbi_raw_input_peek(MSM5xxxPOCMachineState *s, hwaddr o,
                                         unsigned n, uint64_t *v) {
@@ -94,7 +98,24 @@ int main(void) {
         assert(read_at(&s,bad_reads[i].off,bad_reads[i].size)==backing);
         assert(s.sbi_status==MSM5XXX_POC_SBI_REJECTED && !s.sbi_read_full && !s.sbi_board_adc_responses);
     }
-    /* No post-validation writes are granted, including writes to status itself. */
+    /* Repetition is opt-in and requires complete revalidation each time. */
+    test_pc=0x100;
+    s=fresh(true);s.sbi_bootstrap_repeat=true;s.sbi_bootstrap_repeat_pc=0x100;
+    accept(&s);accept(&s);
+    assert(!s.sbi_board_adc_responses && s.sbi_validation_phase==3);
+    write_at(&s,0,0x45,1);
+    assert(s.sbi_status==MSM5XXX_POC_SBI_OBSERVING && s.sbi_validation_phase==0);
+    write_at(&s,4,0x086a,2);
+    assert(s.sbi_status!=MSM5XXX_POC_SBI_ACCEPTED);
+    s=fresh(true);s.sbi_bootstrap_repeat=true;accept(&s);
+    write_at(&s,4,0x086a,2);
+    assert(s.sbi_status==MSM5XXX_POC_SBI_REJECTED);
+    s=fresh(true);s.sbi_bootstrap_repeat=true;s.sbi_bootstrap_repeat_pc=0x102;
+    accept(&s);write_at(&s,0,0x45,1);
+    assert(s.sbi_status==MSM5XXX_POC_SBI_REJECTED);
+    write_at(&s,0,0x45,1);
+    assert(s.sbi_status==MSM5XXX_POC_SBI_REJECTED);
+    /* Default: no post-validation writes, including status itself. */
     for(unsigned i=0;i<6;i++) {
         s=fresh(true);accept(&s);
         write_at(&s,offsets[i],values[i],sizes[i]);

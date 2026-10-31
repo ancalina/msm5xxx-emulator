@@ -497,6 +497,8 @@ struct MSM5xxxPOCMachineState {
     bool irq_level;
     bool sbi_enabled;
     bool sbi_bootstrap_only;
+    bool sbi_bootstrap_repeat;
+    uint32_t sbi_bootstrap_repeat_pc;
     bool sbi_raw_input_enabled, sbi_raw_input_realized, sbi_raw_input_registered;
     uint32_t sbi_raw_input_pc, sbi_raw_input_last_pc;
     uint8_t sbi_raw_input_mask, sbi_raw_input_value;
@@ -8088,6 +8090,7 @@ static void msm5xxx_poc_sbi_write(void *opaque, hwaddr offset,
     MSM5xxxPOCMachineState *s = opaque;
     bool became_candidate = false;
     bool first_event;
+    uint32_t repeat_pc;
 
     if (offset + size > MSM5XXX_POC_SBI_SIZE) {
         return;
@@ -8102,6 +8105,19 @@ static void msm5xxx_poc_sbi_write(void *opaque, hwaddr offset,
     first_event = offset == bootstrap_offsets[0] &&
                   size == bootstrap_sizes[0] &&
                   value == bootstrap_values[0];
+    if (s->sbi_bootstrap_only && s->sbi_bootstrap_repeat && first_event &&
+        msm5xxx_poc_mmio_access_pc(s, &repeat_pc) &&
+        repeat_pc == s->sbi_bootstrap_repeat_pc &&
+        s->sbi_status == MSM5XXX_POC_SBI_ACCEPTED) {
+        /* A closed second boot stage must replay the entire typed protocol. */
+        s->sbi_status = MSM5XXX_POC_SBI_OBSERVING;
+        s->sbi_bootstrap_phase = s->sbi_validation_phase = 0;
+        s->sbi_control = 0;
+        s->sbi_started = false;
+        s->sbi_read_pending = s->sbi_read_full = false;
+        s->sbi_board_adc_phase = 0;
+        s->sbi_board_adc_selector = 0;
+    }
     if (s->sbi_status == MSM5XXX_POC_SBI_OBSERVING) {
         unsigned phase = s->sbi_bootstrap_phase;
 
@@ -13212,6 +13228,31 @@ static void msm5xxx_poc_set_sbi_bootstrap_only(Object *obj, bool value,
     s->sbi_bootstrap_only = value;
 }
 
+static char *msm5xxx_poc_get_sbi_bootstrap_repeat(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->sbi_bootstrap_repeat ?
+        g_strdup_printf("%x", s->sbi_bootstrap_repeat_pc) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_sbi_bootstrap_repeat(Object *obj, const char *value,
+                                               Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned long pc;
+    const char *end;
+
+    if (qemu_strtoul(value, &end, 16, &pc) < 0 || *end || !pc ||
+        pc > UINT32_MAX || (pc & 1) ||
+        s->primary_nor_size < 2 || pc > s->primary_nor_size - 2) {
+        error_setg(errp, "sbi-bootstrap-repeat must be a closed even write PC");
+        return;
+    }
+    s->sbi_bootstrap_repeat_pc = pc;
+    s->sbi_bootstrap_repeat = true;
+}
+
 static bool msm5xxx_poc_get_upper_x8_nor(Object *obj, Error **errp)
 {
     return MSM5XXX_POC_MACHINE(obj)->upper_x8_nor_enabled;
@@ -15991,6 +16032,7 @@ static void msm5xxx_poc_instance_init(Object *obj)
     s->sbi_enabled = false;
     s->tx_init_last_mode = UINT8_MAX;
     s->sbi_bootstrap_only = false;
+    s->sbi_bootstrap_repeat = false;
     s->lcd_trace_enabled = false;
     s->audio_pcm_enabled = true;
     s->ram_base = MSM5XXX_POC_RAM_BASE;
@@ -16101,6 +16143,14 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "sbi-bootstrap-only",
         "Reject post-bootstrap SBI semantics after exact validation"
+    );
+    object_class_property_add_str(
+        oc, "sbi-bootstrap-repeat", msm5xxx_poc_get_sbi_bootstrap_repeat,
+        msm5xxx_poc_set_sbi_bootstrap_repeat
+    );
+    object_class_property_set_description(
+        oc, "sbi-bootstrap-repeat",
+        "Source-closed write PC for repeated exact SBI bootstrap validation"
     );
     object_class_property_add_bool(oc, "lcd-trace", msm5xxx_poc_get_lcd_trace,
                                    msm5xxx_poc_set_lcd_trace);
