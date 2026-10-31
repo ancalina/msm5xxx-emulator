@@ -65,8 +65,8 @@ FRAMEWORK=$(find "$WORK_DIR/unpacked" -type d -name Python.xcframework -prune)
 for slice in ios-arm64 ios-arm64_x86_64-simulator; do
     [[ -f "$FRAMEWORK/$slice/Python.framework/Python" ]] || fail "Missing $slice"
 done
-xcrun lipo -verify_arch arm64 "$FRAMEWORK/ios-arm64/Python.framework/Python"
-xcrun lipo -verify_arch x86_64 "$FRAMEWORK/ios-arm64_x86_64-simulator/Python.framework/Python"
+xcrun lipo "$FRAMEWORK/ios-arm64/Python.framework/Python" -verify_arch arm64
+xcrun lipo "$FRAMEWORK/ios-arm64_x86_64-simulator/Python.framework/Python" -verify_arch x86_64
 # Enforce compatibility with the app's deployment target, rather than assuming
 # a distribution build target. Check every Mach-O module as well as libPython.
 while IFS= read -r -d '' binary; do
