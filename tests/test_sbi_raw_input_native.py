@@ -54,6 +54,10 @@ typedef struct {
     ARMCPU *cpu;uint32_t primary_nor_size;
 ''' + fields + r'''
 } MSM5xxxPOCMachineState;
+static bool msm5xxx_poc_mmio_access_pc(MSM5xxxPOCMachineState *s, uint32_t *pc) {
+    *pc=s->cpu->parent.pc;
+    return in_vcpu && current_cpu==CPU(s->cpu);
+}
 typedef MSM5xxxPOCMachineState Object;
 #define MSM5XXX_POC_MACHINE(obj) (obj)
 ''' + '\n'.join(function(n) for n in (
@@ -65,7 +69,8 @@ typedef MSM5xxxPOCMachineState Object;
             'msm5xxx_poc_sbi_read','msm5xxx_poc_sbi_write',
             'msm5xxx_poc_set_sbi','msm5xxx_poc_get_sbi_raw_input_profile',
             'msm5xxx_poc_set_sbi_raw_input_profile','msm5xxx_poc_get_sbi_raw_input_status',
-            'msm5xxx_poc_get_sbi_bootstrap_only','msm5xxx_poc_set_sbi_bootstrap_only')) + r'''
+            'msm5xxx_poc_get_sbi_bootstrap_only','msm5xxx_poc_set_sbi_bootstrap_only',
+            'msm5xxx_poc_get_sbi_bootstrap_repeat','msm5xxx_poc_set_sbi_bootstrap_repeat')) + r'''
 static ARMCPU cpu;
 static void guest(void){in_vcpu=true;cpu.parent.running=true;cpu.parent.neg.can_do_io=true;current_cpu=&cpu.parent;cpu.parent.pc=0x1d22a;}
 static MSM5xxxPOCMachineState empty(void){
@@ -240,6 +245,17 @@ int main(void){
     s=empty();s.sbi_bootstrap_only=true;accept(&s);
     for(unsigned i=0;i<4;i++)assert(rd(&s,0,2)==0x5f20);
     wr(&s,4,0x086a,2);assert(s.sbi_status==MSM5XXX_POC_SBI_REJECTED);
+    const char *bad_repeat[]={"", "on", "1", "100000002", "40000", "100x"};
+    for(unsigned i=0;i<G_N_ELEMENTS(bad_repeat);i++) {
+        s=empty();Error *error=NULL;
+        msm5xxx_poc_set_sbi_bootstrap_repeat(&s,bad_repeat[i],&error);
+        assert(error && !s.sbi_bootstrap_repeat);
+    }
+    s=empty();Error *repeat_error=NULL;
+    msm5xxx_poc_set_sbi_bootstrap_repeat(&s,"100",&repeat_error);
+    assert(!repeat_error && s.sbi_bootstrap_repeat && s.sbi_bootstrap_repeat_pc==0x100);
+    char *repeat_property=msm5xxx_poc_get_sbi_bootstrap_repeat(&s,NULL);
+    assert(!strcmp(repeat_property,"100"));g_free(repeat_property);
     puts("SBI raw actual-C PC/channel/phase/byte/peek/reset/property/fallback PASS");return 0;
 }
 '''

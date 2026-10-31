@@ -317,10 +317,36 @@ class DirectProtocolMixin:
         self.framebuffer[offset + 1] = (value >> 2 & 7) * 255 // 7
         self.framebuffer[offset + 2] = (value & 3) * 255 // 3
 
+    def _lcd_028_rgb332_commit(self) -> None:
+        """Publish a proven byte raster, including an interrupted prefix."""
+        probe = self._lcd_028_rgb332_probe
+        x0, y0, width, height = self._lcd_028_rgb332_window
+        if not self._lcd_028_rgb332_qualified:
+            self._set_display_geometry(width, height, source="runtime:direct-rgb332")
+        if x0 + width <= self.config.width and y0 + height <= self.config.height:
+            for index, (_address, _size, packed) in enumerate(probe[7:]):
+                if self._lcd_028_rgb332_column_major:
+                    x, y = x0 + index // height, y0 + index % height
+                else:
+                    x, y = x0 + index % width, y0 + index // width
+                self._lcd_028_rgb332_pixel(y * self.config.width + x, packed)
+            self._lcd_028_rgb332_qualified = True
+            self._lcd_protocol = "direct-rgb332"
+            self._publish_frame()
+        probe.clear()
+
     def _lcd_028_rgb332_write(self, address: int, size: int,
                                value: int) -> bool:
-        """Promote only complete low-byte 0x028 RGB332 window transfers."""
+        """Require a full raster to prove RGB332, then retain partial writes."""
         base, data = 0x02800000, 0x02800004
+        probe = self._lcd_028_rgb332_probe
+        if (self._lcd_028_rgb332_qualified and len(probe) >= 7
+                and address == base and size in (1, 2)
+                and 0 <= value <= 0xFF):
+            # A new command ends the current raster without undoing pixels
+            # already written to panel GRAM. Byte and low-byte halfword
+            # commands address the same register. Commit before changing BC mode.
+            self._lcd_028_rgb332_commit()
         # BC's first argument selects traversal only within the proven byte
         # window class. Exact 2A/2E modes are evidenced; other values retain
         # the established row-major fallback, not a global register bit rule.
@@ -389,21 +415,7 @@ class DirectProtocolMixin:
         probe.append(event)
         if len(probe) < len(setup) + 1 + width * height:
             return True
-        if not self._lcd_028_rgb332_qualified:
-            self._set_display_geometry(
-                width, height, source="runtime:direct-rgb332"
-            )
-        if x0 + width <= self.config.width and y0 + height <= self.config.height:
-            for index, (_address, _size, packed) in enumerate(probe[len(setup) + 1:]):
-                if self._lcd_028_rgb332_column_major:
-                    x, y = x0 + index // height, y0 + index % height
-                else:
-                    x, y = x0 + index % width, y0 + index // width
-                self._lcd_028_rgb332_pixel(y * self.config.width + x, packed)
-            self._lcd_028_rgb332_qualified = True
-            self._lcd_protocol = "direct-rgb332"
-            self._publish_frame()
-        probe.clear()
+        self._lcd_028_rgb332_commit()
         return True
 
     def _lcd_split_port_reset(self) -> None:

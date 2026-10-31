@@ -1,0 +1,484 @@
+--- a/hw/block/pflash_cfi01.c
++++ b/hw/block/pflash_cfi01.c
+@@ -85,6 +85,15 @@
+     void *storage;
+     VMChangeStateEntry *vmstate;
+     bool old_multiple_chip_handling;
++    bool sharp_pcr_enabled;
++    bool defer_erase_confirm;
++    bool sharp_locks_enabled, sharp_wp_high;
++    uint8_t sharp_wp_migration_level;
++    uint8_t *sharp_lock_state;
++    uint16_t sharp_pcr;
++    uint16_t sharp_pcr_reset;
++    uint64_t sharp_pcr_setup_address;
++    uint64_t sharp_erase_address;
+ 
+     /* block update buffer */
+     unsigned char *blk_bytes;
+@@ -111,6 +120,197 @@
+         VMSTATE_END_OF_LIST()
+     }
+ };
++
++/* Optional Sharp partition configuration latch. This does not add partition
++ * timing or asynchronous read-while-write execution to the CFI01 model. */
++static bool pflash_sharp_pcr_needed(void *opaque)
++{
++    return ((PFlashCFI01 *)opaque)->sharp_pcr_enabled;
++}
++
++static int pflash_sharp_pcr_post_load(void *opaque, int version_id)
++{
++    PFlashCFI01 *pfl = opaque;
++    (void)version_id;
++    return pfl->sharp_pcr_enabled && !(pfl->sharp_pcr & ~0x0700) ? 0 : -EINVAL;
++}
++
++static const VMStateDescription vmstate_pflash_sharp_pcr = {
++    .name = "pflash_cfi01/sharp-pcr",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pflash_sharp_pcr_needed,
++    .post_load = pflash_sharp_pcr_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT16_EQUAL(sharp_pcr_reset, PFlashCFI01, "Sharp PCR orientation differs"),
++        VMSTATE_UINT16(sharp_pcr, PFlashCFI01),
++        VMSTATE_UINT64(sharp_pcr_setup_address, PFlashCFI01),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static void pflash_sharp_pcr_reset(PFlashCFI01 *pfl)
++{
++    pfl->sharp_pcr = pfl->sharp_pcr_reset;
++    pfl->sharp_pcr_setup_address = UINT64_MAX;
++}
++
++static bool pflash_sharp_pcr_set(PFlashCFI01 *pfl, hwaddr offset,
++                                uint32_t value, int width)
++{
++    if (!pfl->sharp_pcr_enabled || pfl->bank_width != 2 ||
++        pfl->device_width != 2 || pfl->max_device_width != 2 || width != 2 ||
++        value != 0x04 || (offset & 1) || offset != pfl->sharp_pcr_setup_address) {
++        return false;
++    }
++    /* The flash address pins A15..A0 carry PCRC, rather than the data bus.
++     * ARM byte addressing puts those pins in offset bits 16..1. */
++    pfl->sharp_pcr = (offset >> 1) & 0x0700;
++    pfl->status = 0x80;
++    return true;
++}
++
++static bool pflash_sharp_locks_needed(void *opaque)
++{
++    return ((PFlashCFI01 *)opaque)->sharp_locks_enabled;
++}
++
++static int pflash_sharp_locks_post_load(void *opaque, int version_id)
++{
++    PFlashCFI01 *pfl = opaque;
++    (void)version_id;
++    if (!pfl->sharp_locks_enabled || !pfl->sharp_lock_state) {
++        return -EINVAL;
++    }
++    for (unsigned i = 0; i < pfl->nb_blocs; i++) {
++        if (pfl->sharp_lock_state[i] & ~3) {
++            return -EINVAL;
++        }
++    }
++    return 0;
++}
++
++static const VMStateDescription vmstate_pflash_sharp_locks = {
++    .name = "pflash_cfi01/sharp-locks",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pflash_sharp_locks_needed,
++    .post_load = pflash_sharp_locks_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32_EQUAL(nb_blocs, PFlashCFI01, "Sharp block count differs"),
++        VMSTATE_UINT8_EQUAL(sharp_wp_migration_level, PFlashCFI01, "Sharp WP# differs"),
++        VMSTATE_UINT64(sharp_pcr_setup_address, PFlashCFI01),
++        VMSTATE_VARRAY_UINT32(sharp_lock_state, PFlashCFI01, nb_blocs, 1,
++                             vmstate_info_uint8, uint8_t),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static uint8_t pflash_sharp_block_state(PFlashCFI01 *pfl, hwaddr offset)
++{
++    if (!pfl->sharp_locks_enabled) {
++        return 0;
++    }
++    if (!pfl->sector_len || !pfl->sharp_lock_state ||
++        offset / pfl->sector_len >= pfl->nb_blocs) {
++        return 3;
++    }
++    return pfl->sharp_lock_state[offset / pfl->sector_len] & 3;
++}
++
++static bool pflash_sharp_lock_command(PFlashCFI01 *pfl, hwaddr offset,
++                                    uint32_t value, int width)
++{
++    unsigned cmd = value & 0xff;
++    if (!pfl->sharp_locks_enabled || (cmd != 1 && cmd != 0xd0 && cmd != 0x2f)) {
++        return false;
++    }
++    if (width != 2 || value != cmd || (offset & 1) ||
++        offset != pfl->sharp_pcr_setup_address || !pfl->sector_len ||
++        !pfl->sharp_lock_state || offset / pfl->sector_len >= pfl->nb_blocs) {
++        pfl->status |= 0xb0; /* Ready, invalid command sequence. */
++        return true;
++    }
++    uint8_t *state = &pfl->sharp_lock_state[offset / pfl->sector_len];
++    if (cmd == 1) {
++        *state |= 1;
++    } else if (cmd == 0x2f) {
++        *state |= 3;
++    } else if (!(*state & 2) || pfl->sharp_wp_high) {
++        *state &= ~1;
++    }
++    pfl->status |= 0x80;
++    return true;
++}
++
++static bool pflash_sharp_program_frame(PFlashCFI01 *pfl, hwaddr offset, int width)
++{
++    if (!pfl->sharp_pcr_enabled && !pfl->sharp_locks_enabled) {
++        return true;
++    }
++    uint64_t total = pfl->sector_len * pfl->nb_blocs;
++    if (width != 2 || (offset & 1) || total < 2 || offset > total - 2) {
++        pfl->status |= 0x92;
++        return false;
++    }
++    return true;
++}
++
++static bool pflash_sharp_program_blocked(PFlashCFI01 *pfl, hwaddr offset)
++{
++    if (pflash_sharp_block_state(pfl, offset) & 1) {
++        pfl->status |= 0x92; /* Ready, programming/protection error. */
++        return true;
++    }
++    return false;
++}
++
++static bool pflash_deferred_erase_enabled(PFlashCFI01 *pfl)
++{
++    return pfl->defer_erase_confirm || pfl->sharp_pcr_enabled || pfl->sharp_locks_enabled;
++}
++
++static bool pflash_deferred_erase_needed(void *opaque)
++{
++    return pflash_deferred_erase_enabled(opaque);
++}
++
++static int pflash_deferred_erase_post_load(void *opaque, int version_id)
++{
++    PFlashCFI01 *pfl = opaque;
++    uint64_t total = pfl->sector_len * pfl->nb_blocs;
++    uint64_t address = pfl->sharp_erase_address;
++    (void)version_id;
++    return pflash_deferred_erase_enabled(pfl) &&
++        (address == UINT64_MAX || (pfl->sector_len && address % pfl->sector_len == 0 &&
++         total >= pfl->sector_len && address <= total - pfl->sector_len)) ? 0 : -EINVAL;
++}
++
++static const VMStateDescription vmstate_pflash_deferred_erase = {
++    .name = "pflash_cfi01/deferred-erase",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pflash_deferred_erase_needed,
++    .post_load = pflash_deferred_erase_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32_EQUAL(nb_blocs, PFlashCFI01, "Flash block count differs"),
++        VMSTATE_UINT64_EQUAL(sector_len, PFlashCFI01, "Flash sector length differs"),
++        VMSTATE_UINT64(sharp_erase_address, PFlashCFI01),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++/* This opt-in class completes WSM work synchronously. A suspend/resume
++ * arriving after completion preserves errors and reports no suspended work. */
++static bool pflash_sync_completed_control(PFlashCFI01 *pfl, uint32_t value, int width)
++{
++    if (!pflash_deferred_erase_enabled(pfl) || pfl->wcycle || width != 2 ||
++        (value != 0xb0 && value != 0xd0) || pfl->cmd == 0x90 || pfl->cmd == 0x98) {
++        return false;
++    }
++    pfl->status = (pfl->status & ~0x44) | 0x80;
++    return true;
++}
+ 
+ static const VMStateDescription vmstate_pflash = {
+     .name = "pflash_cfi01",
+@@ -126,6 +326,9 @@
+     },
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_pflash_blk_write,
++        &vmstate_pflash_sharp_pcr,
++        &vmstate_pflash_sharp_locks,
++        &vmstate_pflash_deferred_erase,
+         NULL
+     }
+ };
+@@ -229,6 +432,20 @@
+         resp = pfl->ident1;
+         trace_pflash_device_id(pfl->name, resp);
+         break;
++    case 2:
++        if (pfl->sharp_locks_enabled) {
++            resp = pflash_sharp_block_state(pfl, offset);
++            break;
++        }
++        trace_pflash_device_info(pfl->name, offset);
++        return 0;
++    case 6:
++        if (pfl->sharp_pcr_enabled && pfl->bank_width == 2 &&
++            pfl->device_width == 2 && pfl->max_device_width == 2) {
++            resp = pfl->sharp_pcr;
++            break;
++        }
++        /* fall through */
+     default:
+         trace_pflash_device_info(pfl->name, offset);
+         return 0;
+@@ -402,6 +619,48 @@
+     }
+ }
+ 
++/* Sharp erase is armed by 20h and modifies the array only after D0h. The
++ * existing generic CFI01 behavior is retained when both optional classes are off. */
++static bool pflash_sharp_erase_start(PFlashCFI01 *pfl, hwaddr offset,
++                                   uint32_t value, int width)
++{
++    if (!pflash_deferred_erase_enabled(pfl)) {
++        return false;
++    }
++    pfl->sharp_erase_address = UINT64_MAX;
++    if (width == 2 && value == 0x20 && !(offset & 1) && pfl->sector_len &&
++        !(pfl->sector_len & (pfl->sector_len - 1)) &&
++        offset / pfl->sector_len < pfl->nb_blocs) {
++        pfl->sharp_erase_address = offset & ~(pfl->sector_len - 1);
++    }
++    return true;
++}
++
++static bool pflash_sharp_erase_finish(PFlashCFI01 *pfl, hwaddr offset,
++                                    uint32_t value, int width)
++{
++    if (!pflash_deferred_erase_enabled(pfl)) {
++        return false;
++    }
++    uint64_t address = pfl->sharp_erase_address;
++    pfl->sharp_erase_address = UINT64_MAX;
++    if (address == UINT64_MAX || !pfl->sector_len || width != 2 ||
++        value != 0xd0 || (offset & 1) ||
++        offset / pfl->sector_len >= pfl->nb_blocs ||
++        (offset & ~(pfl->sector_len - 1)) != address) {
++        pfl->status |= 0xb0;
++    } else if (pflash_sharp_block_state(pfl, address) & 1) {
++        pfl->status |= 0xa2;
++    } else if (pfl->ro) {
++        pfl->status |= 0xa0;
++    } else {
++        memset((uint8_t *)pfl->storage + address, 0xff, pfl->sector_len);
++        pflash_update(pfl, address, pfl->sector_len);
++        pfl->status |= 0x80;
++    }
++    return true;
++}
++
+ /* copy current flash content to block update buffer */
+ static void pflash_blk_write_start(PFlashCFI01 *pfl, hwaddr offset)
+ {
+@@ -409,6 +668,13 @@
+ 
+     trace_pflash_write_block_start(pfl->name, pfl->counter);
+     pfl->blk_offset = offset & mask;
++    if ((pfl->sharp_pcr_enabled || pfl->sharp_locks_enabled) &&
++        ((uint64_t)pfl->blk_offset > pfl->sector_len * pfl->nb_blocs ||
++         pfl->writeblock_size > pfl->sector_len * pfl->nb_blocs - pfl->blk_offset)) {
++        pfl->status |= 0x92;
++        pfl->blk_offset = -1;
++        return;
++    }
+     memcpy(pfl->blk_bytes, pfl->storage + pfl->blk_offset,
+            pfl->writeblock_size);
+ }
+@@ -418,6 +684,10 @@
+ {
+     g_assert(pfl->blk_offset != -1);
+     trace_pflash_write_block_flush(pfl->name);
++    if (pflash_sharp_program_blocked(pfl, pfl->blk_offset)) {
++        pfl->blk_offset = -1;
++        return;
++    }
+     memcpy(pfl->storage + pfl->blk_offset, pfl->blk_bytes,
+            pfl->writeblock_size);
+     pflash_update(pfl, pfl->blk_offset, pfl->writeblock_size);
+@@ -436,6 +706,10 @@
+ {
+     uint8_t *p;
+ 
++    if (!pflash_sharp_program_frame(pfl, offset, width) ||
++        pflash_sharp_program_blocked(pfl, offset)) {
++        return;
++    }
+     if (pfl->blk_offset != -1) {
+         /* block write: redirect writes to block update buffer */
+         if ((offset < pfl->blk_offset) ||
+@@ -484,12 +758,17 @@
+             trace_pflash_write(pfl->name, "single byte program (0)");
+             break;
+         case 0x20: /* Block erase */
++            if (pflash_sharp_erase_start(pfl, offset, value, width)) {
++                break;
++            }
+             p = pfl->storage;
+             offset &= ~(pfl->sector_len - 1);
+ 
+             trace_pflash_write_block_erase(pfl->name, offset, pfl->sector_len);
+ 
+-            if (!pfl->ro) {
++            if (pflash_sharp_block_state(pfl, offset) & 1) {
++                pfl->status |= 0x22; /* Erase/protection error; retain array. */
++            } else if (!pfl->ro) {
+                 memset(p + offset, 0xff, pfl->sector_len);
+                 pflash_update(pfl, offset, pfl->sector_len);
+             } else {
+@@ -497,11 +776,21 @@
+             }
+             pfl->status |= 0x80; /* Ready! */
+             break;
++        case 0xb0: /* Suspend after synchronous completion. */
++        case 0xd0: /* Resume when no WSM operation remains suspended. */
++            if (pflash_sync_completed_control(pfl, value, width)) {
++                pfl->cmd = 0x70;
++                return;
++            }
++            goto error_flash;
+         case 0x50: /* Clear status bits */
+             trace_pflash_write(pfl->name, "clear status bits");
+-            pfl->status = 0x0;
++            pfl->status = pflash_deferred_erase_enabled(pfl) ?
++                (pfl->status & 0x44) | 0x80 : 0x0;
+             goto mode_read_array;
+-        case 0x60: /* Block (un)lock */
++        case 0x60: /* Block (un)lock or optional Sharp PCR setup */
++            pfl->sharp_pcr_setup_address = width == 2 && value == 0x60 && !(offset & 1) ?
++                offset : UINT64_MAX;
+             trace_pflash_write(pfl->name, "block unlock");
+             break;
+         case 0x70: /* Status Register */
+@@ -549,7 +838,9 @@
+         case 0x28:
+             if (cmd == 0xd0) { /* confirm */
+                 pfl->wcycle = 0;
+-                pfl->status |= 0x80;
++                if (!pflash_sharp_erase_finish(pfl, offset, value, width)) {
++                    pfl->status |= 0x80;
++                }
+             } else if (cmd == 0xff) { /* Read Array */
+                 goto mode_read_array;
+             } else
+@@ -571,7 +862,12 @@
+             pfl->wcycle++;
+             break;
+         case 0x60:
+-            if (cmd == 0xd0) {
++            if (pflash_sharp_pcr_set(pfl, offset, value, width)) {
++                goto mode_read_array;
++            }
++            if (pflash_sharp_lock_command(pfl, offset, value, width)) {
++                pfl->wcycle = 0;
++            } else if (cmd == 0xd0) {
+                 pfl->wcycle = 0;
+                 pfl->status |= 0x80;
+             } else if (cmd == 0x01) {
+@@ -652,6 +948,7 @@
+                   "\n", __func__, offset, pfl->wcycle, pfl->cmd, value);
+ 
+  mode_read_array:
++    pfl->sharp_erase_address = UINT64_MAX;
+     trace_pflash_mode_read_array(pfl->name);
+     memory_region_rom_device_set_romd(&pfl->mem, true);
+     pfl->wcycle = 0;
+@@ -806,6 +1103,32 @@
+     uint64_t total_len;
+     int ret;
+ 
++    if (pfl->sharp_pcr_enabled &&
++        (pfl->bank_width != 2 || pfl->device_width != 2 ||
++         (pfl->max_device_width && pfl->max_device_width != 2) ||
++         (pfl->sharp_pcr_reset != 0x0100 && pfl->sharp_pcr_reset != 0x0400))) {
++        error_setg(errp, "sharp-pcr requires one x16 device and bottom(0x100) or top(0x400) reset orientation");
++        return;
++    }
++    if (pflash_deferred_erase_enabled(pfl) &&
++        (!pfl->sector_len || pfl->sector_len > 0x02000000 ||
++         (pfl->sector_len & (pfl->sector_len - 1)) ||
++         !pfl->nb_blocs || pfl->nb_blocs > 0x02000000 / pfl->sector_len)) {
++        error_setg(errp, "Sharp command model requires a power-of-two sector and at most 32MiB");
++        return;
++    }
++    if (pfl->sharp_locks_enabled &&
++        (pfl->bank_width != 2 || pfl->device_width != 2 ||
++         (pfl->max_device_width && pfl->max_device_width != 2) ||
++         !pfl->nb_blocs || pfl->nb_blocs > 0x10000 ||
++         pfl->sector_len < 0x1000 || (pfl->sector_len & (pfl->sector_len - 1)))) {
++        error_setg(errp, "sharp-locks requires a bounded x16 block geometry");
++        return;
++    }
++    pfl->sharp_wp_migration_level = pfl->sharp_wp_high;
++    if (pfl->sharp_locks_enabled) {
++        pfl->sharp_lock_state = g_new0(uint8_t, pfl->nb_blocs);
++    }
+     if (pfl->sector_len == 0) {
+         error_setg(errp, "attribute \"sector-length\" not specified or zero.");
+         return;
+@@ -891,12 +1214,22 @@
+      * This model deliberately ignores this delay.
+      */
+     pfl->status = 0x80;
++    pflash_sharp_pcr_reset(pfl);
++    pfl->sharp_erase_address = UINT64_MAX;
++    if (pfl->sharp_locks_enabled && pfl->sharp_lock_state) {
++        memset(pfl->sharp_lock_state, 1, pfl->nb_blocs);
++    }
+ 
+     pfl->blk_offset = -1;
+ }
+ 
+ static const Property pflash_cfi01_properties[] = {
+     DEFINE_PROP_DRIVE("drive", PFlashCFI01, blk),
++    DEFINE_PROP_BOOL("defer-erase-confirm", PFlashCFI01, defer_erase_confirm, false),
++    DEFINE_PROP_BOOL("sharp-pcr", PFlashCFI01, sharp_pcr_enabled, false),
++    DEFINE_PROP_BOOL("sharp-locks", PFlashCFI01, sharp_locks_enabled, false),
++    DEFINE_PROP_BOOL("sharp-wp-high", PFlashCFI01, sharp_wp_high, false),
++    DEFINE_PROP_UINT16("sharp-pcr-reset", PFlashCFI01, sharp_pcr_reset, 0x0100),
+     /* num-blocks is the number of blocks actually visible to the guest,
+      * ie the total size of the device divided by the sector length.
+      * If we're emulating flash devices wired in parallel the actual
+@@ -945,12 +1278,19 @@
+     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
+ }
+ 
++static void pflash_cfi01_instance_finalize(Object *obj)
++{
++    PFlashCFI01 *pfl = PFLASH_CFI01(obj);
++    g_free(pfl->sharp_lock_state);
++}
++
+ static const TypeInfo pflash_cfi01_types[] = {
+     {
+         .name           = TYPE_PFLASH_CFI01,
+         .parent         = TYPE_SYS_BUS_DEVICE,
+         .instance_size  = sizeof(PFlashCFI01),
+         .class_init     = pflash_cfi01_class_init,
++        .instance_finalize = pflash_cfi01_instance_finalize,
+     },
+ };
+ 

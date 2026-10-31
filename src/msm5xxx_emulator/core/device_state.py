@@ -415,6 +415,14 @@ class DeviceStateMixin:
                          *register_ranges[:index]]
             for other_start, other_end, other_label in conflicts:
                 if max(start, other_start) < min(end, other_end):
+                    # The explicit boot-key bit refines the stable board
+                    # strap byte; its other bits retain their seeded values.
+                    if (label == "board status input"
+                            and other_label == "stable MSM MMIO"
+                            and start == other_start == 0x03000694
+                            and end == other_end == start + 1
+                            and config.board_status_input.mask == 0x04):
+                        continue
                     # SCH-E470 partial dumps reference code in the upper half
                     # of a 16 MiB NOR while also decoding the board-revision
                     # latch at 0x00DFFFDC.  The physical board uses that small
@@ -766,7 +774,23 @@ class DeviceStateMixin:
         if ports:
             secondary_port = ports[1]
             self._lcd_secondary_reason = "paired-page-descriptor-awaiting-runtime"
-        self._lcd_secondary_panel = PagePanel(secondary_port) if secondary_port else None
+        self._lcd_secondary_panel = (PagePanel(secondary_port, independent_ports=bool(ports))
+                                     if secondary_port else None)
+        if not ports and secondary_port is None:
+            from ..detection.halfword_page import find_halfword_page_secondary
+            halfword_port = find_halfword_page_secondary(self.image)
+            if halfword_port is not None:
+                self._lcd_secondary_panel = PagePanel(halfword_port, data_offset=2,
+                                                      await_setup=True, independent_ports=True)
+                self._lcd_secondary_reason = "halfword-byte-page-consumer-awaiting-runtime"
+                secondary_port = halfword_port
+        if not ports and secondary_port is None:
+            from ..detection.mixed_page import find_mixed_page_secondary
+            mixed_port = find_mixed_page_secondary(self.image)
+            if mixed_port is not None:
+                self._lcd_secondary_panel = PagePanel(mixed_port, independent_ports=True)
+                self._lcd_secondary_reason = "mixed-byte-halfword-page-awaiting-runtime"
+                secondary_port = mixed_port
         if not ports and secondary_port is None:
             from ..detection.secondary_arm_page import find_secondary_arm_page
             from ..devices.display.arm_page_panel import ArmPagePanel

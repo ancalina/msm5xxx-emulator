@@ -292,6 +292,8 @@ struct MSM5xxxPOCMachineState {
     uint32_t mapped_primary_x16_nor_sector_size;
     /* The mutually exclusive direct CFI01/CFI02 profiles share geometry. */
     bool intel_x16_nor_enabled;
+    bool intel_adjacent_nv, intel_adjacent_x16;
+    bool sharp_primary_nv, sharp_nv_wp_high;
     uint32_t intel_x16_nor_base;
     uint32_t intel_x16_nor_size;
     uint32_t intel_x16_nor_sector_size;
@@ -299,6 +301,7 @@ struct MSM5xxxPOCMachineState {
     uint16_t intel_x16_nor_id1;
     MemoryRegion intel_x16_nor_data_alias;
     bool amd_x16_nor_enabled;
+    bool amd_adjacent_nv;
     uint16_t amd_x16_nor_options;
     bool fujitsu_x16_nor_enabled;
     uint32_t secondary_primary_size;
@@ -475,6 +478,8 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion pause_timer;
     MemoryRegion board_revision;
     bool dmd5100_enabled, dmd5100_mapped, dmd5100_ram_verified;
+    bool dmd5000_dual, dmd5000_released;
+    uint32_t dmd5000_descriptor[2], dmd5000_payload[2], dmd5000_selected;
     bool dmd5100_barrier, dmd5100_half_pending;
     uint32_t dmd5100_entry, dmd5100_descriptor, dmd5100_payload, dmd5100_count;
     uint32_t dmd5100_read_base, dmd5100_layout;
@@ -504,6 +509,8 @@ struct MSM5xxxPOCMachineState {
     bool irq_level;
     bool sbi_enabled;
     bool sbi_bootstrap_only;
+    bool sbi_bootstrap_repeat;
+    uint32_t sbi_bootstrap_repeat_pc;
     bool sbi_raw_input_enabled, sbi_raw_input_realized, sbi_raw_input_registered;
     uint32_t sbi_raw_input_pc, sbi_raw_input_last_pc;
     uint8_t sbi_raw_input_mask, sbi_raw_input_value;
@@ -526,6 +533,12 @@ struct MSM5xxxPOCMachineState {
     uint8_t dc0_backing[MSM5XXX_POC_DC0_SIZE];
     unsigned dc0_board_adc_phase;
     uint64_t dc0_board_adc_responses;
+    /* Optional source-qualified direct raster, disjoint from serial ports.
+     * SPI registers are raw backing only; no receiver/ID response is modeled. */
+    bool direct_lcd_enabled;
+    MemoryRegion direct_lcd_vram, direct_lcd_control;
+    uint8_t direct_lcd_pixels[0x12e80];
+    uint8_t direct_lcd_registers[0x28];
     uint8_t lcd_aperture_backing[MSM5XXX_POC_LCD_APERTURE_SIZE];
     uint64_t lcd_aperture_reads;
     uint64_t lcd_aperture_writes;
@@ -543,6 +556,10 @@ struct MSM5xxxPOCMachineState {
     CharFrontend input_chr;
     GByteArray *lcd_trace_buffer;
     QEMUTimer *lcd_trace_timer;
+    bool uart2_tx_ready_enabled;
+    uint32_t uart2_tx_ready_pc;
+    uint8_t uart2_tx_ready_backing;
+    MemoryRegion uart2_tx_ready_region;
     bool uart_console_enabled, uart_console_mapped, uart_console_rejected;
     bool uart_console_realized;
     bool uart_console_probe_enabled, uart_console_probe_lf, uart_console_probe_rx_empty;
@@ -2578,7 +2595,8 @@ static const MemoryRegionOps msm5xxx_poc_ready_control_ops = {
 
 static uint32_t msm5xxx_poc_dmd5100_read_base(MSM5xxxPOCMachineState *s)
 {
-    return s->dmd5100_read_base ? s->dmd5100_read_base : 0x030007e0;
+    /* The dual-descriptor legacy driver reads back at 768/76c (base 760). */
+    return s->dmd5100_read_base ? s->dmd5100_read_base : s->dmd5000_dual ? 0x03000760 : 0x030007e0;
 }
 
 static hwaddr msm5xxx_poc_dmd5100_port_address(MSM5xxxPOCMachineState *s, unsigned index)
@@ -2672,6 +2690,8 @@ static void msm5xxx_poc_dmd5100_reset(void *opaque)
     MSM5xxxPOCMachineState *s = opaque;
     s->dmd5100_phase = DMD5100_IDLE;
     s->dmd5100_reset_released = false;
+    s->dmd5000_released = false;
+    s->dmd5000_selected = 2;
     s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
     s->dmd5100_rejections = 0;
     s->dmd5100_first_rejection = false;
@@ -2738,11 +2758,127 @@ static MemTxResult msm5xxx_poc_dmd5100_forward(MSM5xxxPOCDMD5100Port *port,
     return result;
 }
 
+/* Loader devices fill ROM after machine initialization. Validate content only
+ * at a qualified guest hold, while topology was already checked at init. */
+static bool msm5xxx_poc_dmd5000_descriptors_valid(MSM5xxxPOCMachineState *s)
+{
+    const uint8_t *rom = memory_region_get_ram_ptr(&s->nor);
+    for (unsigned i = 0; i < 2; i++) {
+        uint64_t desc = s->dmd5000_descriptor[i], payload = s->dmd5000_payload[i];
+        if (desc + 8 > s->primary_nor_size ||
+            payload + 4ULL * s->dmd5100_count > s->primary_nor_size ||
+            ldl_le_p(rom + desc) != payload || lduw_le_p(rom + desc + 4) != 0 ||
+            lduw_le_p(rom + desc + 6) != 2 * s->dmd5100_count) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool msm5xxx_poc_dmd5000_write_next(MSM5xxxPOCMachineState *s,
+    unsigned port, uint64_t value, unsigned size)
+{
+    uint32_t *r = s->cpu->env.regs;
+    unsigned p = s->dmd5100_phase, n = s->dmd5100_count;
+    if (port == 2 && size == 1 && value == 0 && r[7] == 0 &&
+        msm5xxx_poc_dmd5100_pc(s, 0x1a)) {
+        if (!msm5xxx_poc_dmd5000_descriptors_valid(s)) {
+            return false;
+        }
+        s->dmd5100_phase = DMD5100_HOLD;
+        s->dmd5100_pairs = s->dmd5100_even_reads = s->dmd5100_odd_reads = 0;
+        s->dmd5100_barrier = s->dmd5100_half_pending = false;
+        s->dmd5000_released = false;
+        s->dmd5000_selected = 2;
+        return true;
+    }
+    if (port == 0 && size == 2 && value == 0 && p == DMD5100_HOLD &&
+        r[7] == 0 && msm5xxx_poc_dmd5100_pc(s, 0x32)) {
+        for (unsigned i = 0; i < 2; i++) {
+            if (r[3] == s->dmd5000_descriptor[i]) {
+                s->dmd5000_selected = i;
+                s->dmd5100_descriptor = s->dmd5000_descriptor[i];
+                s->dmd5100_payload = s->dmd5000_payload[i];
+                s->dmd5100_phase = DMD5100_PROGRAM;
+                return true;
+            }
+        }
+        return false;
+    }
+    if (s->dmd5000_selected > 1) {
+        return false;
+    }
+    unsigned branch = s->dmd5000_selected == 0 ? 0x20 : 0;
+    if (port == 1 && size == 2 && value <= UINT16_MAX && p == DMD5100_PROGRAM &&
+        r[3] == s->dmd5100_descriptor && r[7] == 2 * s->dmd5100_pairs &&
+        s->dmd5100_pairs < n) {
+        if (!s->dmd5100_half_pending && msm5xxx_poc_dmd5100_pc(s, 0x52 + branch)) {
+            s->dmd5100_odd[s->dmd5100_pairs] = value;
+            s->dmd5100_half_pending = true;
+            return true;
+        }
+        if (s->dmd5100_half_pending && msm5xxx_poc_dmd5100_pc(s, 0x58 + branch) &&
+            r[2] == s->dmd5100_payload) {
+            s->dmd5100_even[s->dmd5100_pairs++] = value;
+            s->dmd5100_half_pending = false;
+            if (s->dmd5100_pairs == n) {
+                s->dmd5100_phase = DMD5100_FULL;
+            }
+            return true;
+        }
+        return false;
+    }
+    if (port == 2 && size == 1 && value == 1 && p == DMD5100_FULL &&
+        !s->dmd5000_released && msm5xxx_poc_dmd5100_pc(s, 0x8a)) {
+        s->dmd5000_released = true;
+    } else if (port == 3 && size == 1 && value == 0x0e && p == DMD5100_FULL &&
+        s->dmd5000_released && msm5xxx_poc_dmd5100_pc(s, 0x98)) {
+        s->dmd5100_phase = DMD5100_MODE;
+    } else if (port == 4 && size == 1 && value == 0 && p == DMD5100_MODE &&
+        msm5xxx_poc_dmd5100_pc(s, 0x9c)) {
+        s->dmd5100_phase = DMD5100_EVEN;
+        s->dmd5100_barrier = false;
+    } else if (port == 4 && size == 1 && value == 0 && p == DMD5100_EVEN_DONE &&
+        msm5xxx_poc_dmd5100_pc(s, 0xfa)) {
+        s->dmd5100_phase = DMD5100_ODD;
+        s->dmd5100_barrier = false;
+    } else if (port == 3 && size == 1 && value == 0 && p == DMD5100_ODD_DONE &&
+        msm5xxx_poc_dmd5100_pc(s, 0x160)) {
+        s->dmd5100_phase = DMD5100_CLOSED;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool msm5xxx_poc_dmd5000_read_context(MSM5xxxPOCMachineState *s, bool even,
+                                            unsigned index)
+{
+    uint32_t *r = s->cpu->env.regs;
+    unsigned branch = s->dmd5000_selected == 0 ? 0x24 : 0;
+    if (s->dmd5000_selected > 1 || r[0] != index ||
+        !msm5xxx_poc_dmd5100_pc(s, (even ? 0xbc : 0x120) +
+                                     (even ? branch : (branch ? 0x28 : 0)))) {
+        return false;
+    }
+    if (even) {
+        return r[7] == 0x03000760 && r[4] == 2 * index &&
+            (s->dmd5000_selected == 0 ?
+             r[1] == s->dmd5100_payload && r[2] == s->dmd5100_count :
+             r[2] == s->dmd5100_payload && r[1] == s->dmd5100_count);
+    }
+    return r[6] == 2 * index && r[2] == s->dmd5100_payload &&
+        r[1] == s->dmd5100_count;
+}
+
 static bool msm5xxx_poc_dmd5100_write_next(MSM5xxxPOCMachineState *s,
                                           unsigned port, uint64_t value, unsigned size)
 {
     uint32_t *r = s->cpu->env.regs;
     uint32_t n = s->dmd5100_count, p = s->dmd5100_phase;
+    if (s->dmd5000_dual) {
+        return msm5xxx_poc_dmd5000_write_next(s, port, value, size);
+    }
     if (port == 2 && size == 1 && value == 0 &&
         msm5xxx_poc_dmd5100_pc(s, 0x1a) && r[7] == 0) {
         s->dmd5100_phase = DMD5100_HOLD;
@@ -2836,10 +2972,11 @@ static MemTxResult msm5xxx_poc_dmd5100_read(void *opaque, hwaddr offset,
             return MEMTX_OK;
         }
         if (s->dmd5100_barrier &&
-            ((even && msm5xxx_poc_dmd5100_pc(s, 0x78) && r[7] == s->dmd5100_descriptor &&
+            ((s->dmd5000_dual && msm5xxx_poc_dmd5000_read_context(s, even, even ? i : j)) ||
+             (!s->dmd5000_dual && ((even && msm5xxx_poc_dmd5100_pc(s, 0x78) && r[7] == s->dmd5100_descriptor &&
               r[2] == s->dmd5100_payload && r[4] == 2 * i && r[0] == i && r[3] == s->dmd5100_count) ||
              (odd && msm5xxx_poc_dmd5100_pc(s, 0xa4) && r[7] == s->dmd5100_count &&
-              r[4] == s->dmd5100_payload && r[1] == 2 * j && r[0] == j && r[2] == msm5xxx_poc_dmd5100_read_base(s)))) {
+              r[4] == s->dmd5100_payload && r[1] == 2 * j && r[0] == j && r[2] == msm5xxx_poc_dmd5100_read_base(s)))))) {
             *value = even ? s->dmd5100_even[i++] : s->dmd5100_odd[j++];
             s->dmd5100_even_reads = i;
             s->dmd5100_odd_reads = j;
@@ -2854,10 +2991,13 @@ static MemTxResult msm5xxx_poc_dmd5100_read(void *opaque, hwaddr offset,
     MemTxResult result = msm5xxx_poc_dmd5100_forward(port, offset, value, size, attrs, false);
     if (guest && msm5xxx_poc_dmd5100_active(s)) {
         bool barrier = !offset && size == 1 && port->index == 3 && !s->dmd5100_barrier &&
-            ((p == DMD5100_EVEN && !i && msm5xxx_poc_dmd5100_pc(s, 0x64) &&
+            ((s->dmd5000_dual &&
+              ((p == DMD5100_EVEN && !i && msm5xxx_poc_dmd5100_pc(s, 0x9e)) ||
+               (p == DMD5100_ODD && !j && msm5xxx_poc_dmd5100_pc(s, 0xfc)))) ||
+             (!s->dmd5000_dual && ((p == DMD5100_EVEN && !i && msm5xxx_poc_dmd5100_pc(s, 0x64) &&
               r[7] == 2 * s->dmd5100_count && r[6] == msm5xxx_poc_dmd5100_read_base(s)) ||
              (p == DMD5100_ODD && !j && msm5xxx_poc_dmd5100_pc(s, 0x90) &&
-              r[7] == s->dmd5100_descriptor && r[2] == msm5xxx_poc_dmd5100_read_base(s)));
+              r[7] == s->dmd5100_descriptor && r[2] == msm5xxx_poc_dmd5100_read_base(s)))));
         if (result == MEMTX_OK && barrier) {
             s->dmd5100_barrier = true;
         } else {
@@ -2962,6 +3102,47 @@ malformed:
     error_setg(errp, "dmd5100-program-760-layout requires ENTRY:DESCRIPTOR:PAYLOAD:PAIR_COUNT:LAYOUT(0..3)");
 }
 
+static char *msm5xxx_poc_get_dmd5000(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->dmd5000_dual ? g_strdup_printf("%x:%x:%x:%x:%x:%x", s->dmd5100_entry,
+        s->dmd5000_descriptor[0], s->dmd5000_payload[0], s->dmd5000_descriptor[1],
+        s->dmd5000_payload[1], s->dmd5100_count) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_dmd5000(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t v[6];
+    const char *part = value, *end;
+    unsigned long parsed;
+    if (s->cpu || s->dmd5100_enabled || !part) {
+        goto malformed;
+    }
+    for (unsigned i = 0; i < 6; i++) {
+        if (!g_ascii_isxdigit(*part) || qemu_strtoul(part, &end, 16, &parsed) ||
+            parsed > UINT32_MAX || (i < 5 ? *end != ':' : *end != '\0')) {
+            goto malformed;
+        }
+        v[i] = parsed;
+        part = end + (i < 5);
+    }
+    if (!v[0] || v[0] & 1 || v[0] > 0x02000000 - 0x184 ||
+        v[1] & 3 || v[3] & 3 || v[2] & 1 || v[4] & 1 ||
+        v[1] == v[3] || !v[5] || v[5] > 0x7fff) {
+        goto malformed;
+    }
+    s->dmd5100_entry = v[0];
+    s->dmd5100_descriptor = s->dmd5000_descriptor[0] = v[1];
+    s->dmd5100_payload = s->dmd5000_payload[0] = v[2];
+    s->dmd5000_descriptor[1] = v[3]; s->dmd5000_payload[1] = v[4];
+    s->dmd5100_count = v[5];
+    s->dmd5000_dual = s->dmd5100_enabled = true;
+    return;
+malformed:
+    error_setg(errp, "dmd5000-program requires ENTRY:DESC0:PAYLOAD0:DESC1:PAYLOAD1:PAIR_COUNT");
+}
+
 static char *msm5xxx_poc_get_dmd5100_stats(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -2998,7 +3179,7 @@ static char *msm5xxx_poc_get_dmd5100_rejection(Object *obj, Error **errp)
 static bool msm5xxx_poc_dmd5100_topology(MSM5xxxPOCMachineState *s)
 {
     const uint32_t bases[] = {s->dmd5100_entry, s->dmd5100_descriptor, s->dmd5100_payload};
-    const uint32_t lengths[] = {244, 8, 4 * s->dmd5100_count};
+    const uint32_t lengths[] = {s->dmd5000_dual ? 0x184 : 244, 8, 4 * s->dmd5100_count};
     if (!s->memory_profile_enabled || !memory_region_is_rom(&s->nor)) {
         return false;
     }
@@ -3017,6 +3198,27 @@ static bool msm5xxx_poc_dmd5100_topology(MSM5xxxPOCMachineState *s)
         }
         if (!valid) {
             return false;
+        }
+    }
+    if (s->dmd5000_dual) {
+        for (unsigned i = 0; i < 2; i++) {
+            const uint64_t addresses[] = {s->dmd5000_descriptor[i], s->dmd5000_payload[i]};
+            const unsigned sizes[] = {8, 4 * s->dmd5100_count};
+            for (unsigned j = 0; j < 2; j++) {
+                if (addresses[j] + sizes[j] > s->primary_nor_size) {
+                    return false;
+                }
+                MemoryRegionSection section = memory_region_find(get_system_memory(), addresses[j], sizes[j]);
+                bool valid = section.mr == &s->nor &&
+                    section.offset_within_region == addresses[j] &&
+                    int128_eq(section.size, int128_make64(sizes[j]));
+                if (section.mr) {
+                    memory_region_unref(section.mr);
+                }
+                if (!valid) {
+                    return false;
+                }
+            }
         }
     }
     return true;
@@ -3237,13 +3439,33 @@ static const MemoryRegionOps msm5xxx_poc_board_revision_ops = {
     .impl.max_access_size = 4,
 };
 
+static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
+                                           unsigned size);
+static void msm5xxx_poc_eeprom_gpio_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size);
+
 static uint64_t msm5xxx_poc_board_status_input_read(void *opaque,
                                                      hwaddr offset,
                                                      unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value;
 
-    return !offset && size == 1 ? s->board_status_input_backing : 0;
+    if (offset || size != 1) {
+        return 0;
+    }
+    value = s->board_status_input_backing;
+    if (s->eeprom_gpio_enabled &&
+        s->board_status_input_address >= s->eeprom_gpio_base &&
+        s->board_status_input_address - s->eeprom_gpio_base <
+            MSM5XXX_POC_EEPROM_GPIO_SIZE) {
+        /* The lid owns one bit, not the shared GPIO byte. In particular,
+         * a clock output in that byte must still reach the I2C bridge. */
+        value = msm5xxx_poc_eeprom_gpio_read(s,
+            s->board_status_input_address - s->eeprom_gpio_base, size);
+    }
+    return (value & ~(uint64_t)s->board_status_input_mask) |
+           (s->board_status_input_backing & s->board_status_input_mask);
 }
 
 static void msm5xxx_poc_board_status_input_write(void *opaque, hwaddr offset,
@@ -3256,6 +3478,14 @@ static void msm5xxx_poc_board_status_input_write(void *opaque, hwaddr offset,
         s->board_status_input_backing =
             (value & ~s->board_status_input_mask) |
             (s->board_status_input_backing & s->board_status_input_mask);
+        if (s->eeprom_gpio_enabled &&
+            s->board_status_input_address >= s->eeprom_gpio_base &&
+            s->board_status_input_address - s->eeprom_gpio_base <
+                MSM5XXX_POC_EEPROM_GPIO_SIZE) {
+            msm5xxx_poc_eeprom_gpio_write(s,
+                s->board_status_input_address - s->eeprom_gpio_base,
+                value, size);
+        }
     }
 }
 
@@ -3884,11 +4114,6 @@ static const MemoryRegionOps msm5xxx_poc_board_status_halfword_ops = {
     .valid.max_access_size = 2,
 };
 
-
-static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
-                                            unsigned size);
-static void msm5xxx_poc_eeprom_gpio_write(void *opaque, hwaddr offset,
-                                         uint64_t value, unsigned size);
 
 /* Mapped halfword and distributed byte overlays retain the effective EEPROM
  * GPIO owner. Legacy classes keep their original backing and write behavior. */
@@ -5585,6 +5810,35 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
     qemu_mutex_unlock(&s->audio_core_lock);
     return true;
 }
+
+/* Standalone, detector-owned MA2 command/data bus outside LCD backing. */
+static MemTxResult msm5xxx_poc_ma2_direct_read(void *opaque, hwaddr offset,
+                                              uint64_t *value, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    (void)attrs;
+    return msm5xxx_poc_audio_read_owned(s, offset, size, value) ?
+           MEMTX_OK : MEMTX_ERROR;
+}
+
+static MemTxResult msm5xxx_poc_ma2_direct_write(void *opaque, hwaddr offset,
+                                               uint64_t value, unsigned size,
+                                               MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    (void)attrs;
+    return msm5xxx_poc_audio_write_owned(s, offset, value, size) ?
+           MEMTX_OK : MEMTX_ERROR;
+}
+
+static const MemoryRegionOps msm5xxx_poc_ma2_direct_ops = {
+    .read_with_attrs = msm5xxx_poc_ma2_direct_read,
+    .write_with_attrs = msm5xxx_poc_ma2_direct_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 1,
+    .impl.min_access_size = 1, .impl.max_access_size = 1,
+};
 
 static bool msm5xxx_poc_arm_b_target(uint32_t word, uint32_t address,
                                     uint32_t *target)
@@ -8406,6 +8660,7 @@ static void msm5xxx_poc_sbi_write(void *opaque, hwaddr offset,
     MSM5xxxPOCMachineState *s = opaque;
     bool became_candidate = false;
     bool first_event;
+    uint32_t repeat_pc;
 
     if (offset + size > MSM5XXX_POC_SBI_SIZE) {
         return;
@@ -8420,6 +8675,19 @@ static void msm5xxx_poc_sbi_write(void *opaque, hwaddr offset,
     first_event = offset == bootstrap_offsets[0] &&
                   size == bootstrap_sizes[0] &&
                   value == bootstrap_values[0];
+    if (s->sbi_bootstrap_only && s->sbi_bootstrap_repeat && first_event &&
+        msm5xxx_poc_mmio_access_pc(s, &repeat_pc) &&
+        repeat_pc == s->sbi_bootstrap_repeat_pc &&
+        s->sbi_status == MSM5XXX_POC_SBI_ACCEPTED) {
+        /* A closed second boot stage must replay the entire typed protocol. */
+        s->sbi_status = MSM5XXX_POC_SBI_OBSERVING;
+        s->sbi_bootstrap_phase = s->sbi_validation_phase = 0;
+        s->sbi_control = 0;
+        s->sbi_started = false;
+        s->sbi_read_pending = s->sbi_read_full = false;
+        s->sbi_board_adc_phase = 0;
+        s->sbi_board_adc_selector = 0;
+    }
     if (s->sbi_status == MSM5XXX_POC_SBI_OBSERVING) {
         unsigned phase = s->sbi_bootstrap_phase;
 
@@ -9471,6 +9739,203 @@ static const MemoryRegionOps msm5xxx_poc_ma5_shared_lcd_ops = {
     .valid.max_access_size = 4,
     .impl.min_access_size = 1,
     .impl.max_access_size = 4,
+};
+
+/* Explicit adjacent NV mode retains the primary ROM and RAM boundaries.
+ * It cannot consume the LCD/MMIO aperture or another storage/audio owner. */
+/* Explicit compatible Intel experiment: two x8 status lanes, one x16 bus.
+ * Geometry/part identity must be qualified by the caller, not inferred here. */
+static bool msm5xxx_poc_intel_adjacent_valid(const MSM5xxxPOCMachineState *s)
+{
+    uint64_t base = s->intel_x16_nor_base;
+    uint64_t end = base + (uint64_t)s->intel_x16_nor_size;
+    uint64_t audio_end = (uint64_t)s->audio_base + s->audio_data_offset + 1;
+    return s->intel_adjacent_nv && s->intel_x16_nor_enabled &&
+           s->memory_profile_enabled && s->intel_x16_nor_size &&
+           base == s->primary_nor_size && end <= s->ram_base &&
+           end <= MSM5XXX_POC_LCD_APERTURE_BASE &&
+           !s->amd_x16_nor_enabled && !s->amd_adjacent_nv &&
+           !s->fujitsu_x16_nor_enabled && !s->primary_x16_nor_enabled &&
+           !s->record_x16_nor_enabled && !s->mapped_primary_x16_nor_enabled &&
+           !s->whole_primary_x16_enabled && !s->protected_nor_enabled &&
+           !s->upper_x8_nor_enabled && !s->upper_x16_nor_enabled &&
+           !s->raw_nand_main_enabled && !s->small_nand_enabled &&
+           (!s->audio_enabled || !(s->audio_base < end && audio_end > base));
+}
+
+/* Explicit writable Sharp NV partition inside the primary ROM envelope.
+ * The caller supplies its extent/geometry and preserves every supplied byte. */
+static bool msm5xxx_poc_sharp_primary_valid(const MSM5xxxPOCMachineState *s)
+{
+    uint64_t base = s->intel_x16_nor_base;
+    uint64_t end = base + (uint64_t)s->intel_x16_nor_size;
+    uint64_t audio_end = (uint64_t)s->audio_base + s->audio_data_offset + 1;
+    return s->sharp_primary_nv && !s->intel_adjacent_nv && s->intel_x16_nor_enabled &&
+           s->memory_profile_enabled && s->intel_x16_nor_size &&
+           base >= 0x00400000 && base < end && end <= s->primary_nor_size &&
+           s->primary_nor_size <= s->ram_base &&
+           end <= MSM5XXX_POC_LCD_APERTURE_BASE &&
+           !s->amd_x16_nor_enabled && !s->amd_adjacent_nv &&
+           !s->fujitsu_x16_nor_enabled && !s->primary_x16_nor_enabled &&
+           !s->record_x16_nor_enabled && !s->mapped_primary_x16_nor_enabled &&
+           !s->whole_primary_x16_enabled && !s->protected_nor_enabled &&
+           !s->upper_x8_nor_enabled && !s->upper_x16_nor_enabled &&
+           !s->raw_nand_main_enabled && !s->small_nand_enabled &&
+           (!s->audio_enabled || !(s->audio_base < end && audio_end > base));
+}
+
+static bool msm5xxx_poc_amd_mapping_valid(const MSM5xxxPOCMachineState *s,
+                                         uint64_t ram_size)
+{
+    uint64_t base = s->intel_x16_nor_base;
+    uint64_t end = base + (uint64_t)s->intel_x16_nor_size;
+    uint64_t audio_end = (uint64_t)s->audio_base + s->audio_data_offset + 1;
+    if (!s->amd_x16_nor_enabled) {
+        return !s->amd_adjacent_nv;
+    }
+    if (!s->amd_adjacent_nv) {
+        return base >= s->ram_base && end <= (uint64_t)s->ram_base + ram_size;
+    }
+    return s->memory_profile_enabled && s->intel_x16_nor_size &&
+           base == s->primary_nor_size && end <= s->ram_base &&
+           end <= MSM5XXX_POC_LCD_APERTURE_BASE &&
+           !s->intel_x16_nor_enabled && !s->fujitsu_x16_nor_enabled &&
+           !s->primary_x16_nor_enabled && !s->record_x16_nor_enabled &&
+           !s->mapped_primary_x16_nor_enabled && !s->whole_primary_x16_enabled &&
+           !s->protected_nor_enabled && !s->upper_x8_nor_enabled &&
+           !s->upper_x16_nor_enabled && !s->raw_nand_main_enabled &&
+           !s->small_nand_enabled &&
+           (!s->audio_enabled || !(s->audio_base < end && audio_end > base));
+}
+
+static bool msm5xxx_poc_uart2_tx_ready_conflict(const MSM5xxxPOCMachineState *s)
+{
+    return s->uart2_tx_ready_enabled &&
+           (s->uart_console_enabled ||
+            (s->ready_poll_enabled &&
+             (s->ready_status_address == 0x030007c0 ||
+              s->ready_pulse_address == 0x030007c0)) ||
+            (s->board_status_input_enabled &&
+             s->board_status_input_address <= 0x030007c0 &&
+             (uint64_t)s->board_status_input_address + 4 > 0x030007c0));
+}
+
+/* This virtual TX sink drains synchronously. Source-bound readiness owns
+ * one byte and one read PC; it never grants RX or configuration semantics. */
+static uint64_t msm5xxx_poc_uart2_tx_ready_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc;
+    uint8_t value = s->uart2_tx_ready_backing;
+    if (offset || size != 1) {
+        return 0;
+    }
+    if (s->uart2_tx_ready_enabled && msm5xxx_poc_mmio_access_pc(s, &pc) &&
+        pc == s->uart2_tx_ready_pc) {
+        value |= 1;
+    }
+    return value;
+}
+
+static void msm5xxx_poc_uart2_tx_ready_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!offset && size == 1) {
+        s->uart2_tx_ready_backing = value;
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_uart2_tx_ready_ops = {
+    .read = msm5xxx_poc_uart2_tx_ready_read,
+    .write = msm5xxx_poc_uart2_tx_ready_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 1 },
+    .impl = { .min_access_size = 1, .max_access_size = 1 },
+};
+
+static bool msm5xxx_poc_direct_lcd_audio_conflict(const MSM5xxxPOCMachineState *s)
+{
+    uint64_t first = s->audio_base;
+    uint64_t end = first + (uint64_t)s->audio_data_offset + 1;
+    return s->direct_lcd_enabled && s->audio_enabled &&
+           (end <= first ||
+            (first < 0x02812e80 && end > 0x02800000) ||
+            (first < 0x02820028 && end > 0x02820000));
+}
+
+static void msm5xxx_poc_direct_lcd_reset(MSM5xxxPOCMachineState *s)
+{
+    memset(s->direct_lcd_pixels, 0, sizeof(s->direct_lcd_pixels));
+    memset(s->direct_lcd_registers, 0, sizeof(s->direct_lcd_registers));
+}
+
+static uint64_t msm5xxx_poc_direct_lcd_read(void *opaque, hwaddr offset,
+                                             unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!s->direct_lcd_enabled || size < 1 || size > 4) {
+        return 0;
+    }
+    if (offset < sizeof(s->direct_lcd_pixels) &&
+        size <= sizeof(s->direct_lcd_pixels) - offset) {
+        return msm5xxx_poc_backing_read(s->direct_lcd_pixels, offset, size);
+    }
+    if (offset >= 0x20000 && offset < 0x20028 &&
+        size <= 0x20028 - offset) {
+        return msm5xxx_poc_backing_read(s->direct_lcd_registers,
+                                      offset - 0x20000, size);
+    }
+    return 0;
+}
+
+static void msm5xxx_poc_direct_lcd_write(void *opaque, hwaddr offset,
+                                        uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!s->direct_lcd_enabled || size < 1 || size > 4) {
+        return;
+    }
+    if (offset < sizeof(s->direct_lcd_pixels) &&
+        size <= sizeof(s->direct_lcd_pixels) - offset) {
+        msm5xxx_poc_backing_write(s->direct_lcd_pixels, offset, value, size);
+    } else if (offset >= 0x20000 && offset < 0x20028 &&
+               size <= 0x20028 - offset) {
+        msm5xxx_poc_backing_write(s->direct_lcd_registers,
+                                offset - 0x20000, value, size);
+    } else {
+        return;
+    }
+    msm5xxx_poc_lcd_trace_write(s, 0x02800000 + offset, value, size);
+}
+
+static uint64_t msm5xxx_poc_direct_lcd_control_read(void *opaque,
+                                                  hwaddr offset, unsigned size)
+{
+    return msm5xxx_poc_direct_lcd_read(opaque, offset + 0x20000, size);
+}
+
+static void msm5xxx_poc_direct_lcd_control_write(void *opaque, hwaddr offset,
+                                                uint64_t value, unsigned size)
+{
+    msm5xxx_poc_direct_lcd_write(opaque, offset + 0x20000, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_direct_lcd_ops = {
+    .read = msm5xxx_poc_direct_lcd_read,
+    .write = msm5xxx_poc_direct_lcd_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static const MemoryRegionOps msm5xxx_poc_direct_lcd_control_ops = {
+    .read = msm5xxx_poc_direct_lcd_control_read,
+    .write = msm5xxx_poc_direct_lcd_control_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
 };
 
 static const MemoryRegionOps msm5xxx_poc_lcd_ops = {
@@ -11710,6 +12175,8 @@ static void msm5xxx_poc_reset(void *opaque)
         s->raw_nand_rejections = 0;
     }
     memset(s->lcd_backing, 0, sizeof(s->lcd_backing));
+    msm5xxx_poc_direct_lcd_reset(s);
+    s->uart2_tx_ready_backing = 0;
     memset(s->lcd_reads, 0, sizeof(s->lcd_reads));
     memset(s->lcd_writes, 0, sizeof(s->lcd_writes));
     s->lcd_trace_overflow = false;
@@ -11979,6 +12446,23 @@ static void msm5xxx_poc_init(MachineState *machine)
                                   s->amd_x16_nor_enabled;
     unsigned i;
 
+    if (s->direct_lcd_enabled && (upper_nor_enabled ||
+        (direct_x16_nor_enabled && !s->amd_adjacent_nv && !s->intel_adjacent_nv && !s->sharp_primary_nv) ||
+        s->raw_nand_main_enabled || s->small_nand_enabled ||
+        s->fujitsu_x16_nor_enabled || s->primary_x16_nor_enabled ||
+        s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
+        s->whole_primary_x16_enabled || s->protected_nor_enabled)) {
+        error_report("direct-lcd excludes NOR/NAND owners");
+        exit(1);
+    }
+    if (msm5xxx_poc_uart2_tx_ready_conflict(s)) {
+        error_report("uart2-tx-ready conflicts with another status owner");
+        exit(1);
+    }
+    if (msm5xxx_poc_direct_lcd_audio_conflict(s)) {
+        error_report("direct-lcd conflicts with audio ownership");
+        exit(1);
+    }
     if (!msm5xxx_poc_configure_whole_primary(s, &error_fatal)) {
         return;
     }
@@ -12073,7 +12557,19 @@ static void msm5xxx_poc_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
     }
-    if (s->intel_x16_nor_enabled) {
+    if (s->intel_adjacent_nv && !msm5xxx_poc_intel_adjacent_valid(s)) {
+        error_report("intel-adjacent-nv requires exclusive contiguous ROM/NV/RAM layout");
+        exit(EXIT_FAILURE);
+    }
+    if (s->sharp_nv_wp_high && !s->sharp_primary_nv) {
+        error_report("sharp-nv-wp-high requires sharp-primary-nv");
+        exit(EXIT_FAILURE);
+    }
+    if (s->sharp_primary_nv && !msm5xxx_poc_sharp_primary_valid(s)) {
+        error_report("sharp-primary-nv requires an exclusive interior primary NV partition");
+        exit(EXIT_FAILURE);
+    }
+    if (s->intel_x16_nor_enabled && !s->intel_adjacent_nv && !s->sharp_primary_nv) {
         uint64_t base = s->intel_x16_nor_base;
         uint64_t windows = s->mapped_primary_x16_nor_enabled ? 2 : 1;
         uint64_t end = base + windows * s->intel_x16_nor_size;
@@ -12090,15 +12586,9 @@ static void msm5xxx_poc_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
     }
-    if (s->amd_x16_nor_enabled) {
-        uint64_t base = s->intel_x16_nor_base;
-        uint64_t end = base + s->intel_x16_nor_size;
-        uint64_t ram_end = s->ram_base + machine->ram_size;
-
-        if (base < s->ram_base || end > ram_end) {
-            error_report("amd-x16-nor must overlap the detected RAM aperture");
-            exit(EXIT_FAILURE);
-        }
+    if (!msm5xxx_poc_amd_mapping_valid(s, machine->ram_size)) {
+        error_report("amd-x16-nor requires RAM containment or exclusive adjacent NV mode");
+        exit(EXIT_FAILURE);
     }
     /* Reject an EEPROM boundary through either mapped halfword register. */
     if ((s->matrix_input_row_mask || s->matrix_input_loop) && s->eeprom_gpio_enabled) {
@@ -12507,9 +12997,17 @@ static void msm5xxx_poc_init(MachineState *machine)
                               s->amd_x16_nor_options & 1);
         } else {
             qdev_prop_set_uint8(dev, "width", 2);
-            qdev_prop_set_uint8(dev, "device-width", 2);
-            qdev_prop_set_uint8(dev, "max-device-width", 2);
+            qdev_prop_set_uint8(dev, "device-width", s->intel_adjacent_nv && !s->intel_adjacent_x16 ? 1 : 2);
+            qdev_prop_set_uint8(dev, "max-device-width", s->intel_adjacent_nv && !s->intel_adjacent_x16 ? 1 : 2);
             qdev_prop_set_bit(dev, "big-endian", false);
+            if (s->intel_adjacent_x16) {
+                qdev_prop_set_bit(dev, "defer-erase-confirm", true);
+            }
+            if (s->sharp_primary_nv) {
+                qdev_prop_set_bit(dev, "sharp-pcr", true);
+                qdev_prop_set_bit(dev, "sharp-locks", true);
+                qdev_prop_set_bit(dev, "sharp-wp-high", s->sharp_nv_wp_high);
+            }
         }
         qdev_prop_set_uint16(dev, "id0", s->intel_x16_nor_id0);
         qdev_prop_set_uint16(dev, "id1", s->intel_x16_nor_id1);
@@ -12944,6 +13442,27 @@ static void msm5xxx_poc_init(MachineState *machine)
             s->audio_shared_lcd = true;
         }
     }
+    if (s->direct_lcd_enabled) {
+        memory_region_init_io(&s->direct_lcd_vram, OBJECT(machine),
+                              &msm5xxx_poc_direct_lcd_ops, s,
+                              "msm5xxx-poc.direct-lcd-vram",
+                              sizeof(s->direct_lcd_pixels));
+        memory_region_add_subregion_overlap(get_system_memory(), 0x02800000,
+                                            &s->direct_lcd_vram, 2);
+        memory_region_init_io(&s->direct_lcd_control, OBJECT(machine),
+                              &msm5xxx_poc_direct_lcd_control_ops, s,
+                              "msm5xxx-poc.direct-lcd-control",
+                              sizeof(s->direct_lcd_registers));
+        memory_region_add_subregion(get_system_memory(), 0x02820000,
+                                    &s->direct_lcd_control);
+    }
+    if (s->uart2_tx_ready_enabled) {
+        memory_region_init_io(&s->uart2_tx_ready_region, OBJECT(machine),
+                              &msm5xxx_poc_uart2_tx_ready_ops, s,
+                              "msm5xxx-poc.uart2-tx-ready", 1);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x030007c0,
+                                            &s->uart2_tx_ready_region, 2);
+    }
     if (s->lcd_trace_enabled) {
         memory_region_init_ram(&s->lcd_trace, NULL,
                                "msm5xxx-poc.lcd-trace",
@@ -13184,6 +13703,11 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("opaque audio-aperture requires audio-sites");
         exit(EXIT_FAILURE);
     }
+    if (s->audio_enabled && s->audio_ma2 && s->audio_base == 0x02880000 &&
+        !s->audio_sites_enabled) {
+        error_report("standalone MA2 audio-aperture requires audio-sites");
+        exit(EXIT_FAILURE);
+    }
     if (s->audio_enabled) {
         bool ma5_pcm_output = s->audio_ma5 && s->ma5_pcm_output_enabled &&
                               s->audio_sites_enabled;
@@ -13244,18 +13768,19 @@ static void msm5xxx_poc_init(MachineState *machine)
                                                   msm5xxx_poc_ma2_audio_tick, s);
             }
         }
-        if (!s->audio_ma2 && !s->audio_shared_lcd) {
+        if ((!s->audio_ma2 || s->audio_base == 0x02880000) && !s->audio_shared_lcd) {
             if (upper_nor_enabled &&
                 s->audio_base < MSM5XXX_POC_UPPER_NOR_BASE +
                                 MSM5XXX_POC_UPPER_NOR_SIZE &&
                 (uint64_t)s->audio_base + s->audio_data_offset + 1 >
                     MSM5XXX_POC_UPPER_NOR_BASE) {
-                error_report("opaque audio-aperture overlaps upper NOR");
+                error_report("standalone audio-aperture overlaps upper NOR");
                 exit(EXIT_FAILURE);
             }
             memory_region_init_io(
                 &s->audio_opaque, OBJECT(machine),
-                &msm5xxx_poc_audio_opaque_ops, s,
+                s->audio_ma2 ? &msm5xxx_poc_ma2_direct_ops :
+                               &msm5xxx_poc_audio_opaque_ops, s,
                 "msm5xxx-poc.audio-opaque", s->audio_data_offset + 1
             );
             memory_region_add_subregion(get_system_memory(), s->audio_base,
@@ -13875,6 +14400,81 @@ static void msm5xxx_poc_set_sbi_bootstrap_only(Object *obj, bool value,
         return;
     }
     s->sbi_bootstrap_only = value;
+}
+
+static char *msm5xxx_poc_get_uart2_tx_ready(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->uart2_tx_ready_enabled ?
+        g_strdup_printf("%x", s->uart2_tx_ready_pc) : g_strdup("");
+}
+
+static bool msm5xxx_poc_parse_uart2_tx_ready(const char *value, uint32_t *pc)
+{
+    unsigned long parsed;
+    size_t i, length = value ? strlen(value) : 0;
+    if (!length || length > 8) {
+        return false;
+    }
+    for (i = 0; i < length; i++) {
+        if (!g_ascii_isxdigit(value[i])) {
+            return false;
+        }
+    }
+    if (qemu_strtoul(value, NULL, 16, &parsed) || parsed < 2 ||
+        parsed > 0x01fffffe || (parsed & 1)) {
+        return false;
+    }
+    *pc = parsed;
+    return true;
+}
+
+static void msm5xxx_poc_set_uart2_tx_ready(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t pc;
+    if (!msm5xxx_poc_parse_uart2_tx_ready(value, &pc)) {
+        error_setg(errp, "uart2-tx-ready requires an even ROM read PC in hex");
+        return;
+    }
+    s->uart2_tx_ready_pc = pc;
+    s->uart2_tx_ready_enabled = true;
+}
+
+static bool msm5xxx_poc_get_direct_lcd(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->direct_lcd_enabled;
+}
+
+static void msm5xxx_poc_set_direct_lcd(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->direct_lcd_enabled = value;
+}
+
+static char *msm5xxx_poc_get_sbi_bootstrap_repeat(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->sbi_bootstrap_repeat ?
+        g_strdup_printf("%x", s->sbi_bootstrap_repeat_pc) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_sbi_bootstrap_repeat(Object *obj, const char *value,
+                                               Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned long pc;
+    const char *end;
+
+    if (qemu_strtoul(value, &end, 16, &pc) < 0 || *end || !pc ||
+        pc > UINT32_MAX || (pc & 1) ||
+        s->primary_nor_size < 2 || pc > s->primary_nor_size - 2) {
+        error_setg(errp, "sbi-bootstrap-repeat must be a closed even write PC");
+        return;
+    }
+    s->sbi_bootstrap_repeat_pc = pc;
+    s->sbi_bootstrap_repeat = true;
 }
 
 static bool msm5xxx_poc_get_upper_x8_nor(Object *obj, Error **errp)
@@ -14811,19 +15411,20 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
     ma2 = legacy || (tagged && !strcmp(family, "ma2"));
     ma5 = tagged && !strcmp(family, "ma5");
     opaque = tagged && !strcmp(family, "opaque");
-    ma2_valid = ma2 && base >= 0x02001000 &&
-                base <= MSM5XXX_POC_LCD_APERTURE_BASE +
-                        MSM5XXX_POC_LCD_APERTURE_SIZE - 3 &&
-                data_offset == 2 &&
-                (base + data_offset < msm5xxx_poc_lcd_bases[3] ||
-                 base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE);
+    ma2_valid = ma2 && data_offset == 2 &&
+                (base == 0x02880000 ||
+                 (base >= 0x02001000 &&
+                  base <= MSM5XXX_POC_LCD_APERTURE_BASE +
+                          MSM5XXX_POC_LCD_APERTURE_SIZE - 3 &&
+                  (base + data_offset < msm5xxx_poc_lcd_bases[3] ||
+                   base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE)));
     /* New apertures require the explicit experimental device at realize. */
     ma5_valid = ma5 && base >= 0x02001000 && base <= 0x02ffff00 &&
                 (data_offset == 2 || data_offset == 4 || data_offset == 128);
     opaque_valid = opaque && base == 0x02880000 && data_offset == 2;
     if (!ma2_valid && !ma5_valid && !opaque_valid) {
         error_setg(errp,
-                   "audio-aperture must be LCD-BASE:2[:ma2] or "
+                   "audio-aperture must be LCD-BASE:2[:ma2], 02880000:2:ma2, or "
                    "02840000:2:ma5 or 02880000:2:opaque");
         return;
     }
@@ -15582,6 +16183,118 @@ static void msm5xxx_poc_set_intel_x16_nor(Object *obj, const char *value,
     s->intel_x16_nor_id0 = id0;
     s->intel_x16_nor_id1 = id1;
     s->intel_x16_nor_enabled = true;
+}
+
+static char *msm5xxx_poc_get_intel_adjacent_nv(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->intel_adjacent_nv && !s->intel_adjacent_x16 ? g_strdup_printf("%x:%x:%x:%x:%x",
+        s->intel_x16_nor_base, s->intel_x16_nor_size,
+        s->intel_x16_nor_sector_size, s->intel_x16_nor_id0,
+        s->intel_x16_nor_id1) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_intel_adjacent_nv(Object *obj, const char *value,
+                                             Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) fields = g_strsplit(value, ":", -1);
+    uint32_t parsed[5];
+    if (g_strv_length(fields) != 5 || s->intel_x16_nor_enabled ||
+        s->amd_x16_nor_enabled) {
+        error_setg(errp, "intel-adjacent-nv requires exclusive BASE:SIZE:SECTOR:ID0:ID1");
+        return;
+    }
+    for (unsigned i = 0; i < 5; i++) {
+        unsigned long number;
+        if (qemu_strtoul(fields[i], NULL, 16, &number) || number > UINT32_MAX) {
+            error_setg(errp, "invalid intel-adjacent-nv number");
+            return;
+        }
+        parsed[i] = number;
+    }
+    if (!parsed[0] || !parsed[1] || parsed[1] > UINT32_MAX - parsed[0] ||
+        parsed[2] < 0x1000 || (parsed[2] & (parsed[2] - 1)) ||
+        parsed[0] % parsed[2] || parsed[1] % parsed[2] ||
+        parsed[3] > UINT16_MAX || parsed[4] > UINT16_MAX) {
+        error_setg(errp, "invalid intel-adjacent-nv geometry");
+        return;
+    }
+    s->intel_x16_nor_base = parsed[0];
+    s->intel_x16_nor_size = parsed[1];
+    s->intel_x16_nor_sector_size = parsed[2];
+    s->intel_x16_nor_id0 = parsed[3];
+    s->intel_x16_nor_id1 = parsed[4];
+    s->intel_adjacent_nv = true;
+    s->intel_x16_nor_enabled = true;
+}
+
+static char *msm5xxx_poc_get_intel_adjacent_nv16(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->intel_adjacent_x16 ? g_strdup_printf("%x:%x:%x:%x:%x",
+        s->intel_x16_nor_base, s->intel_x16_nor_size,
+        s->intel_x16_nor_sector_size, s->intel_x16_nor_id0,
+        s->intel_x16_nor_id1) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_intel_adjacent_nv16(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    bool was_enabled = s->intel_x16_nor_enabled;
+    if (s->cpu) {
+        error_setg(errp, "intel-adjacent-nv16 must be configured before realization");
+        return;
+    }
+    msm5xxx_poc_set_intel_adjacent_nv(obj, value, errp);
+    if (!was_enabled && s->intel_x16_nor_enabled && s->intel_adjacent_nv) {
+        s->intel_adjacent_x16 = true;
+    }
+}
+
+static bool msm5xxx_poc_get_sharp_nv_wp_high(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->sharp_nv_wp_high;
+}
+
+static void msm5xxx_poc_set_sharp_nv_wp_high(Object *obj, bool value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "sharp-nv-wp-high must be configured before realization");
+        return;
+    }
+    s->sharp_nv_wp_high = value;
+}
+
+static char *msm5xxx_poc_get_sharp_primary_nv(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->sharp_primary_nv ? g_strdup_printf("%x:%x:%x:%x:%x",
+        s->intel_x16_nor_base, s->intel_x16_nor_size,
+        s->intel_x16_nor_sector_size, s->intel_x16_nor_id0,
+        s->intel_x16_nor_id1) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_sharp_primary_nv(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    bool was_enabled = s->intel_x16_nor_enabled;
+    msm5xxx_poc_set_intel_adjacent_nv(obj, value, errp);
+    if (!was_enabled && s->intel_x16_nor_enabled && s->intel_adjacent_nv) {
+        s->intel_adjacent_nv = false;
+        s->sharp_primary_nv = true;
+    }
+}
+
+static bool msm5xxx_poc_get_amd_adjacent_nv(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->amd_adjacent_nv;
+}
+
+static void msm5xxx_poc_set_amd_adjacent_nv(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->amd_adjacent_nv = value;
 }
 
 static void msm5xxx_poc_set_amd_x16_nor(Object *obj, const char *value,
@@ -16712,6 +17425,7 @@ static void msm5xxx_poc_instance_init(Object *obj)
     s->sbi_enabled = false;
     s->tx_init_last_mode = UINT8_MAX;
     s->sbi_bootstrap_only = false;
+    s->sbi_bootstrap_repeat = false;
     s->lcd_trace_enabled = false;
     s->audio_pcm_enabled = true;
     s->ram_base = MSM5XXX_POC_RAM_BASE;
@@ -16823,6 +17537,24 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         oc, "sbi-bootstrap-only",
         "Reject post-bootstrap SBI semantics after exact validation"
     );
+    object_class_property_add_str(
+        oc, "sbi-bootstrap-repeat", msm5xxx_poc_get_sbi_bootstrap_repeat,
+        msm5xxx_poc_set_sbi_bootstrap_repeat
+    );
+    object_class_property_set_description(
+        oc, "sbi-bootstrap-repeat",
+        "Source-closed write PC for repeated exact SBI bootstrap validation"
+    );
+    object_class_property_add_str(oc, "uart2-tx-ready",
+                                 msm5xxx_poc_get_uart2_tx_ready,
+                                 msm5xxx_poc_set_uart2_tx_ready);
+    object_class_property_set_description(oc, "uart2-tx-ready",
+        "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add_bool(oc, "direct-lcd",
+                                  msm5xxx_poc_get_direct_lcd,
+                                  msm5xxx_poc_set_direct_lcd);
+    object_class_property_set_description(oc, "direct-lcd",
+        "Source-qualified 176x220 raw VRAM and ASIC register backing; SPI RX unmodeled");
     object_class_property_add_bool(oc, "lcd-trace", msm5xxx_poc_get_lcd_trace,
                                    msm5xxx_poc_set_lcd_trace);
     object_class_property_set_description(
@@ -16937,6 +17669,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         msm5xxx_poc_get_gpio_lcd, msm5xxx_poc_set_gpio_lcd);
     object_class_property_add_str(oc, "gpio660-lcd-state",
         msm5xxx_poc_get_gpio_lcd_state, NULL);
+
+    object_class_property_add_str(oc, "dmd5000-program",
+                                  msm5xxx_poc_get_dmd5000, msm5xxx_poc_set_dmd5000);
     object_class_property_add_str(oc, "dmd5100-program",
                                   msm5xxx_poc_get_dmd5100, msm5xxx_poc_set_dmd5100);
     object_class_property_add_str(oc, "dmd5100-stats",
@@ -17098,6 +17833,25 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "intel-x16-nor",
         "Detector-provided external direct-command Intel x16 NOR");
+    object_class_property_add_bool(oc, "sharp-nv-wp-high",
+                                  msm5xxx_poc_get_sharp_nv_wp_high,
+                                  msm5xxx_poc_set_sharp_nv_wp_high);
+    object_class_property_add_str(oc, "intel-adjacent-nv16",
+                                 msm5xxx_poc_get_intel_adjacent_nv16,
+                                 msm5xxx_poc_set_intel_adjacent_nv16);
+    object_class_property_add_str(oc, "sharp-primary-nv",
+                                 msm5xxx_poc_get_sharp_primary_nv,
+                                 msm5xxx_poc_set_sharp_primary_nv);
+    object_class_property_add_str(oc, "intel-adjacent-nv",
+                                 msm5xxx_poc_get_intel_adjacent_nv,
+                                 msm5xxx_poc_set_intel_adjacent_nv);
+    object_class_property_set_description(oc, "intel-adjacent-nv",
+        "Explicit adjacent Intel compatible NV experiment with two x8 status lanes");
+    object_class_property_add_bool(oc, "amd-adjacent-nv",
+                                  msm5xxx_poc_get_amd_adjacent_nv,
+                                  msm5xxx_poc_set_amd_adjacent_nv);
+    object_class_property_set_description(oc, "amd-adjacent-nv",
+        "Explicit disjoint CFI02 NV bank immediately after ROM and below RAM/MMIO");
     object_class_property_add_str(oc, "amd-x16-nor",
                                   msm5xxx_poc_get_amd_x16_nor,
                                   msm5xxx_poc_set_amd_x16_nor);

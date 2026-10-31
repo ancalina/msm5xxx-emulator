@@ -93,7 +93,8 @@ static uint64_t dirty_address;
 static unsigned dirty_size;
 static uint64_t forwarded_address;
 static bool bus_error;
-static uint8_t *memory_region_get_ram_ptr(MemoryRegion *mr){assert(mr==&active->msm);ram_accesses++;return backing;}
+static uint8_t test_rom[0x8000];
+static uint8_t *memory_region_get_ram_ptr(MemoryRegion *mr){if(mr==&active->nor)return test_rom;assert(mr==&active->msm);ram_accesses++;return backing;}
 static void memory_region_set_dirty(MemoryRegion *mr,uint64_t at,unsigned size){assert(mr==&active->msm && at+size<=sizeof(backing));dirty++;dirty_address=at;dirty_size=size;}
 static MemTxResult address_space_write(AddressSpace *as,uint64_t at,MemTxAttrs attrs,const void *bytes,unsigned size){
  for(unsigned n=0;n<5;n++)assert(!active->dmd5100_region[n].enabled);
@@ -108,10 +109,11 @@ static MemTxResult address_space_read(AddressSpace *as,uint64_t at,MemTxAttrs at
  if(bus_error){return MEMTX_ERROR;}memcpy(bytes,backing+at-MSM5XXX_POC_MSM_BASE,size);return MEMTX_OK;
 }
 '''
-        names=('backing_read','backing_write','dmd5100_read_base','dmd5100_port_address','dmd5100_active','dmd5100_regions','dmd5100_record_rejection','dmd5100_reject',
-               'dmd5100_reset','dmd5100_pc','dmd5100_forward','dmd5100_write_next',
-               'dmd5100_write','dmd5100_read','get_dmd5100','set_dmd5100',
-               'set_dmd5100_760','get_dmd5100_760_layout','set_dmd5100_760_layout','get_dmd5100_stats','get_dmd5100_rejection','dmd5100_topology')
+        names=('backing_read','backing_write','dmd5100_read_base','dmd5100_port_address','dmd5100_active','dmd5100_regions','dmd5100_record_rejection','dmd5100_reject','dmd5100_reset','dmd5100_pc','dmd5100_forward','dmd5000_descriptors_valid','dmd5000_write_next','dmd5000_read_context','dmd5100_write_next','dmd5100_write','dmd5100_read','get_dmd5100','set_dmd5100','set_dmd5100_760','get_dmd5100_760_layout','set_dmd5100_760_layout','set_dmd5000','get_dmd5100_stats','get_dmd5100_rejection','dmd5100_topology')
+        code+='''
+static uint32_t ldl_le_p(const uint8_t *p){return p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+static uint16_t lduw_le_p(const uint8_t *p){return p[0]|((uint16_t)p[1]<<8);}
+'''
         code+='\n'.join(function('msm5xxx_poc_'+name)for name in names)
         code+=r'''
 static ARMCPU cpu;
@@ -166,7 +168,84 @@ static void even_pass(MSM5xxxPOCMachineState *s){
  for(unsigned i=0;i<3;i++){even_context(s,i);unsigned before=forwarded;assert(rd(s,3,0x78,2)==even(i));assert(forwarded==before);}
  assert(s->dmd5100_phase==DMD5100_EVEN_DONE);
 }
+
+static void dual_checks(void) {
+ for(unsigned branch=0;branch<2;branch++) {
+  MSM5xxxPOCMachineState s=fresh();s.dmd5000_dual=true;
+  s.dmd5000_descriptor[0]=0x2000;s.dmd5000_descriptor[1]=0x2100;
+  s.dmd5000_payload[0]=0x3000;s.dmd5000_payload[1]=0x3100;
+  assert(msm5xxx_poc_dmd5100_port_address(&s,2)==0x300005c);
+  assert(msm5xxx_poc_dmd5100_port_address(&s,3)==0x3000768);
+  assert(msm5xxx_poc_dmd5100_port_address(&s,4)==0x300076c);
+  memset(test_rom,0,sizeof(test_rom));
+  for(unsigned k=0;k<2;k++) {
+   unsigned d=s.dmd5000_descriptor[k],v=s.dmd5000_payload[k];
+   test_rom[d]=v&255;test_rom[d+1]=v>>8;test_rom[d+6]=6;
+  }
+  select_state(&s);assert(msm5xxx_poc_dmd5100_topology(&s));
+  for(unsigned kind=1;kind<=4;kind++) {
+   bad_address=s.dmd5000_descriptor[1];bad_kind=kind;
+   assert(!msm5xxx_poc_dmd5100_topology(&s));
+   bad_address=s.dmd5000_payload[1];assert(!msm5xxx_poc_dmd5100_topology(&s));
+  }
+  bad_address=UINT64_MAX;bad_kind=0;
+  /* Descriptor bytes are checked after loader population, before acquisition. */
+  test_rom[s.dmd5000_descriptor[1]+6]^=1;
+  cpu.env.regs[7]=0;wr(&s,2,0x1a,0,1);assert(s.dmd5100_phase==DMD5100_REJECTED);
+  test_rom[s.dmd5000_descriptor[1]+6]^=1;
+  cpu.env.regs[7]=0;wr(&s,2,0x1a,0,1);
+  cpu.env.regs[3]=s.dmd5000_descriptor[branch];wr(&s,0,0x32,0,2);
+  assert(s.dmd5000_selected==branch && s.dmd5100_phase==DMD5100_PROGRAM);
+  for(unsigned i=0;i<3;i++) {
+   cpu.env.regs[7]=2*i;cpu.env.regs[3]=s.dmd5100_descriptor;
+   wr(&s,1,branch?0x52:0x72,odd(i),2);
+   cpu.env.regs[2]=s.dmd5100_payload;wr(&s,1,branch?0x58:0x78,even(i),2);
+  }
+  assert(s.dmd5100_pairs==3 && s.dmd5100_phase==DMD5100_FULL);
+  MSM5xxxPOCMachineState saved=s;
+  /* Mode before release is invalid; neither compare lane is consumed. */
+  wr(&s,3,0x98,0xe,1);assert(s.dmd5100_phase==DMD5100_REJECTED);
+  s=saved;wr(&s,2,0x8a,1,1);assert(s.dmd5000_released);
+  wr(&s,3,0x98,0xe,1);wr(&s,4,0x9c,0,1);
+  saved=s;rd(&s,3,branch?0xbc:0xe0,2);
+  assert(s.dmd5100_phase==DMD5100_REJECTED && !s.dmd5100_even_reads);
+  s=saved;rd(&s,3,0x9e,1);assert(s.dmd5100_barrier);
+  for(unsigned i=0;i<3;i++) {
+   cpu.env.regs[0]=i;cpu.env.regs[4]=2*i;cpu.env.regs[7]=0x3000760;
+   cpu.env.regs[branch?2:1]=s.dmd5100_payload;cpu.env.regs[branch?1:2]=3;
+   MSM5xxxPOCMachineState before=s;
+   /* A new ID choice cannot read a buffer acquired for the other descriptor. */
+   rd(&s,3,branch?0xe0:0xbc,2);
+   assert(s.dmd5100_phase==DMD5100_REJECTED && s.dmd5100_even_reads==i);
+   s=before;
+   actual_guest=false;assert(rd(&s,3,0xffff,2)==even(i));assert(s.dmd5100_even_reads==i);
+   actual_guest=true;assert(rd(&s,3,branch?0xbc:0xe0,2)==even(i));
+  }
+  assert(s.dmd5100_phase==DMD5100_EVEN_DONE);
+  wr(&s,4,0xfa,0,1);rd(&s,3,0xfc,1);
+  for(unsigned i=0;i<3;i++) {
+   cpu.env.regs[0]=i;cpu.env.regs[6]=2*i;cpu.env.regs[2]=s.dmd5100_payload;cpu.env.regs[1]=3;
+   actual_guest=false;assert(rd(&s,4,0xffff,2)==odd(i));assert(s.dmd5100_odd_reads==i);
+   actual_guest=true;assert(rd(&s,4,branch?0x120:0x148,2)==odd(i));
+  }
+  assert(s.dmd5100_phase==DMD5100_ODD_DONE);
+  wr(&s,3,0x160,0,1);assert(s.dmd5100_phase==DMD5100_CLOSED);
+  msm5xxx_poc_dmd5100_reset(&s);assert(s.dmd5000_selected==2 && !s.dmd5000_released);
+ }
+ MSM5xxxPOCMachineState s={0};Error *err=NULL;
+ msm5xxx_poc_set_dmd5000(&s,"1000:2000:3000:2100:3100:3",&err);
+ assert(!err && s.dmd5000_dual && s.dmd5100_count==3);
+ msm5xxx_poc_set_dmd5100(&s,"1000:2000:3000:3",&err);assert(err);
+ const char *bad[]={"","0:2000:3000:2100:3100:3","1001:2000:3000:2100:3100:3",
+ "1000:2000:3000:2000:3100:3","1000:2000:3000:2100:3100:0","1000:2000:3000:2100:3100:8000",
+ "1000:2000:3000:2100:3100:3:4","1000:2000:3000:2100:3100:3 ","1000:2000:3000:2100:3100"};
+ for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++) {
+  memset(&s,0,sizeof(s));err=NULL;msm5xxx_poc_set_dmd5000(&s,bad[i],&err);assert(err && !s.dmd5100_enabled);
+ }
+}
 int main(void){
+ dual_checks();finds=unrefs=0;
+
  MSM5xxxPOCMachineState s=fresh(),saved;Error *err=NULL;char *text;
  select_state(&s);assert(msm5xxx_poc_dmd5100_topology(&s));assert(finds==unrefs);
  text=msm5xxx_poc_get_dmd5100(&s,NULL);assert(!strcmp(text,"1000:2000:3000:3"));g_free(text);
@@ -404,7 +483,7 @@ int main(void){
         self.assertLess(init.index('msm5xxx_poc_boot_keysense_init(machine'),init.index('msm5xxx_poc_dmd5100_topology(s)'))
         self.assertIn('qemu_unregister_reset(msm5xxx_poc_dmd5100_reset, s);',source)
         self.assertIn('msm5xxx_poc_get_dmd5100_rejection, NULL);',source)
-        self.assertNotIn('memory_region_get_ram_ptr(&s->nor)', '\n'.join(function('msm5xxx_poc_'+n)for n in names))
+        self.assertNotIn('memory_region_get_ram_ptr(&s->nor)', '\n'.join(function('msm5xxx_poc_'+n)for n in names if n not in ('dmd5100_topology','dmd5000_descriptors_valid')))
 
 
 if __name__=='__main__':unittest.main()
