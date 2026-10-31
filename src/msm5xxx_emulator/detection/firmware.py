@@ -14,6 +14,7 @@ from ..core.config import FirmwareConfig
 from .arm import arm_vector_score
 from .audio import find_audio_transport
 from .bootstrap_sdram import reset_copy_ram_profile
+from .boot_extent import boot_nor_extent
 from .small_page_nand import small_page_nand_profile
 from .boot import (
     AUDIO_PLAY_SIGNATURE, BOARD_ADC_SIGNATURE, BUSY_DELAY_SIGNATURE,
@@ -496,6 +497,13 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     required_flash_extent = referenced_flash_extent(
         image, requested_load_address
     )
+    boot_extent = boot_nor_extent(image, requested_load_address)
+    if boot_extent:
+        required_flash_extent = max(required_flash_extent, boot_extent)
+        detection_notes.append(
+            "reset-linked boot and 270-sector download descriptor declare "
+            "16MiB virtual primary NOR; physical part ID remains unqualified"
+        )
     if requested_flash_size is None:
         scan_limit = (scan_ram_base - requested_load_address
                       if scan_ram_base > requested_load_address
