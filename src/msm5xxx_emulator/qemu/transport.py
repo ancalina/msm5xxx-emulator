@@ -3105,23 +3105,51 @@ def w1c_rex_irq_profile(config: object) -> str | None:
     return ":".join(profile.split(":")[:5]) if profile is not None else None
 
 
-def qemu_stack_w1c_property(image: bytes, config: object) -> str | None:
-    """Admit a complete alternate W1C route without replacing another owner."""
+def qemu_stack_w1c_property(image: bytes, config: object, *,
+                             loaded: bytes | None = None) -> str | None:
+    """Bind W1C and narrowly correct the automatic read-consume selection."""
+    from ..detection.rex_power_w1c import find_power_stack_w1c_irq_profile
+    from ..detection.rex import _find_rex_620_static_controller_callback_candidate
     size = getattr(config, "flash_size", None)
     candidate = getattr(config, "rex_static_controller_candidate", None)
     if (getattr(config, "load_address", None) != 0
             or type(size) is not int or size <= 0
             or getattr(config, "rex_irq_mask", 0)
             or getattr(config, "rex_basic_irq_profile", None) is not None
-            or isinstance(candidate, dict) and candidate.get("accepted") is True
             or any(getattr(config, key, None) is not None for key in (
-                "rex_irq_status_address", "rex_irq_enable_address", "rex_irq_arm_address"))):
+                "rex_irq_status_address", "rex_irq_enable_address", "rex_irq_arm_address"))
+            or loaded is not None and (not isinstance(loaded,bytes) or len(loaded)!=size)):
         return None
-    profile = find_stack_w1c_irq_profile(
-        image[:size], getattr(config, "ram_base", None),
-        getattr(config, "ram_size", None))
+    ram_base,ram_size = getattr(config,"ram_base",None),getattr(config,"ram_size",None)
+    power = find_power_stack_w1c_irq_profile(image[:size],ram_base,ram_size)
+    if power is not None and candidate is not None:
+        if (not isinstance(candidate,dict) or type(candidate.get("accepted")) is not bool
+                or candidate.get("active") is not False
+                or candidate != _find_rex_620_static_controller_callback_candidate(
+                    image[:size],ram_base=ram_base,ram_size=ram_size)):
+            return None
+    if isinstance(candidate,dict) and candidate.get("accepted") is True:
+        if (power is None
+                or candidate.get("signature") != "static-msm5000-620-controller-callback-v1"
+                or candidate.get("controller_class") != "legacy-msm5000-620-two-bank-read-consume-v1"):
+            return None
+        # Every ownership edge in old telemetry must agree with the new typed
+        # W1C graph. Unknown extra/native claims fail canonical equality above.
+        for key in ("status","enable","mask","vector","vector_target",
+                    "vector_copy_source","vector_copy_size","wrapper_file_offset",
+                    "handler_file_offset","callback_file_offset","registrar_file_offset",
+                    "handler_slot","callback_slot","descriptor_file_offset",
+                    "descriptor_runtime_address","mask_table"):
+            if type(candidate.get(key)) is not int or candidate[key] != power[key]:
+                return None
+    profile = power or find_stack_w1c_irq_profile(image[:size],ram_base,ram_size)
     if profile is None:
         return None
+    if loaded is not None:
+        current = (find_power_stack_w1c_irq_profile(loaded,ram_base,ram_size) if power
+                   else find_stack_w1c_irq_profile(loaded,ram_base,ram_size))
+        if current != profile:
+            return None
     return ":".join(f"{profile[key]:x}" for key in (
         "status", "enable", "arm", "mask", "interval_ns"))
 
@@ -3634,12 +3662,22 @@ class Transport:
             self.config, experimental_c80
         )
         self.rex_w1c_profile = w1c_rex_irq_profile(self.config)
-        self.rex_stack_w1c_profile = (
-            qemu_stack_w1c_property(detector_image, self.config)
-            if all(profile is None for profile in (
-                self.rex_c80_profile, self.rex_read_consume_profile,
-                self.rex_w1c_profile)) else None
-        )
+        self.rex_stack_w1c_profile = None
+        self.rex_stack_corrected_automatic = False
+        if self.rex_c80_profile is None and self.rex_w1c_profile is None:
+            stack_candidate = qemu_stack_w1c_property(detector_image,self.config)
+            if self.rex_read_consume_profile is None:
+                self.rex_stack_w1c_profile = stack_candidate
+            elif (stack_candidate is not None and not experimental_c80
+                    and not self.config.rex_static_controller_experimental):
+                # Canonical accepted telemetry can reach this branch only
+                # through the exact power-task source proof above. Preserve
+                # explicit controller choices; correct this automatic tag.
+                self.rex_read_consume_profile = None
+                self.rex_stack_corrected_automatic = True
+                self.rex_stack_w1c_profile = stack_candidate
+                self.config.detection_notes.append(
+                    "source ACK/W1C proof supersedes automatic read-consume telemetry")
         self.config.rex_static_controller_experimental = (
             self.rex_c80_profile is not None
             or self.rex_read_consume_profile is not None
@@ -4432,6 +4470,20 @@ class Transport:
                 f"QEMU watchdog rejected: {watchdog_reject}")
         if len(primary_seed) != self.config.flash_size:
             raise ValueError("primary seed size does not match flash size")
+        if (self.rex_stack_w1c_profile is not None and
+                qemu_stack_w1c_property(detector_image,self.config,loaded=primary_seed)
+                != self.rex_stack_w1c_profile):
+            if self.rex_stack_corrected_automatic:
+                for channel in (lcd_listener,input_listener,gdb_listener,
+                                audio_listener,audio_host_socket,audio_qemu_socket):
+                    if channel is not None:
+                        channel.close()
+                self.decoder.close()
+                self.temporary.cleanup()
+                raise ValueError("loaded W1C source route changed; refusing automatic controller correction")
+            machine = machine.replace(",rex-irq="+self.rex_stack_w1c_profile,"",1)
+            self.rex_stack_w1c_profile = None
+            self.config.detection_notes.append("W1C source IRQ rejected: loaded route changed")
         # New source-bound page producers must match the image actually loaded.
         if primary_seed != self.decoder.image:
             self.decoder._lcd_page_loaded_image = primary_seed
