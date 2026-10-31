@@ -127,6 +127,7 @@ static MemTxResult address_space_write(AddressSpace *as,hwaddr addr,MemTxAttrs a
             'msm5xxx_poc_uart_console_reset','msm5xxx_poc_uart_console_reject',
             'msm5xxx_poc_uart_console_forward','msm5xxx_poc_uart_console_mirror',
             'msm5xxx_poc_uart_console_isr',
+            'msm5xxx_poc_uart_register_file_read','msm5xxx_poc_uart_register_file_write',
             'msm5xxx_poc_uart_console_read_fixed','msm5xxx_poc_uart_console_write_fixed',
             'msm5xxx_poc_uart_console_probe_next',
             'msm5xxx_poc_uart_rearm_guest','msm5xxx_poc_uart_rearm_context',
@@ -135,6 +136,7 @@ static MemTxResult address_space_write(AddressSpace *as,hwaddr addr,MemTxAttrs a
             'msm5xxx_poc_uart_console_read','msm5xxx_poc_uart_console_write',
             'msm5xxx_poc_get_uart_console','msm5xxx_poc_set_uart_console',
             'msm5xxx_poc_get_uart_halfword_console','msm5xxx_poc_set_uart_halfword_console',
+            'msm5xxx_poc_get_uart_register_file','msm5xxx_poc_set_uart_register_file',
             'msm5xxx_poc_get_uart_console_probe','msm5xxx_poc_set_uart_console_probe',
             'msm5xxx_poc_get_uart_console_rearm','msm5xxx_poc_set_uart_console_rearm',
             'msm5xxx_poc_uart_rearm_valid','msm5xxx_poc_get_uart_console_rearm_state',
@@ -723,6 +725,41 @@ int main(void) {
     s=(MSM5xxxPOCMachineState){0};error=NULL;
     msm5xxx_poc_set_uart_halfword_console(&s,"30007ac",&error);
     assert(error && !s.uart_console_enabled && !s.uart_console_halfword_controls);
+    /* Application reconfiguration is opt-in; old strict profiles above stay strict. */
+    const char *register_bases[]={"30007ac","3000f0c"};
+    for(unsigned mode=0;mode<2;mode++) {
+        s=(MSM5xxxPOCMachineState){0};error=NULL;
+        msm5xxx_poc_set_uart_register_file(&s,register_bases[mode],&error);assert(!error);
+        s.uart_console_realized=s.uart_console_mapped=true;
+        msm5xxx_poc_uart_console_reset(&s);select_state(&s);
+        assert(read_at(&s,8,1)==8 && read_at(&s,8,2)==8 && s.uart_console_register_file);
+        write_at(&s,0x14,0,1);write_at(&s,0x10,2,1);write_at(&s,0x10,8,1);
+        write_at(&s,4,0x74,1);write_at(&s,0,0x40,2);write_at(&s,0x10,0xe0,1);
+        write_at(&s,8,0x77,1);write_at(&s,0x10,0x30,1);write_at(&s,0x10,0x10,1);
+        write_at(&s,0x10,0x20,1);write_at(&s,0x10,5,1);
+        assert(!s.uart_console_rejected && s.uart_console_initialized);
+        assert(read_at(&s,0,2)==0x40 && read_at(&s,4,1)==0x74);
+        assert(read_at(&s,8,1)==12 && !(read_at(&s,8,1)&0xf3));
+        write_at(&s,0x14,1,1);assert(read_at(&s,0x10,1)==1 && read_at(&s,0x14,1)==1);
+        write_at(&s,0x10,8,1);assert(read_at(&s,0x10,1)==0 && read_at(&s,8,1)==8);
+        write_at(&s,0x10,4,1);write_at(&s,0xc,10,1);write_at(&s,0xc,65,2);
+        assert(s.uart_console_accepted==2 && s.uart_console_last_byte==65);
+        write_at(&s,0x18,0x1234,2);assert(read_at(&s,0x18,2)==0x1234 && read_at(&s,0x18,1)==0x34);
+        /* The later FF diagnostic mode must still drain an empty receiver. */
+        write_at(&s,0,0,2);write_at(&s,4,0x34,1);write_at(&s,8,0xff,1);
+        write_at(&s,0x14,0,1);write_at(&s,0x1c,30,2);write_at(&s,0x20,0,2);
+        for(unsigned i=0;i<7;i++)write_at(&s,0x10,half_controls[i],1);
+        assert(!s.uart_console_rejected && read_at(&s,8,1)==12 && read_at(&s,0xc,1)==0);
+        text=msm5xxx_poc_get_uart_console_status(&s,&error);
+        assert(strstr(text,"\"registerfile\":true") && strstr(text,"\"csr\":255"));g_free(text);
+        text=msm5xxx_poc_get_uart_register_file(&s,&error);assert(!strcmp(text,register_bases[mode]));g_free(text);
+        occupied=s;error=NULL;msm5xxx_poc_set_uart_register_file(&s,register_bases[mode],&error);
+        assert(error && !memcmp(&s,&occupied,sizeof(s)));
+        read_at(&s,1,2);assert(s.uart_console_rejected);
+        msm5xxx_poc_uart_console_reset(&s);
+        assert(!s.uart_console_rejected && s.uart_console_register_file && !s.uart_console_ipr);
+        write_at(&s,0x10,0x100,2);assert(s.uart_console_rejected);
+    }
     probe_checks();ffcc_checks();rearm_checks();pending_readback_checks();
     puts("UART actual-C four explicit classes/property/alias/init/reset/fallback PASS");return 0;
 }

@@ -556,6 +556,8 @@ struct MSM5xxxPOCMachineState {
     /* FF/DD seals at 5; FF/CC/99 adds LF/RX at 5, drains/config at 6/7, seal 8. */
     uint8_t uart_console_probe_stage, uart_console_probe_step, uart_console_probe_drains;
     bool uart_console_halfword_controls;
+    bool uart_console_register_file;
+    uint16_t uart_console_ipr;
     bool uart_console_initialized, uart_console_tx_enabled, uart_console_rx_enabled;
     bool uart_console_empty;
     uint32_t uart_console_base;
@@ -1342,6 +1344,7 @@ static void msm5xxx_poc_uart_console_reset(void *opaque)
     s->uart_console_empty = true;
     s->uart_console_config = s->uart_console_cr_step = 0;
     s->uart_console_mr1 = s->uart_console_mr2 = s->uart_console_csr = 0;
+    s->uart_console_ipr = 0;
     s->uart_console_imr = s->uart_console_tfwr = s->uart_console_rfwr = 0;
     s->uart_console_accepted = 0;
     s->uart_console_last_byte = 0;
@@ -1437,12 +1440,114 @@ static uint8_t msm5xxx_poc_uart_console_isr(MSM5xxxPOCMachineState *s)
            pending <= s->uart_console_tfwr ? 1 : 0;
 }
 
+/* Opt-in legacy UART register experiment. Register aliases and control bits
+ * agree with Linux drivers/tty/serial/msm_serial.c and the observed 5100
+ * application/diagnostic producers. No RX source or IRQ is synthesized. */
+static MemTxResult msm5xxx_poc_uart_register_file_read(void *opaque,
+    hwaddr offset, uint64_t *value, unsigned size, MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (s->uart_console_rejected) {
+        return msm5xxx_poc_uart_console_forward(s, offset, value, size, attrs, false);
+    }
+    if ((size != 1 && size != 2) || offset & 3 || offset > 0x20) {
+        goto reject;
+    }
+    switch (offset) {
+    case 0: *value = s->uart_console_mr1; break;
+    case 4: *value = s->uart_console_mr2; break;
+    case 8: *value = (s->uart_console_empty ? 8 : 0) |
+                    (s->uart_console_tx_enabled && s->uart_console_empty ? 4 : 0); break;
+    case 0x0c: *value = 0; break;
+    case 0x10: *value = msm5xxx_poc_uart_console_isr(s) & s->uart_console_imr; break;
+    case 0x14: *value = msm5xxx_poc_uart_console_isr(s); break;
+    case 0x18: *value = s->uart_console_ipr; break;
+    case 0x1c: *value = s->uart_console_tfwr; break;
+    case 0x20: *value = s->uart_console_rfwr; break;
+    default: goto reject;
+    }
+    *value &= size == 1 ? UINT8_MAX : UINT16_MAX;
+    return MEMTX_OK;
+reject:
+    msm5xxx_poc_uart_console_reject(s, "unsupported-register-file-read");
+    return msm5xxx_poc_uart_console_forward(s, offset, value, size, attrs, false);
+}
+
+static MemTxResult msm5xxx_poc_uart_register_file_write(void *opaque,
+    hwaddr offset, uint64_t value, unsigned size, MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    MemTxResult result;
+    if (s->uart_console_rejected) {
+        return msm5xxx_poc_uart_console_forward(s, offset, &value, size, attrs, true);
+    }
+    if ((size != 1 && size != 2) || offset & 3 || offset > 0x20 ||
+        value > UINT16_MAX || (size == 1 && value > UINT8_MAX)) {
+        goto reject;
+    }
+    if (offset == 0x10) {
+        unsigned control = value & 15;
+        if (value > UINT8_MAX || (control & 3) == 3 || (control & 12) == 12) {
+            goto reject;
+        }
+        switch (value & 0xf0) {
+        case 0: break;
+        case 0x10: break; /* Reset the already empty receive FIFO. */
+        case 0x20: s->uart_console_empty = true; break;
+        case 0x30: break; /* No receive errors in the isolated empty source. */
+        case 0xe0: break; /* RFR output changes no disconnected RX input. */
+        default: goto reject;
+        }
+        if (control & 1) s->uart_console_rx_enabled = true;
+        if (control & 2) s->uart_console_rx_enabled = false;
+        if (control & 4) s->uart_console_tx_enabled = true;
+        if (control & 8) s->uart_console_tx_enabled = false;
+        s->uart_console_initialized = s->uart_console_rx_enabled || s->uart_console_tx_enabled;
+        return MEMTX_OK;
+    }
+    if (offset == 0x0c) {
+        if (value > UINT8_MAX || !s->uart_console_tx_enabled || !s->uart_console_empty) {
+            goto reject;
+        }
+        s->uart_console_last_byte = value;
+        if (s->uart_console_accepted != UINT64_MAX) {
+            s->uart_console_accepted++;
+        }
+        return MEMTX_OK; /* Provisional synchronous null TX sink. */
+    }
+    if (offset != 0 && offset != 0x18 && offset != 0x1c && offset != 0x20 &&
+        value > UINT8_MAX) {
+        goto reject;
+    }
+    result = msm5xxx_poc_uart_console_mirror(s, offset, value, size, attrs);
+    if (result != MEMTX_OK || s->uart_console_rejected) {
+        return result;
+    }
+    switch (offset) {
+    case 0: s->uart_console_mr1 = value; break;
+    case 4: s->uart_console_mr2 = value; break;
+    case 8: s->uart_console_csr = value; break;
+    case 0x14: s->uart_console_imr = value; break;
+    case 0x18: s->uart_console_ipr = value; break;
+    case 0x1c: s->uart_console_tfwr = value; break;
+    case 0x20: s->uart_console_rfwr = value; break;
+    default: goto reject;
+    }
+    return MEMTX_OK;
+reject:
+    msm5xxx_poc_uart_console_reject(s, "unsupported-register-file-write");
+    return msm5xxx_poc_uart_console_forward(s, offset, &value, size, attrs, true);
+}
+
 static MemTxResult msm5xxx_poc_uart_console_read_fixed(void *opaque, hwaddr offset,
                                                 uint64_t *value, unsigned size,
                                                 MemTxAttrs attrs)
 {
     MSM5xxxPOCMachineState *s = opaque;
 
+    if (s->uart_console_register_file) {
+        return msm5xxx_poc_uart_register_file_read(opaque, offset, value, size, attrs);
+    }
     if (s->uart_console_rejected) {
         return msm5xxx_poc_uart_console_forward(s, offset, value, size, attrs, false);
     }
@@ -1483,6 +1588,9 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
     unsigned config_bit = 0;
     unsigned control_width = s->uart_console_halfword_controls ? 2 : 1;
 
+    if (s->uart_console_register_file) {
+        return msm5xxx_poc_uart_register_file_write(opaque, offset, value, size, attrs);
+    }
     if (s->uart_console_rejected) {
         return msm5xxx_poc_uart_console_forward(s, offset, &value, size, attrs, true);
     }
@@ -1995,6 +2103,24 @@ static void msm5xxx_poc_set_uart_halfword_console(Object *obj,
     s->uart_console_halfword_controls = true;
 }
 
+static char *msm5xxx_poc_get_uart_register_file(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->uart_console_register_file ? g_strdup_printf("%x", s->uart_console_base) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_uart_register_file(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if ((strcmp(value, "30007ac") && strcmp(value, "3000f0c")) ||
+        s->uart_console_enabled || s->uart_console_realized) {
+        error_setg(errp, "experimental-uart-register-file requires 30007ac or 3000f0c before initialization");
+        return;
+    }
+    msm5xxx_poc_set_uart_console(obj, !strcmp(value, "30007ac") ? "30007ac:2:ff" : "3000f0c:2:ff", errp);
+    s->uart_console_register_file = true;
+}
+
 static char *msm5xxx_poc_get_uart_console_probe(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -2162,13 +2288,14 @@ static char *msm5xxx_poc_get_uart_console_status(Object *obj, Error **errp)
     return g_strdup_printf(
         "{\"policy\":\"provisional-uncalibrated-synchronous-null-tx-rx-empty\","
         "\"configured\":%s,\"initialized\":%s,\"rejected\":%s,"
-        "\"classwidth\":%u,\"expectedcsr\":%u,"
+        "\"classwidth\":%u,\"expectedcsr\":%u,\"registerfile\":%s,\"csr\":%u,"
         "\"txenabled\":%s,\"rxenabled\":%s,\"empty\":%s,"
         "\"acceptedcount\":%" G_GUINT64_FORMAT ",\"lastbyte\":%u,\"rejectreason\":\"%s\"}",
         s->uart_console_enabled ? "true" : "false",
         s->uart_console_initialized ? "true" : "false",
         s->uart_console_rejected ? "true" : "false",
         s->uart_console_register_width, s->uart_console_expected_csr,
+        s->uart_console_register_file ? "true" : "false", s->uart_console_csr,
         s->uart_console_tx_enabled ? "true" : "false",
         s->uart_console_rx_enabled ? "true" : "false",
         s->uart_console_empty ? "true" : "false", s->uart_console_accepted,
@@ -16737,6 +16864,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_ram_reserved);
     object_class_property_set_description(
         oc, "ram-reserved", "Unmapped interior RAM aperture BASE:SIZE in hexadecimal");
+    object_class_property_add_str(oc, "experimental-uart-register-file",
+        msm5xxx_poc_get_uart_register_file, msm5xxx_poc_set_uart_register_file);
     object_class_property_add_str(oc, "experimental-uart-halfword-console",
         msm5xxx_poc_get_uart_halfword_console, msm5xxx_poc_set_uart_halfword_console);
     object_class_property_add_str(oc, "uart-console", msm5xxx_poc_get_uart_console,
