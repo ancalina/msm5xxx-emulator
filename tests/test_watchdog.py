@@ -6,7 +6,7 @@ from msm5xxx_emulator.detection import watchdog as detector
 from corpus import firmware_path
 
 
-def fixture(shift=0, register=0x03000700, mask=1):
+def fixture(shift=0, register=0x03000700, mask=1, report_tail=False):
     data = bytearray(0x1800 + shift)
     service, task, dog = 0x100 + shift, 0x500 + shift, 0x1000 + shift
 
@@ -56,7 +56,33 @@ def fixture(shift=0, register=0x03000700, mask=1):
     bl(0xE08 + shift, 0x1140 + shift)
     bl(0xE0E + shift, 0x1144 + shift)
     data[dog:dog + 6] = b'dog.c\0'
+    if report_tail:
+        data[task + 0x48:task + 0x82] = bytes(0x3A)
+        # Assemble an independent single-assertion report tail. Conditional
+        # exits clear the same report word, then branch back to reset r7.
+        tail = {
+            0x4C: 0x6948, 0x4E: 0x43C0, 0x50: 0x4010, 0x52: 0xD00F,
+            0x56: 0x7800, 0x58: 0x2800, 0x5A: 0xD10B,
+            0x68: 0x6950, 0x6A: 0x43C0, 0x6C: 0x4008,
+            0x6E: 0x2000, 0x70: 0x6150, 0x74: 0x2000, 0x76: 0x6148,
+        }
+        for off, op in tail.items():
+            half(task + off, op)
+        for off in (0x72, 0x78):
+            half(task + off, 0xE000 | (((0xC - off - 4) // 2) & 0x7FF))
+        for off, reg, value in (
+                (0x48, 1, task_values[0x14]), (0x4A, 2, 0xFFFF),
+                (0x54, 0, 0x01008000), (0x5C, 1, dog), (0x5E, 0, 42),
+                (0x64, 2, task_values[0x14]), (0x66, 1, 0xFF00)):
+            literal(task + off, reg, value)
+        bl(task + 0x60, 0x1120 + shift)
     return data, service, task
+
+
+def replace_literal(data, at, value):
+    op = struct.unpack_from('<H', data, at)[0]
+    pool = ((at + 4) & ~3) + (op & 255) * 4
+    struct.pack_into('<I', data, pool, value)
 
 
 class WatchdogTests(unittest.TestCase):
@@ -121,6 +147,60 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual((profile['register'], profile['mask']), (0x03000700, 1))
         self.assertEqual(profile['service_address'], 0x950A0)
         self.assertEqual(profile['task_address'], 0x951B8)
+
+    def test_report_tail_relocated_and_source_bound(self):
+        from msm5xxx_emulator.qemu.transport import qemu_watchdog_property
+        for shift, port, mask in ((0, 0x03000700, 1),
+                                  (0x100, 0x03000600, 4)):
+            data, service, task = fixture(shift, port, mask, report_tail=True)
+            profile, reason = detector.find_watchdog_profile(bytes(data))
+            self.assertIsNotNone(profile, reason)
+            self.assertEqual((profile['register'], profile['mask']), (port, mask))
+            self.assertEqual((profile['service_address'], profile['task_address']),
+                             (service, task))
+            self.assertIsNotNone(qemu_watchdog_property(profile, bytes(data))[0])
+            data[task + 0x76] ^= 1
+            self.assertIsNone(qemu_watchdog_property(profile, bytes(data))[0])
+
+    def test_report_tail_control_flow_and_evidence_reject(self):
+        data, _, task = fixture(report_tail=True)
+        for off in detector._TASK_REPORT.keys() | set(detector._TASK_REPORT_CALLS):
+            changed = bytearray(data)
+            changed[task + off] ^= 1
+            with self.subTest(offset=off):
+                self.assertIsNone(detector.find_watchdog_profile(bytes(changed))[0])
+        for off, value in ((0x48, 0x01005004), (0x64, 0x01005004),
+                           (0x54, 0x03000000), (0x5C, len(data) - 2),
+                           (0x5E, 0), (0x5E, 0x10000), (0x4A, 0), (0x66, 0)):
+            changed = bytearray(data)
+            replace_literal(changed, task + off, value)
+            with self.subTest(offset=off, value=value):
+                self.assertIsNone(detector.find_watchdog_profile(bytes(changed))[0])
+        for end in (task + 0x79, 0x1005):
+            self.assertIsNone(detector.find_watchdog_profile(bytes(data[:end]))[0])
+        for timer in (0x01005001, 0x02FFFFFC, 0x03000000):
+            changed = bytearray(data)
+            for off in (0x14, 0x48, 0x64):
+                replace_literal(changed, task + off, timer)
+            self.assertIsNone(detector.find_watchdog_profile(bytes(changed))[0])
+        data[0x1000] = ord('x')
+        self.assertIsNone(detector.find_watchdog_profile(bytes(data))[0])
+
+    def test_owners_across_grammars_are_ambiguous(self):
+        first, _, _ = fixture()
+        second, _, _ = fixture(0x1800, report_tail=True)
+        first.extend(bytes(len(second) - len(first)))
+        first[0x1800:] = second[0x1800:]
+        self.assertEqual(detector.find_watchdog_profile(bytes(first))[1],
+                         'watchdog-owner-ambiguous')
+
+    def test_actual_report_tail_structure(self):
+        profile, reason = detector.find_watchdog_profile(
+            firmware_path('SPH-X8500-fulldump.bin').read_bytes())
+        self.assertIsNotNone(profile, reason)
+        self.assertEqual((profile['register'], profile['mask']), (0x03000700, 1))
+        self.assertEqual((profile['service_address'], profile['task_address']),
+                         (0x6335C, 0x63478))
 
 
 if __name__ == '__main__':

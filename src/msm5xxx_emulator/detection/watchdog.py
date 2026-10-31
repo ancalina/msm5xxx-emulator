@@ -1,6 +1,6 @@
 """Fail-closed recognition of a Thumb watchdog pulse and its periodic owner.
 
-This deliberately recognizes one compiler grammar, not arbitrary GPIO pulses.
+This deliberately recognizes closed compiler grammars, not arbitrary GPIO pulses.
 The scheduled wait argument is 100; 30 s is an emulator policy margin, not a
 recovered physical timeout or a bound on every interrupt-disabled operation.
 """
@@ -45,6 +45,20 @@ _TASK_LITERALS = {
     0x54: 7, 0x56: 0, 0x60: 2, 0x62: 1, 0x70: 0,
 }
 _TASK_CALLS = (2, 0x16, 0x1C, 0x24, 0x30, 0x38, 0x5C, 0x6C, 0x76)
+# Alternative report tail: check missing reports, consult a RAM inhibit byte,
+# assert with (line, dog.c), then clear reports and restart the same pet loop.
+# The timed-wait/pet prefix is identical; none of its instructions are relaxed.
+_TASK_REPORT = {off: op for off, op in _TASK.items() if off < 0x48} | {
+    0x4C: 0x6948, 0x4E: 0x43C0, 0x50: 0x4010, 0x52: 0xD00F,
+    0x56: 0x7800, 0x58: 0x2800, 0x5A: 0xD10B,
+    0x68: 0x6950, 0x6A: 0x43C0, 0x6C: 0x4008,
+    0x6E: 0x2000, 0x70: 0x6150, 0x72: 0xE7CB,
+    0x74: 0x2000, 0x76: 0x6148, 0x78: 0xE7C8,
+}
+_TASK_REPORT_LITERALS = {
+    off: reg for off, reg in _TASK_LITERALS.items() if off < 0x48
+} | {0x48: 1, 0x4A: 2, 0x54: 0, 0x5C: 1, 0x5E: 0, 0x64: 2, 0x66: 1}
+_TASK_REPORT_CALLS = (2, 0x16, 0x1C, 0x24, 0x30, 0x38, 0x60)
 # Wrapper: save signal mask r0 in r7; pass timer r1 and delay r2 to
 # timer setter; then wait on the saved signal mask. Both calls must resolve.
 _WAIT = {0: 0xB580, 2: 0x1C07, 4: 0x1C08, 6: 0x1C11,
@@ -107,24 +121,41 @@ def find_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
     candidates = []
     for match in re.finditer(re.escape(struct.pack("<H", 0xB5F0)), image):
         task = match.start()
-        shape = _shape(image, task, 0x82, _TASK, _TASK_LITERALS, _TASK_CALLS)
-        if shape is None:
-            continue
-        values, calls = shape
-        if calls[0x1C] not in services:
-            continue
-        wait = _shape(image, calls[0x16], 0x18, _WAIT, {}, _WAIT_CALLS)
-        if wait is None or wait[1][8] == wait[1][0xE]:
-            continue
-        dog = values[0x54]
-        if (not 0 <= dog <= len(image) - 6 or image[dog:dog + 6] != b"dog.c\0"
-                or calls[0x5C] != calls[0x76]
-                or values[0x48] != values[0x60]
-                or not _ram(values[0x48])
-                or not 0 < values[0x40] <= 0xFFFF
-                or values[0x56] != values[0x70]):
-            continue
-        candidates.append((task, calls[0x1C]))
+        for report_tail, size, fixed, literals, offsets in (
+                (False, 0x82, _TASK, _TASK_LITERALS, _TASK_CALLS),
+                (True, 0x7A, _TASK_REPORT, _TASK_REPORT_LITERALS,
+                 _TASK_REPORT_CALLS)):
+            shape = _shape(image, task, size, fixed, literals, offsets)
+            if shape is None:
+                continue
+            values, calls = shape
+            if calls[0x1C] not in services:
+                continue
+            wait = _shape(image, calls[0x16], 0x18, _WAIT, {}, _WAIT_CALLS)
+            if wait is None or wait[1][8] == wait[1][0xE]:
+                continue
+            dog = values[0x5C if report_tail else 0x54]
+            if (not 0 <= dog <= len(image) - 6
+                    or image[dog:dog + 6] != b"dog.c\0"
+                    or not 0 < values[0x40] <= 0xFFFF):
+                continue
+            if report_tail:
+                # Same timer/report object before the wait and on both exits;
+                # assertion arguments and inhibit load must resolve directly.
+                if (values[0x14] != values[0x48]
+                        or values[0x48] != values[0x64]
+                        or not _ram(values[0x48])
+                        or not _ram(values[0x48] + 0x17) or values[0x48] & 3
+                        or not _ram(values[0x54])
+                        or not 0 < values[0x5E] <= 0xFFFF
+                        or not values[0x4A] or not values[0x66]):
+                    continue
+            elif (calls[0x5C] != calls[0x76]
+                    or values[0x48] != values[0x60]
+                    or not _ram(values[0x48])
+                    or values[0x56] != values[0x70]):
+                continue
+            candidates.append((task, calls[0x1C]))
     if len(candidates) != 1:
         return None, ("watchdog-owner-ambiguous" if candidates
                       else "watchdog-periodic-owner-unclosed")
