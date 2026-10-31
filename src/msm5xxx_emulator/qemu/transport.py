@@ -52,6 +52,8 @@ from msm5xxx_emulator.detection.memory_layout import restore_sparse_nor_gap
 from msm5xxx_emulator.detection.audio import find_audio_transport, find_ma5_readback_candidate
 from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
 from msm5xxx_emulator.detection.rex_stack_w1c import find_stack_w1c_irq_profile
+from msm5xxx_emulator.detection.nv_nor_word import find_word_offset_nv_nor
+from msm5xxx_emulator.detection.nv_nor_byte import find_byte_offset_nv_nor
 from msm5xxx_emulator.detection.rex import (
     UIS_IDLE_BODY_DELTAS, find_rex_static_controller_callback_candidate,
     find_rex_legacy_row0_profile,
@@ -3071,6 +3073,33 @@ def qemu_stack_w1c_property(image: bytes, config: object) -> str | None:
         "status", "enable", "arm", "mask", "interval_ns"))
 
 
+def qemu_legacy_nv_nor_profile(
+        image: bytes, config: object, *, claimed: bool = False,
+) -> tuple[str, tuple[int, ...]] | None:
+    """Select one source-closed missing NV bank without displacing an owner."""
+    if (claimed or type(getattr(config, "load_address", None)) is not int
+            or config.load_address != 0
+            or type(getattr(config, "flash_size", None)) is not int
+            or config.flash_size != 0x400000 or len(image) > config.flash_size
+            or any(getattr(config, key, None) is not None for key in (
+                "secondary_flash_address", "secondary_flash_write_address",
+                "secondary_flash_image", "upper_flash_address", "nand_image",
+                "native_nand_profile", "primary_flash_probe_address",
+                "flash_id_address"))):
+        return None
+    if find_embedded_fujitsu_x16_nor(image, config.flash_size) is not None:
+        return None
+    ram = (getattr(config, "ram_base", None), getattr(config, "ram_size", None))
+    profiles = [
+        (kind, profile)
+        for kind, profile in (
+            ("word-offset-uniform", find_word_offset_nv_nor(image, *ram)),
+            ("byte-offset-boot-sectors", find_byte_offset_nv_nor(image, *ram)))
+        if profile is not None
+    ]
+    return profiles[0] if len(profiles) == 1 else None
+
+
 def eeprom_gpio_profile(
         image: bytes, config: object,
         ) -> tuple[tuple[int, int, int, int, int, int, int] | None,
@@ -4405,6 +4434,26 @@ class Transport:
                 f"QEMU bounded AMD bank rejected: {self.amd_bank_reject_reason}; "
                 "native fallback retained"
             )
+        legacy_nv_profile = qemu_legacy_nv_nor_profile(
+            detector_image, self.config,
+            claimed=(direct_protocol_conflict or upper_nor_present
+                     or primary_seed[:len(detector_image)] != detector_image)
+            or any(value is not None for value in (
+                profile_reject, primary_profile, probe_profile, record_profile,
+                mapped_primary_profile, intel_profile, amd_profile, catalog_profile,
+                self.amd_bank_source_profile, self.protected_nor_source_profile,
+                ram_reserved, upper_x16_profile, dmd5100_property,
+            )),
+        )
+        if legacy_nv_profile is not None:
+            kind, profile = legacy_nv_profile
+            if kind == "word-offset-uniform":
+                amd_profile = profile
+            self.config.detection_notes.append(
+                "temporary source-closed missing NV NOR bank enabled; "
+                "physical geometry and logical bounds kept distinct; "
+                "compatible virtual device, original chip identity unverified"
+            )
         loader = temporary / "primary.raw"
         loader.write_bytes(primary_seed)
         if primary_imported:
@@ -4630,6 +4679,7 @@ class Transport:
         secondary_base = self.config.secondary_flash_address
         secondary_size = self.config.secondary_flash_size
         catalog_secondary = False
+        legacy_nv_secondary = False
         if secondary_base is None and catalog_profile is not None:
             secondary_base, secondary_size, _ = catalog_profile
             catalog_secondary = True
@@ -4646,6 +4696,10 @@ class Transport:
                 loader_exclude = (
                     secondary_base, secondary_base + secondary_size,
                 )
+        if (secondary_base is None and legacy_nv_profile is not None
+                and legacy_nv_profile[0] == "byte-offset-boot-sectors"):
+            secondary_base, secondary_size, id0, id1 = legacy_nv_profile[1]
+            legacy_nv_secondary = True
         if (secondary_base is None
                 and self.config.secondary_flash_write_address is not None):
             candidate = self.config.load_address + self.config.flash_size
@@ -4660,7 +4714,7 @@ class Transport:
                 secondary_base = candidate
         secondary_ids = (
             (0xFFFF, 0xFFFF) if catalog_secondary else
-            (id0, id1) if embedded_secondary is not None else
+            (id0, id1) if embedded_secondary is not None or legacy_nv_secondary else
             fujitsu_x16_flash_ids(
                 detector_image, self.config.secondary_flash_write_address,
                 self.config.load_address, int(secondary_base or 0),
