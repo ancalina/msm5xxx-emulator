@@ -148,6 +148,10 @@ class DisplayControllerMixin:
         self._lcd_source_window_reason = reason
         if profile is None:
             return
+        if (profile.get("writer_layout") == "arm-loop-count-tail-rom-content-v1"
+                and getattr(cfg, "chipset", None) not in ("MSM5100", "MSM5105")):
+            self._lcd_source_window_reason = "source-writer-chipset-scope-unclosed"
+            return
         if (ram_claimed or getattr(cfg, "ram_bootstrap_profile", None) is not None
                 or getattr(cfg, "missing_overlays", None)):
             self._lcd_source_window_reason = "source-memory-owner-unclosed"

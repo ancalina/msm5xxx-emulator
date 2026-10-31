@@ -60,6 +60,16 @@ class CopiedWindowRuntimeTests(unittest.TestCase):
         with patch(FINDER, return_value=(p, 'accepted-static')):
             h._lcd_bind_source_window(original, loaded, **kwargs)
 
+    def test_rom_content_writer_retains_chipset_scope(self):
+        p = profile()
+        p['writer_layout'] = 'arm-loop-count-tail-rom-content-v1'
+        for chipset in ('MSM5100', 'MSM5105', 'MSM5500', 'MSM6000', None):
+            h = Harness(); h.config.chipset = chipset
+            self.bind(h, p)
+            with self.subTest(chipset=chipset):
+                self.assertEqual(h._lcd_source_window_panel is not None,
+                                 chipset in ('MSM5100', 'MSM5105'))
+
     def test_full_bus_raster_acquires_then_rectangles_own_the_main_display(self):
         h = Harness(); self.bind(h)
         self.assertIsNotNone(h._lcd_source_window_panel)
