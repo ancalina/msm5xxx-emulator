@@ -521,6 +521,12 @@ struct MSM5xxxPOCMachineState {
     uint8_t dc0_backing[MSM5XXX_POC_DC0_SIZE];
     unsigned dc0_board_adc_phase;
     uint64_t dc0_board_adc_responses;
+    /* Optional source-qualified direct raster, disjoint from serial ports.
+     * SPI registers are raw backing only; no receiver/ID response is modeled. */
+    bool direct_lcd_enabled;
+    MemoryRegion direct_lcd_vram, direct_lcd_control;
+    uint8_t direct_lcd_pixels[0x12e80];
+    uint8_t direct_lcd_registers[0x28];
     uint8_t lcd_aperture_backing[MSM5XXX_POC_LCD_APERTURE_SIZE];
     uint64_t lcd_aperture_reads;
     uint64_t lcd_aperture_writes;
@@ -9122,6 +9128,89 @@ static const MemoryRegionOps msm5xxx_poc_ma5_shared_lcd_ops = {
     .impl.max_access_size = 4,
 };
 
+static bool msm5xxx_poc_direct_lcd_audio_conflict(const MSM5xxxPOCMachineState *s)
+{
+    uint64_t first = s->audio_base;
+    uint64_t end = first + (uint64_t)s->audio_data_offset + 1;
+    return s->direct_lcd_enabled && s->audio_enabled &&
+           (end <= first ||
+            (first < 0x02812e80 && end > 0x02800000) ||
+            (first < 0x02820028 && end > 0x02820000));
+}
+
+static void msm5xxx_poc_direct_lcd_reset(MSM5xxxPOCMachineState *s)
+{
+    memset(s->direct_lcd_pixels, 0, sizeof(s->direct_lcd_pixels));
+    memset(s->direct_lcd_registers, 0, sizeof(s->direct_lcd_registers));
+}
+
+static uint64_t msm5xxx_poc_direct_lcd_read(void *opaque, hwaddr offset,
+                                             unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!s->direct_lcd_enabled || size < 1 || size > 4) {
+        return 0;
+    }
+    if (offset < sizeof(s->direct_lcd_pixels) &&
+        size <= sizeof(s->direct_lcd_pixels) - offset) {
+        return msm5xxx_poc_backing_read(s->direct_lcd_pixels, offset, size);
+    }
+    if (offset >= 0x20000 && offset < 0x20028 &&
+        size <= 0x20028 - offset) {
+        return msm5xxx_poc_backing_read(s->direct_lcd_registers,
+                                      offset - 0x20000, size);
+    }
+    return 0;
+}
+
+static void msm5xxx_poc_direct_lcd_write(void *opaque, hwaddr offset,
+                                        uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!s->direct_lcd_enabled || size < 1 || size > 4) {
+        return;
+    }
+    if (offset < sizeof(s->direct_lcd_pixels) &&
+        size <= sizeof(s->direct_lcd_pixels) - offset) {
+        msm5xxx_poc_backing_write(s->direct_lcd_pixels, offset, value, size);
+    } else if (offset >= 0x20000 && offset < 0x20028 &&
+               size <= 0x20028 - offset) {
+        msm5xxx_poc_backing_write(s->direct_lcd_registers,
+                                offset - 0x20000, value, size);
+    } else {
+        return;
+    }
+    msm5xxx_poc_lcd_trace_write(s, 0x02800000 + offset, value, size);
+}
+
+static uint64_t msm5xxx_poc_direct_lcd_control_read(void *opaque,
+                                                  hwaddr offset, unsigned size)
+{
+    return msm5xxx_poc_direct_lcd_read(opaque, offset + 0x20000, size);
+}
+
+static void msm5xxx_poc_direct_lcd_control_write(void *opaque, hwaddr offset,
+                                                uint64_t value, unsigned size)
+{
+    msm5xxx_poc_direct_lcd_write(opaque, offset + 0x20000, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_direct_lcd_ops = {
+    .read = msm5xxx_poc_direct_lcd_read,
+    .write = msm5xxx_poc_direct_lcd_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static const MemoryRegionOps msm5xxx_poc_direct_lcd_control_ops = {
+    .read = msm5xxx_poc_direct_lcd_control_read,
+    .write = msm5xxx_poc_direct_lcd_control_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
 static const MemoryRegionOps msm5xxx_poc_lcd_ops = {
     .read = msm5xxx_poc_lcd_read,
     .write = msm5xxx_poc_lcd_write,
@@ -11116,6 +11205,7 @@ static void msm5xxx_poc_reset(void *opaque)
         s->raw_nand_rejections = 0;
     }
     memset(s->lcd_backing, 0, sizeof(s->lcd_backing));
+    msm5xxx_poc_direct_lcd_reset(s);
     memset(s->lcd_reads, 0, sizeof(s->lcd_reads));
     memset(s->lcd_writes, 0, sizeof(s->lcd_writes));
     s->lcd_trace_overflow = false;
@@ -11385,6 +11475,18 @@ static void msm5xxx_poc_init(MachineState *machine)
                                   s->amd_x16_nor_enabled;
     unsigned i;
 
+    if (s->direct_lcd_enabled && (upper_nor_enabled || direct_x16_nor_enabled ||
+        s->raw_nand_main_enabled || s->small_nand_enabled ||
+        s->fujitsu_x16_nor_enabled || s->primary_x16_nor_enabled ||
+        s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
+        s->whole_primary_x16_enabled || s->protected_nor_enabled)) {
+        error_report("direct-lcd excludes NOR/NAND owners");
+        exit(1);
+    }
+    if (msm5xxx_poc_direct_lcd_audio_conflict(s)) {
+        error_report("direct-lcd conflicts with audio ownership");
+        exit(1);
+    }
     if (!msm5xxx_poc_configure_whole_primary(s, &error_fatal)) {
         return;
     }
@@ -12296,6 +12398,20 @@ static void msm5xxx_poc_init(MachineState *machine)
         if (msm5xxx_poc_ma5_shared_lcd_port(s) == (int)i) {
             s->audio_shared_lcd = true;
         }
+    }
+    if (s->direct_lcd_enabled) {
+        memory_region_init_io(&s->direct_lcd_vram, OBJECT(machine),
+                              &msm5xxx_poc_direct_lcd_ops, s,
+                              "msm5xxx-poc.direct-lcd-vram",
+                              sizeof(s->direct_lcd_pixels));
+        memory_region_add_subregion_overlap(get_system_memory(), 0x02800000,
+                                            &s->direct_lcd_vram, 2);
+        memory_region_init_io(&s->direct_lcd_control, OBJECT(machine),
+                              &msm5xxx_poc_direct_lcd_control_ops, s,
+                              "msm5xxx-poc.direct-lcd-control",
+                              sizeof(s->direct_lcd_registers));
+        memory_region_add_subregion(get_system_memory(), 0x02820000,
+                                    &s->direct_lcd_control);
     }
     if (s->lcd_trace_enabled) {
         memory_region_init_ram(&s->lcd_trace, NULL,
@@ -13226,6 +13342,16 @@ static void msm5xxx_poc_set_sbi_bootstrap_only(Object *obj, bool value,
         return;
     }
     s->sbi_bootstrap_only = value;
+}
+
+static bool msm5xxx_poc_get_direct_lcd(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->direct_lcd_enabled;
+}
+
+static void msm5xxx_poc_set_direct_lcd(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->direct_lcd_enabled = value;
 }
 
 static char *msm5xxx_poc_get_sbi_bootstrap_repeat(Object *obj, Error **errp)
@@ -16152,6 +16278,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         oc, "sbi-bootstrap-repeat",
         "Source-closed write PC for repeated exact SBI bootstrap validation"
     );
+    object_class_property_add_bool(oc, "direct-lcd",
+                                  msm5xxx_poc_get_direct_lcd,
+                                  msm5xxx_poc_set_direct_lcd);
+    object_class_property_set_description(oc, "direct-lcd",
+        "Source-qualified 176x220 raw VRAM and ASIC register backing; SPI RX unmodeled");
     object_class_property_add_bool(oc, "lcd-trace", msm5xxx_poc_get_lcd_trace,
                                    msm5xxx_poc_set_lcd_trace);
     object_class_property_set_description(
