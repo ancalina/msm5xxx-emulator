@@ -658,6 +658,105 @@ class DisplayControllerMixin:
             return
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        fast = getattr(self, "_lcd_fast_write", None)
+        if fast is not None:
+            port, width, write = fast
+            if address == port and size == width and write(address, size, value):
+                return
+            # Commands, foreign ports and malformed data must pass through all
+            # observers again. Never retain a binding across a control write.
+            self._lcd_fast_write = None
+        self._lcd_write_slow(uc, access, address, size, value, user_data)
+        self._lcd_bind_fast_write(address, size)
+
+    def _lcd_bind_fast_write(self, address: int, size: int) -> None:
+        """Specialize only steady data runs after the normal router ran.
+
+        The first write performs interruption/reset side effects. No skipped
+        probe can start on these data ports; every control/width change drops
+        the binding before processing the event. Admitted observers retain the
+        complete path, since they can independently own the same aperture.
+        """
+        panel = getattr(self, "_lcd_secondary_panel", None)
+        parallel_data = ((address, size) == (0x02800002, 2)
+                         and getattr(self, "_lcd_protocol", None) == "parallel-2")
+        page_data = (getattr(self, "_lcd_page_qualified", False) and size in (1, 2)
+                     and getattr(self, "_lcd_page_port", None) in (0x02000000, 0x02800000)
+                     and address == self._lcd_page_port + 4)
+        secondary_data = (panel is not None and panel.committed
+                          and size in (1, 2) and address == panel.port + 4)
+        if not (parallel_data or page_data or secondary_data):
+            return
+        if any(getattr(self, name, None) is not None for name in (
+                "_lcd_source_window_panel", "_lcd_packed_cursor12_panel",
+                "_lcd_packed2_panel", "_lcd_split18_panel", "_lcd_split565_panel",
+                "_lcd_fa_direct_panel", "_lcd_indexed_byte_panel",
+                "_lcd_segmented_panel", "_lcd_cursor_panel", "_lcd_packed12_panel",
+                "_lcd_window_panel")):
+            return
+        if getattr(self, "_lcd_paired_state_ports", None):
+            return
+        if panel is not None:
+            if (getattr(panel, "source_profile", None) is None
+                    and panel.committed and panel.rejection is None
+                    and address == panel.port + 4 and size in (1, 2)):
+                self._lcd_fast_write = (address, size, self._lcd_fast_secondary_data)
+            return
+        # Source-bound page dialects have additional icon/overflow/argument
+        # rules. Keep their admission and rejection handling in the full router.
+        if (getattr(self, "_lcd_odd_page_state", {}).get("profile")
+                or getattr(self, "_lcd_page_source_profile", None)):
+            return
+        # A held candidate may consume or replay even a data-port event.
+        # Bind only after its interruption has completed in the slow path.
+        if any(getattr(self, name, None) for name in (
+                "_lcd_split_port_stage", "_lcd_window_raw8_separate_stage",
+                "_lcd_window_raw8_header", "_lcd_window_raw8_window",
+                "_lcd_byte_020_row_probe", "_lcd_028_split16_events",
+                "_lcd_028_be_word_events", "_lcd_028_direct_probe",
+                "_lcd_028_rgb332_probe", "_lcd_028_rgb332_mode_pending",
+                "_lcd_window_rgb565_header", "_lcd_window_rgb565_window")):
+            return
+        if getattr(self, "_lcd_selector_reacquire_index", None) is not None:
+            return
+        if page_data:
+            self._lcd_fast_write = (address, size, self._lcd_page_feed_data)
+        elif parallel_data:
+            # This halfword aperture has no starting probe. A preceding slow
+            # write has drained pending candidates and interrupted byte RGB565.
+            write = self._lcd_fast_parallel_data
+            if (self._lcd_command not in LCD_MEMORY_WRITE_COMMANDS
+                    and self._lcd_command not in (
+                        0x05, 0x15, 0x16, 0x17, 0x20, 0x21, 0x2A, 0x2B,
+                        0x44, 0x45, 0x50, 0x51, 0x52, 0x53, 0x75)):
+                # +2 at 0x028 is excluded from raw FIFO capture. Unhandled
+                # registers have no data-side effect after the first slow
+                # event; the next command always invalidates this binding.
+                write = self._lcd_unhandled_parallel_data
+            self._lcd_fast_write = (address, size, write)
+
+    def _lcd_unhandled_parallel_data(self, address: int, size: int, value: int) -> bool:
+        # Telemetry flushes can change the shared protocol between LCD writes.
+        return self._lcd_protocol == "parallel-2"
+
+    def _lcd_fast_parallel_data(self, address: int, size: int, value: int) -> bool:
+        if self._lcd_protocol != "parallel-2":
+            return False
+        self._lcd_feed_parallel_data(address, size, value)
+        return True
+
+    def _lcd_fast_secondary_data(self, address: int, size: int, value: int) -> bool:
+        panel = self._lcd_secondary_panel
+        if (panel.rejection is not None or not panel.committed
+                or not 0 <= value <= 255 or panel.column is None
+                or panel.column >= 256 or panel.page < 0):
+            return False
+        with self._display_lock:
+            panel.write(address, size, value)
+        return True
+
+    def _lcd_write_slow(self, uc: object, access: int, address: int, size: int,
+                        value: int, user_data: object) -> None:
         if self._lcd_source_window_write(address, size, value):
             return
         self._lcd_observe_shifted_orientation(address, size, value)

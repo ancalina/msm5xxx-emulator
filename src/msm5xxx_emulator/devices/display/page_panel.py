@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 
+# Each translation expands a page byte into one scanline's monochrome shade.
+_PAGE_BITS = tuple(bytes(255 if value & (1 << bit) else 0
+                         for value in range(256)) for bit in range(8))
+
+
 class PagePanel:
     def __init__(self, port: int) -> None:
         self.port = port
@@ -89,11 +94,13 @@ class PagePanel:
         # inferred from nonzero pixels or a host fold request.
         frame = bytearray(96 * 64 * 3)
         for page in range(8):
-            for x in range(96):
-                value = self.ram[page * 256 + self.bias + x]
-                for bit in range(8):
-                    offset = ((page * 8 + bit) * 96 + x) * 3
-                    shade = 255 if value & (1 << bit) else 0
-                    frame[offset:offset + 3] = bytes((shade,)) * 3
+            columns = self.ram[page * 256 + self.bias:page * 256 + self.bias + 96]
+            for bit, table in enumerate(_PAGE_BITS):
+                shades = columns.translate(table)
+                offset = (page * 8 + bit) * 96 * 3
+                end = offset + 96 * 3
+                frame[offset:end:3] = shades
+                frame[offset + 1:end:3] = shades
+                frame[offset + 2:end:3] = shades
         self.frame = bytes(frame)
         self.dirty = False

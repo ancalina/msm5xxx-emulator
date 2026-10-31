@@ -800,7 +800,9 @@ class QEMUAudioTransportTests(unittest.TestCase):
                 transport.process = SimpleNamespace(poll=lambda: None)
                 transport._terminate_process = Mock()
                 replayed = []
-                transport._replay_record = replayed.append
+                transport._replay_records = lambda records: replayed.extend(
+                    bytes(records[offset:offset + 16])
+                    for offset in range(0, len(records), 16))
                 stop = threading.Event()
                 batches = iter(((transport.input_socket, transport.lcd_socket),
                                 (transport.input_socket,),
@@ -848,24 +850,24 @@ class QEMUAudioTransportTests(unittest.TestCase):
 
     def test_replay_batch_yields_on_time_budget_preserving_records(self) -> None:
         transport = self.native_transport()
-        records = [bytes((index,)) * 16 for index in range(1, 7)]
+        records = [bytes((index % 251,)) * 16 for index in range(600)]
         pending = bytearray(b"".join(records) + b"tail")
         replayed, yields = [], []
         clock = [0]
 
-        def replay_record(record):
-            replayed.append(record)
+        def replay_records(view):
+            replayed.extend(bytes(view[offset:offset + 16]) for offset in range(0, len(view), 16))
             clock[0] += 1_100_000
 
-        transport._replay_record = replay_record
+        transport._replay_records = replay_records
         with patch('msm5xxx_emulator.qemu.transport.time.monotonic_ns',
                    side_effect=lambda: clock[0]), \
                 patch('msm5xxx_emulator.qemu.transport.time.sleep',
                       side_effect=lambda delay: yields.append((delay, len(replayed)))):
-            transport._replay_batch(pending, 6 * 16)
+            transport._replay_batch(pending, 600 * 16)
         self.assertEqual(replayed, records)
         self.assertEqual(pending, b"tail")
-        self.assertEqual(yields, [(0, 2), (0, 4), (0, 6)])
+        self.assertEqual(yields, [(0, 512), (0, 600)])
 
     def test_audio_channel_close_rejects_only_audio(self) -> None:
         transport = self.native_transport()

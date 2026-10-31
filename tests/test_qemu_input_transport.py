@@ -2531,7 +2531,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         transport.input_socket = Stream(input_record)
         transport.lcd_socket = Stream(lcd_record, True)
         transport.process = SimpleNamespace(poll=lambda: None)
-        transport._replay_record = lambda record: seen.append(record[0])
+        transport._replay_records = lambda records: seen.extend(
+            records[offset] for offset in range(0, len(records), MODULE.RECORD_SIZE))
 
         with mock.patch.object(
                 MODULE.select, "select",
