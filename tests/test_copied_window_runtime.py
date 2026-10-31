@@ -131,3 +131,48 @@ class CopiedWindowRuntimeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MuxPageRuntimeTests(unittest.TestCase):
+    def bind(self, h, p=None, loaded=None, **kwargs):
+        p = profile() if p is None else p
+        p.update(signature='source-external-bit4-mono96-page-v1', width=96, height=64,
+                 clear_pages=10, clear_row_bytes=96, data_port=0x02000000,
+                 mode_port=0x02800000, mode_mask=0x10, access_width=1)
+        h.config.chipset = 'MSM5100'
+        original = bytes(0x1000)
+        with patch('msm5xxx_emulator.detection.mux_page.find_mux_page_profile', return_value=(p, 'source')):
+            h._lcd_bind_source_mux(original, original if loaded is None else loaded, **kwargs)
+
+    def test_source_raster_acquires_snapshot_and_geometry_ownership(self):
+        h = Harness(); self.bind(h)
+        self.assertIsNotNone(h._lcd_mux_page_panel)
+        def write(address, value): h._lcd_source_mux_write(address, 1, value)
+        def command(*values):
+            write(0x02800000, 2)
+            for value in values: write(0x02000000, value)
+        command(0, 0xe2, 0xa4)
+        for page in range(10):
+            command(0xb0+page, 0x11, 0)
+            write(0x02800000, 0x12)
+            for _ in range(96): write(0x02000000, 0)
+        command(0xaf)
+        self.assertTrue(h._lcd_mux_page_owned)
+        self.assertEqual(h.frame_sequence, 1)
+        self.assertEqual(h.display_snapshot(), (96, 64, bytes(96*64*3)))
+        h._set_display_geometry(176, 220, source='runtime:foreign', force=True)
+        self.assertEqual((h.config.width, h.config.height), (96, 64))
+        h.framebuffer[:] = bytes([17])*len(h.framebuffer)
+        h._publish_frame()
+        self.assertEqual(h.frame_sequence, 1)
+        self.assertEqual(h.display_snapshot(), (96, 64, bytes(96*64*3)))
+
+    def test_loaded_source_and_memory_owner_negatives(self):
+        h = Harness(); self.bind(h, loaded=bytes(0xfff)+b'1')
+        self.assertIsNone(h._lcd_mux_page_panel)
+        h = Harness(); self.bind(h, ram_claimed=True)
+        self.assertIsNone(h._lcd_mux_page_panel)
+        h = Harness(); h.config.ram_size=16; self.bind(h)
+        self.assertIsNone(h._lcd_mux_page_panel)
+        h = Harness(); h.config.display_geometry_source='manual'; self.bind(h)
+        self.assertIsNone(h._lcd_mux_page_panel)
