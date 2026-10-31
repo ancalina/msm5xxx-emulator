@@ -665,8 +665,12 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertNotIn("static synchronized byte[] audio()", runtime_java)
         self.assertEqual(runtime_java.count("AUDIO_GATE.lock();"), 3)
         self.assertEqual(runtime_java.count("AUDIO_GATE.unlock();"), 3)
-        self.assertIn("static synchronized String key(", runtime_java)
-        self.assertIn("static synchronized String canKey(", runtime_java)
+        self.assertIn("static String key(", runtime_java)
+        self.assertIn("static String canKey(", runtime_java)
+        self.assertNotIn("static synchronized String key(", runtime_java)
+        self.assertNotIn("static synchronized String canKey(", runtime_java)
+        self.assertEqual(runtime_java.count("KEY_GATE.lock();"), 4)
+        self.assertEqual(runtime_java.count("KEY_GATE.unlock();"), 4)
         korean = (Path(__file__).parents[1]
                   / "android/app/src/main/res/values-ko/strings.xml"
                   ).read_text(encoding="utf-8")
@@ -780,7 +784,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
                 stream.close()
         self.assertFalse(worker.is_alive())
 
-    def test_replay_yields_once_per_complete_batch_only_with_audio(self) -> None:
+    def test_replay_yields_per_complete_batch_with_or_without_audio(self) -> None:
         records = [bytes((index,)) * 16 for index in range(1, 7)]
         for audio_enabled in (False, True):
             with self.subTest(audio_enabled=audio_enabled):
@@ -823,7 +827,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
                 audio_worker.is_alive.return_value = False
                 with patch('msm5xxx_emulator.qemu.transport.select.select', side_effect=select_batch) as select_mock, \
                         patch('msm5xxx_emulator.qemu.transport.threading.Thread', return_value=audio_worker) as start_worker, \
-                        patch('msm5xxx_emulator.qemu.transport.time', SimpleNamespace(sleep=yield_to_audio), create=True):
+                        patch('msm5xxx_emulator.qemu.transport.time', SimpleNamespace(sleep=yield_to_audio, monotonic_ns=lambda: 0), create=True):
                     transport.replay(stop)
                 self.assertEqual(replayed, records)
                 self.assertEqual(completed, [True])
@@ -840,7 +844,28 @@ class QEMUAudioTransportTests(unittest.TestCase):
                     transport.audio_socket.close.assert_called_once()
                 else:
                     start_worker.assert_not_called()
-                self.assertEqual(yields, [2, 3, 5, 6] if audio_enabled else [])
+                self.assertEqual(yields, [2, 3, 5, 6])
+
+    def test_replay_batch_yields_on_time_budget_preserving_records(self) -> None:
+        transport = self.native_transport()
+        records = [bytes((index,)) * 16 for index in range(1, 7)]
+        pending = bytearray(b"".join(records) + b"tail")
+        replayed, yields = [], []
+        clock = [0]
+
+        def replay_record(record):
+            replayed.append(record)
+            clock[0] += 1_100_000
+
+        transport._replay_record = replay_record
+        with patch('msm5xxx_emulator.qemu.transport.time.monotonic_ns',
+                   side_effect=lambda: clock[0]), \
+                patch('msm5xxx_emulator.qemu.transport.time.sleep',
+                      side_effect=lambda delay: yields.append((delay, len(replayed)))):
+            transport._replay_batch(pending, 6 * 16)
+        self.assertEqual(replayed, records)
+        self.assertEqual(pending, b"tail")
+        self.assertEqual(yields, [(0, 2), (0, 4), (0, 6)])
 
     def test_audio_channel_close_rejects_only_audio(self) -> None:
         transport = self.native_transport()

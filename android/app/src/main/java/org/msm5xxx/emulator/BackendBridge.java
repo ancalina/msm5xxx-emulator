@@ -262,6 +262,9 @@ final class BackendBridge {
         private final String identity;
         private final boolean[] inputBits;
         private volatile boolean closed;
+        // Admission belongs to this session: a queued edge must never reach a
+        // replacement Python session after close/start races.
+        private final Object keyLifecycle = new Object();
 
         private PythonSession(String identity, boolean[] inputBits) {
             this.identity = identity;
@@ -354,32 +357,36 @@ final class BackendBridge {
         @Override
         public boolean canSetKey(int bit, Integer eventCode)
                 throws IOException {
-            requireOpen();
-            try {
-                JSONObject result = new JSONObject(PythonRuntime.canKey(
-                        bit, eventCode));
-                if (result.getInt("schema") != 1) {
-                    throw new JSONException("unsupported input query schema");
+            synchronized (keyLifecycle) {
+                requireOpen();
+                try {
+                    JSONObject result = new JSONObject(PythonRuntime.canKey(
+                            bit, eventCode));
+                    if (result.getInt("schema") != 1) {
+                        throw new JSONException("unsupported input query schema");
+                    }
+                    return result.getBoolean("accepted");
+                } catch (JSONException | RuntimeException | LinkageError error) {
+                    throw new IOException("Backend input query failed.", error);
                 }
-                return result.getBoolean("accepted");
-            } catch (JSONException | RuntimeException | LinkageError error) {
-                throw new IOException("Backend input query failed.", error);
             }
         }
 
         @Override
         public void setKey(int bit, Integer eventCode, boolean pressed)
                 throws IOException {
-            requireOpen();
-            try {
-                JSONObject result = new JSONObject(PythonRuntime.key(
-                        bit, eventCode, pressed));
-                if (result.getInt("schema") != 1
-                        || !result.getBoolean("accepted")) {
-                    throw new JSONException("input was not accepted");
+            synchronized (keyLifecycle) {
+                requireOpen();
+                try {
+                    JSONObject result = new JSONObject(PythonRuntime.key(
+                            bit, eventCode, pressed));
+                    if (result.getInt("schema") != 1
+                            || !result.getBoolean("accepted")) {
+                        throw new JSONException("input was not accepted");
+                    }
+                } catch (JSONException | RuntimeException | LinkageError error) {
+                    throw new IOException("Backend input failed.", error);
                 }
-            } catch (JSONException | RuntimeException | LinkageError error) {
-                throw new IOException("Backend input failed.", error);
             }
         }
 
@@ -392,18 +399,20 @@ final class BackendBridge {
         @Override
         public void close() throws IOException {
             synchronized (BackendBridge.class) {
-                if (closed) {
-                    return;
-                }
-                closed = true;
-                if (activeSession != this) {
-                    return;
-                }
-                activeSession = null;
-                try {
-                    PythonRuntime.stop();
-                } catch (RuntimeException | LinkageError error) {
-                    throw new IOException("Backend stop failed.", error);
+                synchronized (keyLifecycle) {
+                    if (closed) {
+                        return;
+                    }
+                    closed = true;
+                    if (activeSession != this) {
+                        return;
+                    }
+                    activeSession = null;
+                    try {
+                        PythonRuntime.stop();
+                    } catch (RuntimeException | LinkageError error) {
+                        throw new IOException("Backend stop failed.", error);
+                    }
                 }
             }
         }

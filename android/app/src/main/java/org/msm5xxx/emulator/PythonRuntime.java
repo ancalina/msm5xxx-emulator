@@ -3,6 +3,7 @@ package org.msm5xxx.emulator;
 import android.content.Context;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.util.Log;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -16,6 +17,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /** Official CPython asset layout and the one detector JSON seam. */
 final class PythonRuntime {
+    // Lifecycle holds both the class monitor and this gate. Keys never take
+    // the frame/status monitor; a stop/start still waits for an in-flight edge.
+    private static final ReentrantLock KEY_GATE = new ReentrantLock(true);
     private static final ReentrantLock AUDIO_GATE = new ReentrantLock(true);
     private static File home;
 
@@ -52,6 +56,7 @@ final class PythonRuntime {
                                      File stateDirectory, String profileJson,
                                      boolean experimentalRex, boolean virtualNetwork)
             throws IOException {
+        KEY_GATE.lock();
         AUDIO_GATE.lock();
         try {
             if (home == null) {
@@ -72,6 +77,7 @@ final class PythonRuntime {
             }
         } finally {
             AUDIO_GATE.unlock();
+            KEY_GATE.unlock();
         }
     }
 
@@ -104,9 +110,15 @@ final class PythonRuntime {
         return nativeStatus();
     }
 
-    static synchronized String key(int bit, Integer eventCode, boolean pressed)
+    static String key(int bit, Integer eventCode, boolean pressed)
             throws IOException {
+        long requested = System.nanoTime();
+        KEY_GATE.lock();
+        long entered = System.nanoTime();
         try {
+            Log.i("MSM5xxxInput", "monitor_entry_ns=" + entered
+                    + " monitor_wait_us=" + (entered - requested) / 1000
+                    + " bit=" + bit + " pressed=" + pressed);
             JSONObject request = new JSONObject()
                     .put("bit", bit)
                     .put("event_code", eventCode == null
@@ -115,11 +127,14 @@ final class PythonRuntime {
             return nativeKey(request.toString());
         } catch (JSONException error) {
             throw new IOException("input request is invalid", error);
+        } finally {
+            KEY_GATE.unlock();
         }
     }
 
-    static synchronized String canKey(int bit, Integer eventCode)
+    static String canKey(int bit, Integer eventCode)
             throws IOException {
+        KEY_GATE.lock();
         try {
             JSONObject request = new JSONObject()
                     .put("bit", bit)
@@ -128,15 +143,19 @@ final class PythonRuntime {
             return nativeCanKey(request.toString());
         } catch (JSONException error) {
             throw new IOException("input query is invalid", error);
+        } finally {
+            KEY_GATE.unlock();
         }
     }
 
     static synchronized void stop() {
+        KEY_GATE.lock();
         AUDIO_GATE.lock();
         try {
             nativeStop();
         } finally {
             AUDIO_GATE.unlock();
+            KEY_GATE.unlock();
         }
     }
 
