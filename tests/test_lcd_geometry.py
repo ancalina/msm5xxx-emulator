@@ -1366,6 +1366,53 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual((near_miss.config.width, near_miss.config.height), (176, 220))
         self.assertFalse(near_miss._lcd_028_rgb332_qualified)
 
+    def test_qualified_rgb332_interrupted_window_preserves_pixel_prefix(self) -> None:
+        emulator = self._routing_emulator(width=120, height=160)
+        emulator._lcd_028_rgb332_qualified = True
+        def write(address, value):
+            emulator._lcd_write(None, 0, address, 2, value, None)
+        def window(y0, y1, x0, x1):
+            for address, value in ((0, 0x75), (4, y0), (4, y1),
+                                   (0, 0x15), (4, x0), (4, x1), (0, 0x5c)):
+                write(0x02800000 + address, value)
+        window(11, 84, 0, 119)
+        for _ in range(121):
+            write(0x02800004, 0xdc)
+        # Status refresh preempts an incomplete body; its command also starts
+        # a new RGB332 window rather than entering the RGB565 fallback.
+        window(0, 0, 0, 1)
+        write(0x02800004, 0xe0)
+        write(0x02800004, 0x03)
+        pixels = emulator.display_frame
+        self.assertEqual(pixels[:6], bytes((255, 0, 0, 0, 0, 255)))
+        first = 11 * 120 * 3
+        self.assertEqual(pixels[first:first + 121 * 3], bytes((218, 255, 0)) * 121)
+        self.assertEqual(pixels[first + 121 * 3:first + 122 * 3], bytes(3))
+        self.assertEqual(emulator._lcd_protocol, "direct-rgb332")
+        self.assertFalse(emulator._lcd_028_rgb332_probe)
+
+    def test_unknown_rgb332_partial_window_does_not_qualify(self) -> None:
+        emulator = self._routing_emulator(width=120, height=160)
+        for address, value in ((0, 0x75), (4, 0), (4, 159),
+                               (0, 0x15), (4, 0), (4, 119), (0, 0x5c),
+                               (4, 0xdc), (0, 0x75)):
+            emulator._lcd_write(None, 0, 0x02800000 + address, 1, value, None)
+        self.assertFalse(emulator._lcd_028_rgb332_qualified)
+        self.assertNotEqual(emulator.display_frame[:3], bytes((218, 255, 0)))
+
+    def test_rgb332_partial_column_window_commits_before_bc_mode_change(self) -> None:
+        emulator = self._routing_emulator(width=120, height=160)
+        emulator._lcd_028_rgb332_qualified = True
+        emulator._lcd_028_rgb332_column_major = True
+        for address, value in ((0, 0x75), (4, 4), (4, 6),
+                               (0, 0x15), (4, 2), (4, 3), (0, 0x5c),
+                               (4, 0xe0), (4, 0x1c), (0, 0xbc), (4, 0x2a)):
+            emulator._lcd_write(None, 0, 0x02800000 + address, 1, value, None)
+        for x, y, color in ((2, 4, (255, 0, 0)), (2, 5, (0, 255, 0))):
+            offset = (y * 120 + x) * 3
+            self.assertEqual(emulator.display_frame[offset:offset + 3], bytes(color))
+        self.assertFalse(emulator._lcd_028_rgb332_column_major)
+
     def test_rgb332_bc_traversal_preserves_asymmetric_window(self) -> None:
         emulator = self._routing_emulator(width=120, height=160)
         emulator._lcd_028_rgb332_qualified = True
