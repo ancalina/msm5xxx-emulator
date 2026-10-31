@@ -11,9 +11,10 @@ class PagePanel:
     data_offset = 4
 
     def __init__(self, port: int, *, data_offset: int | None = None,
-                 await_setup: bool = False) -> None:
+                 await_setup: bool = False, independent_ports: bool = False) -> None:
         self.port = port
         self.await_setup = await_setup
+        self.independent_ports = independent_ports
         if data_offset is not None:
             if data_offset not in (2, 4):
                 raise ValueError("unsupported page data offset")

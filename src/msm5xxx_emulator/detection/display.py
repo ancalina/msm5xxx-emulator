@@ -68,6 +68,23 @@ def find_dual_page_ports(image: bytes) -> tuple[int, int] | None:
     """Bind two page-panel ports to one validated descriptor initializer."""
     targets = {start: (width, pages)
                for start, width, pages in _page_plane_descriptors(image)}
+    padded_descriptors: dict[int, int] = {}
+    # This compiler allocates sixteen pages per main plane, while declaring
+    # a fourteen-page UI viewport. Keep allocation separate from visible size;
+    # this additional ownership proof must not alter metadata width inference.
+    padded = (re.escape(struct.pack('<3H', 0xb590, 0x1c1c, 0x2800)) + rb'.\x4f' +
+              re.escape(struct.pack('<21H',
+                  0xd10c, 0x2080, 0x8238, 0x2070, 0x8278, 0x200e,
+                  0x2301, 0x02db, 0x8378, 0x18c8, 0x6238, 0x61f9,
+                  0xc714, 0xbd90, 0x2060, 0x82b8, 0x2040, 0x82f8,
+                  0x2008, 0x84b8, 0x62b9)))
+    for match in re.finditer(padded, image, re.S):
+        start = match.start()
+        descriptor = thumb_literal_value(image, start + 6, 7)
+        if (not start & 1 and descriptor is not None and not descriptor & 3
+                and 0x01000000 <= descriptor <= 0x02000000 - 0x60):
+            targets[start] = (128, 16)
+            padded_descriptors[start] = descriptor
     pairs: set[tuple[int, int]] = set()
     setup = re.compile(
         rb".\x4f\x00\x21\x38\x1c.{4}"
@@ -90,6 +107,11 @@ def find_dual_page_ports(image: bytes) -> tuple[int, int] | None:
                 or first == second
                 or any(port - 4 not in (0x02000000, 0x02800000)
                        for port in (first, second))):
+            continue
+        descriptor = padded_descriptors.get(target)
+        if (descriptor is not None
+                and ((first, second) != (0x02800004, 0x02000004)
+                     or descriptor < sub + 96 * 8 and main < descriptor + 0x60)):
             continue
         pairs.add((first - 4, second - 4))
     return next(iter(pairs)) if len(pairs) == 1 else None

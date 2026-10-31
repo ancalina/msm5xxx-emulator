@@ -835,6 +835,12 @@ class DisplayControllerMixin:
                 panel.await_setup = False
             else:
                 panel = None
+        if (panel is not None and getattr(panel, "independent_ports", False)
+                and address not in (panel.port, panel.port + panel.data_offset)):
+            # A linked two-panel descriptor proves disjoint apertures even
+            # before the first secondary raster completes. Main traffic must
+            # neither reject that candidate nor enter its pending buffer.
+            panel = None
         if panel is not None and getattr(panel, "source_profile", None) is not None:
             profile = panel.source_profile
             if not panel.source_validated and panel.rejection is None:
