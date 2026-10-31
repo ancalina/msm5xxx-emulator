@@ -544,6 +544,10 @@ struct MSM5xxxPOCMachineState {
     CharFrontend input_chr;
     GByteArray *lcd_trace_buffer;
     QEMUTimer *lcd_trace_timer;
+    bool uart2_tx_ready_enabled;
+    uint32_t uart2_tx_ready_pc;
+    uint8_t uart2_tx_ready_backing;
+    MemoryRegion uart2_tx_ready_region;
     bool uart_console_enabled, uart_console_mapped, uart_console_rejected;
     bool uart_console_realized;
     bool uart_console_probe_enabled, uart_console_probe_lf, uart_console_probe_rx_empty;
@@ -9128,6 +9132,53 @@ static const MemoryRegionOps msm5xxx_poc_ma5_shared_lcd_ops = {
     .impl.max_access_size = 4,
 };
 
+static bool msm5xxx_poc_uart2_tx_ready_conflict(const MSM5xxxPOCMachineState *s)
+{
+    return s->uart2_tx_ready_enabled &&
+           (s->uart_console_enabled ||
+            (s->ready_poll_enabled &&
+             (s->ready_status_address == 0x030007c0 ||
+              s->ready_pulse_address == 0x030007c0)) ||
+            (s->board_status_input_enabled &&
+             s->board_status_input_address <= 0x030007c0 &&
+             (uint64_t)s->board_status_input_address + 4 > 0x030007c0));
+}
+
+/* This virtual TX sink drains synchronously. Source-bound readiness owns
+ * one byte and one read PC; it never grants RX or configuration semantics. */
+static uint64_t msm5xxx_poc_uart2_tx_ready_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc;
+    uint8_t value = s->uart2_tx_ready_backing;
+    if (offset || size != 1) {
+        return 0;
+    }
+    if (s->uart2_tx_ready_enabled && msm5xxx_poc_mmio_access_pc(s, &pc) &&
+        pc == s->uart2_tx_ready_pc) {
+        value |= 1;
+    }
+    return value;
+}
+
+static void msm5xxx_poc_uart2_tx_ready_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!offset && size == 1) {
+        s->uart2_tx_ready_backing = value;
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_uart2_tx_ready_ops = {
+    .read = msm5xxx_poc_uart2_tx_ready_read,
+    .write = msm5xxx_poc_uart2_tx_ready_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 1 },
+    .impl = { .min_access_size = 1, .max_access_size = 1 },
+};
+
 static bool msm5xxx_poc_direct_lcd_audio_conflict(const MSM5xxxPOCMachineState *s)
 {
     uint64_t first = s->audio_base;
@@ -11206,6 +11257,7 @@ static void msm5xxx_poc_reset(void *opaque)
     }
     memset(s->lcd_backing, 0, sizeof(s->lcd_backing));
     msm5xxx_poc_direct_lcd_reset(s);
+    s->uart2_tx_ready_backing = 0;
     memset(s->lcd_reads, 0, sizeof(s->lcd_reads));
     memset(s->lcd_writes, 0, sizeof(s->lcd_writes));
     s->lcd_trace_overflow = false;
@@ -11481,6 +11533,10 @@ static void msm5xxx_poc_init(MachineState *machine)
         s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
         s->whole_primary_x16_enabled || s->protected_nor_enabled)) {
         error_report("direct-lcd excludes NOR/NAND owners");
+        exit(1);
+    }
+    if (msm5xxx_poc_uart2_tx_ready_conflict(s)) {
+        error_report("uart2-tx-ready conflicts with another status owner");
         exit(1);
     }
     if (msm5xxx_poc_direct_lcd_audio_conflict(s)) {
@@ -12413,6 +12469,13 @@ static void msm5xxx_poc_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(), 0x02820000,
                                     &s->direct_lcd_control);
     }
+    if (s->uart2_tx_ready_enabled) {
+        memory_region_init_io(&s->uart2_tx_ready_region, OBJECT(machine),
+                              &msm5xxx_poc_uart2_tx_ready_ops, s,
+                              "msm5xxx-poc.uart2-tx-ready", 1);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x030007c0,
+                                            &s->uart2_tx_ready_region, 2);
+    }
     if (s->lcd_trace_enabled) {
         memory_region_init_ram(&s->lcd_trace, NULL,
                                "msm5xxx-poc.lcd-trace",
@@ -13342,6 +13405,46 @@ static void msm5xxx_poc_set_sbi_bootstrap_only(Object *obj, bool value,
         return;
     }
     s->sbi_bootstrap_only = value;
+}
+
+static char *msm5xxx_poc_get_uart2_tx_ready(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->uart2_tx_ready_enabled ?
+        g_strdup_printf("%x", s->uart2_tx_ready_pc) : g_strdup("");
+}
+
+static bool msm5xxx_poc_parse_uart2_tx_ready(const char *value, uint32_t *pc)
+{
+    unsigned long parsed;
+    size_t i, length = value ? strlen(value) : 0;
+    if (!length || length > 8) {
+        return false;
+    }
+    for (i = 0; i < length; i++) {
+        if (!g_ascii_isxdigit(value[i])) {
+            return false;
+        }
+    }
+    if (qemu_strtoul(value, NULL, 16, &parsed) || parsed < 2 ||
+        parsed > 0x01fffffe || (parsed & 1)) {
+        return false;
+    }
+    *pc = parsed;
+    return true;
+}
+
+static void msm5xxx_poc_set_uart2_tx_ready(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t pc;
+    if (!msm5xxx_poc_parse_uart2_tx_ready(value, &pc)) {
+        error_setg(errp, "uart2-tx-ready requires an even ROM read PC in hex");
+        return;
+    }
+    s->uart2_tx_ready_pc = pc;
+    s->uart2_tx_ready_enabled = true;
 }
 
 static bool msm5xxx_poc_get_direct_lcd(Object *obj, Error **errp)
@@ -16278,6 +16381,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         oc, "sbi-bootstrap-repeat",
         "Source-closed write PC for repeated exact SBI bootstrap validation"
     );
+    object_class_property_add_str(oc, "uart2-tx-ready",
+                                 msm5xxx_poc_get_uart2_tx_ready,
+                                 msm5xxx_poc_set_uart2_tx_ready);
+    object_class_property_set_description(oc, "uart2-tx-ready",
+        "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
     object_class_property_add_bool(oc, "direct-lcd",
                                   msm5xxx_poc_get_direct_lcd,
                                   msm5xxx_poc_set_direct_lcd);
