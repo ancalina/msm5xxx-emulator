@@ -3,10 +3,14 @@ from __future__ import annotations
 
 
 class BootPagePanel:
-    def __init__(self, pages, planes):
-        if (pages,planes) not in ((9,1),(16,2)):
+    def __init__(self, pages, planes, *, access_width=2, publish_after_clear_if_enabled=False):
+        if ((access_width,pages,planes) not in ((2,9,1),(2,16,2),(1,8,1))
+                or type(access_width) is not int
+                or (publish_after_clear_if_enabled and (access_width,pages,planes) != (1,8,1))):
             raise ValueError('unsupported-source-raster')
         self.pages,self.planes=pages,planes
+        self.access_width=access_width
+        self.publish_after_clear_if_enabled=publish_after_clear_if_enabled
         self.width,self.height=128,pages*8
         self.ram=bytearray(pages*128*planes)
         self.rgb=bytearray([255])*(128*self.height*3)
@@ -26,8 +30,9 @@ class BootPagePanel:
     def write(self,address,size,value):
         if address not in (0x02000000,0x02000002) or self.rejection:
             return False
-        if size != 2 or not 0 <= value <= 255:
-            self.rejection='source-halfword-byte-value-required';return False
+        if size != self.access_width or not 0 <= value <= 255:
+            self.rejection=('source-halfword-byte-value-required' if self.access_width == 2
+                            else 'source-byte-value-required');return False
         if address == 0x02000000:
             if value == 0xae:
                 self.started=True;self.enabled=self.qualified=False;self.clear_next=0
@@ -75,6 +80,9 @@ class BootPagePanel:
                 pixel=((self.page*8+bit)*128+self.column)*3
                 self.rgb[pixel:pixel+3]=bytes([shade])*3
             if self.qualified and self.enabled:self._publish()
+        if (self.publish_after_clear_if_enabled and self.started and self.enabled
+                and not self.qualified and self.clear_next == self.pages):
+            self.qualified=True;self._publish()
         self.plane+=1
         if self.plane == self.planes:self.plane=0;self.column+=1
         return self.qualified and self.rejection is None

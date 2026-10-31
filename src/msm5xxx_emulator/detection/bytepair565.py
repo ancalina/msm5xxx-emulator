@@ -61,8 +61,11 @@ _RAM = ((16777216, 16777217), (16777216, 16820280), (16789044, 16789045), (16789
 
 
 def find_bytepair565_profile(image: bytes):
-    if not isinstance(image,bytes) or arm_b_target(image,0) != 0x1bbc:
+    if not isinstance(image,bytes):
         return None,'bytepair565-reset-unclosed'
+    if arm_b_target(image,0) != 0x1bbc:
+        from .bytepair565_mx import find_mx_bytepair565_profile
+        return find_mx_bytepair565_profile(image)
     if any(not 0 <= at <= len(image)-size or
            hashlib.sha256(image[at:at+size]).hexdigest() != digest
            for at,size,digest in _SPANS):

@@ -264,6 +264,76 @@ class BootPageRuntimeTests(unittest.TestCase):
         self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
 
 
+class ByteBootPageRuntimeTests(unittest.TestCase):
+    def test_source_contract_and_enabled_complete_clear(self):
+        candidate = dict(signature='source-byte-boot-page128-v1', admission='temporary-evidence-gated',
+            width=128,height=64,command_port=0x02000000,data_port=0x02000002,
+            clear_pages=8,planes=1,access_width=1,publish_after_clear_if_enabled=True,
+            code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
+            data_intervals=(),ram_intervals=((0x01000000,0x01001000),))
+        h=Harness();h.config.chipset='MSM5100'
+        with patch('msm5xxx_emulator.detection.boot_page.find_boot_page_profile', return_value=(candidate,'candidate')):
+            self.assertTrue(h._lcd_bind_source_boot_page(bytes(0x1000),bytes(0x1000)))
+        for value in (0xae,0xaf):h._lcd_source_boot_page_write(0x02000000,1,value)
+        for page in range(8):
+            for value in (0xb0+page,0x10,0):h._lcd_source_boot_page_write(0x02000000,1,value)
+            for _ in range(128):h._lcd_source_boot_page_write(0x02000002,1,0)
+        self.assertEqual(h.frame_sequence,1)
+        self.assertEqual(h.display_snapshot()[:2],(128,64))
+        h._set_display_geometry(96,64,source='runtime:unbound',force=True)
+        self.assertEqual(h.display_snapshot()[:2],(128,64))
+
+
+
+class Rgb565BootRuntimeTests(unittest.TestCase):
+    def bind(self,h,**kwargs):
+        candidate=dict(signature='source-arm-packed-rgb565-boot120-v1',admission='temporary-evidence-gated',
+            width=120,height=133,command_port=0x02000002,pixel_port=0x02000000,
+            access_width=2,code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
+            data_intervals=(),ram_intervals=((0x01000000,0x01001000),),
+            iram_intervals=((0x03800000,0x03801000),))
+        loaded=kwargs.pop('loaded',bytes(0x1000))
+        with patch('msm5xxx_emulator.detection.rgb565_boot.find_rgb565_boot_profile',
+                   return_value=(candidate,'static-candidate')):
+            return h._lcd_bind_source_rgb565_boot(bytes(0x1000),loaded,**kwargs)
+
+    def test_complete_frame_and_ownership(self):
+        h=Harness();h.config.chipset='MSM5100';self.assertTrue(self.bind(h))
+        for value in h._lcd_rgb565_boot_panel.window:h._lcd_source_rgb565_boot_write(0x02000002,2,value)
+        for _ in range(120*133):h._lcd_source_rgb565_boot_write(0x02000000,2,0x07e0)
+        self.assertEqual(h.frame_sequence,0)
+        h._lcd_source_rgb565_boot_write(0x02000002,2,0x1819)
+        expected=h.display_snapshot();self.assertEqual(expected[:2],(120,133))
+        self.assertEqual(expected[2],bytes((0,255,0))*(120*133))
+        h._set_display_geometry(96,64,source='runtime:unbound',force=True)
+        h.framebuffer[:]=bytes(len(h.framebuffer));h._publish_frame()
+        self.assertEqual(h.display_snapshot(),expected);self.assertEqual(h.frame_sequence,1)
+
+    def test_exact_disjoint_loader_patch_only(self):
+        patch_bytes=(0x300,b'PATCH')
+        loaded=bytes(0x300)+b'PATCH'+bytes(0x1000-0x305)
+        h=Harness();h.config.chipset='MSM5100'
+        self.assertTrue(self.bind(h,loaded=loaded,allowed_patch=patch_bytes))
+        h=Harness();h.config.chipset='MSM5100'
+        self.assertFalse(self.bind(h,loaded=loaded,allowed_patch=(0x300,b'OTHER')))
+        h=Harness();h.config.chipset='MSM5100'
+        self.assertFalse(self.bind(h,loaded=loaded))
+        h=Harness();h.config.chipset='MSM5100'
+        overlap=(0x110,b'PATCH')
+        changed=bytes(0x110)+b'PATCH'+bytes(0x1000-0x115)
+        self.assertFalse(self.bind(h,loaded=changed,allowed_patch=overlap))
+
+    def test_owner_memory_seed_and_geometry_reject(self):
+        for field,value in [('chipset','MSM6000'),('ram_size',0xfff),
+                            ('entry',False),('display_geometry_source','manual')]:
+            h=Harness();h.config.chipset='MSM5100';setattr(h.config,field,value)
+            self.assertFalse(self.bind(h),field)
+        h=Harness();h.config.chipset='MSM5105'
+        self.assertFalse(self.bind(h,ram_claimed=True))
+        self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
+
+
+
 class BytePair565RuntimeTests(unittest.TestCase):
     def bind(self,h,**kwargs):
         candidate=dict(signature='source-halfword-bytepair565-104-v1',admission='temporary-evidence-gated',

@@ -69,3 +69,29 @@ class BootPageTests(unittest.TestCase):
                 self.command(p,0x10|(column>>4),column&15)
                 p.write(0x02000002,2,0);p.write(0x02000002,2,0)
         self.command(p,0xaf);self.assertFalse(p.qualified)
+
+    def test_byte_clear_qualifies_after_enabled_and_retains_glyph(self):
+        p = BootPagePanel(8, 1, access_width=1, publish_after_clear_if_enabled=True)
+        cmd = lambda value: p.write(0x02000000, 1, value)
+        cmd(0xae); cmd(0xaf)
+        for page in range(8):
+            for value in (0xb0 + page, 0x10, 0): cmd(value)
+            for _ in range(128): p.write(0x02000002, 1, 0)
+        self.assertTrue(p.qualified); self.assertEqual(p.sequence, 1)
+        for value in (0xb2, 0x10, 3): cmd(value)
+        p.write(0x02000002, 1, 1)
+        self.assertEqual(p.frame[(16*128+3)*3:(16*128+3)*3+3], bytes(3))
+
+    def test_byte_clear_requires_full_unique_enabled_pages_and_width(self):
+        for enabled, rows, width in ((False, range(8), 128), (True, range(7), 128),
+                                     (True, [0]*8, 128), (True, range(8), 127)):
+            p = BootPagePanel(8, 1, access_width=1, publish_after_clear_if_enabled=True)
+            p.write(0x02000000, 1, 0xae)
+            if enabled: p.write(0x02000000, 1, 0xaf)
+            for page in rows:
+                for value in (0xb0+page, 0x10, 0): p.write(0x02000000, 1, value)
+                for _ in range(width): p.write(0x02000002, 1, 0)
+            self.assertFalse(p.qualified); self.assertEqual(p.sequence, 0)
+        p = BootPagePanel(8, 1, access_width=1, publish_after_clear_if_enabled=True)
+        p.write(0x02000000, 2, 0xae)
+        self.assertEqual(p.rejection, 'source-byte-value-required')
