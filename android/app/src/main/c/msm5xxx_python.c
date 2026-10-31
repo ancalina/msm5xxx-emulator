@@ -1,10 +1,13 @@
 #include <jni.h>
+#include <android/log.h>
 #include <limits.h>
 #include <pthread.h>
 #include <Python.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
+#include <time.h>
 
 static pthread_mutex_t INIT_LOCK = PTHREAD_MUTEX_INITIALIZER;
 static int initialized;
@@ -86,9 +89,23 @@ static int initialize_python(JNIEnv *env, const char *home,
     return 1;
 }
 
+static long long monotonic_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long long)now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
 static jstring call_python(JNIEnv *env, const char *function_name,
                            const char *argument) {
+    int key_call = strcmp(function_name, "set_session_key") == 0;
+    long long requested = key_call ? monotonic_ns() : 0;
     PyGILState_STATE gil = PyGILState_Ensure();
+    if (key_call) {
+        long long acquired = monotonic_ns();
+        __android_log_print(ANDROID_LOG_INFO, "MSM5xxxInput",
+                "gil_acquired_ns=%lld gil_wait_us=%lld request=%s",
+                acquired, (acquired - requested) / 1000, argument);
+    }
     PyObject *module = PyImport_ImportModule("msm5xxx_android_runtime");
     PyObject *function = module == NULL ? NULL
                                         : PyObject_GetAttrString(module, function_name);
@@ -106,6 +123,10 @@ static jstring call_python(JNIEnv *env, const char *function_name,
         return NULL;
     }
     const char *text = PyUnicode_AsUTF8(result);
+    if (key_call && text != NULL) {
+        __android_log_print(ANDROID_LOG_INFO, "MSM5xxxInput",
+                "key_result=%s", text);
+    }
     jstring response = text == NULL ? NULL : (*env)->NewStringUTF(env, text);
     if (response == NULL && !(*env)->ExceptionCheck(env)) {
         throw_python_error(env, function_name);
@@ -126,8 +147,20 @@ static jbyteArray call_python_bytes(JNIEnv *env, const char *function_name) {
     if (function != NULL && PyCallable_Check(function)) {
         result = PyObject_CallNoArgs(function);
     }
-    if (result == NULL || !PyBytes_Check(result)
-            || PyBytes_GET_SIZE(result) > INT_MAX) {
+    // Retain result until Java has copied both immutable byte strings. No
+    // concatenated Python frame buffer is needed, and no Python API is called
+    // while the GIL is released for the allocation/copy.
+    PyObject *first = result;
+    PyObject *second = NULL;
+    if (result != NULL && PyTuple_Check(result) && PyTuple_GET_SIZE(result) == 2) {
+        first = PyTuple_GET_ITEM(result, 0);
+        second = PyTuple_GET_ITEM(result, 1);
+    }
+    if (first == NULL || !PyBytes_Check(first)
+            || (second != NULL && !PyBytes_Check(second))
+            || PyBytes_GET_SIZE(first) > INT_MAX
+            || (second != NULL && PyBytes_GET_SIZE(second)
+                > INT_MAX - PyBytes_GET_SIZE(first))) {
         Py_XDECREF(result);
         Py_XDECREF(function);
         Py_XDECREF(module);
@@ -135,13 +168,22 @@ static jbyteArray call_python_bytes(JNIEnv *env, const char *function_name) {
         PyGILState_Release(gil);
         return NULL;
     }
-    jsize size = (jsize)PyBytes_GET_SIZE(result);
-    const jbyte *data = (const jbyte *)PyBytes_AS_STRING(result);
+    jsize first_size = (jsize)PyBytes_GET_SIZE(first);
+    jsize second_size = second == NULL ? 0 : (jsize)PyBytes_GET_SIZE(second);
+    const jbyte *first_data = (const jbyte *)PyBytes_AS_STRING(first);
+    const jbyte *second_data = second == NULL ? NULL
+                              : (const jbyte *)PyBytes_AS_STRING(second);
     jbyteArray response;
     Py_BEGIN_ALLOW_THREADS
-    response = (*env)->NewByteArray(env, size);
+    response = (*env)->NewByteArray(env, first_size + second_size);
     if (response != NULL) {
-        (*env)->SetByteArrayRegion(env, response, 0, size, data);
+        if (first_size != 0) {
+            (*env)->SetByteArrayRegion(env, response, 0, first_size, first_data);
+        }
+        if (second_size != 0 && !(*env)->ExceptionCheck(env)) {
+            (*env)->SetByteArrayRegion(env, response, first_size, second_size,
+                                      second_data);
+        }
     }
     Py_END_ALLOW_THREADS
     Py_DECREF(result);
@@ -212,14 +254,14 @@ JNIEXPORT jbyteArray JNICALL
 Java_org_msm5xxx_emulator_PythonRuntime_nativeFrame(
         JNIEnv *env, jclass type) {
     (void)type;
-    return call_python_bytes(env, "session_frame");
+    return call_python_bytes(env, "session_frame_parts");
 }
 
 JNIEXPORT jbyteArray JNICALL
 Java_org_msm5xxx_emulator_PythonRuntime_nativeSecondaryFrame(
         JNIEnv *env, jclass type) {
     (void)type;
-    return call_python_bytes(env, "session_secondary_frame");
+    return call_python_bytes(env, "session_secondary_frame_parts");
 }
 
 JNIEXPORT jstring JNICALL

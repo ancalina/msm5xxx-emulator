@@ -3457,6 +3457,9 @@ class Transport:
         self.input_host_events = 0
         self.input_active_reads = 0
         self.input_rejections = 0
+        self.input_send_started_ns = 0
+        self.input_send_completed_ns = 0
+        self.input_send_duration_ns = 0
         self.board_status_snapshot: dict[str, int] | None = None
         self._uis_idle_addresses = (
             qemu_uis_idle_observer_addresses(self.config)
@@ -5647,6 +5650,21 @@ class Transport:
                 return
             pending.extend(chunk)
 
+    def _replay_batch(self, pending: bytearray, complete: int) -> None:
+        # Bound continuous decoder ownership of the GIL even without audio.
+        # A single record is atomic; never discard/reorder LCD state writes.
+        deadline = time.monotonic_ns() + 2_000_000
+        for offset in range(0, complete, RECORD_SIZE):
+            self._replay_record(bytes(pending[offset:offset + RECORD_SIZE]))
+            if (offset + RECORD_SIZE < complete
+                    and time.monotonic_ns() >= deadline):
+                time.sleep(0)
+                deadline = time.monotonic_ns() + 2_000_000
+        del pending[:complete]
+        if complete:
+            # Also hand off after short bursts, including input ACK bursts.
+            time.sleep(0)
+
     def replay(self, stop: threading.Event) -> None:
         input_pending = bytearray()
         lcd_pending = bytearray()
@@ -5708,13 +5726,7 @@ class Transport:
                         return
                     pending.extend(chunk)
                     complete = len(pending) // RECORD_SIZE * RECORD_SIZE
-                    for offset in range(0, complete, RECORD_SIZE):
-                        record = bytes(pending[offset:offset + RECORD_SIZE])
-                        self._replay_record(record)
-                    del pending[:complete]
-                    if complete and audio_socket is not None:
-                        # Give the audio reader a turn between bounded batches.
-                        time.sleep(0)
+                    self._replay_batch(pending, complete)
         finally:
             stop.set()
             if audio_worker is not None:
@@ -6108,11 +6120,17 @@ class Transport:
                 packet = matrix_input_command(profile, position, False)
             else:
                 return False
+        self.input_send_started_ns = time.monotonic_ns()
         try:
             self.input_socket.sendall(packet)
         except OSError as error:
             self.decoder.input_error = f"QEMU input transport failed: {error}"
             return False
+        finally:
+            self.input_send_completed_ns = time.monotonic_ns()
+            self.input_send_duration_ns = (
+                self.input_send_completed_ns - self.input_send_started_ns
+            )
         if pressed:
             if sideband is not None:
                 self.sideband_held.add(bit)

@@ -167,20 +167,29 @@ class AndroidFrameTransportTests(unittest.TestCase):
         snapshot = None
         self.assertFalse(json.loads(runtime.session_status())['secondary_preview'])
 
-    def test_visible_swap_keeps_packet_sequence_hash_and_generation(self) -> None:
+    def test_frame_path_keeps_coalescing_without_hashing_or_logging(self) -> None:
         source = JAVA.read_text(encoding="utf-8")
-
         self.assertIn("int sequence = buffer.getInt();", source)
-        self.assertIn(
-            "digest.update(packet, offset, packet.length - offset);", source
-        )
         self.assertIn("frameView.setFrame(frame, generation);", source)
-        self.assertIn('"visible swap generation=" + generation', source)
-        self.assertIn('" sequence=" + Integer.toUnsignedString(frame.sequence)',
-                      source)
-        self.assertIn('" sha256=" + frame.sha256', source)
-        self.assertIn('" nonBlank=" + frame.nonBlank', source)
-        self.assertIn('" geometry=" + bitmap.getWidth()', source)
+        self.assertIn("pendingFrame.compareAndSet(previous, merged)", source)
+        self.assertIn("previous.recycleExcept(frame, secondary)", source)
+        self.assertNotIn("MessageDigest", source)
+        self.assertNotIn('"visible swap generation="', source)
+
+    def test_key_executor_is_reserved_and_deadlines_skip_missed_slots(self) -> None:
+        source = JAVA.read_text(encoding="utf-8")
+        self.assertIn('}, "key-edges")', source)
+        self.assertIn("android.os.Process.THREAD_PRIORITY_DISPLAY", source)
+        self.assertIn("inputExecutor.execute(() -> controlExecutor.execute", source)
+        self.assertIn("inputExecutor.execute(controlExecutor::shutdown)", source)
+        self.assertIn('"executor_start bit="', source)
+        self.assertIn("nextBackendUpdate += FRAME_UPDATE_INTERVAL_NS;", source)
+        self.assertNotIn("nextBackendUpdate = now +", source)
+        self.assertNotIn("nextFrameUpdate", source)
+        self.assertIn("closeAfterKeys(opened);", source)
+        self.assertIn("inputExecutor.awaitTermination(30, TimeUnit.SECONDS)", source)
+        # Only edges, close fences, and shutdown use the FIFO.
+        self.assertEqual(source.count("inputExecutor.execute("), 4)
 
 
 if __name__ == "__main__":

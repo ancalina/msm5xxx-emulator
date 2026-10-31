@@ -140,33 +140,49 @@ def _require_session():
     return _session
 
 
-def _scanout_packet(panel, width, height, frame):
+def _scanout_packet(panel, width, height, frame, *, parts=False):
     if not (1 <= width <= 2048 and 1 <= height <= 2048
             and len(frame) == width * height * 3):
         raise RuntimeError("inconsistent display snapshot")
     snapshot = (width, height, frame)
     previous = _scanout_sent.get(panel)
     if previous is not None and snapshot == previous[0]:
-        return struct.pack("<4I", 1, width, height, previous[1])
+        header = struct.pack("<4I", 1, width, height, previous[1])
+        return (header, b"") if parts else header
     # Client scanout sequence; firmware progress remains in session_status.
     sequence = ((previous[1] if previous else 0) + 1) & 0xFFFFFFFF
     _scanout_sent[panel] = (snapshot, sequence)
-    return struct.pack("<4I", 1, width, height, sequence) + frame
+    header = struct.pack("<4I", 1, width, height, sequence)
+    # JNI copies each immutable part directly into its Java destination array.
+    return (header, frame) if parts else header + frame
 
 
 def session_frame():
     return _scanout_packet("primary", *_require_session().decoder.display_snapshot())
 
 
+def session_frame_parts():
+    return _scanout_packet("primary", *_require_session().decoder.display_snapshot(),
+                           parts=True)
+
+
 def session_secondary_frame():
+    return _secondary_frame_packet(parts=False)
+
+
+def session_secondary_frame_parts():
+    return _secondary_frame_packet(parts=True)
+
+
+def _secondary_frame_packet(*, parts):
     snapshot = _require_session().decoder.secondary_display_snapshot()
     if snapshot is None or not snapshot["qualified"]:
         _scanout_sent.pop("secondary", None)
-        return b""
+        return (b"", b"") if parts else b""
     width, height = snapshot["width"], snapshot["height"]
     frame = (bytes(width * height * 3) if snapshot["enabled"] is False
              else snapshot["frame"])
-    return _scanout_packet("secondary", width, height, frame)
+    return _scanout_packet("secondary", width, height, frame, parts=parts)
 
 
 def session_fold(request_json):
@@ -273,9 +289,17 @@ def set_session_key(request_json):
         event_code = int(event_code)
     if not _session.can_set_key(bit, event_code):
         raise ValueError("input is not detector-admitted")
+    previous_send = getattr(_session, "input_send_completed_ns", 0)
     if not _session.set_key(bit, bool(request["pressed"]), event_code):
         raise RuntimeError("input transport rejected transition")
-    return _json({"accepted": True, "schema": 1})
+    completed = getattr(_session, "input_send_completed_ns", 0)
+    sent = completed != previous_send
+    return _json({
+        "accepted": True, "schema": 1, "sent": sent,
+        "send_started_ns": getattr(_session, "input_send_started_ns", 0) if sent else 0,
+        "send_completed_ns": completed if sent else 0,
+        "send_duration_ns": getattr(_session, "input_send_duration_ns", 0) if sent else 0,
+    })
 
 
 def stop_session():

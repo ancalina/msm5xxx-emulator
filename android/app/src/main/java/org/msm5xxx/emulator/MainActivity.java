@@ -54,8 +54,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.UUID;
@@ -63,6 +61,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -138,7 +137,14 @@ public final class MainActivity extends Activity {
     private static String activeDetectionToken;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    // FIFO exclusively for key edges. Controls must never occupy this worker.
     private final ExecutorService inputExecutor =
+            Executors.newSingleThreadExecutor(task -> new Thread(() -> {
+                android.os.Process.setThreadPriority(
+                        android.os.Process.THREAD_PRIORITY_DISPLAY);
+                task.run();
+            }, "key-edges"));
+    private final ExecutorService controlExecutor =
             Executors.newSingleThreadExecutor();
     private final AtomicReference<FrameUpdate> pendingFrame =
             new AtomicReference<>();
@@ -266,6 +272,7 @@ public final class MainActivity extends Activity {
         }
         dismissSecondaryPresentation();
         stopSession(false);
+        inputExecutor.execute(controlExecutor::shutdown);
         inputExecutor.shutdown();
         super.onDestroy();
     }
@@ -1002,9 +1009,8 @@ public final class MainActivity extends Activity {
                     updateSessionControls(false);
                 }
             });
-            long nextFrameUpdate = 0;
             long nextMetricUpdate = 0;
-            long nextBackendUpdate = 0;
+            long nextBackendUpdate = SystemClock.elapsedRealtimeNanos();
             long publishedInputEvents = -1;
             long publishedRejections = -1;
             while (generation == sessionGeneration) {
@@ -1044,8 +1050,7 @@ public final class MainActivity extends Activity {
                 boolean inputChanged = status.inputHostEvents
                         != publishedInputEvents
                         || status.inputRejections != publishedRejections;
-                boolean frameDue = (latestFrame != null || latestSecondary != null)
-                        && now >= nextFrameUpdate;
+                boolean frameDue = latestFrame != null || latestSecondary != null;
                 boolean metricDue = now >= nextMetricUpdate;
                 if (frameDue || inputChanged || metricDue) {
                     enqueueFrame(new FrameUpdate(generation, latestFrame, latestSecondary,
@@ -1054,13 +1059,18 @@ public final class MainActivity extends Activity {
                     latestSecondary = null;
                     publishedInputEvents = status.inputHostEvents;
                     publishedRejections = status.inputRejections;
-                    nextFrameUpdate = now + FRAME_UPDATE_INTERVAL_NS;
                     nextMetricUpdate = now + METRIC_UPDATE_INTERVAL_NS;
                 }
                 if (!status.processRunning) {
                     throw new IOException("QEMU process exited");
                 }
-                nextBackendUpdate = now + FRAME_UPDATE_INTERVAL_NS;
+                // Keep phase against an absolute deadline; skip missed slots.
+                long completed = SystemClock.elapsedRealtimeNanos();
+                nextBackendUpdate += FRAME_UPDATE_INTERVAL_NS;
+                if (nextBackendUpdate <= completed) {
+                    nextBackendUpdate += ((completed - nextBackendUpdate)
+                            / FRAME_UPDATE_INTERVAL_NS + 1) * FRAME_UPDATE_INTERVAL_NS;
+                }
             }
         } catch (IOException | RuntimeException | LinkageError error) {
             android.util.Log.e("MSM5xxxSession", "Session failed", error);
@@ -1091,7 +1101,7 @@ public final class MainActivity extends Activity {
                 latestSecondary.recycle();
             }
             if (opened != null && (failed || generation != sessionGeneration)) {
-                closeQuietly(opened);
+                closeAfterKeys(opened);
             }
         }
     }
@@ -1261,6 +1271,10 @@ public final class MainActivity extends Activity {
         InputProbe probe = inputTiming.begin(
                 SystemClock.elapsedRealtimeNanos());
         inputExecutor.execute(() -> {
+            long executorStart = SystemClock.elapsedRealtimeNanos();
+            android.util.Log.i("MSM5xxxInput", "executor_start bit=" + bit
+                    + " pressed=" + pressed + " queue_us="
+                    + (executorStart - probe.startNanos) / 1000L);
             try {
                 target.setKey(bit, eventCode, pressed);
                 inputTiming.dispatched(probe,
@@ -1336,7 +1350,7 @@ public final class MainActivity extends Activity {
                 return;
             }
             button.setEnabled(false);
-            inputExecutor.execute(() -> {
+            controlExecutor.execute(() -> {
                 boolean accepted = false;
                 try {
                     accepted = current.canSetKey(bit, eventCode);
@@ -1471,7 +1485,9 @@ public final class MainActivity extends Activity {
             }
             return;
         }
-        inputExecutor.execute(() -> {
+        // Drain previously queued edges (including release) before closing.
+        // The barrier only submits work; close itself runs on the control worker.
+        inputExecutor.execute(() -> controlExecutor.execute(() -> {
             boolean clean = true;
             try {
                 current.close();
@@ -1491,7 +1507,7 @@ public final class MainActivity extends Activity {
                     }
                 });
             }
-        });
+        }));
     }
 
     private void updateSessionKeepScreenOn(boolean enabled, int generation) {
@@ -1510,6 +1526,35 @@ public final class MainActivity extends Activity {
             update.run();
         } else {
             handler.post(update);
+        }
+    }
+
+    // Called by the session worker, including during Activity destruction.
+    private void closeAfterKeys(BackendBridge.Session value) {
+        try {
+            inputExecutor.execute(() -> {
+                try {
+                    controlExecutor.execute(() -> closeQuietly(value));
+                } catch (RejectedExecutionException destroyed) {
+                    // The shutdown marker passed; all accepted edges drained.
+                    closeQuietly(value);
+                }
+            });
+        } catch (RejectedExecutionException destroyed) {
+            // This is the session thread, never the UI thread. Destruction may
+            // have shut down admission while accepted edges are still running.
+            boolean interrupted = false;
+            while (!inputExecutor.isTerminated()) {
+                try {
+                    inputExecutor.awaitTermination(30, TimeUnit.SECONDS);
+                } catch (InterruptedException error) {
+                    interrupted = true;
+                }
+            }
+            closeQuietly(value);
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -1589,7 +1634,7 @@ public final class MainActivity extends Activity {
             if (item.getItemId() == MORE_FOLD) {
                 BackendBridge.Session target = session;
                 boolean opened = latestStatus != null && !latestStatus.foldOpen;
-                inputExecutor.execute(() -> {
+                controlExecutor.execute(() -> {
                     try {
                         if (target != null) {
                             target.setFold(opened);
@@ -1893,7 +1938,6 @@ public final class MainActivity extends Activity {
 
     private static final class FrameView extends View {
         private static final String LOG_TAG = "MSM5xxxFrame";
-        private static final char[] HEX = "0123456789abcdef".toCharArray();
         private final Paint paint = new Paint();
         private Bitmap bitmap;
 
@@ -1932,26 +1976,7 @@ public final class MainActivity extends Activity {
             Bitmap bitmap = Bitmap.createBitmap(colors, width, height,
                     Bitmap.Config.ARGB_8888);
             bitmap.setDensity(Bitmap.DENSITY_NONE);
-            return new FramePacket(bitmap, visible, sequence,
-                    sha256(packet, 16));
-        }
-
-        private static String sha256(byte[] packet, int offset) {
-            final MessageDigest digest;
-            try {
-                digest = MessageDigest.getInstance("SHA-256");
-            } catch (NoSuchAlgorithmException error) {
-                throw new IllegalStateException(error);
-            }
-            digest.update(packet, offset, packet.length - offset);
-            byte[] value = digest.digest();
-            char[] result = new char[value.length * 2];
-            for (int index = 0; index < value.length; index++) {
-                int octet = value[index] & 0xff;
-                result[index * 2] = HEX[octet >>> 4];
-                result[index * 2 + 1] = HEX[octet & 0x0f];
-            }
-            return new String(result);
+            return new FramePacket(bitmap, visible, sequence);
         }
 
         // Transfer ownership on output changes, even if firmware pixels are static.
@@ -1981,12 +2006,6 @@ public final class MainActivity extends Activity {
             }
             Bitmap previous = bitmap;
             bitmap = frame.bitmap;
-            android.util.Log.i(LOG_TAG, "visible swap generation=" + generation
-                    + " sequence=" + Integer.toUnsignedString(frame.sequence)
-                    + " sha256=" + frame.sha256
-                    + " nonBlank=" + frame.nonBlank
-                    + " geometry=" + bitmap.getWidth() + "x"
-                    + bitmap.getHeight());
             setContentDescription(getContext().getString(frame.nonBlank
                     ? R.string.lcd_visible : R.string.lcd_waiting));
             if (previous != null) {
@@ -2388,14 +2407,11 @@ public final class MainActivity extends Activity {
         final Bitmap bitmap;
         final boolean nonBlank;
         final int sequence;
-        final String sha256;
 
-        FramePacket(Bitmap bitmap, boolean nonBlank, int sequence,
-                    String sha256) {
+        FramePacket(Bitmap bitmap, boolean nonBlank, int sequence) {
             this.bitmap = bitmap;
             this.nonBlank = nonBlank;
             this.sequence = sequence;
-            this.sha256 = sha256;
         }
 
         void recycle() {
