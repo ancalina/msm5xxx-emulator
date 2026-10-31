@@ -32,6 +32,24 @@ class LegacyPanelTests(unittest.TestCase):
   p.write(p.port+4,2,0x7e0);self.assertTrue(p.qualified)
   self.assertEqual(p.frame[:3],b'\xff\x00\x00')
   self.assertEqual(p.frame[128*14*3:128*14*3+3],b'\x00\xff\x00')
+ def test_byte565_boot_requires_setup_and_one_complete_little_endian_frame(self):
+  p=LegacyPanel('byte565_boot');cmd=p.port+2;data=p.port
+  for address,value in ((cmd,8),(data,0),(data,1),(cmd,9),(data,0x40)):p.write(address,1,value)
+  self.assertIsNone(p.window)
+  for address,value in ((cmd,8),(data,0),(cmd,9),(data,0x40)):p.write(address,1,value)
+  p.write(data,1,0);p.write(data,1,0xf8)
+  for _ in range(120*133-2):p.write(data,1,0xff);p.write(data,1,0xff)
+  p.write(data,1,0x1f);self.assertFalse(p.qualified)
+  p.write(data,1,0);self.assertTrue(p.qualified)
+  self.assertEqual(p.frame[:3],b'\xff\x00\x00');self.assertEqual(p.frame[-3:],b'\x00\x00\xff')
+  sequence=p.sequence
+  # A malformed or truncated second transfer cannot combine coverage with the first.
+  for address,value in ((cmd,8),(data,0),(cmd,9),(data,0x40)):p.write(address,1,value)
+  for _ in range(100):p.write(data,1,0)
+  p.write(cmd,2,9);self.assertEqual(p.sequence,sequence)
+  for _ in range(120*133*2):p.write(data,1,0)
+  self.assertEqual(p.sequence,sequence)
+
  def test_direct_requires_every_byte_and_preserves_partial_word_writes(self):
   p=LegacyPanel('direct16');last=176*220*2-2
   for at in range(0,last,2):p.write(p.port+at,2,0xffff)

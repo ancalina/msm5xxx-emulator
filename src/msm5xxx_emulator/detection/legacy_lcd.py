@@ -9,7 +9,26 @@ from __future__ import annotations
 import hashlib
 from .arm import thumb_bl_target, thumb_literal_value
 
-_SPECS = {'column16': [(1919484,
+_SPECS = {'byte565_boot': [(619920, 124, 'baca6df280c63bba679ad60d3c828af8ac0e99ca63b2d64552a9699ce3cd08ef',
+  ((10, 9888), (14, 614488), (18, 614912), (22, 618994), (26, 619052), (52, 619416),
+   (56, 619584), (60, 619280), (64, 619052), (68, 619752)),
+  ((6, 1, 4837514), (8, 2, 31920), (30, 0, 16790116), (38, 0, 2198092), (44, 0, 2200008))),
+ (614488, 424, 'e4d9576d6956e324b262e4425052480e156a7d86506149892fd2a9f86310692f',
+  ((2, 1898104), (18, 36416), (26, 36416), (34, 1898132), (38, 552392), (44, 36376),
+   (48, 1898104), (60, 36416), (66, 36416), (74, 1898132), (78, 1898104), (90, 36416),
+   (98, 36416), (106, 1898132), (110, 1898104), (122, 36416), (130, 36416), (138, 1898132),
+   (142, 1898104), (154, 36416), (162, 36416), (170, 1898132), (174, 1898104), (186, 36416),
+   (192, 36416), (200, 1898132), (204, 1898104), (216, 36416), (224, 36416), (232, 1898132),
+   (236, 1898104), (248, 36416), (256, 36416), (264, 1898132), (268, 1898104), (280, 36416),
+   (286, 36416), (294, 1898132), (298, 1898104), (310, 36416), (316, 36416), (324, 1898132),
+   (328, 1898104), (340, 36416), (346, 36416), (354, 1898132), (358, 1898104), (370, 36416),
+   (376, 36416), (384, 1898132), (388, 1898104), (398, 36416), (406, 36416), (414, 1898132)),
+  ((42, 0, 5000),)),
+ (619752, 78, 'e726010b0eac20ee93db7f9bbd7a7beb6154d66fd7cb8cbbf1e1729e8b934dfa',
+  ((2, 1898104), (16, 36416), (24, 36416), (32, 1898132), (42, 1898104), (54, 36416),
+   (62, 36416), (70, 1898132)),
+  ((36, 4, 75497504),))],
+ 'column16': [(1919484,
                106,
                '6879d83ca6bbcfe383e2f184b237f0156dd0f6dfc614c19d53aa67e03bbde0b1',
                ((50, 1912132),
@@ -250,8 +269,21 @@ def find_legacy_lcd_profile(image: bytes, ram_base: int, ram_size: int) -> str |
             or type(ram_size) is not int or ram_size <= 0
             or ram_base < 0 or ram_base + ram_size > 0x100000000):
         return None
+    # Exact immutable source identity: the byte-pair boot canvas is currently
+    # closed for one supplied image only. Both raw and FF-padded loader images
+    # must preserve every byte; the guest stream supplies all displayed pixels.
+    raw_size = 0x7ffff0
+    byte565_boot = (ram_base == 0x1000000 and ram_size == 0x800000
+                    and len(image) in (raw_size, raw_size + 16)
+                    and (len(image) == raw_size or image[raw_size:] == b"\xff" * 16)
+                    and hashlib.sha256(image[0x97590:0x9760c]).hexdigest() ==
+                        "baca6df280c63bba679ad60d3c828af8ac0e99ca63b2d64552a9699ce3cd08ef"
+                    and hashlib.sha256(image[:raw_size]).hexdigest() ==
+                        "ab2e08c6bd92324e662b97741222f4a2fb5f9aec6870243cecd529af49fe74d2")
     matches = []
     for protocol, rows in _SPECS.items():
+        if protocol == "byte565_boot" and not byte565_boot:
+            continue
         valid = True
         for at, size, digest, calls, literals in rows:
             if (not 0 <= at <= len(image) - size
@@ -264,6 +296,7 @@ def find_legacy_lcd_profile(image: bytes, ram_base: int, ram_size: int) -> str |
         if not valid:
             continue
         spans = {
+            "byte565_boot": ((0x1003264, 1),),
             "column16": ((0x12196a4, 2), (0x1214214, 10),
                          (0x1335bbe, 0x5000), (0x13f70b4, 4), (0x13f6ce8, 4)),
             "byte31": ((0x13800a1, 8), (0x1387500, 0x20),

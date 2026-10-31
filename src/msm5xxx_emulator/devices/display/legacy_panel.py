@@ -15,7 +15,12 @@ class LegacyPanel:
         self.width, self.height, self.bits = {
             'byte31': (128, 128, 8), 'column16': (128, 160, 16),
             'direct16': (176, 220, 16), 'half43': (128, 144, 16),
+            'byte565_boot': (120, 133, 16),
         }[protocol]
+        if protocol == 'byte565_boot':
+            self.port = 0x02000000
+        self.byte565_phase = 0
+        self.byte565_low = None
         self.sequence = 0
         self.frame = b''
         self.qualified = False
@@ -85,8 +90,49 @@ class LegacyPanel:
             self._byte31(address, size, value)
         elif self.protocol == 'half43':
             self._half43(address, size, value)
+        elif self.protocol == 'byte565_boot':
+            self._byte565_boot(address, size, value)
         else:
             self._column16(address, size, value)
+
+    def _byte565_boot(self, address, size, value):
+        """Retain one complete byte-pair boot canvas after its observed setup."""
+        if address not in (self.port, self.port + 2):
+            return
+        if size != 1 or not 0 <= value <= 255:
+            self.byte565_phase = 0
+            self.byte565_low = None
+            self.window = None
+            return
+        if address == self.port + 2:
+            self.window = None
+            self.byte565_low = None
+            self.byte565_phase = (1 if value == 8 else
+                                  3 if value == 9 and self.byte565_phase == 2 else 0)
+            return
+        if self.byte565_phase == 1:
+            self.byte565_phase = 2 if value == 0 else 0
+        elif self.byte565_phase == 2:
+            self.byte565_phase = 0
+        elif self.byte565_phase == 3:
+            if value != 0x40:
+                self.byte565_phase = 0
+                return
+            # Do not assemble a full frame from separate partial transfers.
+            self.covered = bytearray(len(self.covered))
+            self.coverage = 0
+            self.ram = bytearray(len(self.ram))
+            self._begin((0, 0, self.width - 1, self.height - 1))
+            self.byte565_phase = 4
+        elif self.byte565_phase == 4:
+            if self.byte565_low is None:
+                self.byte565_low = value
+            else:
+                pixel = self.byte565_low | value << 8
+                self.byte565_low = None
+                self._pixel(pixel)
+                if self.window is None:
+                    self.byte565_phase = 0
 
     def _direct(self, address, size, value):
         off = address-self.port
