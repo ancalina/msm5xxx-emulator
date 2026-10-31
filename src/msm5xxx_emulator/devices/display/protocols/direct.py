@@ -337,11 +337,13 @@ class DirectProtocolMixin:
             )
             self._lcd_028_rgb332_mode_pending = 0
         probe = self._lcd_028_rgb332_probe
+        source_geometry = getattr(self, "_lcd_028_rgb332_source_geometry", None)
         event = (address, size, value)
         if not probe:
             if (address == base and value == 0x75
                     and (size == 1
-                         or (size == 2 and self._lcd_028_rgb332_qualified))):
+                         or (size == 2 and (self._lcd_028_rgb332_qualified
+                                           or source_geometry is not None)))):
                 probe.append(event)
                 return True
             return False
@@ -364,6 +366,14 @@ class DirectProtocolMixin:
             y_axis = [probe[1][2], probe[2][2]]
             x_axis = [probe[4][2], probe[5][2]]
             geometry = self._lcd_full_window_geometry(x_axis, y_axis)
+            if source_geometry is not None:
+                # The source allocates 120x160 bytes. Its normal full refresh
+                # addresses rows 11..159; an extra-row flag includes 0..10.
+                if (x_axis == [0, 119] and y_axis in ([0, 159], [11, 159])):
+                    self._lcd_028_rgb332_window = (
+                        0, y_axis[0], 120, y_axis[1] - y_axis[0] + 1)
+                    return True
+                geometry = None
             if geometry is not None:
                 self._lcd_028_rgb332_window = (x_axis[0], y_axis[0], *geometry)
                 return True
@@ -391,7 +401,8 @@ class DirectProtocolMixin:
             return True
         if not self._lcd_028_rgb332_qualified:
             self._set_display_geometry(
-                width, height, source="runtime:direct-rgb332"
+                *(source_geometry or (width, height)),
+                source="runtime:direct-rgb332", force=source_geometry is not None,
             )
         if x0 + width <= self.config.width and y0 + height <= self.config.height:
             for index, (_address, _size, packed) in enumerate(probe[len(setup) + 1:]):
