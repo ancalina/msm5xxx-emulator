@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import struct
 
-from .arm import thumb_bl_target, thumb_literal_value
+from .arm import thumb_bl_target, thumb_literal_value, thumb_normalized_source_shape
 from .boot import DMD_DOWNLOAD_SIGNATURE
 
 _DRIVER_SIZE = 0xF4
@@ -29,6 +29,23 @@ for _start, _end in _HOLES:
     _MASK[_start:_end] = bytes(_end - _start)
 _MASK = bytes(_MASK)
 _BL_PATTERN = re.compile(rb"(?=[\x00-\xff][\xf0-\xf7][\x00-\xff][\xf8-\xff])")
+
+
+_READ_760_HASHES = (
+    '41c481659c1265d5b4cbf941999141116c178bdb47225ee9685e06cc9e80d6d7',
+    'ca1457ab310a744c3206ad59028f1a4dc80bfd13eab53ed61b33ed69798a80f0',
+)
+_READ_760_CALLS = (0xe,0x26,0x4e,0x56,0xd0,0xd8)
+_READ_760_LITERALS = (8,0x16,0x1c,0x1e,0x2a,0x2c,0x32,0x46,0x5a,0x66,0x74,0x8a,0xbe,0xc4,0xd4)
+
+
+def _read_760_shape(image, entry):
+    for digest in _READ_760_HASHES:
+        shape = thumb_normalized_source_shape(image, entry,
+            (0xde,digest,_READ_760_CALLS,_READ_760_LITERALS))
+        if shape is not None:
+            return shape
+    return None
 
 
 def _driver_matches(image: bytes, entry: int) -> bool:
@@ -73,8 +90,11 @@ def _callee_intervals(image: bytes, targets: list[int], excluded: tuple[tuple[in
 
 
 def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
-    if not _driver_matches(image, entry):
+    legacy = _driver_matches(image, entry)
+    bank_shape = None if legacy else _read_760_shape(image, entry)
+    if not legacy and bank_shape is None:
         return None, "dmd5100-driver-shape-unclosed"
+    read_base = 0x030007e0 if legacy else 0x03000760
     calls = [thumb_bl_target(image, entry + offset)
              for offset in (0x0E, 0x26, 0x4E, 0x56, 0xD0, 0xD8)]
     if (any(target is None or not 0 <= target < len(image) for target in calls)
@@ -87,8 +107,8 @@ def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
     literal_checks = (
         (entry + 0x16, 1, 0x03000050), (entry + 0x1E, 1, 0x03000050),
         (entry + 0x2A, 0, 0x03000050), (entry + 0xC4, 1, 0x03000050),
-        (entry + 0x5A, 6, 0x030007E0), (entry + 0x74, 6, 0x030007E0),
-        (entry + 0x8A, 2, 0x030007E0), (entry + 0xBE, 1, completion),
+        (entry + 0x5A, 6, read_base), (entry + 0x74, 6, read_base),
+        (entry + 0x8A, 2, read_base), (entry + 0xBE, 1, completion),
         (entry + 0x2C, 3, descriptor), (entry + 0x32, 3, descriptor),
         (entry + 0x46, 3, descriptor), (entry + 0x66, 7, descriptor),
     )
@@ -138,7 +158,7 @@ def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
         return None, reason
     all_intervals = intervals + callee_intervals
 
-    return {
+    profile = {
         "signature": _PROFILE_SIGNATURE,
         "admission": "temporary-evidence-gated",
         "entry_file_offset": entry,
@@ -154,7 +174,22 @@ def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
         "completion_byte_address": completion,
         "failure_report_code": struct.unpack_from("<H", image, entry + 0xD6)[0] & 0xFF,
         "source_intervals": tuple(sorted(set(all_intervals))),
-    }, "accepted"
+    }
+    if not legacy:
+        if halfwords != 0x1000:
+            return None, "dmd5100-760-fixed-count-unclosed"
+        profile.update(signature='dmd5100-paired-program-readback-760-v1',read_base=read_base)
+        # Literal pools may relocate independently in this compiler class.
+        owned = list(intervals) + list(callee_intervals)
+        code = (entry,entry+0xde)
+        pools = sorted(set(bank_shape[2]))
+        # Replace the legacy body-plus-pools span with the actual code/pools.
+        owned = [v for v in owned if v != (entry,entry+_DRIVER_SIZE)]
+        for pool in pools:
+            if any(pool[0] < b and a < pool[1] for a,b in owned+[code]):
+                return None, "dmd5100-760-literal-owner-unclosed"
+        profile['source_intervals'] = tuple(sorted(set(owned+[code]+pools)))
+    return profile, "accepted"
 
 
 def find_dmd5100_profile(image: bytes) -> tuple[dict | None, str]:
@@ -164,7 +199,7 @@ def find_dmd5100_profile(image: bytes) -> tuple[dict | None, str]:
     candidates = []
     offset = image.find(DMD_DOWNLOAD_SIGNATURE)
     while offset >= 0:
-        if _driver_matches(image, offset):
+        if _driver_matches(image, offset) or _read_760_shape(image, offset) is not None:
             candidates.append(offset)
         offset = image.find(DMD_DOWNLOAD_SIGNATURE, offset + 1)
     if not candidates:

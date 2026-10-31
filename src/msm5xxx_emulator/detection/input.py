@@ -6,10 +6,12 @@ import struct
 
 from ..core.config import BoardStatusInput
 
-from .arm import thumb_bl_target, thumb_literal_value
+from .arm import thumb_bl_target, thumb_literal_value, thumb_normalized_source_shape
 from .sbi_arm import find_arm_sbi_bootstraps
 from .boot_download import find_boot_download_inputs
 from .input_scanner import scanner_at
+from .input_scanner_arm_clock import arm_clock_scanner_at
+from .input_scanner_indirect import indirect_scanner_at
 from .input_scanner_direct import direct_scanner_at
 from .input_scanner_gated import gated_scanner_at
 from .rex import THUMB_BL_PATTERN, _normalized_thumb_sha256
@@ -223,6 +225,18 @@ def _sbi_literals_match(image: bytes, position: int,
 
 def _sbi_bootstrap_layout_at(image: bytes, position: int) -> str | None:
     """Recognize closed typed bootstrap and two status-loop compiler layouts."""
+    # Same wire transaction with r1/r2 producers and carry-based busy loops.
+    carry_shape = (0x3e, '15362a9229ab72acd40c07f418c47fea9d518272c6a2223b329f5b1763e8f668',
+                   (), (2,0x0c,0x10,0x16,0x20,0x2a,0x2e,0x34))
+    if (thumb_normalized_source_shape(image, position, carry_shape) is not None
+            and _sbi_literals_match(image, position, (
+                (2, 2, SBI_BOOTSTRAP_BASE - 0x40), (0x0C, 1, 0x085F),
+                (0x10, 1, 0x041F), (0x16, 2, SBI_BOOTSTRAP_BASE - 0x40),
+                (0x20, 1, SBI_BOOTSTRAP_BASE - 0x40), (0x2A, 1, 0x085F),
+                (0x2E, 2, SBI_BOOTSTRAP_BASE - 0x40),
+                (0x34, 1, SBI_BOOTSTRAP_BASE - 0x40),
+            ))):
+        return "thumb-sbi-bootstrap-carry-loop-v1"
     m330_words = {
         0: 0x2045, 4: 0x7008, 6: 0x20C5, 8: 0x7008,
         0x0C: 0x303D, 0x0E: 0x8088, 0x12: 0x38F4, 0x14: 0x8188,
@@ -329,7 +343,7 @@ def _sbi_bootstrap_layout_at(image: bytes, position: int) -> str | None:
 def find_sbi_bootstrap_profile(image: bytes) -> dict[str, object] | None:
     """Admit one exact SBI bootstrap; all later SBI semantics stay fail-closed."""
     matches: list[tuple[int, str]] = []
-    for marker in (b"\x45\x20", b"\x45\x25"):
+    for marker in (b"\x45\x20", struct.pack("<H", 0x2100 | 0x45), b"\x45\x25"):
         position = 0
         while (position := image.find(marker, position)) >= 0:
             candidate = position
@@ -569,6 +583,16 @@ def find_board_status_input(image: bytes, notes: list[str] | None = None
             notes.append(f"board-status scanner rejected at {start:#x}: {reason}")
     offset = 0
     while (offset := image.find(b"\xf0\xb5", offset)) >= 0:
+        scanner, reason = indirect_scanner_at(image, offset - 2)
+        if scanner is not None:
+            found.add(scanner)
+        elif reason and notes is not None:
+            notes.append(f"board-status scanner rejected at {offset - 2:#x}: {reason}")
+        scanner, reason = arm_clock_scanner_at(image, offset)
+        if scanner is not None:
+            found.add(scanner)
+        elif reason and notes is not None:
+            notes.append(f"board-status scanner rejected at {offset:#x}: {reason}")
         scanner, reason = scanner_at(image, offset)
         if scanner is not None:
             found.add(scanner)

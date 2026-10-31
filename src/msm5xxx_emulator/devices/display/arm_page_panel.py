@@ -70,4 +70,5 @@ class ArmPagePanel(PagePanel):
                     offset = (y * 96 + x) * 3
                     frame[offset:offset + 3] = bytes((shade,)) * 3
         self.frame = bytes(frame)
+        self.sequence += 1
         self.dirty = False

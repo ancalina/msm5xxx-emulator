@@ -1213,8 +1213,17 @@ def qemu_mapped_scan_gate_property(image: bytes, config: object,
             or [struct.unpack_from("<I", image, rom + off)[0] for off in (8, 0x24, 0x34)]
                != [0x0300072c, 0x03000728, 0x0300072c]):
         return None, "unclosed-mapped-gate-copy"
-    if getattr(config, "board_status_input", None) is not None:
-        return None, "conflicting-status-profile"
+    status_owner = getattr(config, "board_status_input", None)
+    if status_owner is not None:
+        # The reset-owned lid input replaces the provisional status override;
+        # the contact gate and EEPROM backing owner remain independent.
+        from ..detection.input_scanner_indirect import indirect_scanner_at
+        status_entry = gates.get("status_entry")
+        if type(status_entry) is not int or status_entry + 6 != sites[1]:
+            return None, "conflicting-status-profile"
+        proven_owner, _ = indirect_scanner_at(image, status_entry)
+        if proven_owner is None or status_owner != proven_owner:
+            return None, "conflicting-status-profile"
     revision, _ = qemu_board_revision_property(config)
     ready = getattr(config, "ready_poll", None)
     ready_property, _ = qemu_ready_poll_property(ready)
@@ -1238,8 +1247,10 @@ def qemu_mapped_scan_gate_property(image: bytes, config: object,
             return None, "mapped-gate-eeprom-pin-conflict"
     # Temporary scan-enabling policy verified through ordinary numeric UI input.
     # These levels do not identify a physical switch or its released default.
-    return (f"experimental-matrix-contact={sites[0]:x}:10,"
-            f"experimental-matrix-status={sites[1]:x}:2"), None
+    contact = f"experimental-matrix-contact={sites[0]:x}:10"
+    if status_owner is not None:
+        return contact, None
+    return f"{contact},experimental-matrix-status={sites[1]:x}:2", None
 
 
 def qemu_halfword_matrix_property(image: bytes, config: object,
@@ -1501,6 +1512,10 @@ def _boot_storage_profile(config: object, image: bytes, field: str, finder):
 
 def qemu_boot_keysense_property(config: object, image: bytes, *,
                                 input_claimed: bool = False):
+    candidate = getattr(config, "boot_keysense_release", None)
+    if isinstance(candidate, dict) and candidate.get("signature") == "arm-thumb-single-boot-contact-v1":
+        # This class binds after the final primary seed and GPIO owners resolve.
+        return None, None
     profile, reason = _boot_storage_profile(
         config, image, "boot_keysense_release", find_boot_keysense_release)
     if profile is None:
@@ -1510,6 +1525,60 @@ def qemu_boot_keysense_property(config: object, image: bytes, *,
         return None, "boot-key-input-owner-unclosed"
     return "boot-keysense-release=" + ":".join(
         f"{pc:x}" for pc in profile["read_pcs"]), None
+
+
+def qemu_boot_contact_property(config: object, original: bytes, loaded: bytes, *,
+                               input_claimed: bool = False, layout_claimed: bool = False,
+                               eeprom_window: tuple[int, int] | None = None):
+    """Bind one released contact read to the actual immutable primary image."""
+    from msm5xxx_emulator.detection.boot_contact_5100 import find_boot_contact_release
+    profile, reason = find_boot_contact_release(original)
+    if profile is None:
+        return None, None
+    fields = ("load_address", "image_offset", "entry", "flash_size", "ram_base", "ram_size")
+    if (any(type(getattr(config, key, None)) is not int for key in fields)
+            or (config.load_address, config.image_offset, config.entry) != (0, 0, 0)
+            or getattr(config, "image_kind", None) != "firmware"
+            or getattr(config, "chipset", None) not in ("MSM5100", "MSM5105")
+            or not isinstance(loaded, bytes) or len(loaded) != config.flash_size
+            or not original or not 0 < config.flash_size <= 0xffffffff
+            or not 0 <= config.ram_base < config.ram_base+config.ram_size <= 0x100000000):
+        return None, "boot-contact-memory-layout-unclosed"
+    if (layout_claimed or getattr(config, "missing_overlays", None)
+            or getattr(config, "ram_bootstrap_profile", None) is not None
+            or getattr(config, "ram_image_size", 0)):
+        return None, "boot-contact-memory-owner-unclosed"
+    if (input_claimed or getattr(config, "key_register", None) is not None
+            or getattr(config, "board_status_input", None) is not None
+            or getattr(config, "spi_nv_profile", None) is not None):
+        return None, "boot-contact-input-owner-unclosed"
+    windows=[]
+    if eeprom_window is not None:windows.append(eeprom_window)
+    revision=getattr(config,"board_revision_register",None)
+    adc=getattr(config,"board_adc_address",None)
+    if revision is not None:windows.append((revision,4))
+    if adc is not None:windows.append((adc,4))
+    for base,size in windows:
+        if type(base) is not int or type(size) is not int or not 0 <= base < base+size <= 0x100000000:
+            return None,"boot-contact-port-owner-unclosed"
+        if base < profile["address"]+4 and profile["address"] < base+size:
+            return None,"boot-contact-port-owner-conflict"
+    spans=profile["code_intervals"]+profile["literal_intervals"]+profile["display_source_intervals"]
+    ram=profile["ram_intervals"]+profile["display_ram_intervals"]
+    if (any(not 0 <= a < b <= min(config.flash_size,len(original)) for a,b in spans)
+            or any(not config.ram_base <= a < b <= config.ram_base+config.ram_size for a,b in ram)):
+        return None,"boot-contact-source-layout-unclosed"
+    # No mutated helper bodies or executable overlays can share this admission.
+    if original[:config.flash_size].ljust(config.flash_size, b"\xff") != loaded:
+        return None,"boot-contact-loaded-source-changed"
+    current,_=find_boot_contact_release(loaded)
+    if current != profile:
+        return None,"boot-contact-loaded-profile-changed"
+    stored=getattr(config,"boot_keysense_release",None)
+    if stored is not None and json.loads(json.dumps(stored)) != json.loads(json.dumps(profile)):
+        return None,"boot-contact-config-profile-changed"
+    return "experimental-boot-contact="+":".join(f"{v:x}" for v in
+        (profile["address"],profile["read_pcs"][0],profile["mask"],profile["width"])),None
 
 
 def qemu_spi_nv_properties(config: object, image: bytes, *,
@@ -1908,6 +1977,16 @@ def qemu_loaded_uart_console_property(
     if wire is None:
         return None, reason
     limit = _source_class_limit(original, config)
+    if (limit is not None and limit < config.flash_size
+            and profile["signature"] == _UART_PROBE_FF_CC_SIGNATURE
+            and getattr(config, "chipset", None) in ("MSM5100", "MSM5105")
+            and getattr(config, "image_offset", None) == 0
+            and not getattr(config, "missing_overlays", None)
+            and not getattr(config, "ram_image_size", 0)
+            and loaded == original.ljust(config.flash_size, b"\xff")):
+        # Canonical NOR tail padding is not source evidence: every guarded
+        # interval must still be wholly present in the original bytes below.
+        limit = config.flash_size
     if limit is None or limit != config.flash_size or len(loaded) != limit:
         return None, "console-loaded-layout-unverified"
     if not all(profile.get(field) for field in
@@ -2358,6 +2437,7 @@ def qemu_dmd5100_property(
         immutable_limit: int | None = None, layout_claimed: bool = False,
         input_profile: dict | None = None,
         eeprom_window: tuple[int, int] | None = None,
+        allow_read_760: bool = False,
 ) -> tuple[str | None, str | None]:
     """Bind the paired program protocol to the immutable image actually loaded."""
     from msm5xxx_emulator.detection.dmd5100 import find_dmd5100_profile
@@ -2365,12 +2445,48 @@ def qemu_dmd5100_property(
     profile, reason = find_dmd5100_profile(original)
     if profile is None:
         return None, None if reason == "dmd5100-typed-driver-not-found" else reason
+    read_760 = profile.get("signature") == "dmd5100-paired-program-readback-760-v1"
+    if read_760 and getattr(config, "chipset", None) not in ("MSM5100", "MSM5105"):
+        return None, "dmd5100-760-chipset-scope-unclosed"
+    if read_760 and not allow_read_760:
+        return None, "dmd5100-760-runtime-validation-pending"
+    legacy_padded_console = False
+    uart = getattr(config, "uart_console", None)
+    if (not read_760 and isinstance(loaded, bytes)
+            and type(getattr(config, "flash_size", None)) is int
+            and len(original) < config.flash_size
+            and getattr(config, "chipset", None) in ("MSM5100", "MSM5105")
+            and isinstance(uart, dict) and uart.get("signature") == _UART_PROBE_FF_CC_SIGNATURE):
+        # This independently checks the complete reset/copy/console source,
+        # present guard spans, canonical FF tail, and final memory ownership.
+        # Keeping the native DSP bridge avoids a legacy ROM patch invalidating
+        # that same loaded-source contract later in the launch pipeline.
+        console_wire, _ = qemu_loaded_uart_console_property(
+            uart, original, loaded, config, ram_claimed=layout_claimed)
+        legacy_padded_console = console_wire is not None
+    legacy_padded_indirect_page = False
+    if (not read_760 and isinstance(loaded, bytes)
+            and all(type(getattr(config, key, None)) is int for key in
+                    ("flash_size", "ram_base", "ram_size"))
+            and len(original) < config.flash_size
+            and getattr(config, "chipset", None) in ("MSM5100", "MSM5105")):
+        from msm5xxx_emulator.detection.boot_page_indirect import find_indirect_boot_page_profile
+        parent, _ = find_indirect_boot_page_profile(original)
+        # A complete indirect LCD reset/selector graph independently owns the
+        # short primary dump. Preserve that source by using native DSP upload,
+        # rather than a legacy ROM patch that would invalidate its observer.
+        if (parent is not None and find_indirect_boot_page_profile(loaded)[0] == parent
+                and all(config.ram_base <= a < b <= config.ram_base + config.ram_size
+                        for a,b in parent["ram_intervals"])):
+            legacy_padded_indirect_page = True
     fields = ("load_address", "image_offset", "entry", "flash_size", "ram_base", "ram_size")
     if (any(type(getattr(config, name, None)) is not int for name in fields)
             or getattr(config, "image_kind", None) != "firmware"
             or (config.load_address, config.image_offset, config.entry) != (0, 0, 0)
             or not isinstance(loaded, bytes)
-            or not 0 < config.flash_size <= min(len(original), 0xFFFFFFFF)
+            or not 0 < config.flash_size <= 0xFFFFFFFF
+            or (not read_760 and not legacy_padded_console and not legacy_padded_indirect_page
+                and config.flash_size > len(original))
             or not 0 <= config.ram_base < 0x100000000
             or not 0 < config.ram_size <= 0x100000000 - config.ram_base
             or len(loaded) != config.flash_size):
@@ -2397,7 +2513,8 @@ def qemu_dmd5100_property(
         windows.append((input_profile.get("register", input_profile.get("sense_address")), width))
     if eeprom_window is not None:
         windows.append(eeprom_window)
-    ports = (0x0300004C, 0x03000050, 0x0300005C, 0x030007E8, 0x030007EC)
+    read_base = 0x03000760 if read_760 else 0x030007e0
+    ports = (0x0300004C, 0x03000050, 0x0300005C, read_base+8, read_base+12)
     for start, size in windows:
         if (type(start) is not int or type(size) is not int
                 or not 0 <= start < start + size <= 0x100000000):
@@ -2408,13 +2525,16 @@ def qemu_dmd5100_property(
     if type(limit) is not int or not 0 < limit <= config.flash_size:
         return None, "dmd5100-immutable-prefix-unclosed"
     # Keep every active callee byte pristine, not just the typed entry spans.
-    if original[:limit] != loaded[:limit]:
+    expected = original[:limit].ljust(limit, b"\xff") if (read_760 or legacy_padded_console or legacy_padded_indirect_page) else original[:limit]
+    if expected != loaded[:limit]:
         return None, "dmd5100-loaded-immutable-source-changed"
-    if (profile.get("signature") != "dmd5100-paired-program-readback-v1"
+    if (profile.get("signature") != ("dmd5100-paired-program-readback-760-v1" if read_760 else "dmd5100-paired-program-readback-v1")
+            or (read_760 and (profile.get("read_base") != read_base or profile.get("halfword_count") != 0x1000))
             or profile.get("admission") != "temporary-evidence-gated"
             or profile.get("mode") != 0
             or any(not 0 <= start < end <= limit
                    for start, end in profile["source_intervals"])
+            or (read_760 and any(end > len(original) for _,end in profile["source_intervals"]))
             or getattr(config, "dmd_download_address", None) != profile["entry_file_offset"]
             or not config.ram_base <= profile["completion_byte_address"] <
                    config.ram_base + config.ram_size <= 0x100000000):
@@ -2424,7 +2544,7 @@ def qemu_dmd5100_property(
         return None, "dmd5100-loaded-profile-changed"
     values = (profile["entry_file_offset"], profile["descriptor_file_offset"],
               profile["payload_file_offset"], profile["pair_count"])
-    return "dmd5100-program=" + ":".join(f"{value:x}" for value in values), None
+    return ("dmd5100-program-760=" if read_760 else "dmd5100-program=") + ":".join(f"{value:x}" for value in values), None
 
 
 def qemu_dmd5000_property(original: bytes, loaded: bytes, config: object, *,
@@ -4466,6 +4586,8 @@ class Transport:
             immutable_limit=primary_profile[0] if primary_profile is not None else None,
             input_profile=self.matrix_input_profile,
             eeprom_window=(eeprom_profile[0], 32) if eeprom_profile is not None else None,
+            allow_read_760=(isinstance(getattr(self.config, "boot_keysense_release", None), dict)
+                and self.config.boot_keysense_release.get("signature") == "arm-thumb-single-boot-contact-v1"),
             layout_claimed=ma2_patch is not None or any(value is not None for value in (
                 ram_reserved, primary_profile, record_profile, mapped_primary_profile,
                 upper_x16_profile, intel_profile, amd_profile,
@@ -4560,6 +4682,66 @@ class Transport:
                 upper_x16_profile, intel_profile, amd_profile,
                 self.config.upper_flash_address, self.config.secondary_flash_address,
                 self.config.native_nand_profile, self.config.nand_image)))
+        self.decoder._lcd_bind_source_mux(
+            detector_image, primary_seed,
+            ram_claimed=any(value is not None for value in (
+                ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                upper_x16_profile, intel_profile, amd_profile,
+                self.config.upper_flash_address, self.config.secondary_flash_address,
+                self.config.native_nand_profile, self.config.nand_image)))
+        self.decoder._lcd_bind_source_boot_page(
+            detector_image, primary_seed,
+            ram_claimed=any(value is not None for value in (
+                ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                upper_x16_profile, intel_profile, amd_profile,
+                self.config.upper_flash_address, self.config.secondary_flash_address,
+                self.config.native_nand_profile, self.config.nand_image)))
+        self.decoder._lcd_bind_source_rgb565_boot(
+            detector_image, primary_seed,
+            allowed_patch=dmd_patch,
+            ram_claimed=any(value is not None for value in (
+                ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                upper_x16_profile, intel_profile, amd_profile,
+                self.config.upper_flash_address, self.config.secondary_flash_address,
+                self.config.native_nand_profile, self.config.nand_image)))
+        self.decoder._lcd_bind_source_bytepair565(
+            detector_image, primary_seed,
+            ram_claimed=any(value is not None for value in (
+                ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                upper_x16_profile, intel_profile, amd_profile,
+                self.config.upper_flash_address, self.config.secondary_flash_address,
+                self.config.native_nand_profile, self.config.nand_image)))
+        gpio_lcd_property = self.decoder._lcd_bind_source_gpio(
+            detector_image, primary_seed,
+            ram_claimed=any(value is not None for value in (
+                ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                upper_x16_profile, intel_profile, amd_profile,
+                self.config.upper_flash_address, self.config.secondary_flash_address,
+                self.config.native_nand_profile, self.config.nand_image)))
+        if gpio_lcd_property is not None:
+            machine += "," + gpio_lcd_property
+        contact_candidate = getattr(self.config, "boot_keysense_release", None)
+        if (isinstance(contact_candidate, dict) and
+                contact_candidate.get("signature") == "arm-thumb-single-boot-contact-v1"):
+            boot_property, contact_reject = qemu_boot_contact_property(
+                self.config, detector_image, primary_seed,
+                input_claimed=(self.matrix_input_profile is not None
+                               or self.decoder.direct_input_profile is not None
+                               or status_property is not None or experimental_halfword
+                               or experimental_low5 or experimental_status_level is not None),
+                eeprom_window=(eeprom_profile[0], 32) if eeprom_profile is not None else None,
+                layout_claimed=any(value is not None for value in (
+                    ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                    upper_x16_profile, intel_profile, amd_profile,
+                    self.config.upper_flash_address, self.config.secondary_flash_address,
+                    self.config.native_nand_profile, self.config.nand_image)))
+            if boot_property is not None:
+                machine += "," + boot_property
+                self.config.detection_notes.append(
+                    "source-bound released boot contact enabled at its single guest read")
+            elif contact_reject is not None:
+                self.config.detection_notes.append(
+                    f"QEMU boot contact rejected: {contact_reject}; native fallback retained")
         legacy_panel_protocol = self.decoder._lcd_bind_legacy_panel(
             detector_image, primary_seed, ram_claimed=ram_reserved is not None)
         if legacy_panel_protocol == "direct16":

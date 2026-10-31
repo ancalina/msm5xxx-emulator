@@ -56,8 +56,10 @@ int main(void) {
                          "/* Temporary electrical approximation: firmware-qualified")
         old_helper = section("static uint16_t msm5xxx_poc_halfword_sense(",
                              "/* Temporary electrical approximation")
-        owner = section("static uint64_t msm5xxx_poc_eeprom_gpio_read(",
-                        "static uint64_t msm5xxx_poc_matrix_halfword_read")
+        owner = (section("static uint64_t msm5xxx_poc_eeprom_gpio_read(",
+                         "static uint64_t msm5xxx_poc_board_status_input_read") +
+                 section("static uint64_t msm5xxx_poc_halfword_backing_read(",
+                         "static uint64_t msm5xxx_poc_matrix_halfword_read"))
         # This legacy harness does not exercise the new reset phase; its
         # dedicated row734 harness extracts/tests that actual helper separately.
         reset_start = owner.index("static void msm5xxx_poc_matrix_row734_reset(")
