@@ -87,6 +87,9 @@ final class QEMUEngine: ObservableObject {
                 }
                 let support = try FileManager.default.url(for: .applicationSupportDirectory,
                     in: .userDomainMask, appropriateFor: nil, create: true)
+                // iOS drops stderr; keep QEMU/Python diagnostics next to the state for inspection.
+                let log = support.appendingPathComponent("session.log").path
+                freopen(log, "w", stderr); freopen(log, "a", stdout); setvbuf(stderr, nil, _IONBF, 0)
                 let request: [String: Any] = ["firmware": firmware.path, "profile": profile,
                     "qemu": "qemu-system-arm", "state": support.appendingPathComponent("state").path,
                     "experimental_rex": false]
