@@ -26,3 +26,135 @@ diff --git a/block/file-posix.c b/block/file-posix.c
  #if defined(HAVE_HOST_BLOCK_DEVICE)
  #include <paths.h>
  #include <sys/param.h>
+diff --git a/include/qemu/osdep.h b/include/qemu/osdep.h
+--- a/include/qemu/osdep.h
++++ b/include/qemu/osdep.h
+@@ -870,5 +870,27 @@
+ #endif /* !HAVE_SYSTEM_FUNCTION */
+ 
++/* Embedded iOS QEMU owns threads, never the application's process lifetime.
++ * Do not interpose libc globally: only QEMU translation units see these names.
++ * One invocation per app lifetime; fatal exits may intentionally leak state.
++ */
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++#include <pthread.h>
++static inline __attribute__((noreturn)) void msm5xxx_ios_thread_exit(int status)
++{
++    pthread_exit((void *)(intptr_t)status);
++    __builtin_unreachable();
++}
++static inline int msm5xxx_ios_ignore_atexit(void (*callback)(void))
++{
++    (void)callback;
++    return 0;
++}
++#define exit msm5xxx_ios_thread_exit
++#define _exit msm5xxx_ios_thread_exit
++#define _Exit msm5xxx_ios_thread_exit
++#define atexit msm5xxx_ios_ignore_atexit
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/system/main.c b/system/main.c
+--- a/system/main.c
++++ b/system/main.c
+@@ -57,7 +57,8 @@
+ 
+ int (*qemu_main)(void);
+ 
+-#ifdef CONFIG_DARWIN
++/* UIKit owns the main run loop. The host already supplied our worker thread. */
++#if defined(CONFIG_DARWIN) && !TARGET_OS_IPHONE
+ static int os_darwin_cfrunloop_main(void)
+ {
+     CFRunLoopRun();
+diff --git a/system/runstate.c b/system/runstate.c
+--- a/system/runstate.c
++++ b/system/runstate.c
+@@ -803,6 +803,30 @@
+     qemu_notify_event();
+ }
+ 
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++#include "qemu/main-loop.h"
++/* ABI marker prevents the app from loading an older, process-exiting build. */
++int msm5xxx_qemu_embedding_abi(void)
++{
++    return 1;
++}
++
++static void msm5xxx_ios_quit_bh(void *opaque)
++{
++    (void)opaque;
++    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++}
++
++void msm5xxx_qemu_request_quit(void)
++{
++    /* Never wait for BQL on the Python caller. The main AioContext holds it. */
++    AioContext *ctx = qemu_get_aio_context();
++    if (ctx) {
++        aio_bh_schedule_oneshot(ctx, msm5xxx_ios_quit_bh, NULL);
++    }
++}
++#endif
++
+ static void qemu_system_powerdown(void)
+ {
+     qapi_event_send_powerdown();
+diff --git a/system/main.c b/system/main.c
+--- a/system/main.c
++++ b/system/main.c
+@@ -52,7 +52,11 @@
+     bql_unlock();
+     replay_mutex_unlock();
+ 
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    return (void *)(intptr_t)status;
++#else
+     exit(status);
++#endif
+ }
+ 
+ int (*qemu_main)(void);
+@@ -92,7 +96,11 @@
+                            qemu_default_main, NULL, QEMU_THREAD_DETACHED);
+         return qemu_main();
+     } else {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++        return (int)(intptr_t)qemu_default_main(NULL);
++#else
+         qemu_default_main(NULL);
+         g_assert_not_reached();
++#endif
+     }
+ }
+diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
+--- a/accel/tcg/tcg-all.c
++++ b/accel/tcg/tcg-all.c
+@@ -75,7 +75,10 @@
+     TCGState *s = TCG_STATE(obj);
+ 
+     /* If debugging enabled, default "auto on", otherwise off. */
+-#if defined(CONFIG_DEBUG_TCG) && !defined(CONFIG_USER_ONLY)
++#if defined(__APPLE__) && TARGET_OS_IPHONE && !defined(CONFIG_TCG_INTERPRETER)
++    /* iOS permits separate RW/RX aliases, never a writable executable page. */
++    s->splitwx_enabled = 1;
++#elif defined(CONFIG_DEBUG_TCG) && !defined(CONFIG_USER_ONLY)
+     s->splitwx_enabled = -1;
+ #else
+     s->splitwx_enabled = 0;
+diff --git a/system/runstate.c b/system/runstate.c
+--- a/system/runstate.c
++++ b/system/runstate.c
+@@ -1013,4 +1013,8 @@
+     qemu_chr_cleanup();
+     user_creatable_cleanup();
+     /* TODO: unref root container, check all devices are ok */
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    /* We suppress process atexit; clean shutdown still runs exit notifiers. */
++    notifier_list_notify(&exit_notifiers, NULL);
++#endif
+ }

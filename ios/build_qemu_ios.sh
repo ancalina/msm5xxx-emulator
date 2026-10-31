@@ -56,6 +56,6 @@ cd "$BUILD"
     --cross-prefix= --without-default-features --enable-system --enable-tcg $TCI \
     --enable-fdt=internal --disable-download --disable-modules --disable-plugins \
     --disable-gio --disable-tools --disable-docs --disable-install-blobs --disable-werror
-nice -n 10 ninja -C "$BUILD" -j4 qemu-system-arm
+nice -n 19 ninja -C "$BUILD" -j2 qemu-system-arm
 file "$BUILD/qemu-system-arm"
 echo "iOS QEMU ($PLATFORM $ARCH $MODE) built: $BUILD/qemu-system-arm"

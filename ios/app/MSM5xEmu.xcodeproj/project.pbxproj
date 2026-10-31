@@ -10,13 +10,30 @@
 		A10000000000000000000001 /* MSM5xEmuApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* MSM5xEmuApp.swift */; };
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* ContentView.swift */; };
 		A10000000000000000000003 /* QEMUEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* QEMUEngine.swift */; };
+        A10000000000000000000004 = {isa = PBXBuildFile; fileRef = A20000000000000000000004; };
+        A10000000000000000000005 = {isa = PBXBuildFile; fileRef = A20000000000000000000005; };
+        A10000000000000000000006 = {isa = PBXBuildFile; fileRef = A20000000000000000000005; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+        A30000000000000000000006 = {
+            isa = PBXCopyFilesBuildPhase;
+            buildActionMask = 2147483647;
+            dstPath = "";
+            dstSubfolderSpec = 10;
+            files = (A10000000000000000000006, );
+            name = "Embed Python framework";
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* MSM5xEmuApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MSM5xEmuApp.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A20000000000000000000003 /* QEMUEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QEMUEngine.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* MSM5xEmu.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MSM5xEmu.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        A20000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PythonBridge.m; sourceTree = "<group>"; };
+        A20000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Python.xcframework; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -24,6 +41,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                A10000000000000000000005,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -44,6 +62,7 @@
 				A20000000000000000000001 /* MSM5xEmuApp.swift */,
 				A20000000000000000000002 /* ContentView.swift */,
 				A20000000000000000000003 /* QEMUEngine.swift */,
+                A20000000000000000000004,
 			);
 			path = MSM5xEmu;
 			sourceTree = "<group>";
@@ -66,7 +85,9 @@
 				A30000000000000000000001 /* Sources */,
 				A30000000000000000000002 /* Frameworks */,
 				A30000000000000000000003 /* Resources */,
+                A30000000000000000000005 /* Install Python runtime */,
 				A30000000000000000000004 /* Embed QEMU frameworks */,
+                A30000000000000000000006 /* Embed Python framework */,
 			);
 			buildRules = (
 			);
@@ -131,6 +152,18 @@
 			shellPath = /bin/sh;
 			shellScript = "# Optional: copy the per-platform frameworks built by ios/build_qemu_framework.sh\n# (QEMU = TCG/JIT, QEMUTCI = interpreter).\ndst=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nfor name in QEMU QEMUTCI; do\n  src=\"$SRCROOT/Frameworks/$PLATFORM_NAME/$name.framework\"\n  [ -d \"$src\" ] || { echo \"warning: $src not built\"; continue; }\n  mkdir -p \"$dst\"; rm -rf \"$dst/$name.framework\"; cp -R \"$src\" \"$dst/\"\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$dst/$name.framework\"\ndone\n";
 		};
+        A30000000000000000000005 = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            name = "Install Python runtime";
+            outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/bash;
+            shellScript = "\"$SRCROOT/../build_python_ios.sh\" --install-bundle\n";
+        };
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -141,6 +174,7 @@
 				A10000000000000000000001 /* MSM5xEmuApp.swift in Sources */,
 				A10000000000000000000002 /* ContentView.swift in Sources */,
 				A10000000000000000000003 /* QEMUEngine.swift in Sources */,
+                A10000000000000000000004,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -179,6 +213,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+                SWIFT_OBJC_BRIDGING_HEADER = "MSM5xEmu/MSM5xEmu-Bridging-Header.h";
+                "ARCHS[sdk=iphoneos*]" = arm64;
+                "ARCHS[sdk=iphonesimulator*]" = x86_64;
+                ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MSM5xEmu;
@@ -200,6 +238,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+                SWIFT_OBJC_BRIDGING_HEADER = "MSM5xEmu/MSM5xEmu-Bridging-Header.h";
+                "ARCHS[sdk=iphoneos*]" = arm64;
+                "ARCHS[sdk=iphonesimulator*]" = x86_64;
+                ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MSM5xEmu;

@@ -2,34 +2,39 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    private let engine = QEMUEngine()
+    @StateObject private var engine = QEMUEngine()
     @State private var firmware: URL?
     @State private var importing = false
     @State private var message = ""
-    @State private var lastKey = ""
     @State private var jit = QEMUEngine.jitAvailable
 
     private let keys = [["Soft1", "Up", "Soft2"], ["Left", "OK", "Right"], ["Send", "Down", "End"],
                         ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"]]
+    private let bits = ["Soft1": 0, "Up": 1, "Soft2": 2, "Left": 4, "OK": 5, "Right": 6,
+                        "Send": 3, "Down": 9, "End": 7, "1": 11, "2": 12, "3": 13,
+                        "4": 14, "5": 15, "6": 16, "7": 17, "8": 18, "9": 19,
+                        "*": 20, "0": 21, "#": 22]
 
     var body: some View {
         VStack(spacing: 12) {
-            // LCD placeholder; frames will come from the transport once the guest runs.
-            Rectangle()
-                .fill(Color.black)
-                .aspectRatio(128.0 / 160.0, contentMode: .fit)
-                .frame(maxHeight: 260)
-                .overlay(Text(firmware?.lastPathComponent ?? "No firmware").foregroundColor(.gray).padding())
-                .accessibilityLabel("Phone display")
+            Group {
+                if let frame = engine.frame {
+                    Image(decorative: frame, scale: 1).resizable().interpolation(.none)
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    Rectangle().fill(Color.black).aspectRatio(128.0 / 160.0, contentMode: .fit)
+                        .overlay(Text(firmware?.lastPathComponent ?? "No firmware").foregroundColor(.gray).padding())
+                }
+            }
+            .frame(maxHeight: 260)
+            .accessibilityLabel("Phone display")
 
             VStack(spacing: 6) {
                 ForEach(keys, id: \.self) { row in
                     HStack(spacing: 6) {
                         ForEach(row, id: \.self) { key in
-                            Button(key) { lastKey = key }
-                                .frame(maxWidth: .infinity, minHeight: 36)
-                                .background(Color.secondary.opacity(0.15))
-                                .cornerRadius(6)
+                            PhoneKey(label: key, enabled: engine.running && engine.inputBits.contains(bits[key]!),
+                                     transition: { engine.key(bits[key]!, pressed: $0) })
                         }
                     }
                 }
@@ -37,17 +42,25 @@ struct ContentView: View {
 
             Button("Choose firmware") { importing = true }
                 .buttonStyle(.borderedProminent)
+                .disabled(engine.used)
+            HStack {
+                Button("Run") { if let firmware = firmware { engine.start(firmware) } }
+                    .disabled(firmware == nil || engine.used)
+                Button("Stop") { engine.stop() }.disabled(!engine.running)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(engine.status)
                 Text(jit ? "JIT: available (TCG)" : "JIT: unavailable (TCI only)")
-                if !lastKey.isEmpty { Text("Key: \(lastKey)") }
                 if !message.isEmpty { Text(message) }
             }
             .font(.footnote)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding()
+        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
+            engine.refresh()
+        }
         // JIT can be granted while running (TrollStore "Open with JIT", Dopamine); poll cheaply.
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
             let now = QEMUEngine.jitAvailable
@@ -81,5 +94,33 @@ struct ContentView: View {
         } catch {
             message = error.localizedDescription
         }
+    }
+}
+
+
+private struct PhoneKey: View {
+    let label: String
+    let enabled: Bool
+    let transition: (Bool) -> Void
+    @State private var pressed = false
+    var body: some View {
+        Text(label)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(Color.secondary.opacity(pressed ? 0.4 : 0.15))
+            .cornerRadius(6)
+            .opacity(enabled ? 1 : 0.4)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    if enabled && !pressed { pressed = true; transition(true) }
+                }
+                .onEnded { _ in
+                    if pressed { pressed = false; transition(false) }
+                })
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                if enabled { transition(true); transition(false) }
+            }
+            .onDisappear { if pressed { pressed = false; transition(false) } }
     }
 }

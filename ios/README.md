@@ -26,7 +26,14 @@ split-wx TCG uses it (write, then make executable), picks QEMU (TCG) or QEMUTCI,
 running. When installing repeatedly with trollstorehelper, use a new file name each time: it reuses
 content cached under a previously used path. It needs `ios/app/Frameworks/iphoneos/QEMU.framework` (tcg) and `QEMUTCI.framework` (tci).
 
-`ios/app/MSM5xEmu.xcodeproj` (bundle id `me.ancal.msm5xemu`) is the SwiftUI shell: firmware import,
-LCD placeholder, keypad and engine status. It embeds `ios/app/Frameworks/$PLATFORM_NAME/QEMU.framework`
-when present and loads it at launch. Still missing: embedded Python (detector/transport), running
-a guest from the app (QEMU currently exits the process on shutdown) and LCD/input wiring.
+`ios/app/MSM5xEmu.xcodeproj` (bundle id `me.ancal.msm5xemu`, iOS 15.0) embeds
+CPython and the shared detector/transport. See [PYTHON.md](PYTHON.md) for the pinned
+runtime, exact Mac commands, bundle layout and hardware validation. Firmware is
+copied into Application Support; Run applies detector admission before launching
+QEMU on a background thread. LCD frames and detector-admitted press/release input
+use the same protocol as Android. Desktop and Android still use subprocesses.
+
+Rebuild both QEMU variants with this tree's embedding patch. Older frameworks are
+rejected by the app's ABI check. Normal shutdown returns through QEMU cleanup;
+QEMU's direct exit calls end their calling thread rather than UIKit's process.
+One QEMU invocation is supported per app launch; restart the app after Stop.
