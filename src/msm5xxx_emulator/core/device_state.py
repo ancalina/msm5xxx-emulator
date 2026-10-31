@@ -768,6 +768,13 @@ class DeviceStateMixin:
             self._lcd_secondary_reason = "paired-page-descriptor-awaiting-runtime"
         self._lcd_secondary_panel = PagePanel(secondary_port) if secondary_port else None
         if not ports and secondary_port is None:
+            from ..detection.halfword_page import find_halfword_page_secondary
+            halfword_port = find_halfword_page_secondary(self.image)
+            if halfword_port is not None:
+                self._lcd_secondary_panel = PagePanel(halfword_port, data_offset=2)
+                self._lcd_secondary_reason = "halfword-byte-page-consumer-awaiting-runtime"
+                secondary_port = halfword_port
+        if not ports and secondary_port is None:
             from ..detection.secondary_arm_page import find_secondary_arm_page
             from ..devices.display.arm_page_panel import ArmPagePanel
             profile, reason = find_secondary_arm_page(self.image)
