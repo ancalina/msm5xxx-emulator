@@ -28,7 +28,7 @@ class SharedLCDTests(unittest.TestCase):
                  'msm5xxx_poc_ma5_shared_lcd_read', 'msm5xxx_poc_ma5_shared_lcd_write')
         actual = '\n'.join(function(source, name) for name in names)
         begin = source.index('    for (i = 0; i < MSM5XXX_POC_LCD_PORTS; i++) {', source.index('"msm5xxx-poc.lcd-aperture"'))
-        end = source.index('    if (s->lcd_trace_enabled)', begin)
+        end = source.index('    if (s->direct_lcd_enabled)', begin)
         registration = source[begin:end]
         self.assertIn('if (!s->audio_ma2 && !s->audio_shared_lcd) {', source)
         self.assertNotIn('} else if (!s->audio_ma2 && !s->audio_shared_lcd) {', source)
