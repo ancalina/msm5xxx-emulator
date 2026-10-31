@@ -64,6 +64,12 @@ struct ContentView: View {
         }
         // JIT can be granted while running (TrollStore "Open with JIT", Dopamine); poll cheaply.
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            // Headless test runs (autorun marker) leave the latest LCD frame as frame.png.
+            if let frame = engine.frame,
+               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+               FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
+                try? UIImage(cgImage: frame).pngData()?.write(to: support.appendingPathComponent("frame.png"))
+            }
             let now = QEMUEngine.jitAvailable
             if now != jit || QEMUEngine.codeSigningFlags & 0x1000_0000 != 0 && !now {
                 jit = now
