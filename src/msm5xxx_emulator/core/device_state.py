@@ -768,14 +768,6 @@ class DeviceStateMixin:
             self._lcd_secondary_reason = "paired-page-descriptor-awaiting-runtime"
         self._lcd_secondary_panel = (PagePanel(secondary_port, independent_ports=bool(ports))
                                      if secondary_port else None)
-        self._lcd_028_rgb332_source_geometry = None
-        if self._lcd_secondary_reason == "temporary-mixed-descriptor-consumer-awaiting-runtime":
-            from ..detection.byte_main import find_halfword_rgb332_main
-            self._lcd_028_rgb332_source_geometry = find_halfword_rgb332_main(self.image)
-            if (self._lcd_028_rgb332_source_geometry is not None
-                    and getattr(config, "display_geometry_source", "external-config") != "auto-default"
-                    and (config.width, config.height) != self._lcd_028_rgb332_source_geometry):
-                self._lcd_028_rgb332_source_geometry = None
         if not ports and secondary_port is None:
             from ..detection.halfword_page import find_halfword_page_secondary
             halfword_port = find_halfword_page_secondary(self.image)

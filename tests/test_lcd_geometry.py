@@ -1366,32 +1366,6 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual((near_miss.config.width, near_miss.config.height), (176, 220))
         self.assertFalse(near_miss._lcd_028_rgb332_qualified)
 
-    def test_source_bound_halfword_rgb332_preserves_biased_rows(self) -> None:
-        emulator = self._routing_emulator(width=176, height=220)
-        emulator._lcd_028_rgb332_source_geometry = (120, 160)
-        header = ((0x02800000, 0x75), (0x02800004, 11),
-                  (0x02800004, 159), (0x02800000, 0x15),
-                  (0x02800004, 0), (0x02800004, 119),
-                  (0x02800000, 0x5C))
-        for address, value in header:
-            emulator._lcd_write(None, 0, address, 2, value, None)
-        for _ in range(120 * 149 - 1):
-            emulator._lcd_write(None, 0, 0x02800004, 2, 0xFF, None)
-        self.assertFalse(emulator._lcd_028_rgb332_qualified)
-        emulator._lcd_write(None, 0, 0x02800004, 2, 0xE0, None)
-        self.assertTrue(emulator._lcd_028_rgb332_qualified)
-        self.assertEqual((emulator.config.width, emulator.config.height), (120, 160))
-        self.assertEqual(emulator.display_frame[:120 * 11 * 3], bytes(120 * 11 * 3))
-        self.assertEqual(emulator.display_frame[120 * 11 * 3:120 * 11 * 3 + 3], b'\xff' * 3)
-        self.assertEqual(emulator.display_frame[-3:], b'\xff\0\0')
-        # A byte-valued halfword window alone must not change RGB565 admission.
-        unbound = self._routing_emulator(width=176, height=220)
-        for address, value in header:
-            unbound._lcd_write(None, 0, address, 2, value, None)
-        for _ in range(120 * 149):
-            unbound._lcd_write(None, 0, 0x02800004, 2, 0xFF, None)
-        self.assertFalse(unbound._lcd_028_rgb332_qualified)
-
     def test_rgb332_bc_traversal_preserves_asymmetric_window(self) -> None:
         emulator = self._routing_emulator(width=120, height=160)
         emulator._lcd_028_rgb332_qualified = True
