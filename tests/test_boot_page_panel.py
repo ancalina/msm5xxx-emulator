@@ -55,3 +55,17 @@ class BootPageTests(unittest.TestCase):
         for _ in range(128):
             self.command(p,0x10,0);p.write(0x02000002,2,0)
         self.assertEqual(p.clear_next,0)
+
+    def test_foreign_page_extent_or_extra_plane_cannot_qualify_a_prefix(self):
+        p=BootPagePanel(9,1);self.command(p,0xae)
+        for page in range(16):
+            self.command(p,0xb0+page,0x10,0)
+            for _ in range(128):p.write(0x02000002,2,0)
+        self.command(p,0xaf);self.assertFalse(p.qualified)
+        p=BootPagePanel(9,1);self.command(p,0xae)
+        for page in range(9):
+            self.command(p,0xb0+page)
+            for column in range(128):
+                self.command(p,0x10|(column>>4),column&15)
+                p.write(0x02000002,2,0);p.write(0x02000002,2,0)
+        self.command(p,0xaf);self.assertFalse(p.qualified)

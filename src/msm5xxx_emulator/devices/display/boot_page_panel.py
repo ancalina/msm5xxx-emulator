@@ -35,6 +35,11 @@ class BootPagePanel:
                 self.page=-1;self.low=self.high=self.column=None;self.plane=0
             elif 0xb0 <= value < 0xb0+self.pages:
                 self.page=value-0xb0;self.low=self.high=self.column=None;self.plane=0
+            elif 0xb0 <= value <= 0xbf:
+                if self.qualified:self.rejection='source-page-outside-canvas'
+                self.clear_next=0;self.clear_row_count=0
+                self.clear_seen[:]=bytes(len(self.clear_seen))
+                self.page=-1;self.column=None
             elif 0 <= value <= 15:
                 self.low=value;self._address()
             elif 0x10 <= value <= 0x1f:
@@ -48,6 +53,9 @@ class BootPagePanel:
             return self.qualified
         if self.page < 0 or self.column is None or self.column >= 128:
             if self.qualified:self.rejection='data-without-source-page-column'
+            elif self.started:
+                self.clear_next=0;self.clear_row_count=0
+                self.clear_seen[:]=bytes(len(self.clear_seen))
             return False
         at=(self.page*128+self.column)*self.planes+self.plane
         previous=self.ram[at];self.ram[at]=value
