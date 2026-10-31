@@ -771,7 +771,8 @@ class DeviceStateMixin:
             from ..detection.halfword_page import find_halfword_page_secondary
             halfword_port = find_halfword_page_secondary(self.image)
             if halfword_port is not None:
-                self._lcd_secondary_panel = PagePanel(halfword_port, data_offset=2)
+                self._lcd_secondary_panel = PagePanel(halfword_port, data_offset=2,
+                                                      await_setup=True)
                 self._lcd_secondary_reason = "halfword-byte-page-consumer-awaiting-runtime"
                 secondary_port = halfword_port
         if not ports and secondary_port is None:

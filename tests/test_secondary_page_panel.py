@@ -12,6 +12,32 @@ from msm5xxx_emulator.detection.display import find_byte_main_page_secondary
 
 
 class SecondaryPagePanelTests(unittest.TestCase):
+    def test_halfword_setup_ignores_early_aperture_and_main_initialization(self):
+        controller, fallback = self.controller()
+        panel = PagePanel(0x02800000, data_offset=2, await_setup=True)
+        controller._lcd_secondary_panel = panel
+        initial = [(panel.port, 2, 0), (0x02000000, 2, 2),
+                   (0x02000002, 2, 1)]
+        for address, size, value in initial:
+            controller._lcd_write(None, 0, address, size, value, None)
+        self.assertEqual(fallback, initial)
+        self.assertIsNone(panel.rejection)
+        self.assertTrue(panel.await_setup)
+        for value in (0xAE, 0x40, 0xA1, 0x10, 0, 0x81, 0x23):
+            controller._lcd_write(None, 0, panel.port, 2, value, None)
+        for page in range(3):
+            for value in (0xB0 + page, 0x10, 4):
+                controller._lcd_write(None, 0, panel.port, 2, value, None)
+            for _ in range(96):
+                controller._lcd_write(None, 0, panel.port + 2, 2, 0x55, None)
+        self.assertTrue(panel.committed)
+        self.assertIsNone(panel.rejection)
+        self.assertEqual(fallback, initial)
+        for value in (0xAF, 0):
+            controller._lcd_write(None, 0, panel.port, 2, value, None)
+        self.assertIsNone(panel.rejection)
+        self.assertEqual(panel.column, 0)
+
     def test_halfword_data_lane_and_secondary_publication_count(self):
         controller, fallback = self.controller()
         panel = PagePanel(0x02800000, data_offset=2)

@@ -827,6 +827,14 @@ class DisplayControllerMixin:
             elif address in (primary_port, primary_port + 4):
                 commands.clear()
         pending = []
+        if panel is not None and getattr(panel, "await_setup", False):
+            # The linked halfword initializer starts with display-off. Earlier
+            # aperture setup and primary-panel traffic are native writes, not
+            # a failed page candidate. Do not buffer or consume them.
+            if address == panel.port and size == 2 and value == 0xAE:
+                panel.await_setup = False
+            else:
+                panel = None
         if panel is not None and getattr(panel, "source_profile", None) is not None:
             profile = panel.source_profile
             if not panel.source_validated and panel.rejection is None:

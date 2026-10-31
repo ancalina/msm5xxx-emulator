@@ -10,8 +10,10 @@ _PAGE_BITS = tuple(bytes(255 if value & (1 << bit) else 0
 class PagePanel:
     data_offset = 4
 
-    def __init__(self, port: int, *, data_offset: int | None = None) -> None:
+    def __init__(self, port: int, *, data_offset: int | None = None,
+                 await_setup: bool = False) -> None:
         self.port = port
+        self.await_setup = await_setup
         if data_offset is not None:
             if data_offset not in (2, 4):
                 raise ValueError("unsupported page data offset")
@@ -74,7 +76,11 @@ class PagePanel:
         elif 0x10 <= value <= 0x1F:
             self.high = value & 15
             self.column = None
-        elif value <= 15 and self.high is not None:
+        elif value <= 15:
+            # Low-column setup is valid before the first high-column command,
+            # including aperture initialization and controller reinitialization.
+            if self.high is None:
+                self.high = 0
             self.column = self.start = self.high * 16 + value
         else:
             self.high = None
