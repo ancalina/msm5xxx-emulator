@@ -37,7 +37,7 @@ class GpioSerial89Panel:
             elif value == 0 and self.page >= 0:
                 self.column = None
                 self.column_prefix = True
-            elif 0x80 <= value < 0x80+89 and self.page >= 0 and self.column_prefix:
+            elif 0x80 <= value < 0x80+89 and self.page >= 0:
                 self.column = value & 127
             else:
                 self.page = -1

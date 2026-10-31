@@ -53,3 +53,12 @@ class GpioSerialPanelTests(unittest.TestCase):
         self.assertFalse(panel.qualified)
         self.clear(panel)
         self.assertTrue(panel.qualified)
+
+    def test_zero_command_suppressed_by_source_serializer(self):
+        panel=GpioSerial89Panel()
+        for page in range(8):
+            self.send(panel,False,[0x40+page,0x80])
+            self.send(panel,True,[0]*89)
+        self.assertTrue(panel.qualified)
+        self.send(panel,False,[0x43,0x85]);self.send(panel,True,[0xff])
+        self.assertEqual(panel.ram[3*89+5],255)
