@@ -49,5 +49,15 @@ halfword loads support mask `1f`. The configured Thumb guest load receives the
 released bits while other reads and all writes retain the MSM backing value.
 The entire four-byte register must have no other device owner. Every matching
 load receives the release, including after reset; `boot-contact-state` counters
-accumulate across resets. This experiment has no automatic detector activation
-and requires separate live-guest validation for each proposed source profile.
+accumulate across resets. Automatic binding is limited to complete reset/key/LCD
+source classes, reparsed against the immutable loaded image with RAM and GPIO
+ownership checks. Other uses remain manual diagnostics.
+
+The source-qualified `dmd5100-program-760=ENTRY:DESCRIPTOR:PAYLOAD:PAIR_COUNT`
+variant uses the paired DMD word-memory controller with readback registers at
+`03000768` and `0300076c`. The original `dmd5100-program` property keeps its
+`030007e8`/`030007ec` register bank and four-field syntax. Both variants capture
+actual uploaded words, preserve backing writes, and require the typed transfer
+sequence, source PCs, descriptor/payload registers, and readback counters.
+Automatic selection of the new bank also requires the matching reset-linked
+boot-contact source class. Live guest validation is required for each family.

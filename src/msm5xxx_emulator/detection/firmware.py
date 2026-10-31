@@ -582,12 +582,20 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     _boot_key_reason = _spi_nv_reason = None
     if requested_load_address == 0:
         boot_keysense_release, _boot_key_reason = find_boot_keysense_release(primary_image)
+        if (boot_keysense_release is not None
+                and boot_keysense_release.get("signature") == "arm-thumb-single-boot-contact-v1"
+                and chipset not in ("MSM5100", "MSM5105")):
+            boot_keysense_release, _boot_key_reason = None, "predicate-not-closed"
         spi_nv_profile, _spi_nv_reason = find_spi_nv_profile(primary_image)
     if boot_keysense_release is not None:
-        detection_notes.append(
-            "reset-linked released-key predicate detected; only its three "
-            "source reads are eligible, not active key mapping"
-        )
+        if boot_keysense_release.get("signature") == "arm-thumb-single-boot-contact-v1":
+            detection_notes.append(
+                "reset-linked released boot contact detected; only its single source read is eligible")
+        else:
+            detection_notes.append(
+                "reset-linked released-key predicate detected; only its three "
+                "source reads are eligible, not active key mapping"
+            )
     elif _boot_key_reason not in (None, "predicate-not-closed"):
         detection_notes.append(
             f"boot key release not applied: {_boot_key_reason}; native fallback"
@@ -615,6 +623,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     uart_console, uart_console_reason = find_uart_console_profile(
         primary_image, ready_poll
     )
+    if (uart_console is not None
+            and uart_console.get("clock_guard", {}).get("config_diagnostic") is not None
+            and chipset not in ("MSM5100", "MSM5105")):
+        uart_console, uart_console_reason = None, "console-probe-scope-unclosed"
     if uart_console is not None:
         detection_notes.append(
             "bound UART console class: provisional synchronous TX sink, "
@@ -739,6 +751,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     board_adc_reader_position = find_board_adc_reader(primary_image)
     dc0_board_adc_profile = find_dc0_board_adc_profile(primary_image)
     sbi_bootstrap_profile = find_sbi_bootstrap_profile(primary_image)
+    if (sbi_bootstrap_profile is not None
+            and sbi_bootstrap_profile.get("layout") == "thumb-sbi-bootstrap-carry-loop-v1"
+            and chipset not in ("MSM5100", "MSM5105")):
+        sbi_bootstrap_profile = None
     if sbi_bootstrap_profile is not None:
         raw_input, raw_reason = find_sbi_raw_input_profile(
             primary_image, sbi_bootstrap_profile, ram_base, ram_size
