@@ -208,7 +208,7 @@ class GpioSerialRuntimeTests(unittest.TestCase):
             self.send(h,True,[0xff]*89)
             self.assertEqual(h.frame_sequence,int(page==7))
         self.assertTrue(h.gpio_serial_snapshot()['qualified'])
-        expected=(89,64,bytes([255])*(89*64*3))
+        expected=(89,64,bytes(89*64*3))
         self.assertEqual(h.display_snapshot(),expected)
         h.framebuffer[:]=bytes(len(h.framebuffer))
         h._publish_frame()

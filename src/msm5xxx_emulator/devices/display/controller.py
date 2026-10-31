@@ -416,7 +416,8 @@ class DisplayControllerMixin:
         return dict(source_bound=panel is not None, qualified=bool(panel and panel.qualified),
             reason=getattr(self,'_lcd_gpio_serial_reason',None),
             rejection=panel.rejection if panel else None, coverage=panel.coverage if panel else 0,
-            sequence=panel.sequence if panel else 0, source_raster=[89,64], optical_properties=None)
+            sequence=panel.sequence if panel else 0, source_raster=[89,64],
+            pixel_order='source-input-bit-permutation-v1',optical_properties=None)
 
     def _lcd_bind_source_boot_page(self, original: bytes, loaded: bytes, *, ram_claimed=False):
         from ...detection.boot_page import find_boot_page_profile

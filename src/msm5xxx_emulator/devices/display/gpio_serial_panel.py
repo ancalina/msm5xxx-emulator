@@ -14,7 +14,7 @@ class GpioSerial89Panel:
         self.seen = bytearray(89*8)
         self.coverage = 0
         self.ram = bytearray(89*8)
-        self.rgb = bytearray(89*64*3)
+        self.rgb = bytearray([255])*(89*64*3)
         self.frame = bytes(self.rgb)
         self.qualified = self.dirty = False
         self.rejection = None
@@ -60,9 +60,15 @@ class GpioSerial89Panel:
         if self.ram[at] != value:
             self.ram[at] = value
             self.dirty = True
+            # Invert the source bitmap transform, including its cyclic
+            # one-bit page crossing. This exposes the input memory canvas,
+            # not an inferred orientation or polarity of the physical panel.
             for bit in range(8):
-                offset = ((self.page*8+bit)*89+self.column)*3
-                shade = 255 if value & (1 << bit) else 0
+                input_page = 7-self.page if bit == 7 else (6-self.page) & 7
+                input_bit = 0 if bit == 7 else bit+1
+                x,y = 88-self.column,input_page*8+input_bit
+                offset = (y*89+x)*3
+                shade = 0 if value & (1 << bit) else 255
                 self.rgb[offset:offset+3] = bytes([shade])*3
         self.column += 1
         self.qualified = self.coverage == 89*8

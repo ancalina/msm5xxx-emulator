@@ -26,7 +26,7 @@ class GpioSerialPanelTests(unittest.TestCase):
         self.send(panel, True, [0x96, 0x21])
         self.assertEqual(panel.ram[5*89+3:5*89+5], bytes([0x96, 0x21]))
         self.assertEqual(panel.sequence, 2)
-        self.assertEqual(panel.frame[((5*8+1)*89+3)*3:((5*8+1)*89+3)*3+3], bytes([255])*3)
+        self.assertEqual(panel.frame[(10*89+85)*3:(10*89+85)*3+3], bytes(3))
 
     def test_repeated_and_partial_rows_do_not_supply_missing_cells(self):
         for pages, width in (([0]*8,89),(range(7),89),(range(8),88)):
@@ -62,3 +62,22 @@ class GpioSerialPanelTests(unittest.TestCase):
         self.assertTrue(panel.qualified)
         self.send(panel,False,[0x43,0x85]);self.send(panel,True,[0xff])
         self.assertEqual(panel.ram[3*89+5],255)
+
+    def test_exact_source_transform_round_trip_including_page_wrap(self):
+        source=bytes((n*37+n//89*19+7)&255 for n in range(712))
+        panel=GpioSerial89Panel()
+        for page in range(8):
+            self.send(panel,False,[0x40+page,0x80])
+            i=7-page;wire=[]
+            for column in range(89):
+                x=88-column
+                wire.append((~(((source[i*89+x]<<8)|source[((i-1)&7)*89+x])>>1))&255)
+            self.send(panel,True,wire)
+        expected=bytearray(89*64*3)
+        for j in range(8):
+            for x in range(89):
+                for bit in range(8):
+                    shade=255 if source[j*89+x]&(1<<bit)else 0
+                    at=((j*8+bit)*89+x)*3;expected[at:at+3]=bytes([shade])*3
+        self.assertTrue(panel.qualified)
+        self.assertEqual(panel.frame,bytes(expected))
