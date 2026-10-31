@@ -2212,6 +2212,36 @@ def qemu_runtime_ready_poll_property(image: bytes, config: object
     return argument, reason, None
 
 
+def qemu_uart2_tx_property(original: bytes, loaded: bytes, config: object,
+                           *, claimed: bool = False) -> str | None:
+    from ..detection.uart2_tx import find_uart2_tx_ready_pc
+    ready = getattr(config, "ready_poll", None)
+    expected_ready = {
+        "signature": "thumb-uart-csr-sr-rx-empty-v1",
+        "admission": "temporary-evidence-gated",
+        "status_address": 0x030007b4, "mask": 8,
+        "pulse_address": 0x03000600, "status_read_pc_offset": 2,
+        "pulse_set_pc_offset": 0xc, "pulse_clear_pc_offset": 0x10,
+        "uart_rx_empty_read_pc_offset": 0x90, "entries": [0x1dac],
+    }
+    if (claimed or getattr(config, "image_kind", None) != "firmware"
+            or any(type(getattr(config, key, None)) is not int
+                   for key in ("load_address", "image_offset", "entry"))
+            or getattr(config, "load_address", None) != 0
+            or getattr(config, "image_offset", None) != 0
+            or getattr(config, "entry", None) != 0
+            or getattr(config, "uart_console", None) is not None
+            or type(getattr(config, "flash_size", None)) is not int
+            or len(loaded) != config.flash_size
+            or not isinstance(ready, dict)
+            or ready != expected_ready):
+        return None
+    pc = find_uart2_tx_ready_pc(original)
+    if pc is None or find_uart2_tx_ready_pc(loaded) != pc:
+        return None
+    return f"uart2-tx-ready={pc:x}"
+
+
 def qemu_sbi_property(config: object) -> tuple[str | None, str | None]:
     """Keep legacy full SBI chip-bound; admit the closed bootstrap wire class."""
     profile = getattr(config, "sbi_bootstrap_profile", None)
@@ -4423,6 +4453,11 @@ class Transport:
                 self.decoder._lcd_legacy_panel = None
             else:
                 machine += ",direct-lcd=on"
+        uart2_tx_property = qemu_uart2_tx_property(
+            detector_image, primary_seed, self.config,
+            claimed=ram_reserved is not None)
+        if uart2_tx_property is not None:
+            machine += "," + uart2_tx_property
         if uart_property is not None and uart_deferred:
             loaded_uart, loaded_uart_reject = qemu_loaded_uart_console_property(
                 self.config.uart_console, detector_image, primary_seed, self.config,
