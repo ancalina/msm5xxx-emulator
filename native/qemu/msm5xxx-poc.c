@@ -2990,13 +2990,33 @@ static const MemoryRegionOps msm5xxx_poc_board_revision_ops = {
     .impl.max_access_size = 4,
 };
 
+static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
+                                           unsigned size);
+static void msm5xxx_poc_eeprom_gpio_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size);
+
 static uint64_t msm5xxx_poc_board_status_input_read(void *opaque,
                                                      hwaddr offset,
                                                      unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value;
 
-    return !offset && size == 1 ? s->board_status_input_backing : 0;
+    if (offset || size != 1) {
+        return 0;
+    }
+    value = s->board_status_input_backing;
+    if (s->eeprom_gpio_enabled &&
+        s->board_status_input_address >= s->eeprom_gpio_base &&
+        s->board_status_input_address - s->eeprom_gpio_base <
+            MSM5XXX_POC_EEPROM_GPIO_SIZE) {
+        /* The lid owns one bit, not the shared GPIO byte. In particular,
+         * a clock output in that byte must still reach the I2C bridge. */
+        value = msm5xxx_poc_eeprom_gpio_read(s,
+            s->board_status_input_address - s->eeprom_gpio_base, size);
+    }
+    return (value & ~(uint64_t)s->board_status_input_mask) |
+           (s->board_status_input_backing & s->board_status_input_mask);
 }
 
 static void msm5xxx_poc_board_status_input_write(void *opaque, hwaddr offset,
@@ -3009,6 +3029,14 @@ static void msm5xxx_poc_board_status_input_write(void *opaque, hwaddr offset,
         s->board_status_input_backing =
             (value & ~s->board_status_input_mask) |
             (s->board_status_input_backing & s->board_status_input_mask);
+        if (s->eeprom_gpio_enabled &&
+            s->board_status_input_address >= s->eeprom_gpio_base &&
+            s->board_status_input_address - s->eeprom_gpio_base <
+                MSM5XXX_POC_EEPROM_GPIO_SIZE) {
+            msm5xxx_poc_eeprom_gpio_write(s,
+                s->board_status_input_address - s->eeprom_gpio_base,
+                value, size);
+        }
     }
 }
 
@@ -3637,11 +3665,6 @@ static const MemoryRegionOps msm5xxx_poc_board_status_halfword_ops = {
     .valid.max_access_size = 2,
 };
 
-
-static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
-                                            unsigned size);
-static void msm5xxx_poc_eeprom_gpio_write(void *opaque, hwaddr offset,
-                                         uint64_t value, unsigned size);
 
 /* Mapped halfword and distributed byte overlays retain the effective EEPROM
  * GPIO owner. Legacy classes keep their original backing and write behavior. */

@@ -242,6 +242,7 @@ class DisplayControllerMixin:
                     "qualified": panel.committed and panel.rejection is None,
                     "enabled": panel.enabled, "column_offset": panel.bias,
                     "rejection": panel.rejection, "port": panel.port,
+                    "sequence": panel.sequence,
                     "detection": getattr(self, "_lcd_secondary_reason", None)}
 
     @staticmethod
@@ -684,7 +685,8 @@ class DisplayControllerMixin:
                      and getattr(self, "_lcd_page_port", None) in (0x02000000, 0x02800000)
                      and address == self._lcd_page_port + 4)
         secondary_data = (panel is not None and panel.committed
-                          and size in (1, 2) and address == panel.port + 4)
+                          and size in (1, 2)
+                          and address == panel.port + panel.data_offset)
         if not (parallel_data or page_data or secondary_data):
             return
         if any(getattr(self, name, None) is not None for name in (
@@ -699,7 +701,7 @@ class DisplayControllerMixin:
         if panel is not None:
             if (getattr(panel, "source_profile", None) is None
                     and panel.committed and panel.rejection is None
-                    and address == panel.port + 4 and size in (1, 2)):
+                    and address == panel.port + panel.data_offset and size in (1, 2)):
                 self._lcd_fast_write = (address, size, self._lcd_fast_secondary_data)
             return
         # Source-bound page dialects have additional icon/overflow/argument
@@ -825,6 +827,20 @@ class DisplayControllerMixin:
             elif address in (primary_port, primary_port + 4):
                 commands.clear()
         pending = []
+        if panel is not None and getattr(panel, "await_setup", False):
+            # The linked halfword initializer starts with display-off. Earlier
+            # aperture setup and primary-panel traffic are native writes, not
+            # a failed page candidate. Do not buffer or consume them.
+            if address == panel.port and size == 2 and value == 0xAE:
+                panel.await_setup = False
+            else:
+                panel = None
+        if (panel is not None and getattr(panel, "independent_ports", False)
+                and address not in (panel.port, panel.port + panel.data_offset)):
+            # A linked two-panel descriptor proves disjoint apertures even
+            # before the first secondary raster completes. Main traffic must
+            # neither reject that candidate nor enter its pending buffer.
+            panel = None
         if panel is not None and getattr(panel, "source_profile", None) is not None:
             profile = panel.source_profile
             if not panel.source_validated and panel.rejection is None:

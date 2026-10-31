@@ -12,6 +12,77 @@ from msm5xxx_emulator.detection.display import find_byte_main_page_secondary
 
 
 class SecondaryPagePanelTests(unittest.TestCase):
+    def test_halfword_setup_ignores_early_aperture_and_main_initialization(self):
+        controller, fallback = self.controller()
+        panel = PagePanel(0x02800000, data_offset=2, await_setup=True)
+        controller._lcd_secondary_panel = panel
+        initial = [(panel.port, 2, 0), (0x02000000, 2, 2),
+                   (0x02000002, 2, 1)]
+        for address, size, value in initial:
+            controller._lcd_write(None, 0, address, size, value, None)
+        self.assertEqual(fallback, initial)
+        self.assertIsNone(panel.rejection)
+        self.assertTrue(panel.await_setup)
+        for value in (0xAE, 0x40, 0xA1, 0x10, 0, 0x81, 0x23):
+            controller._lcd_write(None, 0, panel.port, 2, value, None)
+        for page in range(3):
+            for value in (0xB0 + page, 0x10, 4):
+                controller._lcd_write(None, 0, panel.port, 2, value, None)
+            for _ in range(96):
+                controller._lcd_write(None, 0, panel.port + 2, 2, 0x55, None)
+        self.assertTrue(panel.committed)
+        self.assertIsNone(panel.rejection)
+        self.assertEqual(fallback, initial)
+        for value in (0xAF, 0):
+            controller._lcd_write(None, 0, panel.port, 2, value, None)
+        self.assertIsNone(panel.rejection)
+        self.assertEqual(panel.column, 0)
+
+    def test_mixed_command_data_widths_keep_main_fallback_independent(self):
+        controller, fallback = self.controller()
+        panel = PagePanel(0x02000000, independent_ports=True)
+        controller._lcd_secondary_panel = panel
+        controller._lcd_secondary_reason = 'synthetic-mixed-page'
+        controller.frame_sequence = 0
+        for page in range(3):
+            for value in (0xb0 + page, 0x12, 0):
+                controller._lcd_write(None, 0, panel.port, 1, value, None)
+            for _ in range(96):
+                controller._lcd_write(None, 0, panel.port + 4, 2, 0x55, None)
+        panel.flush()
+        snapshot = controller.secondary_display_snapshot()
+        self.assertTrue(snapshot['qualified'])
+        self.assertEqual(snapshot['column_offset'], 32)
+        self.assertGreater(snapshot['sequence'], 0)
+        self.assertFalse(fallback)
+        self.assertEqual(controller.frame_sequence, 0)
+        main = (0x02800000, 1, 0x75)
+        controller._lcd_write(None, 0, *main, None)
+        self.assertEqual(fallback, [main])
+
+    def test_halfword_data_lane_and_secondary_publication_count(self):
+        controller, fallback = self.controller()
+        panel = PagePanel(0x02800000, data_offset=2)
+        controller._lcd_secondary_panel = panel
+        controller._lcd_secondary_reason = 'synthetic-halfword-page'
+        controller.frame_sequence = 0
+        for page in range(3):
+            for value in (0xb0 + page, 0x10, 4):
+                controller._lcd_write(None, 0, panel.port, 2, value, None)
+            for _ in range(96):
+                controller._lcd_write(None, 0, panel.port + 2, 2, 0x55, None)
+        panel.flush()
+        snapshot = controller.secondary_display_snapshot()
+        self.assertTrue(snapshot['qualified'])
+        self.assertEqual(snapshot['column_offset'], 4)
+        self.assertGreater(snapshot['sequence'], 0)
+        sequence = snapshot['sequence']
+        panel.flush()
+        self.assertEqual(panel.sequence, sequence)
+        self.assertEqual(controller.frame_sequence, 0)
+        self.assertFalse(fallback)
+        self.assertFalse(panel.write(panel.port + 4, 2, 0))
+
     def test_color_byte_page_contract_requires_shared_object_and_unique_links(self):
         # Synthetic instructions and relocated links, not a firmware fixture.
         image = bytearray(0x1000)

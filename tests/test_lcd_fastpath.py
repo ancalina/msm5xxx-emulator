@@ -72,19 +72,20 @@ class LCDFastpathTests(unittest.TestCase):
                            (0x02800000, 2, 0), (0x02800004, 1, 0x55)])
 
     def test_secondary_commit_overflow_and_rejection(self):
-        pair = self.pair()
-        for device in pair:
-            device._lcd_secondary_panel = PagePanel(0x02000000)
-        events = []
-        for page in range(4):
-            events.extend((0x02000000, 2, value) for value in (0xb0 + page, 0x10, 0))
-            events.extend((0x02000004, 2, (x * 17 + page) & 255) for x in range(96))
-        self.replay(pair, events)
-        self.assertTrue(pair[0]._lcd_secondary_panel.committed)
-        self.assertIsNotNone(pair[0]._lcd_fast_write)
-        self.replay(pair, [(0x02000004, 2, 0xa5)] * 162)
-        self.assertIsNotNone(pair[0]._lcd_secondary_panel.rejection)
-        self.replay(pair, [(0x02000000, 2, 0xaf), (0x02000004, 1, 3)])
+        for data_offset in (2, 4):
+            pair = self.pair()
+            for device in pair:
+                device._lcd_secondary_panel = PagePanel(0x02000000, data_offset=data_offset)
+            events = []
+            for page in range(4):
+                events.extend((0x02000000, 2, value) for value in (0xb0 + page, 0x10, 0))
+                events.extend(((0x02000000 + data_offset), 2, (x * 17 + page) & 255) for x in range(96))
+            self.replay(pair, events)
+            self.assertTrue(pair[0]._lcd_secondary_panel.committed)
+            self.assertIsNotNone(pair[0]._lcd_fast_write)
+            self.replay(pair, [((0x02000000 + data_offset), 2, 0xa5)] * 162)
+            self.assertIsNotNone(pair[0]._lcd_secondary_panel.rejection)
+            self.replay(pair, [(0x02000000, 2, 0xaf), ((0x02000000 + data_offset), 1, 3)])
 
     def test_steady_data_skips_observers_but_command_runs_them(self):
         fast, _slow = self.pair()
