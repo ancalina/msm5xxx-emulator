@@ -58,6 +58,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding()
+        .onAppear(perform: pickStoredFirmware)
         .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
             engine.refresh()
         }
@@ -74,6 +75,20 @@ struct ContentView: View {
             case .success(let url): importFirmware(url)
             case .failure(let error): message = error.localizedDescription
             }
+        }
+    }
+
+    /// Reuse a firmware already in Application Support/firmware (imported earlier or copied in over
+    /// SSH); an `autorun` file next to that folder starts it without touching the screen.
+    private func pickStoredFirmware() {
+        guard firmware == nil, !engine.used,
+              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: support.appendingPathComponent("firmware").path),
+              let name = names.filter({ !$0.hasPrefix(".") }).sorted().first else { return }
+        firmware = support.appendingPathComponent("firmware").appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
+            NSLog("MSM5xEmu autorun %@", name)
+            engine.start(firmware!)
         }
     }
 

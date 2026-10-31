@@ -97,7 +97,7 @@ final class QEMUEngine: ObservableObject {
                 DispatchQueue.main.async {
                     self.running = true
                     self.inputBits = bits
-                    self.status = "Running (detector-admitted input only)"
+                    self.status = "Running (detector-admitted input only)"; NSLog("MSM5xEmu running, input bits %@", String(describing: bits.sorted()))
                 }
             } catch { self.report(error) }
         }
@@ -164,6 +164,7 @@ final class QEMUEngine: ObservableObject {
     }
 
     private func report(_ error: Error) {
+        NSLog("MSM5xEmu error: %@", String(describing: error))
         DispatchQueue.main.async { self.status = error.localizedDescription }
     }
 
