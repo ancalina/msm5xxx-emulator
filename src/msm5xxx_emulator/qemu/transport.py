@@ -1056,7 +1056,7 @@ def qemu_ma5_gpio_irq_property(image: bytes, config: object) -> tuple[str | None
     return "experimental-ma5-irq-route=" + ":".join(f"{value:x}" for value in fields), None
 
 
-def qemu_audio_sites(audio: object) -> str | None:
+def qemu_audio_sites(audio: object, *, allow_standalone_ma2: bool = False) -> str | None:
     """Serialize detector-owned audio bus PCs for the native QEMU gate."""
     if not isinstance(audio, dict):
         return None
@@ -1066,10 +1066,11 @@ def qemu_audio_sites(audio: object) -> str | None:
     data_offset = audio.get("data_offset")
     ma2 = (
         family == "ma2"
-        and type(base) is int and 0x02001000 <= base < 0x02800000
-        and type(data_offset) is int and data_offset == 2
-        and base + data_offset < 0x02800000
-        and (base + data_offset < 0x02200000 or base >= 0x02201000)
+        and type(base) is int and type(data_offset) is int and data_offset == 2
+        and ((0x02001000 <= base < 0x02800000
+              and base + data_offset < 0x02800000
+              and (base + data_offset < 0x02200000 or base >= 0x02201000))
+             or (allow_standalone_ma2 and base == 0x02880000))
     )
     ma5_signature = {
         "write_0": [0x582, 0x58A, 0x10566, 0x1056E, 0x37CAE2],
@@ -1146,6 +1147,35 @@ def qemu_audio_sites(audio: object) -> str | None:
     entries.sort()
     return ";".join(f"{kind}{port:x}/{pc:x}"
                     for kind, port, pc in entries)
+
+
+# Source-local driver window. The audio detector independently revalidates
+# the same image, including port ownership and call-site metadata.
+_STANDALONE_MA2_DRIVER_SHA256 = (
+    "48796f4e925e9f06dd896106cca5e335a3446d6f58a39c35a24ce9b61bfb1aa6"
+)
+
+
+def qemu_standalone_ma2_sites(image: bytes, config: object, audio: object, *,
+                              upper_nor_present: bool = False) -> str | None:
+    """Qualify the source-owned MA2 bus outside the shared LCD aperture."""
+    if (upper_nor_present or getattr(config, "load_address", None) != 0
+            or type(getattr(config, "flash_size", None)) is not int
+            or not isinstance(audio, dict) or audio.get("family") != "ma2"
+            or audio.get("grammar") != "ma2-command-v1"
+            or audio.get("static_status") != "accepted"
+            or audio.get("base") != 0x02880000 or audio.get("data_offset") != 2):
+        return None
+    begin = audio.get("begin")
+    if type(begin) is not int or begin < 12:
+        return None
+    start, size = begin - 12, 0xc0
+    if (start + size > min(len(image), config.flash_size)
+            or hashlib.sha256(image[start:start + size]).hexdigest()
+               != _STANDALONE_MA2_DRIVER_SHA256
+            or find_audio_transport(image) != audio):
+        return None
+    return qemu_audio_sites(audio, allow_standalone_ma2=True)
 
 
 def qemu_mapped_scan_gate_property(image: bytes, config: object,
@@ -4229,6 +4259,8 @@ class Transport:
         audio = self.config.audio_transport
         audio_family = audio.get("family") if audio is not None else None
         audio_grammar = audio.get("grammar") if audio is not None else None
+        standalone_ma2_sites = qemu_standalone_ma2_sites(
+            detector_image, self.config, audio, upper_nor_present=upper_nor_present)
         ma5_property = None
         ma5_auto_profile = False
         ma5_auto_irq = False
@@ -4319,8 +4351,9 @@ class Transport:
                 and audio.get("static_status") == "accepted"
                 and audio_family == "ma2"
                 and audio_grammar == "ma2-command-v1"
-                and self.config.ma2_silent_boot_address is not None):
-            audio_sites = qemu_audio_sites(audio)
+                and (self.config.ma2_silent_boot_address is not None
+                     or standalone_ma2_sites is not None)):
+            audio_sites = standalone_ma2_sites or qemu_audio_sites(audio)
             if audio_sites is not None:
                 machine += (
                     f",audio-aperture={int(audio['base']):x}:"
@@ -4329,6 +4362,10 @@ class Transport:
                 )
                 self.audio_stream_enabled = True
                 self.audio_stream_status = "pending"
+                if standalone_ma2_sites is not None:
+                    self.config.detection_notes.append(
+                        "QEMU source-qualified standalone MA2 bus enabled; "
+                        "unsupported reads remain rejected")
                 if experimental_audio_refill:
                     irq_property, irq_reject = qemu_audio_irq_property(audio, self.config)
                     if irq_property is not None:
