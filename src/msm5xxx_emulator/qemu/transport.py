@@ -96,6 +96,7 @@ from msm5xxx_emulator.state_io import (
 
 
 RECORD_SIZE = 16
+_LCD_RECORD = struct.Struct("<BB2xIII")
 LCD_WRITE = 1
 TELEMETRY = 2
 DEVICE_TELEMETRY = 3
@@ -5519,14 +5520,27 @@ class Transport:
         else:
             self._reject_audio_stream("qemu-audio-status-shape")
 
+    def _replay_records(self, records: memoryview) -> None:
+        """Replay a complete batch without allocating a bytes object per LCD write.
+
+        Keep non-LCD handling in the single-record dispatcher: audio and status
+        records are infrequent and retain their existing validation boundaries.
+        The caller releases the view before resizing its receive buffer.
+        """
+        decoder = self.decoder
+        offset = 0
+        for kind, size, address, value, _tail in _LCD_RECORD.iter_unpack(records):
+            if kind == LCD_WRITE:
+                decoder._lcd_write(decoder.uc, 0, address, size, value, None)
+            else:
+                self._replay_record(bytes(records[offset:offset + RECORD_SIZE]))
+            offset += RECORD_SIZE
+
     def _replay_record(self, record: bytes | bytearray) -> None:
         if record[0] == LCD_WRITE:
+            _kind, size, address, value, _tail = _LCD_RECORD.unpack_from(record)
             self.decoder._lcd_write(
-                self.decoder.uc, 0,
-                int.from_bytes(record[4:8], "little"),
-                record[1],
-                int.from_bytes(record[8:12], "little"),
-                None,
+                self.decoder.uc, 0, address, size, value, None,
             )
         elif record[0] == TELEMETRY:
             self.decoder._lcd_page_flush_current()
@@ -5708,9 +5722,8 @@ class Transport:
                         return
                     pending.extend(chunk)
                     complete = len(pending) // RECORD_SIZE * RECORD_SIZE
-                    for offset in range(0, complete, RECORD_SIZE):
-                        record = bytes(pending[offset:offset + RECORD_SIZE])
-                        self._replay_record(record)
+                    with memoryview(pending)[:complete] as records:
+                        self._replay_records(records)
                     del pending[:complete]
                     if complete and audio_socket is not None:
                         # Give the audio reader a turn between bounded batches.

@@ -796,7 +796,9 @@ class QEMUAudioTransportTests(unittest.TestCase):
                 transport.process = SimpleNamespace(poll=lambda: None)
                 transport._terminate_process = Mock()
                 replayed = []
-                transport._replay_record = replayed.append
+                transport._replay_records = lambda records: replayed.extend(
+                    bytes(records[offset:offset + 16])
+                    for offset in range(0, len(records), 16))
                 stop = threading.Event()
                 batches = iter(((transport.input_socket, transport.lcd_socket),
                                 (transport.input_socket,),
