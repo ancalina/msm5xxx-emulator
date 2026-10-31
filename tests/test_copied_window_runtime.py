@@ -226,3 +226,41 @@ class GpioSerialRuntimeTests(unittest.TestCase):
         self.assertIsNone(self.bind(h,ram_claimed=True))
         self.assertIsNone(self.bind(h,loaded=bytes(0xfff)+b'\1'))
         self.assertIsNotNone(self.bind(h))
+
+
+class BootPageRuntimeTests(unittest.TestCase):
+    def bind(self,h,**kwargs):
+        candidate=dict(signature='source-halfword-boot-page128-v1',admission='temporary-evidence-gated',
+            width=128,height=72,clear_pages=9,planes=1,command_port=0x02000000,data_port=0x02000002,
+            access_width=2,code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
+            data_intervals=(),ram_intervals=((0x01000000,0x01001000),))
+        loaded=kwargs.pop('loaded',bytes(0x1000))
+        with patch('msm5xxx_emulator.detection.boot_page.find_boot_page_profile',
+                   return_value=(candidate,'static-candidate')):
+            return h._lcd_bind_source_boot_page(bytes(0x1000),loaded,**kwargs)
+
+    def test_complete_clear_and_pixel_updates_own_snapshot(self):
+        h=Harness();h.config.chipset='MSM5100';self.assertTrue(self.bind(h))
+        def command(*values):
+            for value in values:h._lcd_source_boot_page_write(0x02000000,2,value)
+        command(0xae)
+        for page in range(9):
+            command(0xb0+page,0x10,0)
+            for _ in range(128):h._lcd_source_boot_page_write(0x02000002,2,0)
+        self.assertEqual(h.frame_sequence,0)
+        command(0xaf);self.assertEqual(h.frame_sequence,1)
+        command(0xb2,0x10,3);h._lcd_source_boot_page_write(0x02000002,2,1)
+        before=h.display_snapshot();self.assertEqual(before[:2],(128,72))
+        self.assertEqual(before[2][(16*128+3)*3:(16*128+3)*3+3],bytes(3))
+        h._set_display_geometry(96,64,source='runtime:unbound',force=True)
+        h.framebuffer[:]=bytes(len(h.framebuffer));h._publish_frame()
+        self.assertEqual(h.display_snapshot(),before);self.assertEqual(h.frame_sequence,2)
+
+    def test_memory_seed_and_manual_geometry_reject(self):
+        for field,value in [('chipset','MSM6000'),('ram_size',0xfff),
+                            ('entry',False),('display_geometry_source','manual')]:
+            h=Harness();h.config.chipset='MSM5100';setattr(h.config,field,value)
+            self.assertFalse(self.bind(h),field)
+        h=Harness();h.config.chipset='MSM5105'
+        self.assertFalse(self.bind(h,ram_claimed=True))
+        self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
