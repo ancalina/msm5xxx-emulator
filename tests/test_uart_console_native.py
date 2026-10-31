@@ -706,8 +706,9 @@ int main(void) {
     for(unsigned i=0;i<7;i++)write_at(&s,0x10,half_controls[i],2);
     assert(!s.uart_console_rejected && s.uart_console_initialized);
     assert(read_at(&s,8,1)==12 && read_at(&s,0x0c,1)==0);
-    for(unsigned i=0;i<256;i++)write_at(&s,0x0c,i,1);
+    for(unsigned i=0;i<256;i++)write_at(&s,0x0c,i,2);
     assert(s.uart_console_accepted==256 && !(read_at(&s,8,1)&1));
+    write_at(&s,0x0c,65,1);assert(s.uart_console_rejected && s.uart_console_accepted==256);
     for(unsigned i=0;i<3;i++) {
         msm5xxx_poc_uart_console_reset(&s);
         unsigned offset=i==0?4:i==1?8:0x10;

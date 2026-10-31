@@ -1524,7 +1524,7 @@ static MemTxResult msm5xxx_poc_uart_console_write_fixed(void *opaque, hwaddr off
         } else if (value == 4) {
             s->uart_console_tx_enabled = true;
         }
-    } else if (offset == 0x0c && size == 1 && value <= UINT8_MAX) {
+    } else if (offset == 0x0c && size == control_width && value <= UINT8_MAX) {
         if (!s->uart_console_initialized || !s->uart_console_tx_enabled ||
             !s->uart_console_empty) {
             reason = "tx-before-initialized-capacity";
