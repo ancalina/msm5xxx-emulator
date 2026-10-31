@@ -73,6 +73,29 @@ class ShiftedBootPanelTests(unittest.TestCase):
         self.command(panel, 0xAF)
         self.assertEqual(set(panel.frame), {255})
 
+    def test_zero_origin_clear_retains_glyph_and_cannot_change_origin(self):
+        panel = ShiftedBootPanel()
+        self.window(panel, x0=0, x1=175)
+        for _ in range(panel.width * panel.height):
+            panel.write(panel.data_port, 2, 0xFFFF)
+        self.command(panel, 0xAF)
+        self.assertTrue(panel.qualified)
+        self.window(panel, x0=0, x1=5, y0=0, y1=15)
+        panel.write(panel.data_port, 2, 0)
+        self.command(panel, 0xAF)
+        self.assertEqual(panel.frame[:6], b'\0\0\0\xff\xff\xff')
+        self.window(panel)
+        self.assertEqual(panel.rejection, 'axis-outside-viewport')
+
+    def test_unknown_origin_cannot_qualify_even_with_complete_raster(self):
+        panel = ShiftedBootPanel()
+        self.window(panel, x0=1, x1=176)
+        for _ in range(panel.width * panel.height):
+            panel.write(panel.data_port, 2, 0xFFFF)
+        self.command(panel, 0xAF)
+        self.assertFalse(panel.qualified)
+        self.assertEqual(panel.sequence, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

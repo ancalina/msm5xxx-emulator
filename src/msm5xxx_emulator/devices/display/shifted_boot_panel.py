@@ -44,7 +44,10 @@ class ShiftedBootPanel:
                 return
             start = self._args[0] | self._args[1] << 8
             end = self._args[2] | self._args[3] << 8
-            lo, hi = (2, 177) if self._command == 0x15 else (0, 219)
+            if self._command == 0x15:
+                lo, hi = self.viewport[:2] if self.qualified else (0, 177)
+            else:
+                lo, hi = (0, 219)
             if not lo <= start <= end <= hi:
                 self._reject("axis-outside-viewport")
                 return
@@ -74,7 +77,14 @@ class ShiftedBootPanel:
                 x, y = self._axes.get(0x15), self._axes.get(0x75)
                 if x is not None and y is not None:
                     window = (*x, *y)
-                    if self.qualified or window == self.viewport:
+                    # Both observed column origins require a complete raster;
+                    # partial windows cannot choose or change the viewport.
+                    if not self.qualified and window in (
+                        (0, 175, 0, 219), (2, 177, 0, 219)
+                    ):
+                        self.viewport = window
+                        self._window = window
+                    elif self.qualified:
                         self._window = window
             elif value == 0xAF:
                 if self._enabled is not True and self.qualified:
