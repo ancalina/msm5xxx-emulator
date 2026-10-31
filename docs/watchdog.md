@@ -6,7 +6,13 @@ The service conditionally returns when its RAM suppression byte is nonzero;
 otherwise it updates a RAM halfword shadow, setting and then clearing one bit,
 and writes both shadow values to the same byte MMIO port. The periodic task
 calls that service after its timed signal wait and has assertions linked to
-`dog.c`. Unsupported compiler forms and ambiguous ownership remain disabled.
+`dog.c`. Two report tails are supported: paired report checks/assertions, or a
+single missing-report check guarded by a RAM inhibit byte. The latter must use
+the same timer/report object at the wait and both report-clear exits; both
+exits restart the same pet loop. Instruction/control-flow contracts, resolved
+call targets and literal relationships are checked for each complete form.
+Unsupported compiler forms and ambiguous ownership remain disabled, including
+multiple owners across the two forms. A downloader pulse alone is insufficient.
 
 The QEMU watchdog uses virtual clock time, including icount time, independently
 of guest IRQ/FIQ masks. The first completed high-to-low pulse starts the timer;
@@ -58,10 +64,43 @@ emulated watchdog. Likewise, supported detection is deliberately narrower than
 all possible firmware watchdog implementations. No firmware execution was used
 to establish the timing evidence.
 
+## Alternate report-tail static witness
+
+IDA 9.1/idalib analysis of the external SPH-X8500 copy confirms the same
+shadow-pulse service at `0x6335C`: suppression byte `0x01001C90`, halfword shadow
+`0x010E097C`, and byte MMIO `0x03000700` with mask 1. Its periodic owner at
+`0x63478` supplies count 100 (`0x63486`), calls the timed-wait wrapper at
+`0x88890` (`0x6348E`), then pets at `0x63494`. The wrapper forwards the timer
+and count to `0x887A2`, then waits at `0x88850`. The setter stores the count at
+timer offset 8 (`0x887C4`); the walker at `0x88800` expires or subtracts its
+argument. The tick supplies 5 at `0xA088..0xA08A`. This retains the existing
+conservative timeout policy; it does not recover a physical timeout.
+
+The alternate report tail checks the report word at timer `0x010B863C` offset
+`0x14`, consults RAM byte `0x01014F08`, and asserts with line number and `dog.c`
+(`0x634D4..0x634D8`). Both exits clear that report word and branch back to reset
+the loop counter. These are grammar/data-flow relationships, not admission
+addresses or model identifiers.
+
+The rebuild completion path pets 100000 times (`0xEEEAA..0xEEEB4`) and calls
+`0x6F94C` at `0xEEEBE`. That routine calls `0x1660E8`, masks IRQ/FIQ through
+`0x2324D0`, then self-branches forever at `0x6F956`, with no more pets. The mask
+helper switches to ARM and ORs `0xC0` into CPSR control (`0x2324D4..0x2324E4`).
+Together with the periodic dog owner, this establishes the watchdog-reset
+dependency statically. The downloader's direct high/low writes at
+`0x10F4..0x1122` corroborate the port but are not used for admission.
+
+The IDA transcript is external at
+`work/bootlogo-analysis/ida3-X8500/watchdog-check.txt`; databases and firmware
+bytes are not repository fixtures.
+
 ## Configuration and validation
 
 `FirmwareConfig.watchdog` carries the detected register/mask, service/task
-addresses and primary scan length. Transport repeats detection on exactly that
+addresses and primary scan length. Watchdog detection runs after layout and
+override finalization, scanning the final NOR window so appended dump/RAM
+bytes cannot enlarge it and descriptor-based NOR extensions are included.
+Transport repeats detection on exactly that
 window of the loaded NOR and emits `watchdog-register`, `watchdog-mask`, and
 `watchdog-timeout-ms` only when all evidence fields still agree. The profile's
 `timeout_ms` is independently tunable (1000 through 3600000 ms in transport);

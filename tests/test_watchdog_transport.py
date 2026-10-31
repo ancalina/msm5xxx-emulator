@@ -27,14 +27,17 @@ class WatchdogTransportTests(unittest.TestCase):
         from corpus import firmware_path
         from msm5xxx_emulator.detection import detect
         from msm5xxx_emulator.detection.firmware_image import load_firmware_image
-        path = firmware_path('SPH-X7700.bin')
-        config = detect(path)
-        image = load_firmware_image(path).image[config.image_offset:]
-        wire, reason = qemu_watchdog_property(config.watchdog, image[:config.flash_size])
-        self.assertIsNotNone(wire, reason)
-        self.assertIn('watchdog-register=50333440', wire)
-        self.assertTrue(any(note.startswith('watchdog admitted:')
-                            for note in config.detection_notes))
+        for name in ('SPH-X7700.bin', 'SPH-X8500-fulldump.bin'):
+            with self.subTest(image=name):
+                path = firmware_path(name)
+                config = detect(path)
+                image = load_firmware_image(path).image[config.image_offset:]
+                wire, reason = qemu_watchdog_property(config.watchdog, image[:config.flash_size])
+                self.assertIsNotNone(wire, reason)
+                self.assertIn('watchdog-register=50333440', wire)
+                self.assertIn('watchdog-mask=1', wire)
+                self.assertTrue(any(note.startswith('watchdog admitted:')
+                                    for note in config.detection_notes))
 
     def test_missing_forged_and_changed_source_fail_closed(self):
         image, service, _ = fixture()

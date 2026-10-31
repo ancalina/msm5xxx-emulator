@@ -601,12 +601,6 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             f"serial NVM not applied: {_spi_nv_reason}; native fallback"
         )
-    watchdog, watchdog_reason = find_watchdog_profile(primary_image)
-    if watchdog is not None or b"dog.c\0" in primary_image:
-        detection_notes.append(
-            "watchdog admitted: unique service/pulse/task linkage" if watchdog is not None
-            else f"watchdog rejected: {watchdog_reason}"
-        )
     ready_poll = find_ready_poll_profile(primary_image)
     if ram_bootstrap_profile is not None and ready_poll is not None:
         ready_poll = None
@@ -1310,7 +1304,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         guest_owned_status_72c=guest_owned_status_72c,
         rex_static_controller_candidate=rex_static_controller_candidate,
         rex_static_c40_controller_observation=rex_static_c40_controller_observation,
-        watchdog=watchdog,
+        watchdog=None,
         ready_poll=ready_poll,
         uart_console=uart_console,
         dc0_board_adc_profile=dc0_board_adc_profile,
@@ -1380,4 +1374,15 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         config.detection_notes.append(f"inline EFS NOR detector rejected: {inline_efs_reason}")
     _infer_upper_nor(config, primary_image)
     _finalize_dump_status(config, image, internal_secondary_seed)
+    # RAM inference/overrides can shrink the provisional primary scan window.
+    # Bind watchdog evidence only to bytes in the finalized loaded NOR seed;
+    # transport must be able to reproduce this exact scan independently.
+    watchdog_image = image[:config.flash_size]
+    config.watchdog, watchdog_reason = find_watchdog_profile(watchdog_image)
+    if config.watchdog is not None or b"dog.c\0" in watchdog_image:
+        config.detection_notes.append(
+            "watchdog admitted: unique service/pulse/task linkage"
+            if config.watchdog is not None
+            else f"watchdog rejected: {watchdog_reason}"
+        )
     return config
