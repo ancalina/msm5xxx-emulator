@@ -38,6 +38,28 @@ class SecondaryPagePanelTests(unittest.TestCase):
         self.assertIsNone(panel.rejection)
         self.assertEqual(panel.column, 0)
 
+    def test_mixed_command_data_widths_keep_main_fallback_independent(self):
+        controller, fallback = self.controller()
+        panel = PagePanel(0x02000000, independent_ports=True)
+        controller._lcd_secondary_panel = panel
+        controller._lcd_secondary_reason = 'synthetic-mixed-page'
+        controller.frame_sequence = 0
+        for page in range(3):
+            for value in (0xb0 + page, 0x12, 0):
+                controller._lcd_write(None, 0, panel.port, 1, value, None)
+            for _ in range(96):
+                controller._lcd_write(None, 0, panel.port + 4, 2, 0x55, None)
+        panel.flush()
+        snapshot = controller.secondary_display_snapshot()
+        self.assertTrue(snapshot['qualified'])
+        self.assertEqual(snapshot['column_offset'], 32)
+        self.assertGreater(snapshot['sequence'], 0)
+        self.assertFalse(fallback)
+        self.assertEqual(controller.frame_sequence, 0)
+        main = (0x02800000, 1, 0x75)
+        controller._lcd_write(None, 0, *main, None)
+        self.assertEqual(fallback, [main])
+
     def test_halfword_data_lane_and_secondary_publication_count(self):
         controller, fallback = self.controller()
         panel = PagePanel(0x02800000, data_offset=2)

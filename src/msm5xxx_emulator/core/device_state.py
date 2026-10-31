@@ -777,6 +777,13 @@ class DeviceStateMixin:
                 self._lcd_secondary_reason = "halfword-byte-page-consumer-awaiting-runtime"
                 secondary_port = halfword_port
         if not ports and secondary_port is None:
+            from ..detection.mixed_page import find_mixed_page_secondary
+            mixed_port = find_mixed_page_secondary(self.image)
+            if mixed_port is not None:
+                self._lcd_secondary_panel = PagePanel(mixed_port, independent_ports=True)
+                self._lcd_secondary_reason = "mixed-byte-halfword-page-awaiting-runtime"
+                secondary_port = mixed_port
+        if not ports and secondary_port is None:
             from ..detection.secondary_arm_page import find_secondary_arm_page
             from ..devices.display.arm_page_panel import ArmPagePanel
             profile, reason = find_secondary_arm_page(self.image)
