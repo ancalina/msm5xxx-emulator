@@ -518,11 +518,18 @@ class DisplayControllerMixin:
         profile,reason=find_boot_page_profile(original)
         self._lcd_boot_page_reason=reason
         if profile is None:return False
-        if (profile.get('signature') != 'source-halfword-boot-page128-v1'
-                or profile.get('admission') != 'temporary-evidence-gated'
-                or tuple(profile.get(k)for k in ('width','command_port','data_port','access_width')) !=
-                   (128,0x02000000,0x02000002,2)
-                or (profile.get('clear_pages'),profile.get('planes')) not in ((9,1),(16,2))
+        halfword=(profile.get('signature') == 'source-halfword-boot-page128-v1'
+                  and profile.get('access_width') == 2
+                  and (profile.get('clear_pages'),profile.get('planes')) in ((9,1),(16,2))
+                  and profile.get('publish_after_clear_if_enabled',False) is False)
+        byte=(profile.get('signature') == 'source-byte-boot-page128-v1'
+              and profile.get('access_width') == 1
+              and (profile.get('clear_pages'),profile.get('planes')) == (8,1)
+              and profile.get('publish_after_clear_if_enabled') is True)
+        if (not (halfword or byte) or profile.get('admission') != 'temporary-evidence-gated'
+                or type(profile.get('access_width')) is not int
+                or tuple(profile.get(k)for k in ('width','command_port','data_port')) !=
+                   (128,0x02000000,0x02000002)
                 or profile.get('height') != profile['clear_pages']*8):
             self._lcd_boot_page_reason='source-boot-page-contract-unverified';return False
         spans=profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
@@ -535,7 +542,8 @@ class DisplayControllerMixin:
             self._lcd_boot_page_reason='source-geometry-owner-conflict';return False
         if find_boot_page_profile(loaded)[0] != profile:
             self._lcd_boot_page_reason='source-loaded-owner-mismatch';return False
-        self._lcd_boot_page_panel=BootPagePanel(profile['clear_pages'],profile['planes'])
+        self._lcd_boot_page_panel=BootPagePanel(profile['clear_pages'],profile['planes'],
+            access_width=profile['access_width'],publish_after_clear_if_enabled=byte)
         self._lcd_boot_page_reason='source-candidate-awaiting-complete-clear'
         return True
 

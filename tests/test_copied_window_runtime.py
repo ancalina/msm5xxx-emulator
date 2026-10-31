@@ -264,6 +264,27 @@ class BootPageRuntimeTests(unittest.TestCase):
         self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
 
 
+class ByteBootPageRuntimeTests(unittest.TestCase):
+    def test_source_contract_and_enabled_complete_clear(self):
+        candidate = dict(signature='source-byte-boot-page128-v1', admission='temporary-evidence-gated',
+            width=128,height=64,command_port=0x02000000,data_port=0x02000002,
+            clear_pages=8,planes=1,access_width=1,publish_after_clear_if_enabled=True,
+            code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
+            data_intervals=(),ram_intervals=((0x01000000,0x01001000),))
+        h=Harness();h.config.chipset='MSM5100'
+        with patch('msm5xxx_emulator.detection.boot_page.find_boot_page_profile', return_value=(candidate,'candidate')):
+            self.assertTrue(h._lcd_bind_source_boot_page(bytes(0x1000),bytes(0x1000)))
+        for value in (0xae,0xaf):h._lcd_source_boot_page_write(0x02000000,1,value)
+        for page in range(8):
+            for value in (0xb0+page,0x10,0):h._lcd_source_boot_page_write(0x02000000,1,value)
+            for _ in range(128):h._lcd_source_boot_page_write(0x02000002,1,0)
+        self.assertEqual(h.frame_sequence,1)
+        self.assertEqual(h.display_snapshot()[:2],(128,64))
+        h._set_display_geometry(96,64,source='runtime:unbound',force=True)
+        self.assertEqual(h.display_snapshot()[:2],(128,64))
+
+
+
 class BytePair565RuntimeTests(unittest.TestCase):
     def bind(self,h,**kwargs):
         candidate=dict(signature='source-halfword-bytepair565-104-v1',admission='temporary-evidence-gated',

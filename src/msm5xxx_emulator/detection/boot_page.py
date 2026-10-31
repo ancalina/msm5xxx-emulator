@@ -259,4 +259,7 @@ def find_boot_page_profile(image: bytes):
             pass
     from .boot_page_indirect import find_indirect_boot_page_profile
     indirect, reason = find_indirect_boot_page_profile(image)
-    return (indirect, reason) if indirect is not None else (None, 'boot-page-source-unclosed')
+    if indirect is not None:return indirect, reason
+    from .byte_boot_page import find_byte_boot_page_profile
+    byte, reason = find_byte_boot_page_profile(image)
+    return (byte, reason) if byte is not None else (None, 'boot-page-source-unclosed')
