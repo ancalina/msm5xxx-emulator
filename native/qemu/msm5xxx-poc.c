@@ -5811,35 +5811,6 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
     return true;
 }
 
-/* Standalone, detector-owned MA2 command/data bus outside LCD backing. */
-static MemTxResult msm5xxx_poc_ma2_direct_read(void *opaque, hwaddr offset,
-                                              uint64_t *value, unsigned size,
-                                              MemTxAttrs attrs)
-{
-    MSM5xxxPOCMachineState *s = opaque;
-    (void)attrs;
-    return msm5xxx_poc_audio_read_owned(s, offset, size, value) ?
-           MEMTX_OK : MEMTX_ERROR;
-}
-
-static MemTxResult msm5xxx_poc_ma2_direct_write(void *opaque, hwaddr offset,
-                                               uint64_t value, unsigned size,
-                                               MemTxAttrs attrs)
-{
-    MSM5xxxPOCMachineState *s = opaque;
-    (void)attrs;
-    return msm5xxx_poc_audio_write_owned(s, offset, value, size) ?
-           MEMTX_OK : MEMTX_ERROR;
-}
-
-static const MemoryRegionOps msm5xxx_poc_ma2_direct_ops = {
-    .read_with_attrs = msm5xxx_poc_ma2_direct_read,
-    .write_with_attrs = msm5xxx_poc_ma2_direct_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 1, .valid.max_access_size = 1,
-    .impl.min_access_size = 1, .impl.max_access_size = 1,
-};
-
 static bool msm5xxx_poc_arm_b_target(uint32_t word, uint32_t address,
                                     uint32_t *target)
 {
@@ -13703,11 +13674,6 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("opaque audio-aperture requires audio-sites");
         exit(EXIT_FAILURE);
     }
-    if (s->audio_enabled && s->audio_ma2 && s->audio_base == 0x02880000 &&
-        !s->audio_sites_enabled) {
-        error_report("standalone MA2 audio-aperture requires audio-sites");
-        exit(EXIT_FAILURE);
-    }
     if (s->audio_enabled) {
         bool ma5_pcm_output = s->audio_ma5 && s->ma5_pcm_output_enabled &&
                               s->audio_sites_enabled;
@@ -13768,19 +13734,18 @@ static void msm5xxx_poc_init(MachineState *machine)
                                                   msm5xxx_poc_ma2_audio_tick, s);
             }
         }
-        if ((!s->audio_ma2 || s->audio_base == 0x02880000) && !s->audio_shared_lcd) {
+        if (!s->audio_ma2 && !s->audio_shared_lcd) {
             if (upper_nor_enabled &&
                 s->audio_base < MSM5XXX_POC_UPPER_NOR_BASE +
                                 MSM5XXX_POC_UPPER_NOR_SIZE &&
                 (uint64_t)s->audio_base + s->audio_data_offset + 1 >
                     MSM5XXX_POC_UPPER_NOR_BASE) {
-                error_report("standalone audio-aperture overlaps upper NOR");
+                error_report("opaque audio-aperture overlaps upper NOR");
                 exit(EXIT_FAILURE);
             }
             memory_region_init_io(
                 &s->audio_opaque, OBJECT(machine),
-                s->audio_ma2 ? &msm5xxx_poc_ma2_direct_ops :
-                               &msm5xxx_poc_audio_opaque_ops, s,
+                &msm5xxx_poc_audio_opaque_ops, s,
                 "msm5xxx-poc.audio-opaque", s->audio_data_offset + 1
             );
             memory_region_add_subregion(get_system_memory(), s->audio_base,
@@ -15411,20 +15376,19 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
     ma2 = legacy || (tagged && !strcmp(family, "ma2"));
     ma5 = tagged && !strcmp(family, "ma5");
     opaque = tagged && !strcmp(family, "opaque");
-    ma2_valid = ma2 && data_offset == 2 &&
-                (base == 0x02880000 ||
-                 (base >= 0x02001000 &&
-                  base <= MSM5XXX_POC_LCD_APERTURE_BASE +
-                          MSM5XXX_POC_LCD_APERTURE_SIZE - 3 &&
-                  (base + data_offset < msm5xxx_poc_lcd_bases[3] ||
-                   base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE)));
+    ma2_valid = ma2 && base >= 0x02001000 &&
+                base <= MSM5XXX_POC_LCD_APERTURE_BASE +
+                        MSM5XXX_POC_LCD_APERTURE_SIZE - 3 &&
+                data_offset == 2 &&
+                (base + data_offset < msm5xxx_poc_lcd_bases[3] ||
+                 base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE);
     /* New apertures require the explicit experimental device at realize. */
     ma5_valid = ma5 && base >= 0x02001000 && base <= 0x02ffff00 &&
                 (data_offset == 2 || data_offset == 4 || data_offset == 128);
     opaque_valid = opaque && base == 0x02880000 && data_offset == 2;
     if (!ma2_valid && !ma5_valid && !opaque_valid) {
         error_setg(errp,
-                   "audio-aperture must be LCD-BASE:2[:ma2], 02880000:2:ma2, or "
+                   "audio-aperture must be LCD-BASE:2[:ma2] or "
                    "02840000:2:ma5 or 02880000:2:opaque");
         return;
     }
