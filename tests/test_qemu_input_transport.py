@@ -901,6 +901,27 @@ class QEMUInputTransportTests(unittest.TestCase):
                               'experimental-matrix-status=42:2', None))
             self.assertEqual(helper(bytes(image), config, profile, enabled=True),
                              ('matrix-halfword=1000628:12:22:3b03', None))
+            # A source-proven lid owner replaces only the status diagnostic.
+            from msm5xxx_emulator.core.config import BoardStatusInput
+            lid = BoardStatusInput(0x3000728, 2, 2)
+            owned = SimpleNamespace(**dict(vars(config), board_status_input=lid))
+            closed = deepcopy(profile)
+            closed['scan_gates']['status_entry'] = 0x3c
+            with mock.patch('msm5xxx_emulator.detection.input_scanner_indirect.indirect_scanner_at',
+                            return_value=(lid, '')) as prove:
+                self.assertEqual(helper(bytes(image), owned, closed, enabled=False),
+                                 ('matrix-halfword=1000628:12:22:3b03,'
+                                  'experimental-matrix-contact=32:10', None))
+                prove.assert_called_once_with(bytes(image), 0x3c)
+                mismatched = deepcopy(closed)
+                mismatched['scan_gates']['status_entry'] += 2
+                self.assertIsNone(helper(bytes(image), owned, mismatched, enabled=False)[0])
+                wrong = SimpleNamespace(**dict(vars(config),
+                    board_status_input=BoardStatusInput(0x3000728, 2, 0)))
+                self.assertIsNone(helper(bytes(image), wrong, closed, enabled=False)[0])
+            with mock.patch('msm5xxx_emulator.detection.input_scanner_indirect.indirect_scanner_at',
+                            return_value=(None, 'unclosed')):
+                self.assertIsNone(helper(bytes(image), owned, closed, enabled=False)[0])
             for changed in ({'scan_gates': None}, {'scan_gates': {}}, {'grammar': 'unknown'}):
                 self.assertIsNone(helper(bytes(image), config, dict(profile, **changed), enabled=False)[0])
             for changed in ({'contact_mask': True}, {'status_mask': 4},

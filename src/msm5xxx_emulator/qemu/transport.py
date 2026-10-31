@@ -1205,8 +1205,17 @@ def qemu_mapped_scan_gate_property(image: bytes, config: object,
             or [struct.unpack_from("<I", image, rom + off)[0] for off in (8, 0x24, 0x34)]
                != [0x0300072c, 0x03000728, 0x0300072c]):
         return None, "unclosed-mapped-gate-copy"
-    if getattr(config, "board_status_input", None) is not None:
-        return None, "conflicting-status-profile"
+    status_owner = getattr(config, "board_status_input", None)
+    if status_owner is not None:
+        # The reset-owned lid input replaces the provisional status override;
+        # the contact gate and EEPROM backing owner remain independent.
+        from ..detection.input_scanner_indirect import indirect_scanner_at
+        status_entry = gates.get("status_entry")
+        if type(status_entry) is not int or status_entry + 6 != sites[1]:
+            return None, "conflicting-status-profile"
+        proven_owner, _ = indirect_scanner_at(image, status_entry)
+        if proven_owner is None or status_owner != proven_owner:
+            return None, "conflicting-status-profile"
     revision, _ = qemu_board_revision_property(config)
     ready = getattr(config, "ready_poll", None)
     ready_property, _ = qemu_ready_poll_property(ready)
@@ -1230,8 +1239,10 @@ def qemu_mapped_scan_gate_property(image: bytes, config: object,
             return None, "mapped-gate-eeprom-pin-conflict"
     # Temporary scan-enabling policy verified through ordinary numeric UI input.
     # These levels do not identify a physical switch or its released default.
-    return (f"experimental-matrix-contact={sites[0]:x}:10,"
-            f"experimental-matrix-status={sites[1]:x}:2"), None
+    contact = f"experimental-matrix-contact={sites[0]:x}:10"
+    if status_owner is not None:
+        return contact, None
+    return f"{contact},experimental-matrix-status={sites[1]:x}:2", None
 
 
 def qemu_halfword_matrix_property(image: bytes, config: object,
