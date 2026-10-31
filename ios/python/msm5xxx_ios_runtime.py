@@ -34,8 +34,9 @@ def start_session(request_json):
         raise RuntimeError("session already running")
     request = json.loads(request_json)
     if (not isinstance(request, dict)
-            or set(request) != {"firmware", "profile", "qemu", "state", "experimental_rex"}
-            or type(request["experimental_rex"]) is not bool):
+            or set(request) - {"virtual_network"} != {"firmware", "profile", "qemu", "state", "experimental_rex"}
+            or type(request["experimental_rex"]) is not bool
+            or type(request.get("virtual_network", False)) is not bool):
         raise ValueError("invalid session request")
     firmware = Path(request["firmware"])
     config = detect(firmware)
@@ -51,7 +52,7 @@ def start_session(request_json):
     transport = Transport(
         Path(request["qemu"]), firmware, state, request["experimental_rex"],
         config=config, audio_stream=False, audio_pcm=False,  # no iOS audio backend yet
-        virtual_cell=virtual_cell_scenario(False),
+        virtual_cell=virtual_cell_scenario(request.get("virtual_network", False)),
         launcher=IOSLauncher(),
     )
     stop = threading.Event()

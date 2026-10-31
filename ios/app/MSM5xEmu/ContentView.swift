@@ -7,57 +7,83 @@ struct ContentView: View {
     @State private var importing = false
     @State private var message = ""
     @State private var jit = QEMUEngine.jitAvailable
+    @State private var showingSettings = false
+    // Same settings and defaults as Android's settings dialog.
+    @AppStorage("persistent_state") private var persistentState = true
+    @AppStorage("experimental_rex") private var experimentalRex = false
+    @AppStorage("virtual_network") private var virtualNetwork = false
 
-    private let keys = [["Soft1", "Up", "Soft2"], ["Left", "OK", "Right"], ["Send", "Down", "End"],
-                        ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"]]
-    private let bits = ["Soft1": 0, "Up": 1, "Soft2": 2, "Left": 4, "OK": 5, "Right": 6,
-                        "Send": 3, "Down": 9, "End": 7, "1": 11, "2": 12, "3": 13,
-                        "4": 14, "5": 15, "6": 16, "7": 17, "8": 18, "9": 19,
-                        "*": 20, "0": 21, "#": 22]
+    // Same order, labels and guest bits as Android's KEY_LAYOUT; volume keys sit in the side column.
+    private static let keypad: [[(String, Int)]] = [
+        [("Menu", 0), ("▲", 1), ("Cancel", 2)], [("◀", 4), ("OK", 5), ("▶", 6)],
+        [("Call", 3), ("▼", 9), ("End", 7)], [("1", 11), ("2", 12), ("3", 13)],
+        [("4", 14), ("5", 15), ("6", 16)], [("7", 17), ("8", 18), ("9", 19)],
+        [("*", 20), ("0", 21), ("#", 22)],
+    ]
 
     var body: some View {
-        VStack(spacing: 12) {
-            Group {
+        VStack(spacing: 2) {
+            ZStack {
+                Color.black
                 if let frame = engine.frame {
                     Image(decorative: frame, scale: 1).resizable().interpolation(.none)
                         .aspectRatio(contentMode: .fit)
                 } else {
-                    Rectangle().fill(Color.black).aspectRatio(128.0 / 160.0, contentMode: .fit)
-                        .overlay(Text(firmware?.lastPathComponent ?? "No firmware").foregroundColor(.gray).padding())
+                    Text(firmware?.lastPathComponent ?? "No firmware").foregroundColor(.gray)
                 }
             }
-            .frame(maxHeight: 260)
+            .frame(maxHeight: .infinity)
             .accessibilityLabel("Phone display")
 
-            VStack(spacing: 6) {
-                ForEach(keys, id: \.self) { row in
-                    HStack(spacing: 6) {
-                        ForEach(row, id: \.self) { key in
-                            PhoneKey(label: key, enabled: engine.running && engine.inputBits.contains(bits[key]!),
-                                     transition: { engine.key(bits[key]!, pressed: $0) })
+            GeometryReader { geometry in
+                HStack(spacing: 2) {
+                    VStack(spacing: 2) {
+                        key("Vol+", 10).frame(height: 40)
+                        key("Vol-", 8).frame(height: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(firmware?.lastPathComponent ?? "No firmware")
+                            Text(engine.status).foregroundColor(.gray)
+                            Text(jit ? "JIT (TCG)" : "No JIT (TCI)").foregroundColor(.gray)
+                            if !message.isEmpty { Text(message).foregroundColor(.gray) }
+                        }
+                        .font(.system(size: 10)).foregroundColor(.white).lineLimit(3)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        Menu {
+                            // QEMU runs once per app process; after Stop, picks and settings apply on relaunch.
+                            Button("Choose firmware") { importing = true }.disabled(engine.running)
+                            Button("Settings") { showingSettings = true }.disabled(engine.running)
+                            if engine.running {
+                                Button("Stop") { engine.stop() }
+                            } else if engine.used {
+                                Button("Relaunch app to run again") {}.disabled(true)
+                            } else {
+                                Button("Run") { run() }.disabled(firmware == nil)
+                            }
+                        } label: {
+                            Text("⋮").font(.title2).foregroundColor(.white)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(Color(white: 0.33)).cornerRadius(4)
+                        }
+                        .frame(height: 40)
+                        .accessibilityLabel("More actions")
+                    }
+                    .frame(width: geometry.size.width / 3)
+                    VStack(spacing: 2) {
+                        ForEach(0..<Self.keypad.count, id: \.self) { row in
+                            HStack(spacing: 2) {
+                                ForEach(0..<3, id: \.self) { column in
+                                    let (label, bit) = Self.keypad[row][column]
+                                    key(label, bit)
+                                }
+                            }
                         }
                     }
                 }
             }
-
-            Button("Choose firmware") { importing = true }
-                .buttonStyle(.borderedProminent)
-                .disabled(engine.used)
-            HStack {
-                Button("Run") { if let firmware = firmware { engine.start(firmware) } }
-                    .disabled(firmware == nil || engine.used)
-                Button("Stop") { engine.stop() }.disabled(!engine.running)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(engine.status)
-                Text(jit ? "JIT: available (TCG)" : "JIT: unavailable (TCI only)")
-                if !message.isEmpty { Text(message) }
-            }
-            .font(.footnote)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 280)
         }
-        .padding()
+        .padding(2)
+        .background(Color(white: 0.07).ignoresSafeArea())
         .onAppear(perform: pickStoredFirmware)
         .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
             engine.refresh()
@@ -76,12 +102,34 @@ struct ContentView: View {
                 NSLog("MSM5xEmu JIT %@ (cs flags 0x%08x)", now ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
             }
         }
+        .sheet(isPresented: $showingSettings) {
+            NavigationView {
+                Form {
+                    Toggle("Persistent device state (firmware SHA-isolated)", isOn: $persistentState)
+                    Toggle("Experimental static REX controller", isOn: $experimentalRex)
+                    Toggle("Virtual network (calls unavailable)", isOn: $virtualNetwork)
+                }
+                .navigationTitle("Settings")
+                .toolbar { Button("Done") { showingSettings = false } }
+            }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             switch result {
             case .success(let url): importFirmware(url)
             case .failure(let error): message = error.localizedDescription
             }
         }
+    }
+
+    private func run() {
+        guard let firmware = firmware else { return }
+        engine.start(firmware, persistentState: persistentState, experimentalRex: experimentalRex,
+                     virtualNetwork: virtualNetwork)
+    }
+
+    private func key(_ label: String, _ bit: Int) -> some View {
+        PhoneKey(label: label, enabled: engine.running && engine.inputBits.contains(bit),
+                 transition: { engine.key(bit, pressed: $0) })
     }
 
     /// Reuse a firmware already in Application Support/firmware (imported earlier or copied in over
@@ -94,7 +142,7 @@ struct ContentView: View {
         firmware = support.appendingPathComponent("firmware").appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
             NSLog("MSM5xEmu autorun %@", name)
-            engine.start(firmware!)
+            run()
         }
     }
 
@@ -108,7 +156,10 @@ struct ContentView: View {
                 .appendingPathComponent("firmware", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let target = dir.appendingPathComponent(url.lastPathComponent)
-            try? FileManager.default.removeItem(at: target)
+            // Keep one image so the next launch reuses exactly this pick.
+            for old in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
+                try? FileManager.default.removeItem(at: old)
+            }
             try FileManager.default.copyItem(at: url, to: target)
             firmware = target
             message = "Imported \(target.lastPathComponent)"
@@ -126,10 +177,11 @@ private struct PhoneKey: View {
     @State private var pressed = false
     var body: some View {
         Text(label)
-            .frame(maxWidth: .infinity, minHeight: 36)
-            .background(Color.secondary.opacity(pressed ? 0.4 : 0.15))
-            .cornerRadius(6)
-            .opacity(enabled ? 1 : 0.4)
+            .font(.system(size: 13))
+            .foregroundColor(enabled ? .white : .gray)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(white: !enabled ? 0.18 : pressed ? 0.44 : 0.33))
+            .cornerRadius(4)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { _ in

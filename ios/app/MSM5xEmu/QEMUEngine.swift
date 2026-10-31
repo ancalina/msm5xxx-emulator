@@ -68,7 +68,8 @@ final class QEMUEngine: ObservableObject {
         NSLog("MSM5xEmu engine: %@; JIT %@; cs flags 0x%08x", status, QEMUEngine.jitAvailable ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
     }
 
-    func start(_ firmware: URL) {
+    func start(_ firmware: URL, persistentState: Bool = true, experimentalRex: Bool = false,
+               virtualNetwork: Bool = false) {
         guard entry != nil, !used else { return }
         used = true
         queue.async {
@@ -91,8 +92,9 @@ final class QEMUEngine: ObservableObject {
                 let log = support.appendingPathComponent("session.log").path
                 freopen(log, "w", stderr); freopen(log, "a", stdout); setvbuf(stderr, nil, _IONBF, 0)
                 let request: [String: Any] = ["firmware": firmware.path, "profile": profile,
-                    "qemu": "qemu-system-arm", "state": support.appendingPathComponent("state").path,
-                    "experimental_rex": false]
+                    "qemu": "qemu-system-arm",
+                    "state": persistentState ? support.appendingPathComponent("state").path : NSNull(),
+                    "experimental_rex": experimentalRex, "virtual_network": virtualNetwork]
                 let json = try JSONSerialization.data(withJSONObject: request)
                 let result = try PythonBridge.call("start_session", argument: String(decoding: json, as: UTF8.self))
                 let started = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any]

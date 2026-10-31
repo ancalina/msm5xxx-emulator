@@ -24,6 +24,13 @@ class IOSRuntimeTests(unittest.TestCase):
         self.addCleanup(self.modules.stop)
         self.runtime = load_module("msm5xxx_ios_runtime", ROOT / "ios/python/msm5xxx_ios_runtime.py")
 
+    def test_start_rejects_malformed_settings_before_detection(self):
+        base = {"firmware": "x", "profile": {}, "qemu": "q", "state": None, "experimental_rex": False}
+        for request in ({**base, "virtual_network": "yes"}, {**base, "unknown": True},
+                        {k: v for k, v in base.items() if k != "state"}):
+            with self.subTest(request=request), self.assertRaisesRegex(ValueError, "invalid session request"):
+                self.runtime.start_session(__import__("json").dumps(request))
+
     def test_stop_retains_resources_when_replay_still_alive(self):
         transport = self.shared._session = Mock()
         thread = self.shared._session_thread = Mock()
