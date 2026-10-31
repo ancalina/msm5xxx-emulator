@@ -4729,6 +4729,8 @@ class Transport:
                 "probe/caller/ordered-descriptor linkage"
             )
         if amd_profile is not None:
+            if legacy_nv_profile is not None and legacy_nv_profile[0] == "word-offset-uniform":
+                machine += ",amd-adjacent-nv=on"
             base, size, sector_size, id0, id1, options = amd_profile
             amd_state = ((state_dir / "amd-x16.raw")
                          if state_dir is not None else

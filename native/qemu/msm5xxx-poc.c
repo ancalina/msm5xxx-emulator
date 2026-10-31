@@ -299,6 +299,7 @@ struct MSM5xxxPOCMachineState {
     uint16_t intel_x16_nor_id1;
     MemoryRegion intel_x16_nor_data_alias;
     bool amd_x16_nor_enabled;
+    bool amd_adjacent_nv;
     uint16_t amd_x16_nor_options;
     bool fujitsu_x16_nor_enabled;
     uint32_t secondary_primary_size;
@@ -9132,6 +9133,32 @@ static const MemoryRegionOps msm5xxx_poc_ma5_shared_lcd_ops = {
     .impl.max_access_size = 4,
 };
 
+/* Explicit adjacent NV mode retains the primary ROM and RAM boundaries.
+ * It cannot consume the LCD/MMIO aperture or another storage/audio owner. */
+static bool msm5xxx_poc_amd_mapping_valid(const MSM5xxxPOCMachineState *s,
+                                         uint64_t ram_size)
+{
+    uint64_t base = s->intel_x16_nor_base;
+    uint64_t end = base + (uint64_t)s->intel_x16_nor_size;
+    uint64_t audio_end = (uint64_t)s->audio_base + s->audio_data_offset + 1;
+    if (!s->amd_x16_nor_enabled) {
+        return !s->amd_adjacent_nv;
+    }
+    if (!s->amd_adjacent_nv) {
+        return base >= s->ram_base && end <= (uint64_t)s->ram_base + ram_size;
+    }
+    return s->memory_profile_enabled && s->intel_x16_nor_size &&
+           base == s->primary_nor_size && end <= s->ram_base &&
+           end <= MSM5XXX_POC_LCD_APERTURE_BASE &&
+           !s->intel_x16_nor_enabled && !s->fujitsu_x16_nor_enabled &&
+           !s->primary_x16_nor_enabled && !s->record_x16_nor_enabled &&
+           !s->mapped_primary_x16_nor_enabled && !s->whole_primary_x16_enabled &&
+           !s->protected_nor_enabled && !s->upper_x8_nor_enabled &&
+           !s->upper_x16_nor_enabled && !s->raw_nand_main_enabled &&
+           !s->small_nand_enabled &&
+           (!s->audio_enabled || !(s->audio_base < end && audio_end > base));
+}
+
 static bool msm5xxx_poc_uart2_tx_ready_conflict(const MSM5xxxPOCMachineState *s)
 {
     return s->uart2_tx_ready_enabled &&
@@ -11527,7 +11554,8 @@ static void msm5xxx_poc_init(MachineState *machine)
                                   s->amd_x16_nor_enabled;
     unsigned i;
 
-    if (s->direct_lcd_enabled && (upper_nor_enabled || direct_x16_nor_enabled ||
+    if (s->direct_lcd_enabled && (upper_nor_enabled ||
+        (direct_x16_nor_enabled && !s->amd_adjacent_nv) ||
         s->raw_nand_main_enabled || s->small_nand_enabled ||
         s->fujitsu_x16_nor_enabled || s->primary_x16_nor_enabled ||
         s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
@@ -11654,15 +11682,9 @@ static void msm5xxx_poc_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
     }
-    if (s->amd_x16_nor_enabled) {
-        uint64_t base = s->intel_x16_nor_base;
-        uint64_t end = base + s->intel_x16_nor_size;
-        uint64_t ram_end = s->ram_base + machine->ram_size;
-
-        if (base < s->ram_base || end > ram_end) {
-            error_report("amd-x16-nor must overlap the detected RAM aperture");
-            exit(EXIT_FAILURE);
-        }
+    if (!msm5xxx_poc_amd_mapping_valid(s, machine->ram_size)) {
+        error_report("amd-x16-nor requires RAM containment or exclusive adjacent NV mode");
+        exit(EXIT_FAILURE);
     }
     /* Reject an EEPROM boundary through either mapped halfword register. */
     if ((s->matrix_input_row_mask || s->matrix_input_loop) && s->eeprom_gpio_enabled) {
@@ -15189,6 +15211,16 @@ static void msm5xxx_poc_set_intel_x16_nor(Object *obj, const char *value,
     s->intel_x16_nor_enabled = true;
 }
 
+static bool msm5xxx_poc_get_amd_adjacent_nv(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->amd_adjacent_nv;
+}
+
+static void msm5xxx_poc_set_amd_adjacent_nv(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->amd_adjacent_nv = value;
+}
+
 static void msm5xxx_poc_set_amd_x16_nor(Object *obj, const char *value,
                                          Error **errp)
 {
@@ -16651,6 +16683,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "intel-x16-nor",
         "Detector-provided external direct-command Intel x16 NOR");
+    object_class_property_add_bool(oc, "amd-adjacent-nv",
+                                  msm5xxx_poc_get_amd_adjacent_nv,
+                                  msm5xxx_poc_set_amd_adjacent_nv);
+    object_class_property_set_description(oc, "amd-adjacent-nv",
+        "Explicit disjoint CFI02 NV bank immediately after ROM and below RAM/MMIO");
     object_class_property_add_str(oc, "amd-x16-nor",
                                   msm5xxx_poc_get_amd_x16_nor,
                                   msm5xxx_poc_set_amd_x16_nor);
