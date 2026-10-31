@@ -1391,6 +1391,24 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator._lcd_protocol, "direct-rgb332")
         self.assertFalse(emulator._lcd_028_rgb332_probe)
 
+    def test_rgb332_command_width_change_keeps_qualified_partial_pixels(self) -> None:
+        for first_size, next_size in ((1, 2), (2, 1)):
+            emulator = self._routing_emulator(width=120, height=160)
+            emulator._lcd_028_rgb332_qualified = True
+            def window(y, size):
+                for address, value in ((0, 0x75), (4, y), (4, y),
+                                       (0, 0x15), (4, 0), (4, 2), (0, 0x5c)):
+                    emulator._lcd_write(None, 0, 0x02800000 + address, size, value, None)
+            window(11, first_size)
+            emulator._lcd_write(None, 0, 0x02800004, first_size, 0xdc, None)
+            window(0, next_size)
+            for value in (0xe0, 0x1c, 0x03):
+                emulator._lcd_write(None, 0, 0x02800004, next_size, value, None)
+            offset = 11 * 120 * 3
+            self.assertEqual(emulator.display_frame[offset:offset + 3], bytes((218, 255, 0)))
+            self.assertEqual(emulator.display_frame[:9], bytes((255, 0, 0, 0, 255, 0, 0, 0, 255)))
+            self.assertEqual(emulator._lcd_protocol, "direct-rgb332")
+
     def test_unknown_rgb332_partial_window_does_not_qualify(self) -> None:
         emulator = self._routing_emulator(width=120, height=160)
         for address, value in ((0, 0x75), (4, 0), (4, 159),

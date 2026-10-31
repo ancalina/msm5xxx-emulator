@@ -341,10 +341,11 @@ class DirectProtocolMixin:
         base, data = 0x02800000, 0x02800004
         probe = self._lcd_028_rgb332_probe
         if (self._lcd_028_rgb332_qualified and len(probe) >= 7
-                and address == base and size == probe[0][1]
+                and address == base and size in (1, 2)
                 and 0 <= value <= 0xFF):
             # A new command ends the current raster without undoing pixels
-            # already written to panel GRAM. Commit before changing BC mode.
+            # already written to panel GRAM. Byte and low-byte halfword
+            # commands address the same register. Commit before changing BC mode.
             self._lcd_028_rgb332_commit()
         # BC's first argument selects traversal only within the proven byte
         # window class. Exact 2A/2E modes are evidenced; other values retain
