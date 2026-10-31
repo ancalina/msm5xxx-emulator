@@ -5,9 +5,6 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(CDPATH= cd -- "$ROOT/.." && pwd)
 PYTHON_PREFIX="$ROOT/build/vendor-src/python-3.14.4-android/prefix"
 PYTHON_SOURCE="$ROOT/build/vendor-src/cpython-3.14.4"
-UNICORN_ROOT="$ROOT/build/vendor-src/unicorn-2.1.4"
-UNICORN_SOURCE="$UNICORN_ROOT/bindings/python/unicorn"
-UNICORN_LIBRARY="$ROOT/build/vendor-prefix/unicorn/lib/libunicorn.so"
 NUMPY_WHEEL="$ROOT/build/vendor-wheelhouse/numpy-2.5.1/numpy-2.5.1-cp314-cp314-android_24_arm64_v8a.whl"
 NUMPY_SOURCE_ARCHIVE="$ROOT/build/vendor-downloads/numpy-2.5.1.tar.gz"
 NUMPY_CXX_LIBRARY="$ROOT/build/vendor-prefix/numpy/lib/libc++_shared.so"
@@ -35,7 +32,7 @@ assets = root / "build/generated/python-assets/python/lib/python3.14"
 site = assets / "site-packages"
 jni = root / "build/generated/jniLibs/arm64-v8a"
 required = [assets / "os.py", site / "numpy/__init__.py",
-            site / "unicorn/__init__.py", jni / "libqemu-system-arm.so",
+            jni / "libqemu-system-arm.so",
             jni / "libpython3.14.so"]
 if not all(path.is_file() for path in required):
     raise SystemExit("prepared runtime missing; run full prepare_runtime.sh first")
@@ -75,9 +72,6 @@ check_sha256 \
     9b8c1ce18cf7553d67f274893fbfc718edc1ed256305bd8cff5ce3b3d4854b64 \
     "$PYTHON_PREFIX/lib/libpython3.14.so"
 check_sha256 \
-    96763dcb68f90eea6b27745bb5c252295b347c3cce992a683dded611fd38894c \
-    "$UNICORN_LIBRARY"
-check_sha256 \
     a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3 \
     "$NUMPY_SOURCE_ARCHIVE"
 python3 -m zipfile -t "$NUMPY_WHEEL"
@@ -96,7 +90,6 @@ if [ -d "$LICENSES" ]; then
     find "$LICENSES" -mindepth 1 -delete
 fi
 mkdir -p "$ASSETS/lib/python3.14/site-packages"
-mkdir -p "$ASSETS/lib/python3.14/site-packages/unicorn"
 mkdir -p "$ASSETS/cwd" "$LICENSES" "$JNI"
 
 cp -a "$PYTHON_PREFIX/lib/python3.14/." "$ASSETS/lib/python3.14/"
@@ -124,8 +117,6 @@ cp "$ROOT/app/src/main/python/msm5xxx_android_runtime.py" \
     "$ASSETS/lib/python3.14/site-packages/"
 cp -a "$REPO/src/msm5xxx_emulator" \
     "$ASSETS/lib/python3.14/site-packages/"
-cp -a "$UNICORN_SOURCE/." \
-    "$ASSETS/lib/python3.14/site-packages/unicorn/"
 python3 -m zipfile -e "$NUMPY_WHEEL" \
     "$ASSETS/lib/python3.14/site-packages"
 find "$ASSETS/lib/python3.14/site-packages/numpy" -type f -name '*.so' \
@@ -162,11 +153,15 @@ find "$ASSETS/lib/python3.14/site-packages" -type f -name '*.pyc' -delete
 find "$ASSETS" -type f \( -name '*.gz' -o -name '*-' \) \
     -exec sh -c 'for file do mv -- "$file" "$file-"; done' sh {} +
 
-rm -f "$JNI/libpython3.14.so" "$JNI/libcrypto_python.so" \
-    "$JNI/libsqlite3_python.so" "$JNI/libssl_python.so" \
-    "$JNI/libunicorn.so" "$JNI/libc++_shared.so"
+# Preserve QEMU libraries and replace the Python dependency libraries.
+# This also removes stale libraries from earlier runtime layouts.
+for library in "$JNI/"*.so; do
+    case "${library##*/}" in
+        libqemu-system-arm.so|libglib-2.0.so|libintl.so) ;;
+        *) rm -f "$library" ;;
+    esac
+done
 cp "$PYTHON_PREFIX/lib/libpython3.14.so" "$JNI/"
-cp "$UNICORN_LIBRARY" "$JNI/"
 cp "$NUMPY_CXX_LIBRARY" "$JNI/"
 
 for file in \
@@ -176,7 +171,6 @@ for file in \
         "$QEMU_SOURCE/COPYING.LIB" \
         "$DTC_SOURCE/BSD-2-Clause" \
         "$DTC_SOURCE/README.license" \
-        "$UNICORN_ROOT/COPYING.LGPL2" \
         "$GLIB_SOURCE/LICENSES/LGPL-2.1-or-later.txt" \
         "$GLIB_SOURCE/subprojects/proxy-libintl-0.5/COPYING" \
         "$PCRE2_SOURCE/LICENCE.md" \
@@ -195,7 +189,6 @@ cp "$QEMU_SOURCE/COPYING" "$LICENSES/QEMU-GPL-2.0.txt"
 cp "$QEMU_SOURCE/COPYING.LIB" "$LICENSES/QEMU-LGPL-2.1.txt"
 cp "$DTC_SOURCE/BSD-2-Clause" "$LICENSES/libfdt-BSD-2-Clause.txt"
 cp "$DTC_SOURCE/README.license" "$LICENSES/libfdt-README-license.txt"
-cp "$UNICORN_ROOT/COPYING.LGPL2" "$LICENSES/Unicorn-LGPL-2.0.txt"
 cp "$GLIB_SOURCE/LICENSES/LGPL-2.1-or-later.txt" \
     "$LICENSES/GLib-LGPL-2.1-or-later.txt"
 cp "$GLIB_SOURCE/subprojects/proxy-libintl-0.5/COPYING" \
@@ -211,4 +204,4 @@ cp -a "$ASSETS/lib/python3.14/site-packages/"numpy-2.5.1.dist-info/licenses/. \
     "$LICENSES/NumPy/"
 
 python3 "$ROOT/runtime_cache.py" dependencies
-echo "Prepared pinned Python detector and audio runtime."
+echo "Prepared pinned Python detector and transport runtime."

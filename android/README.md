@@ -17,7 +17,6 @@ install -m 0755 /new/glib-build-work/runtime/libintl.so \
   build/vendor-install/glib-source-r13/usr/local/lib/libintl.so
 MSM5XXX_DTC_SOURCE=/path/to/pinned/dtc \
   ./build_qemu_android.sh /new/qemu-build-work
-./build_unicorn_android.sh
 ./build_numpy_android.sh
 ./prepare_runtime.sh
 gradle --offline --max-workers=1 :app:assembleDebug
@@ -28,6 +27,9 @@ Launch the app and choose a firmware through the system picker. Use the **⋮**
 menu to choose another firmware, change session settings, run, or stop. Tapping
 an unmapped keypad button opens its validated manual mapping dialog. Choose
 **Edit input mapping** to override or remove mappings for any keypad button.
+
+After upgrading from an earlier runtime layout, run full `prepare_runtime.sh`
+once to replace dependency assets and refresh the dependency cache.
 
 For Python-only client/emulator edits, reuse the prepared dependencies and native
 runtime rather than rebuilding them:

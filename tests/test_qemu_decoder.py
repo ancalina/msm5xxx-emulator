@@ -1,20 +1,16 @@
-"""Synthetic reset/device parity and imports without a Unicorn installation."""
+"""Synthetic reset, device decoding and persistence without a CPU backend."""
 from copy import deepcopy
-import json
 from pathlib import Path
 import struct
-import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch, Mock
 
-from msm5xxx_emulator import GenericMSMEmulator
 from msm5xxx_emulator.core.config import LinkerLayout, BoardStatusInput
 from msm5xxx_emulator.core.initial_state import initial_register_state
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
-from msm5xxx_emulator.qemu.transport import unicorn_state, qemu_memory_profile
+from msm5xxx_emulator.qemu.transport import qemu_memory_profile
 
 
 class QemuDecoderTests(unittest.TestCase):
@@ -35,41 +31,10 @@ class QemuDecoderTests(unittest.TestCase):
         config.secondary_flash_state = str(Path(directory) / 'secondary.json')
         return config
 
-    def pair(self, config):
-        legacy = GenericMSMEmulator(deepcopy(config), approximate_audio=False)
-        self.addCleanup(legacy.close)
-        decoder = QemuDecoder(deepcopy(config), approximate_audio=False)
+    def decoder(self, config):
+        decoder = QemuDecoder(config)
         self.addCleanup(decoder.close)
-        return legacy, decoder
-
-    def test_import_and_construct_without_unicorn_or_sitecustomize(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = self.config(directory)
-            code = '''import sys, json
-sys.path[:] = json.loads(sys.argv[1])
-sys.modules['unicorn'] = None
-import msm5xxx_emulator.qemu.transport
-import msm5xxx_emulator.qemu.live_display
-from msm5xxx_emulator.core.config import FirmwareConfig
-from msm5xxx_emulator.qemu.decoder import QemuDecoder
-config = FirmwareConfig(**json.loads(sys.argv[2]))
-decoder = QemuDecoder(config, approximate_audio=False)
-decoder._lcd_write(None, 0, 0x02000000, 2, 0x22, None)
-decoder.close()
-import importlib.util
-spec = importlib.util.spec_from_file_location('android_runtime', sys.argv[3])
-runtime = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runtime)
-assert json.loads(runtime.probe())['qemu_decoder']
-assert sys.modules['unicorn'] is None
-'''
-            from dataclasses import asdict
-            result = subprocess.run(
-                [sys.executable, '-S', '-c', code, json.dumps(sys.path),
-                 json.dumps(asdict(config)), str(Path(__file__).resolve().parents[1]
-                 / 'android/app/src/main/python/msm5xxx_android_runtime.py')],
-                capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+        return decoder
 
     def test_initial_registers_memory_profile_and_memory_bytes(self):
         for linker in (False, True):
@@ -82,22 +47,20 @@ assert sys.modules['unicorn'] is None
                 config.board_revision_register = 0x03000740
                 config.board_revision_value = 0x12345678
                 config.board_status_input = BoardStatusInput(0x03000744, 8, 8)
-                legacy, decoder = self.pair(config)
-                registers = unicorn_state(legacy)
-                self.assertEqual(initial_register_state(config), registers)
+                decoder = self.decoder(config)
+                registers = initial_register_state(config)
                 self.assertEqual(registers["sp"], 0x01100ffc if linker else 0x013ffffc)
                 self.assertEqual(registers["cpsr"], 0xd3)
                 self.assertTrue(all(value == 0 for key, value in registers.items()
                                     if key not in ("sp", "cpsr")))
                 self.assertEqual(qemu_memory_profile(config, registers),
-                                 qemu_memory_profile(config, initial_register_state(config)))
-                for address, size in ((0, 0x4000), (config.ram_base, 0x2000),
-                                      (0x03000720, 64), (0xfffff000, 0x1000)):
-                    self.assertEqual(decoder.initial_memory.read(address, size),
-                                     bytes(legacy.uc.mem_read(address, size)))
-                for name in ('image', 'direct_input_profile', 'direct_input_positions',
-                             'direct_input_detection', 'input_error'):
-                    self.assertEqual(getattr(decoder, name), getattr(legacy, name))
+                                 "4000:1000000:1100ffc" if linker else "4000:1000000:13ffffc")
+                self.assertEqual(decoder.initial_memory.read(config.load_address, 4),
+                                 struct.pack('<I', 0xEA000000))
+                self.assertEqual(decoder.initial_memory.read(config.ram_base, 256),
+                                 bytes(range(256)))
+                self.assertEqual(decoder.initial_memory.read(0xfffff000, 0x1000),
+                                 b'\xff' * 0x1000)
                 self.assertIsNone(decoder.uc)
 
     def test_framebuffer_initial_render_and_format_changes(self):
@@ -109,37 +72,32 @@ assert sys.modules['unicorn'] is None
                 config.framebuffer_address = config.ram_base + 0x100
                 config.framebuffer_stride = 68
                 config.framebuffer_format = "rgb565le"
-                legacy, decoder = self.pair(config)
+                decoder = self.decoder(config)
                 for fmt in ('rgb565le', 'bgr565be', 'rgb565be', 'bgr565le'):
-                    for device in (legacy, decoder):
-                        device.set_framebuffer_format(fmt)
-                    self.assertEqual(decoder.display_snapshot(), legacy.display_snapshot())
-                    self.assertEqual(decoder.frame_sequence, legacy.frame_sequence)
+                    decoder.set_framebuffer_format(fmt)
+                    width, height, pixels = decoder.display_snapshot()
+                    self.assertEqual((width, height, len(pixels)), (32, 32, 32 * 32 * 3))
                     self.assertEqual(decoder.firmware_frame_sequence, 0)
                 if seeded:
                     self.assertTrue(any(decoder.display_snapshot()[-1]))
 
-    def test_lcd_write_and_audio_ownership_parity(self):
+    def test_lcd_write_and_audio_ownership(self):
         with tempfile.TemporaryDirectory() as directory:
-            legacy, decoder = self.pair(self.config(directory))
-            for device in (legacy, decoder):
-                # Exercise the shared ownership decision with a recording transport.
-                device.audio_transport = Mock(static_status='accepted', base=0x02000000,
-                                              data_offset=2)
-                device.audio_transport.owns_write.return_value = False
-                device._lcd_write(device.uc, 0, 0x02000000, 1, 0x22, None)
-                device.audio_transport.owns_write.assert_called_once_with(0, 0x02000000, 1)
-                device.audio_transport.owns_write.return_value = True
-                device._lcd_write(device.uc, 0, 0x02000002, 1, 0xff, None)
-                self.assertEqual(device.lcd_writes, 1)
-                device._lcd_write(device.uc, 0, 0x02000000, 2, 0x22, None)
-                for value in (0xf800, 0x07e0, 0x001f) * 342:
-                    device._lcd_write(device.uc, 0, 0x02000002, 2, value, None)
-                device._flush_indexed_frame()
-                device._lcd_page_flush_current()
-            self.assertEqual(decoder.display_snapshot(), legacy.display_snapshot())
-            self.assertEqual(decoder.secondary_display_snapshot(), legacy.secondary_display_snapshot())
-            self.assertEqual(decoder.lcd_writes, legacy.lcd_writes)
+            decoder = self.decoder(self.config(directory))
+            # Exercise the shared ownership decision with a recording transport.
+            decoder.audio_transport = Mock(static_status='accepted', base=0x02000000,
+                                          data_offset=2)
+            decoder.audio_transport.owns_write.return_value = False
+            decoder._lcd_write(decoder.uc, 0, 0x02000000, 1, 0x22, None)
+            decoder.audio_transport.owns_write.assert_called_once_with(0, 0x02000000, 1)
+            decoder.audio_transport.owns_write.return_value = True
+            decoder._lcd_write(decoder.uc, 0, 0x02000002, 1, 0xff, None)
+            self.assertEqual(decoder.lcd_writes, 1)
+            decoder._lcd_write(decoder.uc, 0, 0x02000000, 2, 0x22, None)
+            for value in (0xf800, 0x07e0, 0x001f) * 342:
+                decoder._lcd_write(decoder.uc, 0, 0x02000002, 2, value, None)
+            decoder._flush_indexed_frame()
+            decoder._lcd_page_flush_current()
             self.assertGreater(decoder.frame_sequence, 0)
 
     def test_descriptor_input_config_side_effects(self):
@@ -170,14 +128,11 @@ assert sys.modules['unicorn'] is None
                  patch(prefix + 'resolve_lg_descriptor_input', side_effect=lambda _: (deepcopy(descriptor), 'accepted', [])), \
                  patch(prefix + 'find_rex_legacy_5ms_timer_bridge', return_value=bridge), \
                  patch(prefix + 'find_rex_legacy_5ms_irq_route', return_value=route):
-                legacy, decoder = self.pair(config)
+                decoder = self.decoder(config)
             self.assertEqual(decoder.direct_input_detection, 'accepted')
             self.assertTrue(decoder.direct_input_positions)
-            for name in ('direct_input_profile', 'direct_input_positions',
-                         '_rex_irq_pending', '_rex_irq_controller_aperture',
-                         '_direct_sideband_read_profiles'):
-                self.assertEqual(getattr(decoder, name), getattr(legacy, name))
-            self.assertEqual(decoder.config, legacy.config)
+            self.assertEqual(decoder.direct_input_profile['grammar_fingerprint'],
+                             'synthetic-descriptor')
             self.assertEqual(decoder.config.rex_tick_ms, 5)
             self.assertEqual(decoder.config.rex_irq_status_address, route['status'])
 
@@ -194,33 +149,29 @@ assert sys.modules['unicorn'] is None
                 config.nand_enabled = True
                 config.nand_data_size, config.nand_page_size = 512, 256
                 config.nand_spare_size, config.nand_pages_per_block = 16, 2
-                outputs = []
-                for backend in (GenericMSMEmulator, QemuDecoder):
-                    state = Path(directory) / backend.__name__
-                    state.mkdir()
-                    selected = deepcopy(config)
-                    selected.flash_state = str(state / 'flash.json')
-                    selected.secondary_flash_state = str(state / 'secondary.json')
-                    selected.upper_flash_state = str(state / 'upper.json')
-                    device = backend(selected, native_nand=native, approximate_audio=False)
-                    try:
-                        self.assertEqual(bool(device.nand_image), not native)
-                        for flash in (device.flash, device.secondary_flash, device.upper_flash):
-                            flash.program(0x2000 if flash is device.flash else 0, b'\x5a\xa5')
-                        device.eeprom_data[:] = bytes(0x2000)
-                        device.eeprom_data[3:5] = b'\x12\x34'
-                        if not native:
-                            device.nand_image[1] = 0x50
-                    finally:
-                        device.close()
-                    saved = {path.name: path.read_bytes() for path in state.iterdir()
-                             if path.suffix in ('.json', '.bin')}
-                    self.assertIn('flash.json', saved)
-                    self.assertIn('secondary.json', saved)
-                    self.assertIn('upper.json', saved)
-                    self.assertIn('flash.json.eeprom.bin', saved)
-                    eeprom = saved['flash.json.eeprom.bin']
-                    self.assertEqual((len(eeprom), eeprom[3:5]), (0x2000, b'\x12\x34'))
-                    self.assertEqual('flash.json.nand.bin' in saved, not native)
-                    outputs.append(saved)
-                self.assertEqual(*outputs)
+                state = Path(directory) / 'state'
+                state.mkdir()
+                selected = deepcopy(config)
+                selected.flash_state = str(state / 'flash.json')
+                selected.secondary_flash_state = str(state / 'secondary.json')
+                selected.upper_flash_state = str(state / 'upper.json')
+                device = QemuDecoder(selected, native_nand=native)
+                try:
+                    self.assertEqual(bool(device.nand_image), not native)
+                    for flash in (device.flash, device.secondary_flash, device.upper_flash):
+                        flash.program(0x2000 if flash is device.flash else 0, b'\x5a\xa5')
+                    device.eeprom_data[:] = bytes(0x2000)
+                    device.eeprom_data[3:5] = b'\x12\x34'
+                    if not native:
+                        device.nand_image[1] = 0x50
+                finally:
+                    device.close()
+                saved = {path.name: path.read_bytes() for path in state.iterdir()
+                         if path.suffix in ('.json', '.bin')}
+                self.assertIn('flash.json', saved)
+                self.assertIn('secondary.json', saved)
+                self.assertIn('upper.json', saved)
+                self.assertIn('flash.json.eeprom.bin', saved)
+                eeprom = saved['flash.json.eeprom.bin']
+                self.assertEqual((len(eeprom), eeprom[3:5]), (0x2000, b'\x12\x34'))
+                self.assertEqual('flash.json.nand.bin' in saved, not native)

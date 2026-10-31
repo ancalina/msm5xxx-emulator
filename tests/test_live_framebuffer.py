@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import threading
 import unittest
 
-from msm5xxx_emulator.gui.app import can_apply_live_framebuffer_format
-from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.gui.controls import can_apply_live_framebuffer_format
+from msm5xxx_emulator.qemu.decoder import QemuDecoder
 
 
 class LiveFramebufferTests(unittest.TestCase):
@@ -31,14 +31,14 @@ class LiveFramebufferTests(unittest.TestCase):
             memory = bytearray(width * height * 2)
             for offset, value in zip((10, 12, 18, 20), values):
                 memory[offset:offset + 2] = value.to_bytes(2, endian)
-            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator = QemuDecoder.__new__(QemuDecoder)
             emulator.config = SimpleNamespace(
                 framebuffer_address=address, framebuffer_stride=width * 2,
                 framebuffer_format=framebuffer_format, width=width, height=height,
             )
             emulator.framebuffer = bytearray(width * height * 3)
-            emulator.uc = SimpleNamespace(
-                mem_read=lambda offset, size: bytes(memory[offset - address:
+            emulator.initial_memory = SimpleNamespace(
+                read=lambda offset, size: bytes(memory[offset - address:
                                                           offset - address + size])
             )
             publishes: list[bool] = []
@@ -63,13 +63,13 @@ class LiveFramebufferTests(unittest.TestCase):
     def test_abnormal_mem_read_length_keeps_legacy_render_semantics(self) -> None:
         def render(row: bytes, width: int, height: int,
                    x0: int, x1: int) -> bytes:
-            emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+            emulator = QemuDecoder.__new__(QemuDecoder)
             emulator.config = SimpleNamespace(
                 framebuffer_address=0x01010000, framebuffer_stride=width * 2,
                 framebuffer_format="rgb565le", width=width, height=height,
             )
             emulator.framebuffer = bytearray(width * height * 3)
-            emulator.uc = SimpleNamespace(mem_read=lambda _address, _size: row)
+            emulator.initial_memory = SimpleNamespace(read=lambda _address, _size: row)
             emulator._publish_frame = lambda **_kwargs: None
             self.assertTrue(emulator._render_framebuffer_region(
                 x0, 0, x1, 0, force=False
@@ -106,7 +106,7 @@ class LiveFramebufferTests(unittest.TestCase):
         ))
 
     def test_emulator_reinterprets_mapped_framebuffer_without_reboot(self) -> None:
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator = QemuDecoder.__new__(QemuDecoder)
         emulator.config = SimpleNamespace(
             framebuffer_address=0x01010000,
             framebuffer_format="rgb565le",
@@ -126,7 +126,7 @@ class LiveFramebufferTests(unittest.TestCase):
         self.assertEqual(calls, [(0, 0, 127, 159, True, False)])
 
     def test_preseed_publish_does_not_count_as_firmware_frame(self) -> None:
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
+        emulator = QemuDecoder.__new__(QemuDecoder)
         emulator.framebuffer = bytearray((1, 2, 3))
         emulator.display_frame = bytes(3)
         emulator.frame_sequence = 0

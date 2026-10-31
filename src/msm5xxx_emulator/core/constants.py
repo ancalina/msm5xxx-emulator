@@ -5,15 +5,6 @@ PAGE = 0x1000
 MAX_RAM_SIZE = 0x08000000
 MAX_NAND_DATA_SIZE = 0x08000000
 MAX_NAND_BACKING_SIZE = 0x10000000
-MAX_DYNAMIC_PAGES = 2048
-UNMAPPED_ACCESS_HISTORY_LIMIT = 16
-LCD_MMIO_PRIMARY_START = 0x02000000
-LCD_MMIO_PRIMARY_COMMAND_SIZE = PAGE
-LCD_MMIO_PRIMARY_END = 0x02800000
-BOOTSTRAP_HLE_SLACK = 0x400
-# Hardware-poll release is guest-visible; keep the established observation cadence
-# independent of GUI/public run() partitions.
-POLL_OBSERVATION_STEPS = 100_000
 BUILD_CODENAME = "ancal"
 HANDSET_KEY_COUNT = 23
 NAND_MMIO_RANGES = (
@@ -30,7 +21,6 @@ BYTE_RGB565_BOOT_COMMANDS = bytes.fromhex(
 )
 BYTE_RGB565_BOOT_WIDTH = 96
 BYTE_RGB565_BOOT_HEIGHT = 64
-REX_TICK_INTERVAL = 100_000
 STABLE_MSM_MMIO = (
     # Bit 4 selects normal handset boot on several board revisions; bit 2 is
     # retained for the later 5100/5500 startup code.
@@ -41,10 +31,3 @@ STABLE_MSM_MMIO = (
     (0x03000720, b"\xff\xff"),
     (0x03000724, b"\xff\xff"),
 )
-
-
-def __getattr__(name):
-    if name == "THUMB_LOW_REGISTERS":
-        from unicorn import arm_const
-        return tuple(getattr(arm_const, f"UC_ARM_REG_R{i}") for i in range(8))
-    raise AttributeError(name)

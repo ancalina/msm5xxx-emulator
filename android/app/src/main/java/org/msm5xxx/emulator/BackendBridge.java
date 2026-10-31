@@ -53,7 +53,6 @@ final class BackendBridge {
                     || !"3.14.4".equals(result.getString("python"))
                     || !"2.5.1".equals(result.getString("numpy"))
                     || !result.getBoolean("qemu_decoder")
-                    || !result.getBoolean("audio_renderer")
                     || !result.getBoolean("detector_entry")
                     || !result.getBoolean("gdb_remote")
                     || !result.getBoolean("qemu_transport")) {

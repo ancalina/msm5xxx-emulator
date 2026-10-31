@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 from msm5xxx_emulator.qemu import transport
-from msm5xxx_emulator import GenericMSMEmulator
+from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu import nand_state as native_nand_state
 from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
 from msm5xxx_emulator.detection.firmware import detect
@@ -354,16 +354,13 @@ class NativeNandDecoderOwnershipTests(unittest.TestCase):
             config.flash_state = str(root / 'legacy')
             config.secondary_flash_state = str(root / 'secondary')
             config.upper_flash_state = str(root / 'upper')
-            with patch('unicorn.Uc.emu_start', side_effect=AssertionError('no CPU execution')) as execute:
-                decoder = GenericMSMEmulator(config, native_nand=True, approximate_audio=False)
-                try:
-                    self.assertTrue(config.nand_enabled)
-                    self.assertFalse(decoder._legacy_nand_enabled)
-                    self.assertEqual(decoder.nand_image, bytearray())
-                    self.assertEqual(decoder.instructions, 0)
-                finally:
-                    decoder.close()
-                execute.assert_not_called()
+            decoder = QemuDecoder(config, native_nand=True)
+            try:
+                self.assertTrue(config.nand_enabled)
+                self.assertFalse(decoder._nand_state_enabled)
+                self.assertEqual(decoder.nand_image, bytearray())
+            finally:
+                decoder.close()
             self.assertFalse((root / 'legacy.nand.bin').exists())
             self.assertFalse((root / 'legacy.nand.json').exists())
         self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), before)

@@ -1,7 +1,8 @@
-"""Run the QEMU PoC while the unchanged emulator GUI decodes LCD writes."""
+"""Run QEMU with the desktop LCD, input, and settings interface."""
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import queue
 import sys
@@ -388,7 +389,12 @@ class LiveWindow(Window):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("firmware", nargs="?", type=Path)
-    parser.add_argument("--qemu", required=True, type=Path)
+    parser.add_argument(
+        "--qemu", type=Path,
+        default=Path(os.environ.get("MSM5XXX_QEMU",
+            Path(__file__).resolve().parents[3] / "bin" /
+            ("qemu-system-arm.exe" if os.name == "nt" else "qemu-system-arm"))),
+    )
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument(
         "--experimental-static-rex-controller",

@@ -40,7 +40,7 @@ if ! "$python" -c 'import tkinter' >/dev/null 2>&1; then
     die "Tk is missing. Install Python Tk support (Debian/Ubuntu: python3-tk; macOS: a Python build with Tcl/Tk), then run this launcher again." 1
 fi
 
-if ! "$python" -c 'import unicorn, PIL, numpy' >/dev/null 2>&1; then
+if ! "$python" -c 'import PIL, numpy' >/dev/null 2>&1; then
     if [ ! -x "$venv_python" ]; then
         printf '%s\n' "Creating local .venv..."
         "$python" -m venv "$venv_dir" || die "Could not create local .venv." "$?"
@@ -52,7 +52,7 @@ if ! "$python" -c 'import unicorn, PIL, numpy' >/dev/null 2>&1; then
         die "Dependency installation failed. Check network access and Python pip, then run this launcher again." "$?"
 fi
 
-"$python" -c 'import unicorn, PIL, numpy' >/dev/null 2>&1 ||
+"$python" -c 'import PIL, numpy' >/dev/null 2>&1 ||
     die "Python dependencies are still unavailable after installation." 1
 
 qemu=${MSM5XXX_QEMU:-"$script_dir/bin/qemu-system-arm"}

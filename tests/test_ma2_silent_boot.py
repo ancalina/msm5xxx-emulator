@@ -4,15 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
-from unicorn.arm_const import (
-    UC_ARM_REG_CPSR,
-    UC_ARM_REG_LR,
-    UC_ARM_REG_PC,
-    UC_ARM_REG_R0,
-)
 
-from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.boot import find_ma2_silent_boot_wait
 from corpus import FIRMWARE_ROOT
@@ -45,24 +38,6 @@ class Ma2SilentBootTests(unittest.TestCase):
 
         self.assertIsNone(find_ma2_silent_boot_wait(path.read_bytes()))
         self.assertIsNone(detect(path).ma2_silent_boot_address)
-
-    def test_hle_returns_success_to_thumb_lr_and_counts_call(self) -> None:
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.ma2_silent_boot_calls = 0
-        emulator._thumb_runtime_matches = lambda *args, **kwargs: True
-        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
-        uc.reg_write(UC_ARM_REG_R0, 0xFFFFFFFF)
-        uc.reg_write(UC_ARM_REG_LR, 0x2001)
-        uc.reg_write(UC_ARM_REG_PC, 0x1000)
-        uc.reg_write(UC_ARM_REG_CPSR, 0xD3)
-
-        emulator._ma2_silent_boot(uc, 0x1000, 2, None)
-
-        self.assertEqual(uc.reg_read(UC_ARM_REG_R0), 0)
-        self.assertEqual(uc.reg_read(UC_ARM_REG_PC), 0x2000)
-        self.assertEqual(uc.reg_read(UC_ARM_REG_LR), 0x2001)
-        self.assertTrue(uc.reg_read(UC_ARM_REG_CPSR) & 0x20)
-        self.assertEqual(emulator.ma2_silent_boot_calls, 1)
 
 
 if __name__ == "__main__":

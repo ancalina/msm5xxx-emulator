@@ -7,10 +7,9 @@ import struct
 from types import SimpleNamespace
 import unittest
 
-from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 
 from msm5xxx_emulator.core.config import BoardStatusInput
-from msm5xxx_emulator.core.emulator import GenericMSMEmulator
+from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.detection.input import find_board_status_input
 
 
@@ -99,20 +98,6 @@ class BoardStatusInputTests(unittest.TestCase):
         image[0x300:0x600] = distinct[0x300:0x600]
         self.assertIsNone(find_board_status_input(image))
 
-    def test_default_assertion_preserves_other_status_bits(self) -> None:
-        emulator = GenericMSMEmulator.__new__(GenericMSMEmulator)
-        emulator.config = SimpleNamespace(
-            board_status_input=BoardStatusInput(0x03000670, 0x08, 0x08)
-        )
-        uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
-        uc.mem_map(0x03000000, 0x1000)
-        uc.mem_write(0x03000670, b"\x03")
-        emulator._refresh_board_status_input(uc)
-        self.assertEqual(uc.mem_read(0x03000670, 1), b"\x0b")
-
-        uc.mem_write(0x03000670, b"\x03")
-        emulator._refresh_board_status_input(uc, 0x03000670, 1)
-        self.assertEqual(uc.mem_read(0x03000670, 1), b"\x0b")
 
     def test_and_flags_class_relocated_and_mutations(self) -> None:
         for start, reg in ((0x100, 0), (0x202, 1)):

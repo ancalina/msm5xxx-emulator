@@ -12,7 +12,7 @@ from unittest import mock
 import zipfile
 
 import msm5xxx_emulator.detection.firmware_image as firmware_image
-from msm5xxx_emulator.core.lifecycle import LifecycleMixin
+from msm5xxx_emulator.core.device_state import DeviceStateMixin
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.detection.firmware_image import (
     MAX_LOGICAL_IMAGE_SIZE, decode_intel_hex, load_firmware_image,
@@ -152,7 +152,7 @@ class FirmwareImageTests(unittest.TestCase):
             path = Path(directory) / "phone.hex"
             path.write_bytes(encoded)
             config = detect(path)
-            available, _ram_seed = LifecycleMixin._load_primary_image(
+            available, _ram_seed = DeviceStateMixin._load_primary_image(
                 SimpleNamespace(), config, None
             )
             self.assertEqual(available[:len(image)], image)
@@ -174,7 +174,7 @@ class FirmwareImageTests(unittest.TestCase):
             path.write_bytes(_hex_image(bytes(image[:-1]) + b"\x00"))
             with self.assertRaisesRegex(
                     ValueError, "firmware source changed after detection"):
-                LifecycleMixin._load_primary_image(
+                DeviceStateMixin._load_primary_image(
                     SimpleNamespace(), config, None
                 )
 

@@ -1,11 +1,6 @@
 """Display methods owned by controller."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from unicorn import Uc
-
 from ...core.constants import LCD_MEMORY_WRITE_COMMANDS
 
 
@@ -657,7 +652,7 @@ class DisplayControllerMixin:
             self._lcd_paired_state_candidate = (address, value)
             self._lcd_paired_state_reason = "awaiting-peer-command"
 
-    def _lcd_write(self, uc: Uc, access: int, address: int, size: int,
+    def _lcd_write(self, uc: object, access: int, address: int, size: int,
                    value: int, user_data: object) -> None:
         if self._audio_transport_owns_write(uc, address, size):
             return
@@ -793,7 +788,7 @@ class DisplayControllerMixin:
             return
         self._lcd_write_fallback(uc, access, address, size, value, user_data)
 
-    def _lcd_write_fallback(self, uc: Uc, access: int, address: int, size: int,
+    def _lcd_write_fallback(self, uc: object, access: int, address: int, size: int,
                             value: int, user_data: object) -> None:
         if self._lcd_split_port_write(address, size, value):
             return
@@ -835,7 +830,7 @@ class DisplayControllerMixin:
             self._lcd_selector_reacquire_replay(protocol, words)
         return words, protocol
 
-    def _lcd_route_write(self, uc: Uc, access: int, address: int, size: int,
+    def _lcd_route_write(self, uc: object, access: int, address: int, size: int,
                          value: int, user_data: object) -> None:
         if (address in (0x02000000, 0x02000001, 0x02000002, 0x02000003)
                 or getattr(self, "_lcd_odd_page_state", {}).get("profile")):

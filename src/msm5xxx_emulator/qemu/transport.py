@@ -229,17 +229,6 @@ def qemu_low5_matrix_property(
     return f"matrix-low5={descriptor:x}:{sites[0]:x}:{sites[1]:x}", None
 
 
-def unicorn_state(emulator) -> dict[str, int]:
-    from unicorn import arm_const
-
-    return {
-        name: emulator.uc.reg_read(
-            getattr(arm_const, f"UC_ARM_REG_{name.upper()}")
-        )
-        for name in REGISTER_NAMES
-    }
-
-
 def qemu_ram_argument(size: int) -> str:
     """Preserve exact bytes; keep MiB spelling for aligned RAM allocations."""
     if type(size) is not int or size <= 0:
@@ -3531,7 +3520,7 @@ class Transport:
         self.config.secondary_flash_state = str(temporary / "secondary.flash.json")
         if upper_nor_enabled:
             self.config.upper_flash_state = str(temporary / "upper.flash.json")
-        decoder_options = {"approximate_audio": False}
+        decoder_options = {}
         if getattr(self.config, "native_nand_profile", None) is not None:
             decoder_options["native_nand"] = True
         self.decoder = QemuDecoder(self.config, **decoder_options)
@@ -5505,10 +5494,6 @@ class Transport:
                     self.native_audio_packets.clear()
                     self.native_audio_reset_epoch = reset_epoch
                 self._audio_ready.notify_all()
-            player = getattr(self.decoder, "audio_player", None)
-            if player is not None:
-                player.close()
-                self.decoder.audio_player = None
         elif (status == AUDIO_STATUS_REJECTED and order >= dropped > 0
               and detail != 0):
             self.audio_stream_dropped = dropped
@@ -5531,10 +5516,6 @@ class Transport:
         elif status == AUDIO_STATUS_NATIVE and order == dropped == detail == 0:
             self.audio_native = True
             self.audio_stream_status = "native"
-            player = getattr(self.decoder, "audio_player", None)
-            if player is not None:
-                player.close()
-                self.decoder.audio_player = None
         else:
             self._reject_audio_stream("qemu-audio-status-shape")
 

@@ -1,4 +1,4 @@
-"""CPU-independent reset state shared by the execution backends."""
+"""CPU-independent reset state for the QEMU guest and display decoder."""
 from __future__ import annotations
 
 from ..detection.memory_layout import aligned

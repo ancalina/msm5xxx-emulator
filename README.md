@@ -14,6 +14,8 @@ entire desktop archive. Keep the launcher, `bin/`, and bundled DLLs together.
 
 Firmware and saved state are not included.
 
+The installed desktop command is `msm5xxx-qemu` (QEMU live display).
+
 ## Start
 
 Run the launcher without arguments to open the firmware chooser:

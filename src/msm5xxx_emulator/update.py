@@ -286,22 +286,23 @@ def apply_prepared_update(prepared: Path, target: Path, state_root: Path,
 
 
 _APPLY_CODE = """\
-import os, pathlib, subprocess, sys
-root, prepared, state, firmware, revision, discard = sys.argv[1:]
+import json, os, pathlib, subprocess, sys
+root, prepared, state, firmware, revision, discard, launch_args = sys.argv[1:]
 sys.path.insert(0, str(pathlib.Path(root) / 'src'))
 from msm5xxx_emulator.update import apply_prepared_update
 apply_prepared_update(pathlib.Path(prepared), pathlib.Path(root), pathlib.Path(state), revision, discard == '1')
-subprocess.Popen([sys.executable, '-m', 'msm5xxx_emulator.gui.app', firmware], cwd=root,
+subprocess.Popen([sys.executable, '-m', 'msm5xxx_emulator.qemu.live_display', firmware, *json.loads(launch_args)], cwd=root,
                  env=dict(os.environ, PYTHONPATH=str(pathlib.Path(root) / 'src')))
 """
 
 
 def inplace_update_command(prepared: Path, root: Path, state_root: Path,
                            firmware: Path, info: UpdateInfo,
-                           discard_modified: bool) -> list[str]:
+                           discard_modified: bool, *,
+                           launch_args: tuple[str, ...] = ()) -> list[str]:
     """Build shell-free helper command that runs after GUI shutdown."""
     return [
         os.fsdecode(os.path.abspath(sys.executable)), "-c", _APPLY_CODE,
         str(root), str(prepared), str(state_root), str(firmware), info.revision,
-        "1" if discard_modified else "0",
+        "1" if discard_modified else "0", json.dumps(launch_args),
     ]

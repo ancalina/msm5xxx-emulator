@@ -1,18 +1,13 @@
 """Display methods owned by framebuffer."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from unicorn import Uc
-
 from ...core.constants import FRAMEBUFFER_FORMATS
 import struct
 
 
 class FramebufferMixin:
     def _read_framebuffer_memory(self, address: int, size: int) -> bytes:
-        return self.uc.mem_read(address, size)
+        return self.initial_memory.read(address, size)
 
     def set_framebuffer_format(self, framebuffer_format: str) -> None:
         """Apply a verified framebuffer colour interpretation without rebooting."""
@@ -81,36 +76,3 @@ class FramebufferMixin:
             self._lcd_protocol = f"framebuffer-{self.config.framebuffer_format}"
             self._publish_frame(firmware_originated=firmware_originated)
         return changed
-
-    def _framebuffer_rows(self, uc: Uc, address: int, size: int,
-                          user_data: object) -> None:
-        from unicorn.arm_const import UC_ARM_REG_R0
-        from unicorn.arm_const import UC_ARM_REG_R1
-        from unicorn.arm_const import UC_ARM_REG_R2
-        if uc.reg_read(UC_ARM_REG_R0) != self.config.framebuffer_address:
-            return
-        self.lcd_writes += 1
-        self._render_framebuffer_region(
-            0, uc.reg_read(UC_ARM_REG_R1), self.config.width - 1,
-            uc.reg_read(UC_ARM_REG_R2),
-        )
-
-    def _framebuffer_rect(self, uc: Uc, address: int, size: int,
-                          user_data: object) -> None:
-        from unicorn.arm_const import UC_ARM_REG_R0
-        from unicorn.arm_const import UC_ARM_REG_R1
-        from unicorn.arm_const import UC_ARM_REG_R2
-        from unicorn.arm_const import UC_ARM_REG_R3
-        from unicorn.arm_const import UC_ARM_REG_SP
-        from unicorn import UcError
-        if uc.reg_read(UC_ARM_REG_R0) != self.config.framebuffer_address:
-            return
-        try:
-            y1 = struct.unpack("<I", uc.mem_read(uc.reg_read(UC_ARM_REG_SP), 4))[0]
-        except (UcError, struct.error):
-            return
-        self.lcd_writes += 1
-        self._render_framebuffer_region(
-            uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2),
-            uc.reg_read(UC_ARM_REG_R3), y1,
-        )

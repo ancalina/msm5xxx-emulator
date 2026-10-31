@@ -1,4 +1,4 @@
-"""CPU-free device initialization and persistence shared by both backends."""
+"""CPU-free device initialization and persistence for QEMU decoding."""
 from __future__ import annotations
 
 from collections import Counter
@@ -10,10 +10,7 @@ from .constants import MAX_NAND_DATA_SIZE
 from .constants import MAX_RAM_SIZE
 from .constants import NAND_MMIO_RANGES
 from .constants import PAGE
-from .constants import POLL_OBSERVATION_STEPS
 from .constants import STABLE_MSM_MMIO
-from .constants import UNMAPPED_ACCESS_HISTORY_LIMIT
-from .errors import HostBackendFault
 from ..detection.display import (detect_lcd_width_hint, detect_packed_selector_port, find_dual_page_ports, find_byte_main_page_secondary, find_mixed_primary_power_port,
                                  find_paired_display_state_ports, find_packed_cursor_port, find_packed12_port, find_window_panel_port)
 from ..devices.display.page_panel import PagePanel
@@ -47,20 +44,11 @@ import logging
 
 LOGGER = logging.getLogger("msm5xxx")
 
-try:
-    from ..audio.player import ApproximateSmafPlayer
-except ImportError:
-    ApproximateSmafPlayer = None
-
-
 class DeviceStateMixin:
-    _uses_cpu = False
-
-    def __init__(self, config: FirmwareConfig, *, approximate_audio: bool = True,
-                 native_nand: bool = False) -> None:
+    def __init__(self, config: FirmwareConfig, *, native_nand: bool = False) -> None:
         if type(native_nand) is not bool:
             raise ValueError("invalid native NAND ownership")
-        self._legacy_nand_enabled = config.nand_enabled and not native_nand
+        self._nand_state_enabled = config.nand_enabled and not native_nand
         self.config = config
         LOGGER.info("emulator init config=%s",
                     json.dumps(config.diagnostic_config(), ensure_ascii=False,
@@ -81,17 +69,11 @@ class DeviceStateMixin:
         self._initialize_memory(
             config, secondary_base, ram_end, ram_seed
         )
-        self._init_runtime_state(ram_seed)
-        self._init_sbi_state(config)
         self._init_display_capture_state(config)
         self._init_nand_state(config)
         self._init_display_protocol_state(config)
-        self._init_unmapped_state()
-        self._init_input_state(config, install_hooks=self._uses_cpu)
-        self._init_nor_probe_state()
-        self._init_audio_state(approximate_audio)
-        if self._uses_cpu:
-            self._install_remaining_hooks(config, secondary_base, eeprom_enabled)
+        self._init_input_state(config)
+        self._init_audio_state()
 
     def _validate_config(
             self, config: FirmwareConfig) -> tuple[int, int, int | None]:
@@ -136,7 +118,7 @@ class DeviceStateMixin:
                 raise ValueError(f"{label} overlaps fixed alternate LCD MMIO")
             if max(start, 0x03000000) < min(end, 0x04000000):
                 raise ValueError(f"{label} overlaps fixed MSM MMIO/internal RAM")
-        if self._legacy_nand_enabled:
+        if self._nand_state_enabled:
             for start, end, label in configured:
                 if any(max(start, port_start) < min(end, port_end)
                        for port_start, port_end in NAND_MMIO_RANGES):
@@ -153,9 +135,6 @@ class DeviceStateMixin:
             if (config.framebuffer_address < config.ram_base
                     or framebuffer_end > ram_end):
                 raise ValueError("framebuffer range outside configured RAM")
-        elif (config.framebuffer_flush_address is not None
-              or config.framebuffer_rect_flush_address is not None):
-            raise ValueError("framebuffer trigger configured without framebuffer address")
         if not config.flash_state:
             raise ValueError("primary flash state path is empty")
         secondary_base = config.secondary_flash_address
@@ -220,7 +199,7 @@ class DeviceStateMixin:
             ))
         if eeprom_enabled:
             persistent_outputs.append(("EEPROM state", eeprom_state_path))
-        if self._legacy_nand_enabled:
+        if self._nand_state_enabled:
             persistent_outputs.extend((
                 ("NAND state", resolved_path(config.flash_state + ".nand.bin")),
                 ("NAND metadata", resolved_path(config.flash_state + ".nand.json")),
@@ -322,14 +301,13 @@ class DeviceStateMixin:
         self.secondary_base: int | None = secondary_base
         self.upper_flash: NORFlash | None = None
         self.upper_base: int | None = config.upper_flash_address
-        self._lazy_secondary_attempted: set[int] = set()
         if secondary_base is not None:
             secondary_end = secondary_base + config.secondary_flash_size
             image_end = config.load_address + len(self.image)
             overlaps_image = (max(secondary_base, config.load_address)
                               < min(secondary_end, image_end))
             overlaps_ram = max(secondary_base, config.ram_base) < min(secondary_end, ram_end)
-            overlaps_nand = (self._legacy_nand_enabled
+            overlaps_nand = (self._nand_state_enabled
                              and any(max(secondary_base, port_start)
                                      < min(secondary_end, port_end)
                                      for port_start, port_end in NAND_MMIO_RANGES))
@@ -366,7 +344,7 @@ class DeviceStateMixin:
             if (max(self.upper_base, config.load_address) < min(upper_end, config.load_address + len(self.image))
                     or max(self.upper_base, config.ram_base) < min(upper_end, ram_end)
                     or secondary_base is not None and max(self.upper_base, secondary_base) < min(upper_end, secondary_base + config.secondary_flash_size)
-                    or self._legacy_nand_enabled and any(max(self.upper_base, start) < min(upper_end, end)
+                    or self._nand_state_enabled and any(max(self.upper_base, start) < min(upper_end, end)
                                                    for start, end in NAND_MMIO_RANGES)):
                 raise ValueError("upper flash overlaps configured storage")
             self.upper_flash = NORFlash(b"\xff" * config.upper_flash_size,
@@ -426,7 +404,7 @@ class DeviceStateMixin:
             *((overlay.target, overlay.target + overlay.size, "executable overlay")
               for overlay in config.overlays),
         ]
-        if self._legacy_nand_enabled:
+        if self._nand_state_enabled:
             register_reserved.extend(
                 (start, end, "NAND MMIO") for start, end in NAND_MMIO_RANGES
             )
@@ -453,11 +431,9 @@ class DeviceStateMixin:
 
     def _map_and_seed_memory(self, config, secondary_base, ram_seed,
                              map_memory, write_memory, read_memory,
-                             memory_errors, stable_hook=None):
-        """Build the reset memory image for either CPU or display decoding."""
-        # Map actual devices and storage, rather than one contiguous 80 MiB
-        # arena.  Besides catching bad pointers, this avoids large-map issues
-        # seen in the Windows Unicorn backend.
+                             memory_errors):
+        """Build the reset memory image for display decoding."""
+        # Keep device and storage regions distinct in the sparse memory image.
         ranges = [
             (config.load_address, len(self.image)),
             (config.ram_base, config.ram_size),
@@ -467,13 +443,13 @@ class DeviceStateMixin:
             (0x03000000, 0x01000000), # MSM MMIO and internal RAM overlays
             # Some incomplete board dumps retain an all-ones optional-device
             # pointer.  On the physical 32-bit bus this lands on open bus,
-            # rather than becoming a host pointer or crashing Unicorn.
+            # rather than becoming a host pointer.
             (0xFFFFF000, PAGE),
             *((address, len(value)) for address, value in STABLE_MSM_MMIO),
         ]
         if config.key_register is not None:
             ranges.append((config.key_register, 4))
-        if self._legacy_nand_enabled:
+        if self._nand_state_enabled:
             ranges.extend((start, end - start) for start, end in NAND_MMIO_RANGES)
         if secondary_base is not None:
             ranges.append((secondary_base, config.secondary_flash_size))
@@ -525,10 +501,6 @@ class DeviceStateMixin:
                     and address + len(value) <= config.key_register + 4):
                 continue
             write_memory(address, value)
-            if address == 0x0300072C and config.guest_owned_status_72c:
-                continue
-            if stable_hook is not None:
-                stable_hook(address, value)
         if (config.board_revision_register is not None
                 and config.board_revision_value is not None):
             write_memory(config.board_revision_register,
@@ -537,90 +509,6 @@ class DeviceStateMixin:
         if status is not None:
             current = read_memory(status.address, 1)[0]
             write_memory(status.address, bytes((current | status.default & status.mask,)))
-
-    def _init_runtime_state(self, ram_seed: bytes) -> None:
-        self.instructions = 0
-        self.reset_entries = 0
-        self.fast_boot_used = False
-        self.fault: str | None = None
-        self._host_backend_fault: HostBackendFault | None = None
-        self._logged_fault: str | None = None
-        self.tail: deque[int] = deque(maxlen=64)
-        self.hot: Counter[int] = Counter()
-        self.mmio_reads: Counter[tuple[int, int, int]] = Counter()
-        self.mmio_read_totals: Counter[tuple[int, int, int]] = Counter()
-        self.poll_escapes: list[dict[str, int]] = []
-        self._poll_escape_keys: set[tuple[int, int, int, int, int]] = set()
-        self._poll_candidate_chunks: Counter[tuple[int, int, int]] = Counter()
-        self._poll_window_remaining = POLL_OBSERVATION_STEPS
-        self.ready_bits: dict[tuple[int, int], tuple[int, int]] = {}
-        self.zero_fetches = 0
-        self.rex_idle_entries = 0
-        self.rex_ticks = 0
-        self.rex_elapsed_ms = 0
-        self.rex_next_instruction = 0
-        self._rex_tick_return_address: int | None = None
-        self._rex_tick_context: tuple[tuple[int, int], ...] | None = None
-        self._rex_irq_pending = [0, 0]
-        self._rex_irq_controller_aperture: tuple[int, int] | None = None
-        self._rex_candidate_route: dict[str, object] | None = None
-        self._rex_candidate_shadow_hooks: list[int] = []
-        self._rex_candidate_gate_pending = False
-        self._rex_copied_c40_route: dict[str, object] | None = None
-        self._rex_copied_c40_shadow_hooks: list[int] = []
-        self._rex_copied_c40_gate_pending = False
-        self._rex_copied_c40_gate_terminal = False
-        self._rex_copied_c40_gate_next_instruction = 0
-        self._rex_candidate_gate_terminal = False
-        self._rex_candidate_gate_next_instruction = 0
-        self.rex_controller_gate_attempts = 0
-        self.rex_controller_gate_accepts = 0
-        self.rex_controller_gate_reason: str | None = None
-        self.rex_controller_activation_instruction: int | None = None
-        self.rex_controller_pending_assertions = 0
-        self.rex_controller_pending_acks = 0
-        self.rex_irq_deliveries = 0
-        self._rex_irq_arm_required = False
-        self._rex_irq_armed = True
-        self.rex_irq_arm_writes = 0
-        self.rex_irq_arm_accepts = 0
-        self.rex_irq_arm_last_value: int | None = None
-        self.rex_irq_arm_instruction: int | None = None
-        self.board_adc_reads = 0
-        self.board_adc_channel_entries: Counter[int] = Counter()
-        self._board_adc_reader_channel: int | None = None
-        self._board_adc_reader_layout_cache: tuple[bytes | None, int | None] | None = None
-        self.flash_id_reads = 0
-        self.fast_crc16_calls = 0
-        self.fast_dmd_downloads = 0
-        self.ram_seed_size = len(ram_seed)
-        self.secondary_flash_reads = 0
-        self.secondary_flash_writes = 0
-        self.legacy_efs_page_reads = 0
-        self.eeprom_reads = 0
-        self.eeprom_read_bytes = 0
-        self.eeprom_writes = 0
-        self.eeprom_write_bytes = 0
-        self.fast_memory_clears = 0
-        self.fast_memory_copies = 0
-        self.fast_register_ramps = 0
-        self.fast_arm_memory_copies = 0
-        # A few BSPs construct the initial runtime image with a literal
-        # ROM->SDRAM copy, a contiguous BSS clear, then one IRAM overlay copy
-        # instead of an ordinary linker table. These bounds are a one-shot
-        # lease for that exact bootstrap chain; they never authorize later
-        # runtime work buffers.
-        self._bootstrap_data_end: int | None = None
-        self._bootstrap_rom_end: int | None = None
-        self._bootstrap_bss_end: int | None = None
-        self._bootstrap_bss_complete = False
-        self._bootstrap_iram_end: int | None = None
-        # The structural Thumb clear/copy HLE and the older generic
-        # scatter-load escape are individually safe, but they describe
-        # mutually exclusive bootstrap phases.  Once real RAM-init work has
-        # been completed by the former, do not later return through the
-        # latter's guessed LR.
-        self.hot_loop_hle_used = False
 
     def _init_display_capture_state(self, config: FirmwareConfig) -> None:
         # The emulation worker can identify a new LCD geometry while Tk is
@@ -707,14 +595,13 @@ class DeviceStateMixin:
             )
 
     def _init_nand_state(self, config: FirmwareConfig) -> None:
-        self.nand_commands: list[int] = []
         self.nand_image = bytearray()
         self.nand_raw_page_size = config.nand_page_size + config.nand_spare_size
         self.nand_page_count = config.nand_data_size // config.nand_page_size
         nand_backing_size = self.nand_page_count * self.nand_raw_page_size
         if nand_backing_size > MAX_NAND_BACKING_SIZE:
             raise ValueError("NAND raw backing exceeds 256 MiB safety limit")
-        if self._legacy_nand_enabled:
+        if self._nand_state_enabled:
             if config.nand_image:
                 supplied = Path(config.nand_image).read_bytes()
                 self.nand_image = self._normalise_nand(supplied, nand_backing_size,
@@ -726,7 +613,7 @@ class DeviceStateMixin:
         self.nand_metadata_path = Path(config.flash_state + ".nand.json")
         self.nand_recovered_seed = False
         self.nand_needs_rewrite = False
-        if self._legacy_nand_enabled:
+        if self._nand_state_enabled:
             with exclusive_path_lock(config.flash_state):
                 self.nand_recovered_seed = self.nand_state_path.is_file()
                 if self.nand_recovered_seed:
@@ -742,14 +629,6 @@ class DeviceStateMixin:
                     )
         self.nand_loaded = bytes(self.nand_image)
         self.nand_operations: list[tuple[str, int, bytes | int]] = []
-        self.nand_mode = "idle"
-        self.nand_address: list[int] = []
-        self.nand_cursor = 0
-        self.nand_reads = 0
-        self.nand_writes = 0
-        self.nand_bad_block_probes = 0
-        self.nand_program = bytearray()
-        self.nand_spare_latched = False
 
     def _init_display_protocol_state(self, config: FirmwareConfig) -> None:
         self._lg_pixels: list[int] = []
@@ -921,58 +800,16 @@ class DeviceStateMixin:
         self._lcd_index = 0
         self._lcd_indexed_dirty = False
 
-    def _init_unmapped_state(self) -> None:
-        self.dynamic_pages: set[int] = set()
-        self.dynamic_page_first_accesses: deque[dict[str, int | str]] = deque(
-            maxlen=UNMAPPED_ACCESS_HISTORY_LIMIT
-        )
-        self.last_unmapped: dict[str, int | str] | None = None
-        self.unmapped_accesses: deque[dict[str, int | str]] = deque(
-            maxlen=UNMAPPED_ACCESS_HISTORY_LIMIT
-        )
-        self._chunk_unmapped: dict[str, int | str] | None = None
-        self._lcd_mmio_extended_mapped = False
 
-    def _init_nor_probe_state(self) -> None:
-        self._flash_restore: dict[int, bytes] = {}
-        # T720 and Motorola MSM510x firmware directly issue Intel's ID
-        # sequence (0x90, halfword reads at +0/+2, then 0xFF).  The mapped
-        # bytes are not proof of the physical device, so observe completed
-        # probes only; never alter NOR responses from this telemetry.
-        self._parallel_nor_direct_probe: dict[str, int] | None = None
-        self.primary_parallel_nor_direct_id_probes: list[dict[str, int]] = []
-
-    def _init_audio_state(self, approximate_audio: bool) -> None:
-        self.audio_player = (
-            ApproximateSmafPlayer()
-            if approximate_audio and ApproximateSmafPlayer is not None else None
-        )
+    def _init_audio_state(self) -> None:
         self.audio_transport = AudioTransport(self.config.audio_transport)
-        self.audio_play_requests = 0
-        self.audio_last_size = 0
-        self.ma2_silent_boot_calls = 0
-        self.audio_discovered_address: int | None = None
-        self._audio_probe_hook: int | None = None
-        self._audio_probe_rejections: set[int] = set()
 
     def close(self) -> None:
-        LOGGER.info("emulator close begin model=%s instructions=%d fault=%r",
-                    self.config.model, self.instructions, self.fault)
-        try:
-            if self._host_backend_fault is None:
-                self.save_flash()
-                self._save_eeprom()
-                self._save_nand()
-            else:
-                # A host backend failure can interrupt a Python device hook at
-                # an unknown point.  Keep the last durable state instead of
-                # mixing a partial chunk into the next boot.
-                LOGGER.warning("emulator state persistence skipped after host backend fault "
-                               "model=%s", self.config.model)
-        finally:
-            if self.audio_player is not None:
-                self.audio_player.close()
-        LOGGER.info("emulator close complete model=%s", self.config.model)
+        """Persist CPU-free storage state after the transport has stopped."""
+        self.save_flash()
+        self._save_eeprom()
+        self._save_nand()
+        LOGGER.info("decoder close complete model=%s", self.config.model)
 
     def _initial_primary_flash_ids(self, read_memory, memory_errors) -> tuple[int, int] | None:
         """Infer NOR autoselect IDs only from one unambiguous firmware descriptor."""

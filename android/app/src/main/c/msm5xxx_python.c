@@ -55,7 +55,6 @@ static int initialize_python(JNIEnv *env, const char *home,
     char cwd[PATH_MAX];
     if (!join_path(cwd, sizeof(cwd), home, "cwd")
             || chdir(cwd) != 0
-            || setenv("LIBUNICORN_PATH", native_dir, 1) != 0
             || setenv("LD_LIBRARY_PATH", native_dir, 1) != 0
             || setenv("MSM5XXX_STATE_DIR", state_dir, 1) != 0) {
         pthread_mutex_unlock(&INIT_LOCK);
