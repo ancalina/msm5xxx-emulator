@@ -461,6 +461,11 @@ struct MSM5xxxPOCMachineState {
     bool search2_probe_done, search2_probe_rejected;
     MemoryRegion dc0;
     MemoryRegion lcd_aperture;
+    MemoryRegion lcd029_region;
+    bool lcd029_enabled, lcd029_realized;
+    uint8_t lcd029_backing[0x38];
+    uint64_t lcd029_reads, lcd029_writes;
+
     MemoryRegion audio_opaque;
     MemoryRegion lcd[MSM5XXX_POC_LCD_PORTS];
     MemoryRegion lcd_trace;
@@ -9048,6 +9053,55 @@ static bool msm5xxx_poc_audio_packet_write(MSM5xxxPOCMachineState *s,
     return true;
 }
 
+/* Source-qualified diagnostic experiment. No status or incoming data is
+ * synthesized; all reads return the register backing written by the guest. */
+static uint64_t msm5xxx_poc_lcd029_read(void *opaque, hwaddr offset,
+                                      unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (size != 2 || offset & 1 || offset > 0x36) {
+        return 0;
+    }
+    s->lcd029_reads++;
+    return msm5xxx_poc_backing_read(s->lcd029_backing, offset, size);
+}
+
+static void msm5xxx_poc_lcd029_write(void *opaque, hwaddr offset,
+                                    uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (size != 2 || offset & 1 || offset > 0x36) {
+        return;
+    }
+    s->lcd029_writes++;
+    msm5xxx_poc_backing_write(s->lcd029_backing, offset, value, size);
+    msm5xxx_poc_lcd_trace_write(s, 0x02900000 + offset, value & UINT16_MAX, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_lcd029_ops = {
+    .read = msm5xxx_poc_lcd029_read,
+    .write = msm5xxx_poc_lcd029_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+    .impl = { .min_access_size = 2, .max_access_size = 2 },
+};
+
+static char *msm5xxx_poc_get_lcd029(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup(s->lcd029_enabled ? "1" : "");
+}
+
+static void msm5xxx_poc_set_lcd029(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (s->lcd029_enabled || s->lcd029_realized || strcmp(value, "1")) {
+        error_setg(errp, "experimental-lcd029 requires 1 before initialization");
+        return;
+    }
+    s->lcd029_enabled = true;
+}
+
 static uint64_t msm5xxx_poc_lcd_aperture_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
@@ -11516,6 +11570,8 @@ static void msm5xxx_poc_reset(void *opaque)
     memset(s->dc0_backing, 0, sizeof(s->dc0_backing));
     s->dc0_board_adc_phase = 0;
     s->dc0_board_adc_responses = 0;
+    memset(s->lcd029_backing, 0, sizeof(s->lcd029_backing));
+    s->lcd029_reads = s->lcd029_writes = 0;
     memset(s->lcd_aperture_backing, 0,
            sizeof(s->lcd_aperture_backing));
     s->lcd_aperture_reads = 0;
@@ -12710,6 +12766,23 @@ static void msm5xxx_poc_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(),
                                     s->raw_nand_command_address,
                                     &s->raw_nand_command);
+    }
+    s->lcd029_realized = true;
+    if (s->lcd029_enabled) {
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), 0x02900000, sizeof(s->lcd029_backing));
+        bool conflict = section.mr != NULL || s->raw_nand_main_enabled;
+        if (section.mr) {
+            memory_region_unref(section.mr);
+        }
+        if (conflict) {
+            error_report("LCD029 experiment conflicts with an existing memory/NAND owner");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_io(&s->lcd029_region, OBJECT(machine),
+            &msm5xxx_poc_lcd029_ops, s, "msm5xxx-poc.lcd029", sizeof(s->lcd029_backing));
+        memory_region_add_subregion(get_system_memory(), 0x02900000,
+                                     &s->lcd029_region);
     }
     memory_region_init_io(&s->lcd_aperture, OBJECT(machine),
                           &msm5xxx_poc_lcd_aperture_ops, s,
@@ -16729,6 +16802,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "dmd5100-program-760-layout",
         msm5xxx_poc_get_dmd5100_760_layout, msm5xxx_poc_set_dmd5100_760_layout);
 
+    object_class_property_add_str(oc, "experimental-lcd029",
+        msm5xxx_poc_get_lcd029, msm5xxx_poc_set_lcd029);
     object_class_property_add_str(oc, "experimental-gpio660-lcd",
         msm5xxx_poc_get_gpio_lcd, msm5xxx_poc_set_gpio_lcd);
     object_class_property_add_str(oc, "gpio660-lcd-state",
