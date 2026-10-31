@@ -4412,6 +4412,17 @@ class Transport:
                 upper_x16_profile, intel_profile, amd_profile,
                 self.config.upper_flash_address, self.config.secondary_flash_address,
                 self.config.native_nand_profile, self.config.nand_image)))
+        legacy_panel_protocol = self.decoder._lcd_bind_legacy_panel(
+            detector_image, primary_seed, ram_claimed=ram_reserved is not None)
+        if legacy_panel_protocol == "direct16":
+            if (direct_protocol_conflict or any(value is not None for value in (
+                    primary_profile, record_profile, mapped_primary_profile,
+                    upper_x16_profile, intel_profile, amd_profile,
+                    self.config.upper_flash_address, self.config.secondary_flash_address,
+                    self.config.native_nand_profile, self.config.nand_image))):
+                self.decoder._lcd_legacy_panel = None
+            else:
+                machine += ",direct-lcd=on"
         if uart_property is not None and uart_deferred:
             loaded_uart, loaded_uart_reject = qemu_loaded_uart_console_property(
                 self.config.uart_console, detector_image, primary_seed, self.config,
