@@ -9,6 +9,7 @@ from ..core.config import BoardStatusInput
 from .arm import thumb_bl_target, thumb_literal_value
 from .input_scanner import scanner_at
 from .input_scanner_arm_clock import arm_clock_scanner_at
+from .input_scanner_indirect import indirect_scanner_at
 from .input_scanner_direct import direct_scanner_at
 from .input_scanner_gated import gated_scanner_at
 from .rex import THUMB_BL_PATTERN, _normalized_thumb_sha256
@@ -543,6 +544,11 @@ def find_board_status_input(image: bytes, notes: list[str] | None = None
             notes.append(f"board-status scanner rejected at {start:#x}: {reason}")
     offset = 0
     while (offset := image.find(b"\xf0\xb5", offset)) >= 0:
+        scanner, reason = indirect_scanner_at(image, offset - 2)
+        if scanner is not None:
+            found.add(scanner)
+        elif reason and notes is not None:
+            notes.append(f"board-status scanner rejected at {offset - 2:#x}: {reason}")
         scanner, reason = arm_clock_scanner_at(image, offset)
         if scanner is not None:
             found.add(scanner)
