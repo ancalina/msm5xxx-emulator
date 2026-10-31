@@ -2342,13 +2342,29 @@ def qemu_dmd5100_property(
         console_wire, _ = qemu_loaded_uart_console_property(
             uart, original, loaded, config, ram_claimed=layout_claimed)
         legacy_padded_console = console_wire is not None
+    legacy_padded_indirect_page = False
+    if (not read_760 and isinstance(loaded, bytes)
+            and all(type(getattr(config, key, None)) is int for key in
+                    ("flash_size", "ram_base", "ram_size"))
+            and len(original) < config.flash_size
+            and getattr(config, "chipset", None) in ("MSM5100", "MSM5105")):
+        from msm5xxx_emulator.detection.boot_page_indirect import find_indirect_boot_page_profile
+        parent, _ = find_indirect_boot_page_profile(original)
+        # A complete indirect LCD reset/selector graph independently owns the
+        # short primary dump. Preserve that source by using native DSP upload,
+        # rather than a legacy ROM patch that would invalidate its observer.
+        if (parent is not None and find_indirect_boot_page_profile(loaded)[0] == parent
+                and all(config.ram_base <= a < b <= config.ram_base + config.ram_size
+                        for a,b in parent["ram_intervals"])):
+            legacy_padded_indirect_page = True
     fields = ("load_address", "image_offset", "entry", "flash_size", "ram_base", "ram_size")
     if (any(type(getattr(config, name, None)) is not int for name in fields)
             or getattr(config, "image_kind", None) != "firmware"
             or (config.load_address, config.image_offset, config.entry) != (0, 0, 0)
             or not isinstance(loaded, bytes)
             or not 0 < config.flash_size <= 0xFFFFFFFF
-            or (not read_760 and not legacy_padded_console and config.flash_size > len(original))
+            or (not read_760 and not legacy_padded_console and not legacy_padded_indirect_page
+                and config.flash_size > len(original))
             or not 0 <= config.ram_base < 0x100000000
             or not 0 < config.ram_size <= 0x100000000 - config.ram_base
             or len(loaded) != config.flash_size):
@@ -2387,7 +2403,7 @@ def qemu_dmd5100_property(
     if type(limit) is not int or not 0 < limit <= config.flash_size:
         return None, "dmd5100-immutable-prefix-unclosed"
     # Keep every active callee byte pristine, not just the typed entry spans.
-    expected = original[:limit].ljust(limit, b"\xff") if (read_760 or legacy_padded_console) else original[:limit]
+    expected = original[:limit].ljust(limit, b"\xff") if (read_760 or legacy_padded_console or legacy_padded_indirect_page) else original[:limit]
     if expected != loaded[:limit]:
         return None, "dmd5100-loaded-immutable-source-changed"
     if (profile.get("signature") != ("dmd5100-paired-program-readback-760-v1" if read_760 else "dmd5100-paired-program-readback-v1")
@@ -4357,6 +4373,13 @@ class Transport:
                 self.config.upper_flash_address, self.config.secondary_flash_address,
                 self.config.native_nand_profile, self.config.nand_image)))
         self.decoder._lcd_bind_source_boot_page(
+            detector_image, primary_seed,
+            ram_claimed=any(value is not None for value in (
+                ram_reserved, primary_profile, record_profile, mapped_primary_profile,
+                upper_x16_profile, intel_profile, amd_profile,
+                self.config.upper_flash_address, self.config.secondary_flash_address,
+                self.config.native_nand_profile, self.config.nand_image)))
+        self.decoder._lcd_bind_source_bytepair565(
             detector_image, primary_seed,
             ram_claimed=any(value is not None for value in (
                 ram_reserved, primary_profile, record_profile, mapped_primary_profile,

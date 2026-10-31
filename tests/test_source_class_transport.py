@@ -471,3 +471,28 @@ class DMDPaddedConsoleBindingTests(unittest.TestCase):
         self.assertIsNone(self.bind(layout_claimed=True)[0])
         self.cfg.chipset='MSM6000';self.assertIsNone(self.bind()[0])
         self.cfg.chipset='MSM5100';self.cfg.ram_size=1;self.assertIsNone(self.bind()[0])
+
+
+class DMDPaddedIndirectPageBindingTests(unittest.TestCase):
+    def setUp(self):
+        DMDPaddedConsoleBindingTests.setUp(self)
+        self.cfg.uart_console=None
+
+    def bind(self,loaded=None,parent=True,**kwargs):
+        source=dict(ram_intervals=((0x01000000,0x01001000),)) if parent else None
+        with patch('msm5xxx_emulator.detection.dmd5100.find_dmd5100_profile',
+                   return_value=(self.profile,'typed-source')):
+            with patch('msm5xxx_emulator.detection.boot_page_indirect.find_indirect_boot_page_profile',
+                       return_value=(source,'indirect-parent')):
+                return qemu_dmd5100_property(self.original,self.loaded if loaded is None else loaded,
+                                             self.cfg,**kwargs)
+
+    def test_native_bridge_requires_complete_indirect_parent_and_canonical_tail(self):
+        self.assertEqual(self.bind(),('dmd5100-program=100:400:200:a',None))
+        self.assertIsNone(self.bind(parent=False)[0])
+        for at in (0x100,0x200,0x800,0xfff):
+            changed=bytearray(self.loaded);changed[at]^=1
+            self.assertIsNone(self.bind(bytes(changed))[0])
+        self.assertIsNone(self.bind(layout_claimed=True)[0])
+        self.cfg.chipset='MSM6000';self.assertIsNone(self.bind()[0])
+        self.cfg.chipset='MSM5100';self.cfg.ram_size=0xfff;self.assertIsNone(self.bind()[0])

@@ -264,5 +264,43 @@ class BootPageRuntimeTests(unittest.TestCase):
         self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
 
 
+class BytePair565RuntimeTests(unittest.TestCase):
+    def bind(self,h,**kwargs):
+        candidate=dict(signature='source-halfword-bytepair565-104-v1',admission='temporary-evidence-gated',
+            width=104,height=80,command_port=0x02000000,pixel_port=0x02400000,
+            access_width=2,code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
+            data_intervals=(),ram_intervals=((0x01000000,0x01001000),),
+            iram_intervals=((0x03800000,0x03801000),))
+        loaded=kwargs.pop('loaded',bytes(0x1000))
+        with patch('msm5xxx_emulator.detection.bytepair565.find_bytepair565_profile',
+                   return_value=(candidate,'static-candidate')):
+            return h._lcd_bind_source_bytepair565(bytes(0x1000),loaded,**kwargs)
+
+    def test_complete_frame_and_ownership(self):
+        h=Harness();h.config.chipset='MSM5100';self.assertTrue(self.bind(h))
+        h._lcd_source_bytepair565_write(0x02000000,2,0xaf)
+        for value in h._lcd_bytepair565_panel.window:h._lcd_source_bytepair565_write(0x02000000,2,value)
+        for _ in range(104*80-1):
+            h._lcd_source_bytepair565_write(0x02400000,2,7)
+            h._lcd_source_bytepair565_write(0x02400000,2,0xe0)
+        self.assertEqual(h.frame_sequence,0)
+        h._lcd_source_bytepair565_write(0x02400000,2,7)
+        h._lcd_source_bytepair565_write(0x02400000,2,0xe0)
+        expected=h.display_snapshot();self.assertEqual(expected[:2],(104,80))
+        self.assertEqual(expected[2],bytes((0,255,0))*(104*80))
+        h._set_display_geometry(96,64,source='runtime:unbound',force=True)
+        h.framebuffer[:]=bytes(len(h.framebuffer));h._publish_frame()
+        self.assertEqual(h.display_snapshot(),expected);self.assertEqual(h.frame_sequence,1)
+
+    def test_owner_memory_seed_and_geometry_reject(self):
+        for field,value in [('chipset','MSM6000'),('ram_size',0xfff),
+                            ('entry',False),('display_geometry_source','manual')]:
+            h=Harness();h.config.chipset='MSM5100';setattr(h.config,field,value)
+            self.assertFalse(self.bind(h),field)
+        h=Harness();h.config.chipset='MSM5105'
+        self.assertFalse(self.bind(h,ram_claimed=True))
+        self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
+
+
 if __name__ == '__main__':
     unittest.main()
