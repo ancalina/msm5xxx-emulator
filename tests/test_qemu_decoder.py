@@ -14,6 +14,34 @@ from msm5xxx_emulator.qemu.transport import qemu_memory_profile
 
 
 class QemuDecoderTests(unittest.TestCase):
+    def test_shifted_boot_message_routing_retains_short_glyph_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.config(directory)
+            config.width, config.height = 176, 220
+            decoder = self.decoder(config)
+
+            def command(value, *arguments):
+                decoder._lcd_write(None, 0, 0x02800034, 2, value, None)
+                for argument in arguments:
+                    decoder._lcd_write(None, 0, 0x02800036, 2, argument, None)
+
+            command(0x75, 0, 0, 219, 0)
+            command(0x15, 2, 0, 177, 0)
+            command(0x5C)
+            for _ in range(176 * 220):
+                decoder._lcd_write(None, 0, 0x02800036, 2, 0xFFFF, None)
+            command(0x75, 0, 0, 15, 0)
+            command(0x15, 2, 0, 7, 0)
+            command(0x5C)
+            for _ in range(14 * 6):
+                decoder._lcd_write(None, 0, 0x02800036, 2, 0, None)
+            command(0xAF)
+            width, height, frame = decoder.display_snapshot()
+            self.assertEqual((width, height), (176, 220))
+            self.assertGreater(decoder.firmware_frame_sequence, 0)
+            self.assertEqual(frame[:18], bytes(18))
+            self.assertEqual(frame[14 * 176 * 3:14 * 176 * 3 + 18], b'\xff' * 18)
+
     def config(self, directory):
         # Same exception-vector fixture as test_eeprom, with a patterned RAM seed.
         raw = bytearray(b'\xff' * 0x3000)

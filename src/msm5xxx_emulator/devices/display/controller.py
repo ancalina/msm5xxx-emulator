@@ -1296,6 +1296,8 @@ class DisplayControllerMixin:
             return
         if self._lcd_source_bytepair565_write(address, size, value):
             return
+        if self._lcd_shifted_boot_write(address, size, value):
+            return
         self._lcd_observe_shifted_orientation(address, size, value)
         self._lcd_packed_window_observe(address, size, value)
         with self._display_lock:
@@ -1437,6 +1439,31 @@ class DisplayControllerMixin:
                                          old_value, user_data)
             return
         self._lcd_write_fallback(uc, access, address, size, value, user_data)
+
+    def _lcd_shifted_boot_write(self, address: int, size: int, value: int) -> bool:
+        """Observe the distinct +0x34/+0x36 boot aperture without port aliases."""
+        if address not in (0x02800034, 0x02800036):
+            return False
+        geometry = (176, 220)
+        if ((self.config.width, self.config.height) != geometry
+                and getattr(self.config, "display_geometry_source", None) != "auto-default"):
+            return False
+        panel = getattr(self, "_lcd_shifted_boot_panel", None)
+        if panel is None:
+            if (address, size, value) != (0x02800034, 2, 0x75):
+                return False
+            from .shifted_boot_panel import ShiftedBootPanel
+            panel = self._lcd_shifted_boot_panel = ShiftedBootPanel()
+        before = panel.sequence
+        panel.write(address, size, value)
+        if panel.sequence != before and panel.rejection is None:
+            self._set_display_geometry(*geometry, source="runtime:shifted-monochrome-boot")
+            if (self.config.width, self.config.height) != geometry:
+                return False
+            self.framebuffer[:] = panel.frame
+            self._lcd_protocol = "shifted-monochrome-boot"
+            self._publish_frame()
+        return panel.qualified and panel.rejection is None
 
     def _lcd_write_fallback(self, uc: object, access: int, address: int, size: int,
                             value: int, user_data: object) -> None:
