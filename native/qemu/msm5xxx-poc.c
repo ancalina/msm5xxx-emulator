@@ -12109,9 +12109,13 @@ static void msm5xxx_poc_init(MachineState *machine)
                 s->rex_irq_handler_address;
         bool vector_invalid = s->rex_irq_vector_target < s->ram_base ||
             s->rex_irq_vector_target > ram_end - 4;
+        bool wrapper_invalid = s->rex_irq_copied ?
+            (s->rex_irq_wrapper_address < 0x03800000 ||
+             (uint64_t)s->rex_irq_wrapper_address + s->rex_irq_wrapper_size >
+                 0x03810000) :
+            s->rex_irq_wrapper_address >= s->primary_nor_size;
 
-        if (vector_invalid ||
-                s->rex_irq_wrapper_address >= s->primary_nor_size ||
+        if (vector_invalid || wrapper_invalid ||
                 (!handler_in_nor && !handler_in_iram) ||
                 s->rex_irq_callback_address >= s->primary_nor_size ||
                 s->rex_irq_handler_slot < s->ram_base ||
