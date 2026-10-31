@@ -54,6 +54,8 @@ from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
 from msm5xxx_emulator.detection.rex_stack_w1c import find_stack_w1c_irq_profile
 from msm5xxx_emulator.detection.nv_nor_word import find_word_offset_nv_nor
 from msm5xxx_emulator.detection.nv_nor_byte import find_byte_offset_nv_nor
+from msm5xxx_emulator.detection.sbi_arm import find_arm_sbi_bootstraps
+from msm5xxx_emulator.detection.input import _sbi_bootstrap_layout_at
 from msm5xxx_emulator.detection.rex import (
     UIS_IDLE_BODY_DELTAS, find_rex_static_controller_callback_candidate,
     find_rex_legacy_row0_profile,
@@ -2252,6 +2254,27 @@ def qemu_sbi_property(config: object) -> tuple[str | None, str | None]:
     return "sbi=on,sbi-bootstrap-only=on", raw_reject
 
 
+def qemu_sbi_repeat_property(image: bytes, config: object) -> str | None:
+    """Bind repeated initialization to a closed Thumb write after an ARM stage."""
+    size = getattr(config, "flash_size", None)
+    if (type(getattr(config, "load_address", None)) is not int
+            or config.load_address != 0 or type(size) is not int
+            or not 0 < size <= 0x2000000
+            or qemu_sbi_property(config)[0] != "sbi=on,sbi-bootstrap-only=on"):
+        return None
+    profile = config.sbi_bootstrap_profile
+    entries = profile["entries"]
+    if len(entries) != 1 or profile.get("layout") != "thumb-sbi-bootstrap-direct-literal-v1":
+        return None
+    source = image[:size]
+    entry = entries[0]
+    if (_sbi_bootstrap_layout_at(source, entry) != profile["layout"]
+            or len(find_arm_sbi_bootstraps(source)) != 1):
+        return None
+    # This exact layout's fresh BYTE 0x45 producer is STRB at entry+4.
+    return f"{entry + 4:x}"
+
+
 def qemu_board_revision_property(
         config: object) -> tuple[str | None, str | None]:
     """Serialize only a complete detector-owned MSM revision readback."""
@@ -3784,6 +3807,13 @@ class Transport:
         sbi_property, sbi_reject = qemu_sbi_property(self.config)
         if sbi_property is not None:
             machine += f",{sbi_property}"
+            repeat_pc = qemu_sbi_repeat_property(detector_image, self.config)
+            if repeat_pc is not None:
+                machine += f",sbi-bootstrap-repeat={repeat_pc}"
+                self.config.detection_notes.append(
+                    "QEMU source-closed repeated SBI bootstrap enabled at its write PC; "
+                    "full revalidation required, later general SBI transfers unqualified"
+                )
         if sbi_reject is not None:
             fallback = "bootstrap-only retained" if sbi_property else "native fallback retained"
             self.config.detection_notes.append(
