@@ -292,7 +292,8 @@ struct MSM5xxxPOCMachineState {
     uint32_t mapped_primary_x16_nor_sector_size;
     /* The mutually exclusive direct CFI01/CFI02 profiles share geometry. */
     bool intel_x16_nor_enabled;
-    bool intel_adjacent_nv;
+    bool intel_adjacent_nv, intel_adjacent_x16;
+    bool sharp_primary_nv, sharp_nv_wp_high;
     uint32_t intel_x16_nor_base;
     uint32_t intel_x16_nor_size;
     uint32_t intel_x16_nor_sector_size;
@@ -9350,6 +9351,27 @@ static bool msm5xxx_poc_intel_adjacent_valid(const MSM5xxxPOCMachineState *s)
            (!s->audio_enabled || !(s->audio_base < end && audio_end > base));
 }
 
+/* Explicit writable Sharp NV partition inside the primary ROM envelope.
+ * The caller supplies its extent/geometry and preserves every supplied byte. */
+static bool msm5xxx_poc_sharp_primary_valid(const MSM5xxxPOCMachineState *s)
+{
+    uint64_t base = s->intel_x16_nor_base;
+    uint64_t end = base + (uint64_t)s->intel_x16_nor_size;
+    uint64_t audio_end = (uint64_t)s->audio_base + s->audio_data_offset + 1;
+    return s->sharp_primary_nv && !s->intel_adjacent_nv && s->intel_x16_nor_enabled &&
+           s->memory_profile_enabled && s->intel_x16_nor_size &&
+           base >= 0x00400000 && base < end && end <= s->primary_nor_size &&
+           s->primary_nor_size <= s->ram_base &&
+           end <= MSM5XXX_POC_LCD_APERTURE_BASE &&
+           !s->amd_x16_nor_enabled && !s->amd_adjacent_nv &&
+           !s->fujitsu_x16_nor_enabled && !s->primary_x16_nor_enabled &&
+           !s->record_x16_nor_enabled && !s->mapped_primary_x16_nor_enabled &&
+           !s->whole_primary_x16_enabled && !s->protected_nor_enabled &&
+           !s->upper_x8_nor_enabled && !s->upper_x16_nor_enabled &&
+           !s->raw_nand_main_enabled && !s->small_nand_enabled &&
+           (!s->audio_enabled || !(s->audio_base < end && audio_end > base));
+}
+
 static bool msm5xxx_poc_amd_mapping_valid(const MSM5xxxPOCMachineState *s,
                                          uint64_t ram_size)
 {
@@ -11770,7 +11792,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     unsigned i;
 
     if (s->direct_lcd_enabled && (upper_nor_enabled ||
-        (direct_x16_nor_enabled && !s->amd_adjacent_nv && !s->intel_adjacent_nv) ||
+        (direct_x16_nor_enabled && !s->amd_adjacent_nv && !s->intel_adjacent_nv && !s->sharp_primary_nv) ||
         s->raw_nand_main_enabled || s->small_nand_enabled ||
         s->fujitsu_x16_nor_enabled || s->primary_x16_nor_enabled ||
         s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
@@ -11884,7 +11906,15 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("intel-adjacent-nv requires exclusive contiguous ROM/NV/RAM layout");
         exit(EXIT_FAILURE);
     }
-    if (s->intel_x16_nor_enabled && !s->intel_adjacent_nv) {
+    if (s->sharp_nv_wp_high && !s->sharp_primary_nv) {
+        error_report("sharp-nv-wp-high requires sharp-primary-nv");
+        exit(EXIT_FAILURE);
+    }
+    if (s->sharp_primary_nv && !msm5xxx_poc_sharp_primary_valid(s)) {
+        error_report("sharp-primary-nv requires an exclusive interior primary NV partition");
+        exit(EXIT_FAILURE);
+    }
+    if (s->intel_x16_nor_enabled && !s->intel_adjacent_nv && !s->sharp_primary_nv) {
         uint64_t base = s->intel_x16_nor_base;
         uint64_t windows = s->mapped_primary_x16_nor_enabled ? 2 : 1;
         uint64_t end = base + windows * s->intel_x16_nor_size;
@@ -12308,9 +12338,17 @@ static void msm5xxx_poc_init(MachineState *machine)
                               s->amd_x16_nor_options & 1);
         } else {
             qdev_prop_set_uint8(dev, "width", 2);
-            qdev_prop_set_uint8(dev, "device-width", s->intel_adjacent_nv ? 1 : 2);
-            qdev_prop_set_uint8(dev, "max-device-width", s->intel_adjacent_nv ? 1 : 2);
+            qdev_prop_set_uint8(dev, "device-width", s->intel_adjacent_nv && !s->intel_adjacent_x16 ? 1 : 2);
+            qdev_prop_set_uint8(dev, "max-device-width", s->intel_adjacent_nv && !s->intel_adjacent_x16 ? 1 : 2);
             qdev_prop_set_bit(dev, "big-endian", false);
+            if (s->intel_adjacent_x16) {
+                qdev_prop_set_bit(dev, "defer-erase-confirm", true);
+            }
+            if (s->sharp_primary_nv) {
+                qdev_prop_set_bit(dev, "sharp-pcr", true);
+                qdev_prop_set_bit(dev, "sharp-locks", true);
+                qdev_prop_set_bit(dev, "sharp-wp-high", s->sharp_nv_wp_high);
+            }
         }
         qdev_prop_set_uint16(dev, "id0", s->intel_x16_nor_id0);
         qdev_prop_set_uint16(dev, "id1", s->intel_x16_nor_id1);
@@ -15433,7 +15471,7 @@ static void msm5xxx_poc_set_intel_x16_nor(Object *obj, const char *value,
 static char *msm5xxx_poc_get_intel_adjacent_nv(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    return s->intel_adjacent_nv ? g_strdup_printf("%x:%x:%x:%x:%x",
+    return s->intel_adjacent_nv && !s->intel_adjacent_x16 ? g_strdup_printf("%x:%x:%x:%x:%x",
         s->intel_x16_nor_base, s->intel_x16_nor_size,
         s->intel_x16_nor_sector_size, s->intel_x16_nor_id0,
         s->intel_x16_nor_id1) : g_strdup("");
@@ -15472,6 +15510,64 @@ static void msm5xxx_poc_set_intel_adjacent_nv(Object *obj, const char *value,
     s->intel_x16_nor_id1 = parsed[4];
     s->intel_adjacent_nv = true;
     s->intel_x16_nor_enabled = true;
+}
+
+static char *msm5xxx_poc_get_intel_adjacent_nv16(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->intel_adjacent_x16 ? g_strdup_printf("%x:%x:%x:%x:%x",
+        s->intel_x16_nor_base, s->intel_x16_nor_size,
+        s->intel_x16_nor_sector_size, s->intel_x16_nor_id0,
+        s->intel_x16_nor_id1) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_intel_adjacent_nv16(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    bool was_enabled = s->intel_x16_nor_enabled;
+    if (s->cpu) {
+        error_setg(errp, "intel-adjacent-nv16 must be configured before realization");
+        return;
+    }
+    msm5xxx_poc_set_intel_adjacent_nv(obj, value, errp);
+    if (!was_enabled && s->intel_x16_nor_enabled && s->intel_adjacent_nv) {
+        s->intel_adjacent_x16 = true;
+    }
+}
+
+static bool msm5xxx_poc_get_sharp_nv_wp_high(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->sharp_nv_wp_high;
+}
+
+static void msm5xxx_poc_set_sharp_nv_wp_high(Object *obj, bool value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "sharp-nv-wp-high must be configured before realization");
+        return;
+    }
+    s->sharp_nv_wp_high = value;
+}
+
+static char *msm5xxx_poc_get_sharp_primary_nv(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->sharp_primary_nv ? g_strdup_printf("%x:%x:%x:%x:%x",
+        s->intel_x16_nor_base, s->intel_x16_nor_size,
+        s->intel_x16_nor_sector_size, s->intel_x16_nor_id0,
+        s->intel_x16_nor_id1) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_sharp_primary_nv(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    bool was_enabled = s->intel_x16_nor_enabled;
+    msm5xxx_poc_set_intel_adjacent_nv(obj, value, errp);
+    if (!was_enabled && s->intel_x16_nor_enabled && s->intel_adjacent_nv) {
+        s->intel_adjacent_nv = false;
+        s->sharp_primary_nv = true;
+    }
 }
 
 static bool msm5xxx_poc_get_amd_adjacent_nv(Object *obj, Error **errp)
@@ -16948,6 +17044,15 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "intel-x16-nor",
         "Detector-provided external direct-command Intel x16 NOR");
+    object_class_property_add_bool(oc, "sharp-nv-wp-high",
+                                  msm5xxx_poc_get_sharp_nv_wp_high,
+                                  msm5xxx_poc_set_sharp_nv_wp_high);
+    object_class_property_add_str(oc, "intel-adjacent-nv16",
+                                 msm5xxx_poc_get_intel_adjacent_nv16,
+                                 msm5xxx_poc_set_intel_adjacent_nv16);
+    object_class_property_add_str(oc, "sharp-primary-nv",
+                                 msm5xxx_poc_get_sharp_primary_nv,
+                                 msm5xxx_poc_set_sharp_primary_nv);
     object_class_property_add_str(oc, "intel-adjacent-nv",
                                  msm5xxx_poc_get_intel_adjacent_nv,
                                  msm5xxx_poc_set_intel_adjacent_nv);
