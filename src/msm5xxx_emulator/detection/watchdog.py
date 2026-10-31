@@ -87,7 +87,7 @@ def _ram(value: int) -> bool:
     return 0x01000000 <= value < 0x03000000
 
 
-def find_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
+def _find_shadow_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
     """Return a unique closed service/task pair, or explain rejection.
 
     All code and dog.c literals must be directly represented in this image;
@@ -171,3 +171,15 @@ def find_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
         "shadow_address": values[0xE] + 0x380,
         "wait_argument": 100,
     }, "watchdog-service-and-periodic-dog-owner-closed"
+
+
+def find_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
+    """Preserve existing source classes, then try the closed leaf reset owner."""
+    profile, reason = _find_shadow_watchdog_profile(image)
+    if profile is not None:
+        return profile, reason
+    from .leaf_watchdog import find_leaf_watchdog_profile
+    profile = find_leaf_watchdog_profile(image)
+    if profile is None:
+        return None, reason
+    return profile, "watchdog-byte-pulse-periodic-and-rebuild-reset-owner-closed"
