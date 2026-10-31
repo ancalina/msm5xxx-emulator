@@ -758,6 +758,9 @@ struct MSM5xxxPOCMachineState {
     bool ma2_audio_timer_rejected;
     bool rex_irq_enabled;
     bool rex_irq_c80;
+    bool rex_irq_copied;
+    uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size;
+    uint32_t rex_irq_vector_rom, rex_irq_halfword_arm_pc;
     bool rex_irq_read_consume;
     uint32_t rex_irq_status_address;
     uint32_t rex_irq_enable_address;
@@ -5463,9 +5466,36 @@ static bool msm5xxx_poc_rex_static_gate(MSM5xxxPOCMachineState *s)
         s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
         return false;
     }
-    if (!msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(target), target,
-                                  &target) ||
-        target != s->rex_irq_wrapper_address) {
+    if (s->rex_irq_copied) {
+        uint8_t loaded[512], original[512];
+        uint32_t veneer;
+
+        /* This class has a copied B -> LDR pc veneer, not a direct B. */
+        if (!msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(target),
+                                      target, &veneer) ||
+            veneer != target + 8 ||
+            msm5xxx_poc_guest_u32(veneer) != 0xe51ff004 ||
+            msm5xxx_poc_guest_u32(veneer + 4) != s->rex_irq_wrapper_address) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
+            return false;
+        }
+        cpu_physical_memory_read(target, loaded, 16);
+        cpu_physical_memory_read(s->rex_irq_vector_rom, original, 16);
+        if (memcmp(loaded, original, 16)) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
+            return false;
+        }
+        cpu_physical_memory_read(s->rex_irq_wrapper_address, loaded,
+                                 s->rex_irq_wrapper_size);
+        cpu_physical_memory_read(s->rex_irq_wrapper_rom, original,
+                                 s->rex_irq_wrapper_size);
+        if (memcmp(loaded, original, s->rex_irq_wrapper_size)) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
+            return false;
+        }
+    } else if (!msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(target), target,
+                                         &target) ||
+               target != s->rex_irq_wrapper_address) {
         s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_WRAPPER_WAIT;
         return false;
     }
@@ -5724,6 +5754,50 @@ static void msm5xxx_poc_rex_irq_arm_write(void *opaque, hwaddr offset,
         msm5xxx_poc_rex_irq_schedule(s);
     }
 }
+
+static uint64_t msm5xxx_poc_rex_copied_arm_read(void *opaque, hwaddr offset,
+                                                unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                   0x7a0 + offset, size);
+}
+
+static void msm5xxx_poc_rex_copied_arm_write(void *opaque, hwaddr offset,
+                                           uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc;
+    uint8_t opcode[2];
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                             0x7a0 + offset, value, size);
+    memory_region_set_dirty(&s->msm, 0x7a0 + offset, size);
+    if (offset || size != 2 || value != 2 || !s->cpu->env.thumb ||
+        !msm5xxx_poc_boot_storage_guest(s) ||
+        !msm5xxx_poc_mmio_access_pc(s, &pc) ||
+        pc != s->rex_irq_halfword_arm_pc ||
+        s->cpu->env.regs[1] != 0x030007a0 ||
+        (s->cpu->env.regs[0] & UINT16_MAX) != 2 || s->rex_irq_armed) {
+        return;
+    }
+    cpu_physical_memory_read(pc, opcode, 2);
+    if (lduw_le_p(opcode) != 0x8008) { /* STRH r0, [r1] */
+        return;
+    }
+    s->rex_irq_armed = true;
+    s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      s->rex_irq_interval;
+    msm5xxx_poc_rex_irq_schedule(s);
+}
+
+static const MemoryRegionOps msm5xxx_poc_rex_copied_arm_ops = {
+    .read = msm5xxx_poc_rex_copied_arm_read,
+    .write = msm5xxx_poc_rex_copied_arm_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
 
 static const MemoryRegionOps msm5xxx_poc_rex_irq_ops = {
     .read = msm5xxx_poc_rex_irq_read,
@@ -12521,6 +12595,38 @@ static void msm5xxx_poc_init(MachineState *machine)
             s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                               s->rex_irq_interval;
             msm5xxx_poc_rex_irq_schedule(s);
+        } else if (s->rex_irq_copied) {
+            MemoryRegionSection section;
+            uint64_t ram_end = (uint64_t)s->ram_base + machine->ram_size;
+            bool conflict;
+
+            section = memory_region_find(get_system_memory(), 0x030007a0, 4);
+            conflict = section.mr != &s->msm ||
+                       section.offset_within_region != 0x7a0 ||
+                       !int128_eq(section.size, int128_make64(4));
+            if (section.mr) {
+                memory_region_unref(section.mr);
+            }
+            if (conflict || !s->memory_profile_enabled ||
+                s->rex_irq_wrapper_rom + (uint64_t)s->rex_irq_wrapper_size > s->primary_nor_size ||
+                s->rex_irq_vector_rom + (uint64_t)16 > s->primary_nor_size ||
+                s->rex_irq_halfword_arm_pc + (uint64_t)2 > s->primary_nor_size ||
+                s->rex_irq_handler_address + (uint64_t)s->rex_irq_handler_size > s->primary_nor_size ||
+                s->rex_irq_callback_address + (uint64_t)2 > s->primary_nor_size ||
+                s->rex_irq_vector_target < s->ram_base ||
+                s->rex_irq_vector_target + (uint64_t)16 > ram_end ||
+                s->rex_irq_handler_slot < s->ram_base ||
+                s->rex_irq_handler_slot + (uint64_t)4 > ram_end ||
+                s->rex_irq_callback_slot < s->ram_base ||
+                s->rex_irq_callback_slot + (uint64_t)4 > ram_end) {
+                error_report("Copied IRQ route requires bounded primary sources, RAM slots and exclusive arm backing");
+                exit(EXIT_FAILURE);
+            }
+            memory_region_init_io(&s->rex_irq_arm, OBJECT(machine),
+                &msm5xxx_poc_rex_copied_arm_ops, s,
+                "msm5xxx-poc.rex-copied-arm", 4);
+            memory_region_add_subregion_overlap(get_system_memory(),
+                0x030007a0, &s->rex_irq_arm, 1);
         } else {
             memory_region_init_io(&s->rex_irq_arm, OBJECT(machine),
                                   &msm5xxx_poc_rex_irq_arm_ops, s,
@@ -15456,6 +15562,62 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
     s->rex_irq_enabled = true;
 }
 
+static char *msm5xxx_poc_get_rex_copied_c80(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (!s->rex_irq_copied) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x",
+        s->rex_irq_interval, s->rex_irq_vector_target,
+        s->rex_irq_wrapper_address, s->rex_irq_handler_slot,
+        s->rex_irq_handler_address, s->rex_irq_handler_size,
+        s->rex_irq_callback_slot, s->rex_irq_callback_address,
+        s->rex_irq_wrapper_rom, s->rex_irq_wrapper_size,
+        s->rex_irq_vector_rom, s->rex_irq_halfword_arm_pc);
+}
+
+static void msm5xxx_poc_set_rex_copied_c80(Object *obj, const char *value,
+                                          Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned interval, vector, wrapper, slot, handler, size, callback_slot;
+    unsigned callback, wrapper_rom, wrapper_size, vector_rom, arm_pc;
+    int consumed = -1;
+    int fields = sscanf(value, "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x%n",
+        &interval, &vector, &wrapper, &slot, &handler, &size, &callback_slot,
+        &callback, &wrapper_rom, &wrapper_size, &vector_rom, &arm_pc, &consumed);
+
+    if (fields != 12 || consumed < 0 || value[consumed] || s->rex_irq_enabled ||
+        !interval || vector & 3 || wrapper & 3 || slot & 3 || callback_slot & 3 ||
+        handler & 1 || callback & 1 || !size || wrapper_rom & 3 || vector_rom & 3 ||
+        arm_pc & 1 || wrapper_size < 4 || wrapper_size > 512 || wrapper_size & 3 ||
+        wrapper < 0x03800000 || (uint64_t)wrapper + wrapper_size > 0x03810000) {
+        error_setg(errp, "experimental-rex-copied-c80 requires INTERVAL:VECTOR:TCM_WRAPPER:HANDLER_SLOT:HANDLER:SIZE:CALLBACK_SLOT:CALLBACK:WRAPPER_ROM:WRAPPER_SIZE:VECTOR_ROM:ARM_PC");
+        return;
+    }
+    s->rex_irq_status_address = 0x03000c80;
+    s->rex_irq_enable_address = 0x03000c94;
+    s->rex_irq_arm_address = 0x030007a0;
+    s->rex_irq_mask = 0x200;
+    s->rex_irq_interval = interval;
+    s->rex_irq_vector_target = vector;
+    s->rex_irq_wrapper_address = wrapper;
+    s->rex_irq_handler_slot = slot;
+    s->rex_irq_handler_address = handler;
+    s->rex_irq_handler_size = size;
+    s->rex_irq_callback_slot = callback_slot;
+    s->rex_irq_callback_address = callback;
+    s->rex_irq_wrapper_rom = wrapper_rom;
+    s->rex_irq_wrapper_size = wrapper_size;
+    s->rex_irq_vector_rom = vector_rom;
+    s->rex_irq_halfword_arm_pc = arm_pc;
+    s->rex_irq_controller_size = MSM5XXX_POC_REX_C80_CONTROLLER_SIZE;
+    s->rex_irq_bank_count = 2;
+    s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
+    s->rex_irq_enabled = s->rex_irq_c80 = s->rex_irq_copied = true;
+}
+
 static char *msm5xxx_poc_get_rex_static_read_consume(Object *obj,
                                                       Error **errp)
 {
@@ -16737,6 +16899,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_rex_irq);
     object_class_property_set_description(
         oc, "rex-irq", "Detector-provided REX periodic IRQ route");
+    object_class_property_add_str(oc, "experimental-rex-copied-c80",
+        msm5xxx_poc_get_rex_copied_c80, msm5xxx_poc_set_rex_copied_c80);
     object_class_property_add_str(oc, "rex-static-c80",
                                   msm5xxx_poc_get_rex_static_c80,
                                   msm5xxx_poc_set_rex_static_c80);
