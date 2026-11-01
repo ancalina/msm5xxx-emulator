@@ -4074,7 +4074,8 @@ static uint64_t msm5xxx_poc_board_status_halfword_read(void *opaque,
         s->board_status_input_address - MSM5XXX_POC_MSM_BASE + offset, size);
     CPUState *cpu = current_cpu;
 
-    if (offset || ((s->matrix_input_loop || s->matrix_input_row734) && size != 2) ||
+    if (offset || ((s->matrix_input_loop || s->matrix_input_row734 ||
+                    !s->matrix_input_halfword) && size != 2) ||
         !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) ||
         !cpu->running || !cpu->neg.can_do_io) {
         return backing;
@@ -12755,6 +12756,12 @@ static void msm5xxx_poc_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
     if (s->board_status_input_descriptor &&
+        !(s->board_status_input_enabled && !s->matrix_input_enabled &&
+          s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
+          s->board_status_input_mask == 1 &&
+          s->board_status_input_descriptor >= s->ram_base &&
+          (uint64_t)s->board_status_input_descriptor + 8 <=
+              (uint64_t)s->ram_base + machine->ram_size) &&
         (!s->board_status_input_enabled || !s->matrix_input_halfword ||
          s->matrix_input_low5 || s->matrix_input_row_mask ||
          s->board_status_input_descriptor != s->matrix_input_descriptor ||

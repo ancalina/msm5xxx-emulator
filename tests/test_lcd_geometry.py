@@ -400,6 +400,35 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_packed_21_state = 0
         return emulator
 
+    def test_sd810_terminal_delimits_single_and_mixed_rows(self) -> None:
+        from types import SimpleNamespace
+
+        emulator = self._routing_emulator(width=120, height=160)
+        emulator.config.model = "LG-SD810"
+        emulator.config.chipset = "MSM5100"
+        emulator.config.board_status_input = SimpleNamespace(
+            address=0x03000720, mask=1, default=1)
+        for value in (0x0200, 0x0300, 0x0477, 0x059f):
+            emulator._lcd_write(None, 0, 0x02000078, 2, value, None)
+        emulator._lcd_write(None, 0, 0x020000fa, 2, 0, None)
+        emulator._lcd_write(None, 0, 0x02000078, 2, 0x1002, None)
+        self.assertNotEqual(emulator._lcd_frame_protocol, "sd810-lgfa-rgb565")
+        for mode in ("single", "mixed", "paired"):
+            for value in (0x0200, 0x0300, 0x0477, 0x059f):
+                emulator._lcd_write(None, 0, 0x02000078, 2, value, None)
+            for y in range(160):
+                for _ in range(120):
+                    if mode == "paired" or (mode == "mixed" and 14 <= y <= 141):
+                        emulator._lcd_write(None, 0, 0x020000fa, 2, 3, None)
+                    emulator._lcd_write(None, 0, 0x020000fa, 2, 0xeffe, None)
+            emulator._lcd_write(None, 0, 0x02000078, 2, 0x1002, None)
+            self.assertEqual(emulator._lcd_frame_protocol, "sd810-lgfa-rgb565")
+            self.assertEqual(emulator.display_frame[:3], b"\xff\xff\xff")
+            for y in (13, 14, 141, 142, 159):
+                index = (y * 120 + 119) * 3
+                self.assertEqual(emulator.display_frame[index:index + 3],
+                                 b"\xff\xff\xff")
+
     def test_lg_paired_window_proves_geometry_before_complete_frame(self) -> None:
         emulator = self._routing_emulator(width=176, height=220)
         for value in (0x0200, 0x0300, 0x0477, 0x059F):

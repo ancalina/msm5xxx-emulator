@@ -13,6 +13,7 @@ from .input_scanner import scanner_at
 from .input_scanner_arm_clock import arm_clock_scanner_at
 from .input_scanner_indirect import indirect_scanner_at
 from .input_scanner_direct import direct_scanner_at
+from .input_sd810 import sd810_gpio_board_status_profile
 from .input_scanner_gated import gated_scanner_at
 from .rex import THUMB_BL_PATTERN, _normalized_thumb_sha256
 from .signatures import find_all
@@ -571,6 +572,9 @@ def find_board_status_input(image: bytes, notes: list[str] | None = None
     """Accept one unique Thumb byte-status mask/branch/debounce control shape."""
     boot_inputs = find_boot_download_inputs(image)
     found: set[BoardStatusInput] = set(boot_inputs)
+    sd810 = sd810_gpio_board_status_profile(image)
+    if sd810 is not None:
+        found.add(BoardStatusInput(*sd810))
     # This compiler layout loads the GPIO literal before saving registers.
     for match in re.finditer(b"\xb0\xb5\x00\x78", image):
         start = match.start() - 2

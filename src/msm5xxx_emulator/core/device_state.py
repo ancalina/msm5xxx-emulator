@@ -423,6 +423,14 @@ class DeviceStateMixin:
                             and end == other_end == start + 1
                             and config.board_status_input.mask == 0x04):
                         continue
+                    if (label == "board status input"
+                            and other_label == "stable MSM MMIO"
+                            and start == other_start == 0x03000720
+                            and end == start + 1
+                            and config.model == "LG-SD810"
+                            and config.chipset == "MSM5100"
+                            and config.board_status_input.mask == 1):
+                        continue
                     # SCH-E470 partial dumps reference code in the upper half
                     # of a 16 MiB NOR while also decoding the board-revision
                     # latch at 0x00DFFFDC.  The physical board uses that small

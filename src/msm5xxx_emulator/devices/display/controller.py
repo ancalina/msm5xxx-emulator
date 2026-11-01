@@ -847,9 +847,60 @@ class DisplayControllerMixin:
         axes = (([arguments[0], arguments[2]], [arguments[1], arguments[3]])
                 if base == 2 else
                 ([arguments[0], arguments[1]], [arguments[2], arguments[3]]))
+        if self._lcd_sd810_enabled() and base == 2:
+            self._lcd_sd810_window = (axes[0][0], axes[1][0],
+                                      axes[0][1], axes[1][1])
+            self._lcd_sd810_words = []
         self._lcd_lgfa_window = self._lcd_full_window_geometry(*axes)
         self._lg_pixels.clear()
         order.clear()
+
+    def _lcd_sd810_enabled(self) -> bool:
+        status = getattr(self.config, "board_status_input", None)
+        return (getattr(self.config, "model", None) == "LG-SD810"
+                and getattr(self.config, "chipset", None) == "MSM5100"
+                and status is not None
+                and (status.address, status.mask, status.default)
+                    == (0x03000720, 1, 1))
+
+    def _lcd_sd810_finish(self) -> bool:
+        """Decode a complete, terminal-delimited LG halfword transfer."""
+        window = getattr(self, "_lcd_sd810_window", None)
+        words = getattr(self, "_lcd_sd810_words", [])
+        self._lcd_sd810_window = None
+        self._lcd_sd810_words = []
+        if window is None:
+            return False
+        x0, y0, x1, y1 = window
+        width, height = self.config.width, self.config.height
+        if not (width == 120 and height == 160 and 0 <= x0 <= x1 < width
+                and 0 <= y0 <= y1 < height):
+            return False
+        columns = x1 - x0 + 1
+        pixels = columns * (y1 - y0 + 1)
+        middle = max(0, min(y1, 141) - max(y0, 14) + 1)
+        mixed_count = pixels + columns * middle
+        if len(words) not in (pixels, mixed_count, 2 * pixels):
+            return False
+        paired_all = len(words) == 2 * pixels
+        mixed = len(words) == mixed_count and mixed_count != pixels
+        pos = 0
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                if paired_all or (mixed and 14 <= y <= 141):
+                    hi, lo = words[pos:pos + 2]
+                    pos += 2
+                    pixel = ((hi & 3) << 14) | ((lo >> 2) & 0x3800) | ((lo >> 1) & 0x07ff)
+                else:
+                    value = words[pos]
+                    pos += 1
+                    red3 = (value >> 13) & 7
+                    red = (red3 << 2) | (red3 >> 1)
+                    pixel = (red << 11) | (((value >> 6) & 0x3f) << 5) | ((value >> 1) & 0x1f)
+                self._pixel(y * width + x, pixel)
+        self._lcd_protocol = "sd810-lgfa-rgb565"
+        self._publish_frame()
+        return True
 
     def _lcd_promote_lgfa_geometry(self) -> None:
         geometry = self._lcd_lgfa_window
@@ -1564,6 +1615,9 @@ class DisplayControllerMixin:
             return
         self._lcd_lowbyte_page_event(address, size, value)
         if address == 0x02000078:
+            if (size == 2 and value == 0x1002 and self._lcd_sd810_enabled()
+                    and self._lcd_sd810_finish()):
+                return
             self._lcd_lgfa_register(size, value)
         # Match every LCD write while a direct-window candidate is held: an
         # intervening aperture access is a mismatch, not a later continuation.
@@ -1574,6 +1628,10 @@ class DisplayControllerMixin:
             return
         if address == 0x020000FA:
             self._lcd_promote_lgfa_geometry()
+            if (size == 2 and self._lcd_sd810_enabled()
+                    and getattr(self, "_lcd_sd810_window", None) is not None):
+                self._lcd_sd810_words.append(value & 0xffff)
+                return
             self._lg_pixels.append(value & ((1 << (size * 8)) - 1))
             count = self.config.width * self.config.height * 2
             if len(self._lg_pixels) >= count:
