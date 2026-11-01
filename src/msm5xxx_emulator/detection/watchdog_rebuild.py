@@ -10,7 +10,17 @@ import re
 import struct
 
 from .watchdog import _shape, _ram
-from .gap_intel import _irq_veneer
+def _irq_veneer(image: bytes, entry: int, restore: bool, depth: int = 0) -> bool:
+    if depth > 1 or entry & 3 or not 0 <= entry <= len(image) - 24:
+        return False
+    prefix, padding, *arm = struct.unpack_from('<HH5I', image, entry)
+    if (prefix == 0x4778 and padding == 0x46C0
+            and arm[:2] == [0xE59FC000, 0xE12FFF1C] and arm[2] & 1):
+        return _irq_veneer(image, arm[2] & ~1, restore, depth + 1)
+    return (prefix == 0x4778 and padding == 0 and arm == [
+        0xE10F0000, 0xE3C010C0 if restore else 0xE38010C0,
+        0xE121F001, 0xE20000C0, 0xE12FFF1E,
+    ])
 
 # Two bounded delay/pet loops, followed by erase, FFF0 program and reset calls.
 _FIXED = {
