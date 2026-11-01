@@ -5141,9 +5141,6 @@ static void msm5xxx_poc_ma2_audio_kick(MSM5xxxPOCMachineState *s)
     }
 }
 
-static bool msm5xxx_poc_mmio_access_pc(MSM5xxxPOCMachineState *s,
-                                      uint32_t *pc);
-
 static void msm5xxx_poc_ma5_commit_trace(void *opaque,
                                         const MSM5xxxMA5Commit *commit)
 {
@@ -12674,23 +12671,23 @@ static void msm5xxx_poc_init(MachineState *machine)
             s->matrix_row734_presence2, s->matrix_row734_sense2,
             s->matrix_row734_boot_site};
         uint32_t ports[] = {0x03000720, 0x03000728, 0x0300072c, 0x03000734};
-        for (unsigned i = 0; i < ARRAY_SIZE(sites); i++) {
-            if (s->primary_nor_size < 4 || sites[i] > s->primary_nor_size - 4) {
+        for (unsigned index = 0; index < ARRAY_SIZE(sites); index++) {
+            if (s->primary_nor_size < 4 || sites[index] > s->primary_nor_size - 4) {
                 error_report("matrix-row734 source site exceeds primary NOR");
                 exit(EXIT_FAILURE);
             }
         }
-        for (unsigned i = 0; i < 2; i++) {
-            uint64_t address = s->matrix_row734_row_tables[i];
+        for (unsigned index = 0; index < 2; index++) {
+            uint64_t address = s->matrix_row734_row_tables[index];
             if (address < s->ram_base || address + 12 >
                 (uint64_t)s->ram_base + machine->ram_size) {
                 error_report("matrix-row734 row table exceeds RAM");
                 exit(EXIT_FAILURE);
             }
         }
-        for (unsigned i = 0; i < ARRAY_SIZE(ports); i++) {
-            if (s->eeprom_gpio_enabled && s->eeprom_gpio_base < ports[i] + 2 &&
-                (uint64_t)s->eeprom_gpio_base + MSM5XXX_POC_EEPROM_GPIO_SIZE > ports[i]) {
+        for (unsigned index = 0; index < ARRAY_SIZE(ports); index++) {
+            if (s->eeprom_gpio_enabled && s->eeprom_gpio_base < ports[index] + 2 &&
+                (uint64_t)s->eeprom_gpio_base + MSM5XXX_POC_EEPROM_GPIO_SIZE > ports[index]) {
                 error_report("matrix-row734 conflicts with an EEPROM GPIO owner");
                 exit(EXIT_FAILURE);
             }

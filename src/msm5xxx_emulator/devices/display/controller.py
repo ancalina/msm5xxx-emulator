@@ -201,7 +201,7 @@ class DisplayControllerMixin:
         if panel is None:
             return False
         selected = (panel.port <= address < panel.port+0x12e80
-                    or 0x02820000 <= address < 0x02820028) if panel.protocol == "direct16" else address in (panel.port,panel.port+(2 if panel.protocol == "half43" else 4))
+                    or 0x02820000 <= address < 0x02820028) if panel.protocol == "direct16" else address in (panel.port,panel.port+(2 if panel.protocol in ("half43", "byte565_boot") else 4))
         if not selected:
             return False
         owned = getattr(self, "_lcd_source_window_owned", False)
