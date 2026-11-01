@@ -16,7 +16,15 @@ diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
      int wcycle; /* if 0, the flash is read normally */
      int bypass;
      int ro;
-@@ -336,7 +340,8 @@
+@@ -312,6 +316,7 @@
+ 
+     /* Lazy reset to ROMD mode after a certain amount of read accesses */
+     if (!pfl->rom_mode && pfl->wcycle == 0 &&
++        !(pfl->suspended_ready_dq7 && pflash_erase_suspend_mode(pfl)) &&
+         ++pfl->read_counter > PFLASH_LAZY_ROMD_THRESHOLD) {
+         pflash_mode_read_array(pfl);
+     }
+@@ -336,7 +341,8 @@
              /* Toggle bit 2, but not 6. */
              toggle_dq2(pfl);
              /* Status register read */
@@ -26,7 +34,7 @@ diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
              trace_pflash_read_status(pfl->name, ret);
              break;
          }
-@@ -538,7 +543,8 @@
+@@ -538,7 +544,8 @@
              /* We need another unlock sequence */
              goto check_unlock0;
          case 0xA0: /* Program */
@@ -36,7 +44,7 @@ diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
                  pflash_sector_is_erasing(pfl, offset)) {
                  /* Ignore writes to erasing sectors. */
                  if (pfl->bypass) {
-@@ -952,6 +958,10 @@
+@@ -952,6 +959,10 @@
      DEFINE_PROP_UINT8("width", PFlashCFI02, width, 0),
      DEFINE_PROP_UINT8("mappings", PFlashCFI02, mappings, 0),
      DEFINE_PROP_UINT8("big-endian", PFlashCFI02, be, 0),

@@ -12824,7 +12824,20 @@ static void msm5xxx_poc_init(MachineState *machine)
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
         unsigned region;
 
-        if (s->whole_primary_x16_enabled) {
+        /* The descriptor-selected Toshiba 0x84 device uses DQ7 to detect
+         * completion of erase suspend.  Keep other primary NOR profiles on
+         * their existing status behavior. */
+        if (s->whole_primary_x16_enabled ||
+            (s->primary_x16_write_while_suspended &&
+             s->primary_x16_nor_id0 == 0x98 &&
+             s->primary_x16_nor_id1 == 0x84 &&
+             s->primary_x16_nor_region_count == 3 &&
+             s->primary_x16_nor_block_count[0] == 32 &&
+             s->primary_x16_nor_region_size[0] == 0x10000 &&
+             s->primary_x16_nor_block_count[1] == 8 &&
+             s->primary_x16_nor_region_size[1] == 0x2000 &&
+             s->primary_x16_nor_block_count[2] == 31 &&
+             s->primary_x16_nor_region_size[2] == 0x10000)) {
             qdev_prop_set_bit(dev, "suspended-ready-dq7", true);
         }
 
