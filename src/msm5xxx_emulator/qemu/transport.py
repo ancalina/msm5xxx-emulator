@@ -1721,6 +1721,7 @@ def qemu_amd_bank_profile(original: bytes, loaded: bytes, config: object, *,
                           nor_claimed: bool = False) -> tuple[dict | None, str | None]:
     """Bind a bounded bank to the actual loaded immutable producer graph."""
     from msm5xxx_emulator.detection.amd_bank import find_amd_bank_profile
+    from msm5xxx_emulator.detection.fixed_ram_amd import find_fixed_ram_amd_profile
     limit = _source_class_limit(original, config)
     if limit is None or limit != config.flash_size or len(loaded) != limit:
         return None, "amd-bank-source-layout-unverified"
@@ -1735,6 +1736,11 @@ def qemu_amd_bank_profile(original: bytes, loaded: bytes, config: object, *,
         if profile is not None:
             return None, "amd-bank-inline-efs-candidate-conflict"
         profile, reason, finder = inline, inline_reason, find_inline_efs_nor_profile
+    if profile is None and not nor_claimed and config.load_address == 0:
+        args_fixed = (config.flash_size, config.ram_base, config.ram_size)
+        fixed = find_fixed_ram_amd_profile(original[:limit], *args_fixed)
+        if fixed is not None and fixed == find_fixed_ram_amd_profile(loaded, *args_fixed):
+            return fixed, None
     if profile is None:
         return None, reason
     if nor_claimed:
