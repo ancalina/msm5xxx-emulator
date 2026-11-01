@@ -89,6 +89,10 @@ int main(void) {
                          "static char *msm5xxx_poc_get_audio_aperture")
         status_read = section("static bool msm5xxx_poc_loop_status_matches(",
                               "static const MemoryRegionOps msm5xxx_poc_board_status_halfword_ops")
+        # The SD810 accessory overlay has its own focused native harness.
+        accessory_start = status_read.index("/* SD810 uses a separate active-low")
+        accessory_end = status_read.index("static void msm5xxx_poc_board_status_halfword_write(", accessory_start)
+        status_read = status_read[:accessory_start] + status_read[accessory_end:]
         status_final = section("    if (s->board_status_input_descriptor &&",
                                "    if (s->raw_nand_main_enabled &&")
         # Compile the actual receive rejection condition; no mirrored validator.

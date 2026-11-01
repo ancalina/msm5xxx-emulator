@@ -505,6 +505,7 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion dmd_5500_start;
     MemoryRegion dmd_5500_completion;
     MemoryRegion board_status_input;
+    MemoryRegion sd810_accessory_input;
     MemoryRegion matrix_input;
     MemoryRegion mmio;
     qemu_irq cpu_irq;
@@ -4100,6 +4101,45 @@ static uint64_t msm5xxx_poc_board_status_halfword_read(void *opaque,
     return (backing & ~(uint64_t)s->board_status_input_mask) |
            s->board_status_input_level;
 }
+
+/* SD810 uses a separate active-low hands-free accessory contact on the
+ * GPIO output/input halfword. Preserve the output latch on writes; project
+ * the disconnected contact only on guest halfword reads after the firmware
+ * has initialized its port descriptor. */
+static uint64_t msm5xxx_poc_sd810_accessory_read(void *opaque, hwaddr offset,
+                                                  unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value = msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                               0x724 + offset, size);
+    CPUState *cpu = current_cpu;
+
+    if (!offset && size == 2 && qemu_in_vcpu_thread() && cpu == CPU(s->cpu) &&
+        cpu->running && cpu->neg.can_do_io &&
+        msm5xxx_poc_guest_u32(s->board_status_input_descriptor + 0x14) ==
+            MSM5XXX_POC_MSM_BASE + 0x724) {
+        value |= 0x400;
+    }
+    return value;
+}
+
+static void msm5xxx_poc_sd810_accessory_write(void *opaque, hwaddr offset,
+                                               uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              0x724 + offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_sd810_accessory_ops = {
+    .read = msm5xxx_poc_sd810_accessory_read,
+    .write = msm5xxx_poc_sd810_accessory_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 2,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 2,
+};
 
 static void msm5xxx_poc_board_status_halfword_write(void *opaque, hwaddr offset,
                                                      uint64_t value,
@@ -13603,6 +13643,16 @@ static void msm5xxx_poc_init(MachineState *machine)
             get_system_memory(), s->board_status_input_address,
             &s->board_status_input, 2
         );
+    }
+    if (s->board_status_input_enabled && !s->matrix_input_enabled &&
+        s->board_status_input_descriptor == 0x01816618 &&
+        s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
+        s->board_status_input_mask == 1) {
+        memory_region_init_io(&s->sd810_accessory_input, OBJECT(machine),
+                              &msm5xxx_poc_sd810_accessory_ops, s,
+                              "msm5xxx-poc.sd810-accessory-input", 2);
+        memory_region_add_subregion_overlap(get_system_memory(),
+            MSM5XXX_POC_MSM_BASE + 0x724, &s->sd810_accessory_input, 2);
     }
     if (s->matrix_input_enabled) {
         memory_region_init_io(&s->matrix_input, OBJECT(machine),
