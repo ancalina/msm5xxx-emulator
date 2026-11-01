@@ -1723,6 +1723,12 @@ def qemu_amd_bank_profile(original: bytes, loaded: bytes, config: object, *,
     from msm5xxx_emulator.detection.amd_bank import find_amd_bank_profile
     from msm5xxx_emulator.detection.fixed_ram_amd import find_fixed_ram_amd_profile
     limit = _source_class_limit(original, config)
+    if (limit is not None and limit < config.flash_size and not nor_claimed
+            and config.load_address == 0 and len(loaded) >= limit):
+        args_fixed = (config.flash_size, config.ram_base, config.ram_size)
+        fixed = find_fixed_ram_amd_profile(original[:limit], *args_fixed)
+        if fixed is not None and fixed == find_fixed_ram_amd_profile(loaded[:limit], *args_fixed):
+            return fixed, None
     if limit is None or limit != config.flash_size or len(loaded) != limit:
         return None, "amd-bank-source-layout-unverified"
     args = (config.load_address, config.flash_size, config.ram_base, config.ram_size)
