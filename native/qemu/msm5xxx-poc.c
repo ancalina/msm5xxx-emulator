@@ -672,6 +672,7 @@ struct MSM5xxxPOCMachineState {
     uint8_t experimental_matrix_status_level;
     uint16_t matrix_input_row_mask; /* Zero retains the legacy six-row class. */
     uint32_t matrix_input_descriptor;
+    uint32_t matrix_input_contact_precheck[3];
     uint32_t matrix_input_presence_site;
     bool matrix_input_enabled;
     uint32_t matrix_input_address;
@@ -1295,7 +1296,8 @@ static void msm5xxx_poc_host_input_read(void *opaque, const uint8_t *buf,
             (!record[1] && (record[2] || record[3])) ||
             (record[1] &&
              (record[2] == MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW ?
-              (!s->matrix_input_sideband_mask || s->matrix_input_low5 ||
+              (!s->matrix_input_sideband_mask ||
+               (s->matrix_input_low5 && !s->matrix_input_contact_precheck[0]) ||
                record[3] != s->matrix_input_sideband_mask) :
               (record[2] >= s->matrix_input_rows ||
                record[3] > ((s->matrix_input_low5 || s->matrix_input_loop || s->matrix_input_row734) ? 0x1f : 0x0f) ||
@@ -4344,6 +4346,24 @@ static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
         return (backing & ~(uint64_t)0x10) |
                s->experimental_matrix_contact_level;
     }
+    if (s->matrix_input_low5 && s->matrix_input_contact_precheck[0] &&
+        (pc == s->matrix_input_contact_precheck[0] ||
+         pc == s->matrix_input_contact_precheck[1] ||
+         pc == s->matrix_input_contact_precheck[2])) {
+        unsigned low = msm5xxx_poc_backing_read(msm, 0x728, 2) & 0x1f;
+        unsigned selected = (low ^ 0x1f) |
+            ((msm5xxx_poc_backing_read(msm, 0x724, 2) & 0x4000) ? 0 : 0x20);
+        if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x34) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c) {
+            return backing;
+        }
+        return (backing & ~0x10ULL) |
+            (s->matrix_input_pressed &&
+             (s->matrix_input_row == MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW ||
+              (s->matrix_input_row < 6 &&
+               (selected & (1U << s->matrix_input_row)) &&
+               !(s->matrix_input_sense & 0x10))) ? 0 : 0x10);
+    }
     if (pc != s->matrix_input_presence_site &&
         pc != s->matrix_input_sense_site &&
         (!s->matrix_input_loop || pc != s->matrix_input_contact_site)) {
@@ -4394,7 +4414,9 @@ static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
             !msm5xxx_poc_low5_sense(backing,
                 msm5xxx_poc_backing_read(msm, 0x728, 2),
                 msm5xxx_poc_backing_read(msm, 0x724, 2),
-                pc == s->matrix_input_presence_site, s->matrix_input_pressed,
+                pc == s->matrix_input_presence_site,
+                s->matrix_input_pressed &&
+                    s->matrix_input_row != MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW,
                 s->matrix_input_row, s->matrix_input_sense, &value)) {
             s->matrix_input_rejections++;
             return backing;
@@ -12883,6 +12905,14 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("matrix-halfword conflicts with the final memory map");
         exit(EXIT_FAILURE);
     }
+    if (s->matrix_input_contact_precheck[0] &&
+        (s->primary_nor_size < 2 ||
+         s->matrix_input_contact_precheck[0] >= s->primary_nor_size - 2 ||
+         s->matrix_input_contact_precheck[1] >= s->primary_nor_size - 2 ||
+         s->matrix_input_contact_precheck[2] >= s->primary_nor_size - 2)) {
+        error_report("matrix-low5 contact sites outside primary NOR");
+        exit(EXIT_FAILURE);
+    }
     if (s->board_status_input_descriptor &&
         !(s->board_status_input_enabled && !s->matrix_input_enabled &&
           s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
@@ -12891,10 +12921,13 @@ static void msm5xxx_poc_init(MachineState *machine)
           (uint64_t)s->board_status_input_descriptor + 8 <=
               (uint64_t)s->ram_base + machine->ram_size) &&
         (!s->board_status_input_enabled || !s->matrix_input_halfword ||
-         s->matrix_input_low5 || s->matrix_input_row_mask ||
+         s->matrix_input_row_mask ||
          s->board_status_input_descriptor != s->matrix_input_descriptor ||
          s->board_status_input_address != MSM5XXX_POC_MSM_BASE + 0x720 ||
-         s->board_status_input_mask != (s->matrix_input_loop ? 0x10 : 4))) {
+         s->board_status_input_mask != (s->matrix_input_low5 ? 1 :
+                                        s->matrix_input_loop ? 0x10 : 4) ||
+         (s->matrix_input_low5 &&
+          s->board_status_input_descriptor != 0x01816618))) {
         error_report("board-status-descriptor requires matching halfword "
                      "matrix and status GPIO class");
         exit(EXIT_FAILURE);
@@ -13733,7 +13766,8 @@ static void msm5xxx_poc_init(MachineState *machine)
             &s->board_status_input, 2
         );
     }
-    if (s->board_status_input_enabled && !s->matrix_input_enabled &&
+    if (s->board_status_input_enabled &&
+        (!s->matrix_input_enabled || s->matrix_input_low5) &&
         s->board_status_input_descriptor == 0x01816618 &&
         s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
         s->board_status_input_mask == 1) {
@@ -15574,8 +15608,8 @@ static void msm5xxx_poc_set_board_status_descriptor(Object *obj,
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
     uint64_t descriptor;
 
-    if (s->matrix_input_gpio || s->matrix_input_low5 ||
-        s->matrix_input_row_mask ||
+    if (s->matrix_input_gpio || s->matrix_input_row_mask ||
+        (s->matrix_input_low5 && s->matrix_input_descriptor != 0x01816618) ||
         qemu_strtou64(value, NULL, 16, &descriptor) || !descriptor ||
         descriptor > UINT32_MAX - 0x38 || descriptor & 3) {
         error_setg(errp, "board-status-descriptor requires aligned descriptor");
@@ -16007,13 +16041,25 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
                                          Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    unsigned descriptor, presence, sense;
+    unsigned descriptor, presence, sense, contact1 = 0, contact2 = 0, init = 0;
     char trailing;
+    int fields = sscanf(value, "%x:%x:%x:%x:%x:%x%c", &descriptor, &presence,
+                        &sense, &contact1, &contact2, &init, &trailing);
 
-    if (s->matrix_input_enabled || s->board_status_input_descriptor ||
-        sscanf(value, "%x:%x:%x%c", &descriptor, &presence, &sense,
-               &trailing) != 3 || !descriptor || descriptor & 3 ||
-        descriptor > UINT32_MAX - 0x38 || presence & 1 || sense & 1 ||
+    if (s->matrix_input_enabled ||
+        (s->board_status_input_descriptor &&
+         s->board_status_input_descriptor != 0x01816618) ||
+        (fields != 3 && fields != 6) ||
+        (fields == 3 && sscanf(value, "%x:%x:%x%c", &descriptor, &presence,
+                               &sense, &trailing) != 3) ||
+        !descriptor || descriptor & 3 ||
+        (fields == 6 && (descriptor != 0x01816618 || !contact1 || !contact2 || !init ||
+                         contact1 & 1 || contact2 & 1 || init & 1 ||
+                         contact1 == contact2 || init == contact1 || init == contact2)) ||
+        descriptor > UINT32_MAX - 0x38 ||
+        (s->board_status_input_descriptor &&
+         descriptor != s->board_status_input_descriptor) ||
+        presence & 1 || sense & 1 ||
         presence == sense || presence > UINT32_MAX - 2 ||
         sense > UINT32_MAX - 2) {
         error_setg(errp, "matrix-low5 requires exclusive aligned "
@@ -16021,6 +16067,9 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
         return;
     }
     s->matrix_input_low5 = true;
+    s->matrix_input_contact_precheck[0] = contact1;
+    s->matrix_input_contact_precheck[1] = contact2;
+    s->matrix_input_contact_precheck[2] = init;
     s->matrix_input_halfword = true;
     s->matrix_input_descriptor = descriptor;
     s->matrix_input_presence_site = presence;
@@ -16028,7 +16077,7 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
     s->matrix_input_address = MSM5XXX_POC_MSM_BASE + 0x72c;
     s->matrix_input_no_key = 0x1f;
     s->matrix_input_rows = 6;
-    s->matrix_input_sideband_mask = 0;
+    s->matrix_input_sideband_mask = fields == 6 ? 0x10 : 0;
     s->matrix_input_sense_bitmap = (1U << 30) | (1U << 29) |
         (1U << 27) | (1U << 23) | (1U << 15);
     s->matrix_input_host_enabled = true;

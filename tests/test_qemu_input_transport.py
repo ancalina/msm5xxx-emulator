@@ -580,6 +580,26 @@ class QEMUInputTransportTests(unittest.TestCase):
         config.board_status_input = object()
         self.assertEqual(helper(bytes(image), config, profile),
                          (None, 'conflicting-status-profile'))
+        # Coexistence requires both the SD810 reader and its shared descriptor.
+        image[0x22] ^= 1
+        config.board_status_input = SimpleNamespace(
+            address=0x3000720, mask=1, default=1)
+        sd810 = dict(profile, descriptor_pointer=0x1816618, function=0,
+                     timer_bridge={'scanner': 0, 'registration_callsite': 0x13e})
+        struct.pack_into('<5H', image, 0x80, 0x6b60, 0x8800, 0x0940, 0xd207, 0x2051)
+        for pos in (0x3a, 0x60):
+            struct.pack_into('<4H', image, pos, 0x6b40, 0x8800, 0x0940, 0xd200)
+        with mock.patch.dict(helper.__globals__,
+                             sd810_gpio_board_status_profile=lambda image: (0x3000720, 1, 1),
+                             thumb_literal_value=lambda *args: 0x1816618):
+            self.assertEqual(helper(bytes(image), config, sd810),
+                             ('matrix-low5=1816618:12:22:3c:62:82', None))
+            self.assertEqual(helper(bytes(image), config, profile),
+                             (None, 'conflicting-status-profile'))
+        with mock.patch.dict(helper.__globals__,
+                             sd810_gpio_board_status_profile=lambda image: None):
+            self.assertEqual(helper(bytes(image), config, sd810),
+                             (None, 'conflicting-status-profile'))
 
         transport = object.__new__(MODULE.Transport)
         transport.matrix_input_profile = profile
@@ -599,6 +619,14 @@ class QEMUInputTransportTests(unittest.TestCase):
             self.assertEqual(packets[-2:],
                              [bytes((0x80, 1, row, sense)), bytes((0x80, 0, 0, 0))])
         self.assertFalse(transport.can_set_key(22))
+        self.assertFalse(transport.can_set_key(7))
+        transport.matrix_input_profile = dict(profile, sd810_end_contact=True)
+        self.assertTrue(transport.can_set_key(7, 0x51))
+        self.assertFalse(transport.can_set_key(7, 0x0a))
+        self.assertTrue(transport.set_key(7, True))
+        self.assertTrue(transport.set_key(7, False))
+        self.assertEqual(packets[-2:],
+                         [bytes((0x80, 1, 0xff, 0x10)), bytes((0x80, 0, 0, 0))])
         with self.assertRaises(ValueError):
             MODULE.matrix_senses(dict(profile, grammar='direct-low-nibble-6-row-v1'))
 

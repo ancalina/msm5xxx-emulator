@@ -170,6 +170,7 @@ typedef struct {
     uint8_t experimental_matrix_status_level;
     uint16_t matrix_input_row_mask;
     bool matrix_input_host_enabled, matrix_input_pressed;
+    uint32_t matrix_input_contact_precheck[3];
     uint32_t matrix_input_descriptor, matrix_input_presence_site;
     uint32_t matrix_input_sense_site, matrix_input_address, matrix_input_sense_bitmap;
     unsigned matrix_input_rows, matrix_input_no_key, matrix_input_sideband_mask;
@@ -330,7 +331,29 @@ int main(void) {
     cpu_state.running = false; assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2); cpu_state.running = true;
     cpu_state.neg.can_do_io = false; assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2); cpu_state.neg.can_do_io = true;
     current_cpu = NULL; assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2); current_cpu = &cpu_state;
+    /* The source-qualified fifth-column precheck must release the line,
+     * while still reflecting a selected contact on that column. */
+    s.matrix_input_contact_precheck[0] = 0x786e8;
+    s.matrix_input_contact_precheck[1] = 0x7870e;
+    pc = 0x786e8; put(0x72c, 0x6dc2); put(0x728, 0x200);
+    put(0x724, 0x2043); s.matrix_input_pressed = false;
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2);
+    s.matrix_input_pressed = true; s.matrix_input_row = 2; s.matrix_input_sense = 15;
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dc2);
+    put(0x728, 0x21f); put(0x724, 0x6043);
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2);
+    descriptor_words[13]++; assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dc2);
+    descriptor_words[13]--;
+    s.matrix_input_row = 255; s.matrix_input_sense = 0x10;
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dc2);
     s.matrix_input_pressed = false;
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2);
+    uint8_t end_record[] = {0x80,1,255,0x10};
+    s.matrix_input_sideband_mask = 0x10;
+    assert(!host_rejected(&s,end_record));
+    s.matrix_input_contact_precheck[0] = 0;
+    assert(host_rejected(&s,end_record));
+    s.matrix_input_sideband_mask = 0;
     uint8_t record[] = {0x80,1,3,30};
     assert(!host_rejected(&s,record));
     s.matrix_input_low5 = false; assert(host_rejected(&s,record)); s.matrix_input_low5 = true;
@@ -353,6 +376,17 @@ int main(void) {
         s = (MSM5xxxPOCMachineState){0}; err = NULL;
         msm5xxx_poc_set_matrix_low5(&s,invalid[i],&err); assert(err && !s.matrix_input_enabled);
     }
+
+    s = (MSM5xxxPOCMachineState){.board_status_input_descriptor=0x1816618};
+    err = NULL;
+    msm5xxx_poc_set_matrix_low5(&s,"1816618:78722:7886a:786e8:7870e:7966a",&err);
+    assert(!err && s.matrix_input_contact_precheck[0] == 0x786e8 &&
+           s.matrix_input_contact_precheck[1] == 0x7870e &&
+           s.matrix_input_contact_precheck[2] == 0x7966a &&
+           s.matrix_input_sideband_mask == 0x10);
+    s = (MSM5xxxPOCMachineState){0}; err = NULL;
+    msm5xxx_poc_set_matrix_low5(&s,"1801000:2:4:6:8",&err);
+    assert(err && !s.matrix_input_enabled);
 
     /* Mapped seven-row class: ascending bits0,1,8,9,11,12,13. */
     const unsigned row_bits[] = {1,2,0x100,0x200,0x800,0x1000,0x2000};

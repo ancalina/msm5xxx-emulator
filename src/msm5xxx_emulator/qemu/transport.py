@@ -258,7 +258,12 @@ def qemu_low5_matrix_property(
     """
     if profile is None or profile.get("grammar") != "lg-descriptor-low5-6x5-raw-v1":
         return None, None
-    if getattr(config, "board_status_input", None) is not None:
+    status = getattr(config, "board_status_input", None)
+    if status is not None and not (
+            (getattr(status, "address", None), getattr(status, "mask", None),
+             getattr(status, "default", None)) == (0x03000720, 1, 1)
+            and sd810_gpio_board_status_profile(image) == (0x03000720, 1, 1)
+            and profile.get("descriptor_pointer") == 0x01816618):
         return None, "conflicting-status-profile"
     if (profile.get("rows") != 6 or profile.get("columns") != 5
             or profile.get("sense_bits") != 5
@@ -292,7 +297,38 @@ def qemu_low5_matrix_property(
         sites.append(candidates[0] + 2)  # Actual LDRH, not its pointer load.
     if sites[0] == sites[1]:
         return None, "ambiguous-sense-roles"
-    return f"matrix-low5={descriptor:x}:{sites[0]:x}:{sites[1]:x}", None
+    suffix = ""
+    if status is not None:
+        # The scanner also checks the shared fifth sense line before driving
+        # an individual row. Close both conditional halfword reads.
+        start = int(profile["function"]) - config.load_address
+        contact_sites = []
+        for offset in (0x3a, 0x60):
+            pos = start + offset
+            if pos < 2 or pos + 8 > len(image):
+                return None, "contact-read-outside-image"
+            pointer, read, shift, branch = struct.unpack_from("<4H", image, pos)
+            reg = pointer & 7
+            if (pointer & 0xF800 != 0x6800 or (pointer >> 6 & 31) != 13
+                    or read != 0x8800 | reg << 3 | reg
+                    or shift != 0x0800 | 5 << 6 | reg << 3 | reg
+                    or branch & 0xFF00 != 0xD200
+                    or thumb_literal_value(image, pos - 2, (pointer >> 3) & 7)
+                       != descriptor):
+                return None, "contact-read-shape-mismatch"
+            contact_sites.append(config.load_address + pos + 2)
+        bridge = profile.get("timer_bridge")
+        registration = bridge.get("registration_callsite") if isinstance(bridge, dict) else None
+        if type(registration) is not int:
+            return None, "contact-initializer-unclosed"
+        init = registration - config.load_address - 0xbe
+        if (init < 0 or init + 10 > len(image)
+                or struct.unpack_from("<5H", image, init) !=
+                   (0x6b60, 0x8800, 0x0940, 0xd207, 0x2051)):
+            return None, "contact-initializer-unclosed"
+        contact_sites.append(config.load_address + init + 2)
+        suffix = ":" + ":".join(f"{site:x}" for site in contact_sites)
+    return f"matrix-low5={descriptor:x}:{sites[0]:x}:{sites[1]:x}{suffix}", None
 
 
 def qemu_ram_argument(size: int) -> str:
@@ -4214,13 +4250,16 @@ class Transport:
                 )
                 self.matrix_input_profile = direct
                 self.matrix_input_sideband_producer = sideband
-        if experimental_low5:
+        if experimental_low5 or sd810_status:
             low5_property, low5_reject = qemu_low5_matrix_property(
                 detector_image, self.config, direct
             )
             if low5_property is not None:
                 machine += f",{low5_property}"
                 self.matrix_input_profile = direct
+                if sd810_status:
+                    # The pre-scan active-low contact emits the KEYEMUL E event.
+                    direct["sd810_end_contact"] = True
                 self.config.detection_notes.append(
                     "QEMU five-column matrix temporary: descriptor/selector-gated electrical input"
                 )
@@ -6760,6 +6799,10 @@ class Transport:
     def _sideband_input_producer(
             self, bit: int, event_code: int | None,
     ) -> dict[str, object] | None:
+        if (self.matrix_input_profile is not None
+                and self.matrix_input_profile.get("sd810_end_contact") is True
+                and bit == 7 and event_code in (None, 0x51)):
+            return {"register_width": 1, "polarity": "active-low", "mask": 0x10}
         if (self.matrix_input_profile is not None
                 and self.matrix_input_profile.get("grammar") == "distributed-six-byte-numeric-v1"):
             if getattr(self, "matrix_input_sideband_producer", None) is None:

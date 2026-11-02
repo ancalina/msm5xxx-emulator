@@ -172,6 +172,7 @@ typedef struct {
     bool matrix_input_enabled,matrix_input_host_enabled,matrix_input_pressed;
     bool matrix_input_halfword,matrix_input_low5,matrix_input_loop,matrix_input_row734;
     bool matrix_row734_boot_seen;
+    uint32_t matrix_input_contact_precheck[3];
     uint32_t matrix_input_descriptor,matrix_input_presence_site,matrix_input_sense_site;
     uint32_t matrix_input_contact_site,matrix_row734_presence2,matrix_row734_sense2,matrix_row734_boot_site;
     uint32_t matrix_row734_row_tables[2],ram_base;
