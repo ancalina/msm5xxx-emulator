@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import struct
 
-from .arm import thumb_bl_target
+from .arm import thumb_bl_target, thumb_literal_value
 
 
 GPIO_PORT_POINTER_GLOBAL = 0x01816618
@@ -117,3 +117,89 @@ def sd810_fold_event_source(image: bytes, raw_enqueue: int) -> bool:
         return False
     return all(thumb_bl_target(image, base + offset) == raw_enqueue
                for offset in (28, 34, 100, 106))
+
+
+def sd810_fold_irq_source(
+        image: bytes, raw_enqueue: int, route: dict[str, object],
+) -> tuple[int, int, int, int, int] | None:
+    """Close GPIO0's edge callback and parent IRQ over the same image."""
+    if not sd810_fold_event_source(image, raw_enqueue):
+        return None
+    if (route.get("controller_class") != "legacy-c80-two-bank-group10-v1"
+            or route.get("status") != 0x03000c80
+            or route.get("enable") != 0x03000c94):
+        return None
+    base = sd810_gpio_reader_sites(image)[0]
+    if base + 120 > len(image) or tuple(
+            _u16(image, base + offset) for offset in (0x54, 0x56, 0x6e, 0x70, 0x72)
+            ) != (0x1c22, 0x2101, 0x1c22, 0x2100, 0x2000):
+        return None
+    callback = thumb_literal_value(image, base + 0x14, 4)
+    setter = thumb_bl_target(image, base + 0x74)
+    if callback is None or not callback & 1 or setter is None:
+        return None
+    callback_code = callback & ~1
+    if (callback_code + 0x36 > len(image)
+            or tuple(_u16(image, callback_code + offset) for offset in (2, 4, 6))
+               != (0x2200, 0x2101, 0x2000)
+            or thumb_bl_target(image, callback_code + 8) != setter):
+        return None
+    publish = thumb_bl_target(image, callback_code + 0x32)
+    if (publish is None or publish + 0x1a > len(image)
+            or _u16(image, publish + 0x12) != 0x2104
+            or thumb_bl_target(image, publish + 0x16) is None
+            or (wait_mask := thumb_literal_value(image, base + 0x80, 0)) is None
+            or not wait_mask & 4):
+        return None
+    target_task = thumb_literal_value(image, publish + 0x14, 0)
+    if type(target_task) is not int or not 0x01000000 <= target_task < 0x02000000:
+        return None
+    group = thumb_literal_value(image, setter + 0x2c, 3)
+    vector = thumb_literal_value(image, setter + 0x2e, 6)
+    if (type(group) is not int or type(vector) is not int
+            or not 0x01000000 <= group <= 0x01ffffa8 or group & 3
+            or not 0x01000000 <= vector <= 0x01ffff40 or vector & 3
+            or route.get("callback_slot") != group - 0x38):
+        return None
+    # Validate the copied GPIO-bank descriptor and adjacent parent line 29.
+    sources = []
+    for pos in range(0, min(len(image) - 20, 0x40000) + 1, 4):
+        source, target, size, bss, bss_size = struct.unpack_from("<5I", image, pos)
+        if (0 < size <= 0x800000 and source + size <= len(image)
+                and 0x01000000 <= target <= group - 0x68
+                and group + 16 <= target + size == bss
+                and 0 < bss_size <= 0x2000000 and bss + bss_size <= 0x04000000):
+            origin = source + group - target
+            if (origin >= 0x68 and
+                    struct.unpack_from("<4I", image, origin) ==
+                    (0x03000c88, 0x03000ca4, 0x03000cb0, 0x0300074c) and
+                    struct.unpack_from("<3I", image, origin - 0x68) ==
+                    (0x03000c84, 0x03000c98, 0x2000)):
+                sources.append(origin)
+    if len(sources) != 1:
+        return None
+    handler_file = route.get("handler_file_offset")
+    registrar_file = route.get("registrar_file_offset")
+    if type(handler_file) is not int or type(registrar_file) is not int:
+        return None
+    installs = []
+    for pos in range(handler_file, min(len(image) - 8, handler_file + 0x1800), 2):
+        if (_u16(image, pos + 2) != 0x201d
+                or thumb_bl_target(image, pos + 4) != registrar_file):
+            continue
+        candidate = thumb_literal_value(image, pos, 1)
+        if candidate is not None and candidate & 1:
+            installs.append(candidate & ~1)
+    if len(installs) != 1:
+        return None
+    group_isr = installs[0]
+    if (group_isr + 0x50 > len(image)
+            or thumb_literal_value(image, group_isr + 2, 4) != 0x03000c80
+            or thumb_literal_value(image, group_isr + 6, 1) != group
+            or thumb_literal_value(image, group_isr + 0x26, 1) != vector
+            or tuple(_u16(image, group_isr + offset) for offset in
+                     (0, 4, 8, 10, 0x46, 0x4c)) !=
+               (0xb5b0, 0x8920, 0x8a0a, 0x4002, 0x5808, 0x8127)
+            or thumb_bl_target(image, group_isr + 0x48) is None):
+        return None
+    return group, vector, callback, group - 0x54, group_isr | 1

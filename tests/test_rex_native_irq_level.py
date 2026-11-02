@@ -61,6 +61,15 @@ int main(void) {
     s.rex_irq_c80 = false; s.rex_irq_status_address = 0x03000c80;
     s.rex_irq_enable_address = 0x03000c88;
     msm5xxx_poc_rex_irq_update(&s); assert(!cpu);
+    s.rex_irq_c80 = true; s.rex_irq_enable_address = 0x03000c94;
+    s.rex_irq_pending[1] = 0x2000; s.rex_irq_backing[0x19] = 0x20;
+    msm5xxx_poc_rex_irq_update(&s); assert(!cpu); /* Route not yet installed. */
+    s.rex_irq_route_active = true;
+    msm5xxx_poc_rex_irq_update(&s); assert(cpu);
+    s.rex_irq_backing[0x19] = 0;
+    msm5xxx_poc_rex_irq_update(&s); assert(!cpu); /* Parent masked. */
+    s.rex_irq_pending[1] = 0;
+    s.rex_irq_route_active = false;
     s.irq_level = true;
     msm5xxx_poc_rex_irq_update(&s); assert(cpu && !s.rex_irq_level);
     s.irq_level = false; s.ma5_irq_level = true;

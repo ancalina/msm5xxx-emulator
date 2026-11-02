@@ -44,12 +44,28 @@ def find_kp_legacy_scanner(image: bytes, model: str) -> dict[str, object] | None
             0x146: 0x8db1, 0x150: 0x6a32, 0x182: 0x4399,
             0x194: 0x6b70, 0x196: 0x8800,
             0x198: 0x06c0, 0x19a: 0x0ec0, 0x19c: 0x281f,
+            0x1a4: 0x6b71, 0x1a6: 0x8809, 0x1a8: 0x0949,
             0x1b8: 0x2306, 0x1bc: 0x4358, 0x1be: 0x391e,
             0x1c2: 0x5d07, 0x1c6: 0x3401, 0x1cc: 0x2c06,
             0x1d0: 0xe759,
         }
         if any(struct.unpack_from("<H", image, start + off)[0] != word
                for off, word in operations.items()):
+            continue
+        helper = thumb_bl_target(image, start + 0x5a)
+        if (helper is None or helper < 0 or helper + 0x4c > len(image)
+                or thumb_bl_target(image, start + 0x1d2) != helper
+                or thumb_literal_value(image, helper + 6, 7) != descriptor):
+            continue
+        helper_operations = {
+            0: 0xb580, 8: 0x231e, 10: 0x8db9, 12: 0x4399,
+            14: 0x85b9, 18: 0x6a3a, 0x22: 0x89b9,
+            0x24: 0x2301, 0x26: 0x029b, 0x28: 0x4399, 0x2a: 0x81b9,
+            0x2e: 0x683a, 0x3e: 0x89b9, 0x40: 0x2301,
+            0x42: 0x025b, 0x44: 0x4399, 0x46: 0x81b9, 0x4a: 0x683a,
+        }
+        if any(struct.unpack_from("<H", image, helper + off)[0] != word
+               for off, word in helper_operations.items()):
             continue
         senses = _low5_senses(image, start, end)
         if not any(pos == start + 0x194 for pos, _ in senses):
@@ -67,16 +83,32 @@ def find_kp_legacy_scanner(image: bytes, model: str) -> dict[str, object] | None
         sinks = [target for target, count in calls.items() if count >= 4]
         if len(sinks) != 1:
             continue
+        callsites = [pos for pos in range(start, end - 3, 2)
+                     if thumb_bl_target(image, pos) == sinks[0]]
         candidates.append({
             "grammar": "lg-kp-legacy-low5-6x5-v1", "function": start,
+            "grammar_fingerprint": "lg-kp-legacy-low5-6x5-v1",
+            "family": "lg-kp-legacy-raw-keypad-v1", "prologue": start,
             "descriptor_pointer": descriptor,
             "descriptor_mmio_provenance": provenance["kind"],
-            "presence_site": start + 0x62, "sense_site": start + 0x196,
-            "contact_site": start + 0x50,
+            "presence_site": start + 0x62, "sense_site": start + 0x194,
+            "contact_site": start + 0x50, "contact2_site": start + 0x1a6,
+            "sense_sites": [start + 0x5e, start + 0x194],
+            "global_sense_sites": [start + 0x5e],
+            "row_sense_sites": [start + 0x194],
+            "row_register": 4, "row_register_evidence": "identity-six-row-loop",
             "event_table": event_address, "event_codes": event_codes,
             "column_map": columns[1], "column_table": columns[0],
-            "raw_enqueue": sinks[0], "rows": 6, "columns": 5,
+            "raw_enqueue": sinks[0], "raw_enqueue_callsites": callsites,
+            "raw_enqueue_callsite": callsites[0], "rows": 6, "columns": 5,
             "sense_bits": 5, "no_key": 31,
+            "absolute_roles": {"control": 0x03000720,
+                               "row_drive": 0x03000728,
+                               "sense": 0x0300072c},
+            "provisional_mappings": {
+                bit: {"event": event, "rule": "ascii-table-entry"}
+                for bit, event in zip(range(11, 23), b"123456789*0#")
+            },
             "single_key_column_sense": [
                 next(value for value in (30, 29, 27, 23, 15)
                      if columns[1][value] == column)

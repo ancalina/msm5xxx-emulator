@@ -33,14 +33,17 @@ from msm5xxx_emulator.detection.middle_nand import find_middle_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
+from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
+from msm5xxx_emulator.detection.input_lg_kp import find_kp_legacy_scanner
 from msm5xxx_emulator.detection.input_sd810 import (
-    sd810_fold_event_source, sd810_gpio_board_status_profile,
+    sd810_fold_irq_source, sd810_gpio_board_status_profile,
 )
 from msm5xxx_emulator.detection.input_matrix import (
     ASCII_KEY_EVENTS,
     _samsung_sideband_51_family_metadata,
     resolve_distributed_matrix_input,
 )
+from msm5xxx_emulator.core.config import BoardStatusInput
 from msm5xxx_emulator.devices.input import SAMSUNG_RING32_KEY_EVENTS
 from msm5xxx_emulator.detection.arm import (
     _thumb_path_preserves_register,
@@ -237,7 +240,7 @@ def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
         "senses", profile.get("single_key_column_sense", ())
     ))
     no_key = int(profile["no_key"])
-    low5 = profile.get("grammar") in {"lg-descriptor-low5-6x5-raw-v1", "descriptor-row734-low5-6x5-v1"}
+    low5 = profile.get("grammar") in {"lg-descriptor-low5-6x5-raw-v1", "descriptor-row734-low5-6x5-v1", "lg-kp-legacy-low5-6x5-v1"}
     loop = profile.get("grammar") == "indirect-halfword-loop-six-row-v1"
     if loop and (no_key != 31 or senses != (30, 29, 27, 23)):
         raise ValueError("invalid detector-resolved loop senses")
@@ -264,8 +267,9 @@ def qemu_low5_matrix_property(
     if status is not None and not (
             (getattr(status, "address", None), getattr(status, "mask", None),
              getattr(status, "default", None)) == (0x03000720, 1, 1)
-            and sd810_gpio_board_status_profile(image) == (0x03000720, 1, 1)
-            and profile.get("descriptor_pointer") == 0x01816618):
+            and ((sd810_gpio_board_status_profile(image) == (0x03000720, 1, 1)
+                  and profile.get("descriptor_pointer") == 0x01816618)
+                 or qemu_sd840_status_source(image, config, profile))):
         return None, "conflicting-status-profile"
     if (profile.get("rows") != 6 or profile.get("columns") != 5
             or profile.get("sense_bits") != 5
@@ -340,8 +344,12 @@ def qemu_sd840_low5_contacts(
         image: bytes, config: object, profile: dict[str, object],
 ) -> tuple[int, int, int] | None:
     """Close SD840's sense-bit prechecks over its verified timer callback."""
-    if (getattr(config, "board_status_input", None) is not None
-            or profile.get("descriptor_pointer") != 0x0181661c):
+    status = getattr(config, "board_status_input", None)
+    if (status is not None and
+            (getattr(status, "address", None), getattr(status, "mask", None),
+             getattr(status, "default", None)) != (0x03000720, 1, 1)):
+        return None
+    if profile.get("descriptor_pointer") != 0x0181661c:
         return None
     scanner = profile.get("function")
     bridge = profile.get("timer_bridge")
@@ -393,6 +401,91 @@ def qemu_sd840_numeric_profile(profile: dict[str, object]) -> dict[str, object]:
         bit: {"event": event}
         for bit, event in zip(range(11, 23), ASCII_KEY_EVENTS)
     }}
+
+
+def qemu_kp_low5_property(image: bytes, config: object,
+                           profile: dict[str, object] | None) -> str | None:
+    """Serialize only a KP scanner with a closed timer and IRQ route."""
+    if (profile is None or profile.get("grammar") != "lg-kp-legacy-low5-6x5-v1"
+            or getattr(config, "board_status_input", None) is not None):
+        return None
+    source = find_kp_legacy_scanner(image, getattr(config, "model", ""))
+    bridge = profile.get("timer_bridge")
+    if (source is None or not isinstance(bridge, dict)
+            or not isinstance(bridge.get("irq_route"), dict)
+            or profile.get("event_sink_validation") != "validated-raw-enqueue-callsites"):
+        return None
+    route = bridge["irq_route"]
+    if (route.get("controller_class") != "legacy-c80-two-bank-group10-v1"
+            or not QemuDecoder._rex_legacy_irq_route_metadata_valid(route)
+            or bridge.get("outer_callback") != route.get("outer_callback")
+            or getattr(config, "rex_tick_address", None) != bridge.get("outer_callback")
+            or getattr(config, "rex_irq_handler_address", None) != route.get("handler")
+            or getattr(config, "rex_irq_status_address", None) != route.get("status")
+            or getattr(config, "rex_irq_enable_address", None) != route.get("enable")):
+        return None
+    load = config.load_address
+    for field in ("function", "sense_site", "presence_site", "contact_site", "contact2_site"):
+        if profile.get(field) != source[field] + load:
+            return None
+    if (profile.get("descriptor_pointer") != source["descriptor_pointer"]
+            or profile.get("event_codes") != source["event_codes"]
+            or bridge.get("scanner") != profile["function"]):
+        return None
+    try:
+        matrix_senses(profile)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (f"matrix-kp-low5={source['descriptor_pointer']:x}:"
+            f"{profile['presence_site']:x}:{profile['sense_site'] + 2:x}:"
+            f"{profile['contact_site']:x}:{profile['contact2_site']:x}")
+
+
+def qemu_sd840_status_source(
+        image: bytes, config: object, profile: dict[str, object],
+) -> bool:
+    """Link GPIO720 bit 0 to this scanner's ordinary-key admission gate."""
+    if qemu_sd840_low5_contacts(image, config, profile) is None:
+        return False
+    provenance = _descriptor_mmio_provenance(image, 0x0181661c)
+    if (provenance is None or provenance["source"] + 8 > len(image)
+            or struct.unpack_from("<I", image, provenance["source"] + 4)[0]
+               != 0x03000720):
+        return False
+    load = config.load_address
+    scanner = profile["function"] - load
+    reader = profile["timer_bridge"]["registration_callsite"] - load + 0x86
+    sink = profile.get("raw_enqueue")
+    if type(sink) is not int or reader < 0 or reader + 0x46 > len(image):
+        return False
+    sink -= load
+    if (thumb_literal_value(image, reader, 0) != 0x0181661c
+            or tuple(struct.unpack_from("<H", image, reader + off)[0] for off in
+                     (2, 4, 6, 8, 10, 14, 16, 18, 22, 24, 26, 32,
+                      54, 56, 58, 64)) !=
+               (0x6840, 0x8800, 0x07c0, 0x0fc0, 0x227f, 0x0112, 0x1851,
+                0x2800, 0xd10e, 0x7148, 0x2008, 0x20ff,
+                0x2001, 0x7148, 0x2006, 0x20ff)
+            or any(thumb_bl_target(image, reader + off) != sink
+                   for off in (28, 34, 60, 66))):
+        return False
+    state = thumb_literal_value(image, reader + 12, 1)
+    classifier = thumb_bl_target(image, scanner + 0x326)
+    if (state is None or not config.ram_base <= state + 0x7f5 <
+            config.ram_base + config.ram_size
+            or classifier is None or classifier < 0 or classifier + 0x1a > len(image)
+            or thumb_bl_target(image, scanner + 0x330) != sink
+            or thumb_literal_value(image, classifier + 0x0a, 0) != state):
+        return False
+    if (classifier + 0x4c > len(image)
+            or tuple(struct.unpack_from("<H", image, classifier + off)[0] for off in
+                     (6, 8, 12, 14, 16, 20, 22)) != (
+                         0x227f, 0x7901, 0x0112, 0x1810,
+                         0x2901, 0x7941, 0x2900)):
+        return False
+    checks = {struct.unpack_from("<H", image, pos)[0]
+              for pos in range(classifier + 0x1a, classifier + 0x4c, 2)}
+    return all((0x2f00 | event) in checks for event in ASCII_KEY_EVENTS)
 
 
 def qemu_ram_argument(size: int) -> str:
@@ -4252,7 +4345,16 @@ class Transport:
                 f"QEMU board-revision bridge rejected: {revision_reject}; "
                 "native fallback retained"
             )
+        direct = self.decoder.direct_input_profile
         board_status = self.config.board_status_input
+        self._sd840_status_source_closed = bool(
+            board_status is None and direct is not None
+            and qemu_sd840_status_source(detector_image, self.config, direct)
+        )
+        if self._sd840_status_source_closed:
+            # The scanner's admission gate consumes this active-high status.
+            board_status = BoardStatusInput(0x03000720, 1, 1)
+            self.config.board_status_input = board_status
         sd810_status = (board_status is not None
                          and self.config.model == "LG-SD810"
                          and self.config.chipset == "MSM5100"
@@ -4265,19 +4367,29 @@ class Transport:
                 f",board-status-input={board_status.address:x}:"
                 f"{board_status.mask:x}:{board_status.default:x}"
             )
-            if sd810_status:
+            if sd810_status or self._sd840_status_source_closed:
                 # The firmware keeps the port pointer in descriptor + 4.
                 # Native code verifies it before overlaying this input bit.
-                machine += ",board-status-descriptor=1816618"
-        direct = self.decoder.direct_input_profile
-        self._sd810_fold_source_closed = bool(
-            sd810_status and direct is not None
-            and type(direct.get("raw_enqueue")) is int
-            and sd810_fold_event_source(
-                detector_image,
-                int(direct["raw_enqueue"]) - self.config.load_address,
-            )
-        )
+                descriptor = 0x01816618 if sd810_status else int(direct['descriptor_pointer'])
+                machine += f",board-status-descriptor={descriptor:x}"
+        fold_irq = None
+        if (sd810_status and direct is not None and not experimental_ma5_irq
+                and type(direct.get("raw_enqueue")) is int):
+            bridge = direct.get("timer_bridge")
+            route = bridge.get("irq_route") if isinstance(bridge, dict) else None
+            if isinstance(route, dict):
+                fold_irq = sd810_fold_irq_source(
+                    detector_image,
+                    int(direct["raw_enqueue"]) - self.config.load_address,
+                    route,
+                )
+        self._sd810_fold_source_closed = fold_irq is not None
+        if fold_irq is not None:
+            group, vector, callback, slot, handler = fold_irq
+            callback = ((callback & ~1) + self.config.load_address) | 1
+            handler = ((handler & ~1) + self.config.load_address) | 1
+            machine += (f",sd810-fold-irq={group:x}:{vector:x}:{callback:x}:"
+                        f"{slot:x}:{handler:x}")
         if (direct is not None
                 and direct.get("grammar") == "direct-low-nibble-6-row-v1"
                 and int(direct.get("sense_bits", 0)) == 4):
@@ -4323,6 +4435,10 @@ class Transport:
             direct = qemu_sd840_numeric_profile(direct)
             self.decoder.direct_input_profile = direct
             self.decoder.direct_input_positions = self.decoder._direct_matrix_positions(direct)
+        kp_property = qemu_kp_low5_property(detector_image, self.config, direct)
+        if kp_property is not None:
+            machine += f",{kp_property}"
+            self.matrix_input_profile = direct
         if experimental_low5 or sd810_status or sd840_source_closed:
             low5_property, low5_reject = qemu_low5_matrix_property(
                 detector_image, self.config, direct
@@ -6895,6 +7011,9 @@ class Transport:
 
     def can_set_fold(self) -> bool:
         profile = self.config.board_status_input
+        if getattr(self, "_sd840_status_source_closed", False):
+            # The default is source-proven; its edge IRQ is not modeled yet.
+            return False
         if (getattr(self.config, "model", None) == "LG-SD810" and profile is not None
                 and (profile.address, profile.mask) == (0x03000720, 1)):
             # The UI name is inferred: the source proves the logical status

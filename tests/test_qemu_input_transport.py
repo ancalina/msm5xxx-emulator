@@ -676,6 +676,37 @@ class QEMUInputTransportTests(unittest.TestCase):
             struct.pack_into('<H', image, registration - 0x15a, 0x2700)
             self.assertIsNone(MODULE.qemu_sd840_low5_contacts(bytes(image), config, profile))
 
+    def test_sd840_status_links_gpio_events_to_key_admission(self):
+        from corpus import firmware_path
+        from msm5xxx_emulator.detection import detect
+        from msm5xxx_emulator.devices.input import InputMixin
+
+        class InputProbe(InputMixin):
+            pass
+
+        path = firmware_path('LG-SD840-FullDump.bin')
+        config = detect(path)
+        probe = InputProbe()
+        probe.image = path.read_bytes()
+        probe.config = config
+        probe._init_input_state(config)
+        profile = probe.direct_input_profile
+        self.assertIsNotNone(profile)
+        self.assertTrue(MODULE.qemu_sd840_status_source(probe.image, config, profile))
+        changed = bytearray(probe.image)
+        reader = profile['timer_bridge']['registration_callsite'] - config.load_address + 0x86
+        struct.pack_into('<H', changed, reader + 58, 0x2008)
+        self.assertFalse(MODULE.qemu_sd840_status_source(bytes(changed), config, profile))
+        changed = bytearray(probe.image)
+        from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
+        provenance = _descriptor_mmio_provenance(changed, profile['descriptor_pointer'])
+        struct.pack_into('<I', changed, provenance['source'] + 4, 0x03000724)
+        self.assertFalse(MODULE.qemu_sd840_status_source(bytes(changed), config, profile))
+        config.board_status_input = SimpleNamespace(address=0x3000720, mask=1, default=1)
+        prop, reject = MODULE.qemu_low5_matrix_property(probe.image, config, profile)
+        self.assertIsNone(reject)
+        self.assertTrue(prop.startswith('matrix-low5=181661c:'))
+
     def test_loop_matrix_property_and_numeric_packets(self):
         image = bytearray(0x100)
         for site in (0x12, 0x22, 0x32):

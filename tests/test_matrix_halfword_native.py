@@ -154,7 +154,8 @@ typedef struct {
     bool board_status_input_enabled;
     uint32_t board_status_input_address, board_status_input_mask;
     uint32_t board_status_input_default, board_status_input_level, board_status_input_rejections;
-    bool matrix_input_halfword, matrix_input_low5, matrix_input_loop, matrix_input_enabled;
+    bool matrix_input_halfword, matrix_input_low5, matrix_input_kp_low5, matrix_input_loop, matrix_input_enabled;
+    uint32_t matrix_input_kp_contact2;
     bool matrix_input_row734, matrix_row734_boot_seen;
     uint32_t matrix_row734_presence2, matrix_row734_sense2, matrix_row734_boot_site;
     uint32_t matrix_row734_row_tables[2];
@@ -384,7 +385,7 @@ int main(void) {
            s.matrix_input_contact_precheck[1] == 0x7870e &&
            s.matrix_input_contact_precheck[2] == 0x7966a &&
            s.matrix_input_sideband_mask == 0x10);
-    s = (MSM5xxxPOCMachineState){0}; err = NULL;
+    s = (MSM5xxxPOCMachineState){.board_status_input_descriptor=0x181661c}; err = NULL;
     msm5xxx_poc_set_matrix_low5(&s,"181661c:7845e:785a4:78424:7844a:79210",&err);
     assert(!err && s.matrix_input_contact_precheck[0] == 0x78424 &&
            s.matrix_input_contact_precheck[2] == 0x79210 &&
@@ -1033,6 +1034,27 @@ int main(void) {
         if(conflict==3) msm5xxx_poc_set_board_status_input(&s,"3000668:1:0",&err);
         assert(!err); msm5xxx_poc_set_matrix_gpio(&s,gpio_property,&err); assert(err);
     }
+
+    /* KP drives four rows on 728 and two on 720. */
+    s=(MSM5xxxPOCMachineState){.cpu=&cpu_state};err=NULL;
+    msm5xxx_poc_set_matrix_kp_low5(&s,"10bd680:2:4:6:8",&err);
+    assert(!err && s.matrix_input_kp_low5);
+    property=msm5xxx_poc_get_matrix_kp_low5(&s,&err);
+    assert(!strcmp(property,"10bd680:2:4:6:8"));free(property);
+    for(unsigned row=0;row<6;row++) {
+        unsigned p728=0x1e, p720=0x600;
+        if(row<4) p728 &= ~(1u<<(row+1));
+        else p720 &= ~(row==4 ? 0x400 : 0x200);
+        for(unsigned c=0;c<5;c++) {
+            const unsigned senses[]={30,29,27,23,15};
+            assert(msm5xxx_poc_kp_low5_sense(0x73e0,p728,p720,false,true,row,senses[c],&value));
+            assert(value==(0x73e0|senses[c]));
+            assert(msm5xxx_poc_kp_low5_sense(0x73e0,0,0,true,true,row,senses[c],&value));
+            assert(value==(0x73e0|senses[c]));
+        }
+    }
+    assert(!msm5xxx_poc_kp_low5_sense(0x73e0,0,0,false,false,0,30,&value));
+    assert(!msm5xxx_poc_kp_low5_sense(0x73e0,0x1e,0x600,true,false,0,30,&value));
 
     /* Independent six-row/four-column read plane and contact approximation. */
 

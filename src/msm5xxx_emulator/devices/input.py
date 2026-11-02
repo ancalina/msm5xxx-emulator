@@ -7,6 +7,7 @@ from ..core.config import FirmwareConfig
 from ..core.constants import HANDSET_KEY_COUNT
 from ..detection.input import detect_input_profile
 from ..detection.input_descriptor import resolve_lg_descriptor_input
+from ..detection.input_lg_kp import find_kp_legacy_scanner
 from ..detection.input_matrix import UNCLASSIFIED
 from ..detection.input_matrix import SAMSUNG_DUAL_PLANE_RING32
 from ..detection.input_matrix import SAMSUNG_RING32
@@ -70,6 +71,8 @@ class InputMixin:
                 descriptor, status, rejected = resolve_lg_descriptor_input(
                     self.image
                 )
+                if descriptor is None and config.model in {"LG-KP2000", "LG-KP2006"}:
+                    descriptor = find_kp_legacy_scanner(self.image, config.model)
                 self.direct_input_rejections.extend(rejected)
                 if descriptor is not None:
                     overlays = config.overlays
@@ -167,6 +170,10 @@ class InputMixin:
                             "function", "prologue", "sense_site",
                             "raw_enqueue", "raw_enqueue_callsite",
                         ]
+                        scalar_fields.extend(
+                            field for field in ("presence_site", "contact_site", "contact2_site")
+                            if descriptor.get(field) is not None
+                        )
                         scalar_fields.extend(
                             field for field in (
                                 "raw_enqueue_store", "raw_dequeue",

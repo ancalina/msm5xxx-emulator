@@ -3,7 +3,7 @@ import struct
 import unittest
 
 from msm5xxx_emulator.detection.input_sd810 import (
-    sd810_fold_event_source, sd810_gpio_board_status_profile,
+    sd810_fold_event_source, sd810_fold_irq_source, sd810_gpio_board_status_profile,
 )
 
 
@@ -52,3 +52,36 @@ class SD810StatusTests(unittest.TestCase):
         reader(image, 0x100)
         struct.pack_into("<H", image, 0x100 + 22, 0xd000)
         self.assertIsNone(sd810_gpio_board_status_profile(image))
+
+    def test_fold_irq_requires_live_source_chain(self):
+        from corpus import firmware_path
+        from msm5xxx_emulator.detection import detect
+        from msm5xxx_emulator.devices.input import InputMixin
+
+        class InputProbe(InputMixin):
+            pass
+
+        path = firmware_path('LG-SD810-General.bin')
+        config = detect(path)
+        probe = InputProbe()
+        probe.image = path.read_bytes()
+        probe.config = config
+        probe._init_input_state(config)
+        profile = probe.direct_input_profile
+        self.assertIsNotNone(profile)
+        route = profile['timer_bridge']['irq_route']
+        sink = profile['raw_enqueue'] - config.load_address
+        source = sd810_fold_irq_source(probe.image, sink, route)
+        self.assertIsNotNone(source)
+        self.assertEqual(source[3] + 0x54, source[0])
+        self.assertIsNone(sd810_fold_irq_source(
+            probe.image, sink, dict(route, callback_slot=route['callback_slot'] + 4)))
+        changed = bytearray(probe.image)
+        bank = struct.pack('<4I', 0x03000c88, 0x03000ca4, 0x03000cb0, 0x0300074c)
+        offset = changed.find(bank)
+        self.assertGreaterEqual(offset, 0)
+        changed[offset] ^= 1
+        self.assertIsNone(sd810_fold_irq_source(bytes(changed), sink, route))
+        changed = bytearray(probe.image)
+        struct.pack_into('<H', changed, (source[2] & ~1) + 4, 0x2100)
+        self.assertIsNone(sd810_fold_irq_source(bytes(changed), sink, route))

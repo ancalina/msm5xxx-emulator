@@ -652,11 +652,16 @@ struct MSM5xxxPOCMachineState {
     uint8_t board_status_input_level;
     uint32_t board_status_input_events;
     uint32_t board_status_input_rejections;
+    bool sd810_fold_irq_enabled;
+    uint32_t sd810_fold_group, sd810_fold_vector, sd810_fold_callback;
+    uint32_t sd810_fold_parent_slot, sd810_fold_parent_handler;
     bool matrix_input_gpio;
     uint32_t matrix_input_gpio_port[3];
     uint8_t matrix_input_gpio_mask[3];
     bool matrix_input_halfword;
     bool matrix_input_low5;
+    bool matrix_input_kp_low5;
+    uint32_t matrix_input_kp_contact2;
     bool matrix_input_row734, matrix_row734_boot_seen;
     uint32_t matrix_row734_presence2, matrix_row734_sense2, matrix_row734_boot_site;
     uint32_t matrix_row734_row_tables[2];
@@ -1244,6 +1249,9 @@ static void msm5xxx_poc_lcd_trace_flush(void *opaque)
               qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 33);
 }
 
+static void msm5xxx_poc_sd810_fold_edge(MSM5xxxPOCMachineState *s,
+                                         unsigned old_level, unsigned new_level);
+
 static int msm5xxx_poc_host_input_can_read(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
@@ -1279,11 +1287,13 @@ static void msm5xxx_poc_host_input_read(void *opaque, const uint8_t *buf,
                 record[2] || record[3]) {
                 s->board_status_input_rejections++;
             } else {
+                unsigned old_level = s->board_status_input_level;
                 s->board_status_input_level = record[1];
                 s->board_status_input_backing =
                     (s->board_status_input_backing & ~s->board_status_input_mask) |
                     s->board_status_input_level;
                 s->board_status_input_events++;
+                msm5xxx_poc_sd810_fold_edge(s, old_level, record[1]);
             }
             s->matrix_input_buffer_length = 0;
             msm5xxx_poc_board_status_stream_write(s);
@@ -3590,6 +3600,28 @@ static bool msm5xxx_poc_low5_sense(uint16_t backing, uint16_t output728,
     return true;
 }
 
+static bool msm5xxx_poc_kp_low5_sense(uint16_t backing, uint16_t output728,
+                                      uint16_t output720, bool presence,
+                                      bool pressed, unsigned row, unsigned sense,
+                                      uint16_t *result)
+{
+    unsigned selected = ((~output728 >> 1) & 0xf) |
+        ((output720 & 0x400) ? 0 : 0x10) |
+        ((output720 & 0x200) ? 0 : 0x20);
+
+    *result = backing;
+    if ((presence ? selected != 0x3f :
+         (!selected || (selected & (selected - 1)))) ||
+        (pressed && (row >= 6 ||
+         !(sense == 30 || sense == 29 || sense == 27 ||
+           sense == 23 || sense == 15)))) {
+        return false;
+    }
+    *result = (backing & 0xffe0) |
+        (pressed && (selected & (1U << row)) ? sense : 0x1f);
+    return true;
+}
+
 /* Source-selected high one-hot rows; upper input/control bits stay native.
  * The boot transaction is restricted to the proven released-contact case. */
 static bool msm5xxx_poc_row734_sense(uint16_t backing, uint16_t enable728,
@@ -4331,6 +4363,39 @@ static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
     pc = CPU_GET_CLASS(cpu)->get_pc(cpu) & ~1U;
     if (s->matrix_input_row734) {
         return msm5xxx_poc_matrix_row734_read(s, backing, pc);
+    }
+
+    if (s->matrix_input_kp_low5) {
+        uint16_t value;
+        if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor) !=
+                MSM5XXX_POC_MSM_BASE + 0x720 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x20) !=
+                MSM5XXX_POC_MSM_BASE + 0x728 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x34) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c) {
+            return backing;
+        }
+        if (pc == s->matrix_input_contact_site ||
+            pc == s->matrix_input_kp_contact2) {
+            return backing | 0x10;
+        }
+        if (pc != s->matrix_input_presence_site &&
+            pc != s->matrix_input_sense_site) {
+            return backing;
+        }
+        if (!msm5xxx_poc_kp_low5_sense(backing,
+                msm5xxx_poc_halfword_backing_read(s, 0x728, 2),
+                msm5xxx_poc_halfword_backing_read(s, 0x720, 2),
+                pc == s->matrix_input_presence_site,
+                s->matrix_input_pressed, s->matrix_input_row,
+                s->matrix_input_sense, &value)) {
+            s->matrix_input_rejections++;
+            return backing;
+        }
+        if (s->matrix_input_pressed && (value & 31) != 31) {
+            s->matrix_input_active_reads++;
+        }
+        return value;
     }
 
     /* Explicit electrical approximation at one descriptor-qualified read only. */
@@ -5902,6 +5967,37 @@ static uint32_t msm5xxx_poc_guest_u32(hwaddr address)
     return le32_to_cpu(value);
 }
 
+/* The SD810 GPIO0 input is edge triggered. Only project an edge after the
+ * guest has installed the proven GPIO callback and parent route. */
+static void msm5xxx_poc_sd810_fold_edge(MSM5xxxPOCMachineState *s,
+                                         unsigned old_level, unsigned new_level)
+{
+    uint8_t *msm;
+    unsigned enabled, rising;
+
+    if (!s->sd810_fold_irq_enabled || old_level == new_level ||
+        !s->rex_irq_c80 || !s->rex_irq_route_active ||
+        s->rex_irq_read_consume || s->ma5_irq_configured ||
+        msm5xxx_poc_guest_u32(s->sd810_fold_group) != 0x03000c88 ||
+        msm5xxx_poc_guest_u32(s->sd810_fold_group + 4) != 0x03000ca4 ||
+        msm5xxx_poc_guest_u32(s->sd810_fold_group + 8) != 0x03000cb0 ||
+        msm5xxx_poc_guest_u32(s->sd810_fold_vector) != s->sd810_fold_callback ||
+        msm5xxx_poc_guest_u32(s->sd810_fold_parent_slot) !=
+            s->sd810_fold_parent_handler ||
+        !(msm5xxx_poc_guest_u32(s->sd810_fold_group + 0x10) & 1)) {
+        return;
+    }
+    msm = memory_region_get_ram_ptr(&s->msm);
+    enabled = msm5xxx_poc_backing_read(msm, 0xca4, 2);
+    rising = msm5xxx_poc_backing_read(msm, 0xcb0, 2) & 1;
+    if (!(enabled & 1) || rising != !!new_level) {
+        return;
+    }
+    s->rex_irq_backing[8] |= 1; /* GPIO0 child status, W1C at C88. */
+    s->rex_irq_pending[1] |= 0x2000; /* Parent line 29, C84 bit 13. */
+    msm5xxx_poc_rex_irq_update(s);
+}
+
 static bool msm5xxx_poc_rex_static_gate(MSM5xxxPOCMachineState *s)
 {
     uint32_t target;
@@ -6001,6 +6097,16 @@ static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s)
         );
 
         level |= (second_enabled & s->rex_irq_pending[1]) != 0;
+    }
+
+    /* The C80 two-bank controller routes GPIO group 0 on line 29. */
+    if (s->rex_irq_c80 && s->rex_irq_route_active &&
+        !s->rex_irq_read_consume && s->rex_irq_bank_count == 2 &&
+        s->rex_irq_status_address == 0x03000c80 && offset == 0x14) {
+        uint16_t second_enabled = msm5xxx_poc_backing_read(
+            s->rex_irq_backing, offset + 4, 2
+        );
+        level |= (second_enabled & s->rex_irq_pending[1] & 0x2000) != 0;
     }
 
     level |= s->ma5_irq_configured && s->ma5_irq_qualified &&
@@ -6129,6 +6235,11 @@ static uint64_t msm5xxx_poc_rex_irq_read(void *opaque, hwaddr offset,
     return value;
 }
 
+static uint16_t msm5xxx_poc_fold_gpio_ack(uint16_t backing, uint16_t value)
+{
+    return (value & ~1u) | ((backing & 1) && !(value & 1));
+}
+
 static void msm5xxx_poc_rex_irq_write(void *opaque, hwaddr offset,
                                       uint64_t value, unsigned size)
 {
@@ -6142,6 +6253,10 @@ static void msm5xxx_poc_rex_irq_write(void *opaque, hwaddr offset,
     if (s->ma5_irq_configured) {
         msm5xxx_poc_ma5_irq_write(s, offset, value, size);
         return;
+    }
+    if (s->sd810_fold_irq_enabled && offset == 8 && size == 2) {
+        /* GPIO0 status is W1C; preserve the other bits' existing behavior. */
+        value = msm5xxx_poc_fold_gpio_ack(s->rex_irq_backing[8], value);
     }
     if (!msm5xxx_poc_rex_irq_shadow_active(s) || s->rex_irq_read_consume) {
         msm5xxx_poc_backing_write(s->rex_irq_backing, offset, value, size);
@@ -12752,13 +12867,13 @@ static void msm5xxx_poc_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
     /* Reject an EEPROM boundary through either mapped halfword register. */
-    if ((s->matrix_input_row_mask || s->matrix_input_loop) && s->eeprom_gpio_enabled) {
+    if ((s->matrix_input_row_mask || s->matrix_input_loop || s->matrix_input_kp_low5) && s->eeprom_gpio_enabled) {
         uint64_t start = s->eeprom_gpio_base;
         uint64_t end = start + MSM5XXX_POC_EEPROM_GPIO_SIZE;
 
         const unsigned loop_offsets[] = { 0x720, 0x728, 0x72c };
-        for (unsigned port_index = 0; port_index < (s->matrix_input_loop ? 3 : 2); port_index++) {
-            unsigned offset = s->matrix_input_loop ? loop_offsets[port_index] : 0x724 + 8 * port_index;
+        for (unsigned port_index = 0; port_index < ((s->matrix_input_loop || s->matrix_input_kp_low5) ? 3 : 2); port_index++) {
+            unsigned offset = (s->matrix_input_loop || s->matrix_input_kp_low5) ? loop_offsets[port_index] : 0x724 + 8 * port_index;
             uint64_t address = MSM5XXX_POC_MSM_BASE + offset;
 
             if (start < address + 2 && end > address &&
@@ -12770,7 +12885,7 @@ static void msm5xxx_poc_init(MachineState *machine)
         }
     }
     /* Loop selector and sense apertures cannot bypass unrelated owners. */
-    if (s->matrix_input_loop) {
+    if (s->matrix_input_loop || s->matrix_input_kp_low5) {
         const unsigned offsets[] = { 0x720, 0x728, 0x72c };
         for (unsigned port_index = 0; port_index < sizeof(offsets) / sizeof(offsets[0]); port_index++) {
             uint64_t address = MSM5XXX_POC_MSM_BASE + offsets[port_index];
@@ -12891,13 +13006,22 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("matrix-gpio conflicts with the final memory map");
         exit(EXIT_FAILURE);
     }
+    if (s->matrix_input_kp_low5 && s->board_status_input_enabled) {
+        error_report("matrix-kp-low5 conflicts with board-status-input");
+        exit(EXIT_FAILURE);
+    }
+    if (s->matrix_input_kp_low5 &&
+        s->matrix_input_kp_contact2 >= s->primary_nor_size - 2) {
+        error_report("matrix-kp-low5 contact outside primary NOR");
+        exit(EXIT_FAILURE);
+    }
     if (s->matrix_input_halfword &&
         (s->matrix_input_descriptor < s->ram_base ||
          (uint64_t)s->matrix_input_descriptor + 0x38 >
              (uint64_t)s->ram_base + machine->ram_size ||
          s->matrix_input_presence_site >= s->primary_nor_size - 2 ||
          s->matrix_input_sense_site >= s->primary_nor_size - 2 ||
-         (s->matrix_input_loop &&
+         ((s->matrix_input_loop || s->matrix_input_kp_low5) &&
           s->matrix_input_contact_site >= s->primary_nor_size - 2) ||
          (s->board_status_input_enabled &&
           s->board_status_input_address >= MSM5XXX_POC_MSM_BASE + 0x72c &&
@@ -12927,7 +13051,8 @@ static void msm5xxx_poc_init(MachineState *machine)
          s->board_status_input_mask != (s->matrix_input_low5 ? 1 :
                                         s->matrix_input_loop ? 0x10 : 4) ||
          (s->matrix_input_low5 &&
-          s->board_status_input_descriptor != 0x01816618))) {
+          s->board_status_input_descriptor != 0x01816618 &&
+          s->board_status_input_descriptor != 0x0181661c))) {
         error_report("board-status-descriptor requires matching halfword "
                      "matrix and status GPIO class");
         exit(EXIT_FAILURE);
@@ -12950,6 +13075,28 @@ static void msm5xxx_poc_init(MachineState *machine)
          s->raw_nand_data_address != MSM5XXX_POC_RAW_NAND_MIDDLE_DATA_BASE)) {
         error_report("raw-nand-ready requires the middle NAND controller");
         exit(EXIT_FAILURE);
+    }
+    if (s->sd810_fold_irq_enabled) {
+        uint64_t ram_end = (uint64_t)s->ram_base + machine->ram_size;
+        if (!s->board_status_input_enabled ||
+            s->board_status_input_address != MSM5XXX_POC_MSM_BASE + 0x720 ||
+            s->board_status_input_mask != 1 ||
+            s->board_status_input_descriptor != 0x01816618 ||
+            !s->rex_irq_c80 || s->rex_irq_read_consume ||
+            s->rex_irq_status_address != 0x03000c80 ||
+            s->rex_irq_enable_address != 0x03000c94 ||
+            s->rex_irq_bank_count != 2 ||
+            s->sd810_fold_group < s->ram_base ||
+            (uint64_t)s->sd810_fold_group + 0x14 > ram_end ||
+            s->sd810_fold_vector < s->ram_base ||
+            (uint64_t)s->sd810_fold_vector + 4 > ram_end ||
+            s->sd810_fold_parent_slot < s->ram_base ||
+            (uint64_t)s->sd810_fold_parent_slot + 4 > ram_end ||
+            (s->sd810_fold_callback & ~1u) >= s->primary_nor_size ||
+            (s->sd810_fold_parent_handler & ~1u) >= s->primary_nor_size) {
+            error_report("sd810-fold-irq requires the matching GPIO and two-bank IRQ route");
+            exit(EXIT_FAILURE);
+        }
     }
     if (s->rex_irq_c80) {
         uint64_t ram_end = s->ram_base + machine->ram_size;
@@ -15609,7 +15756,8 @@ static void msm5xxx_poc_set_board_status_descriptor(Object *obj,
     uint64_t descriptor;
 
     if (s->matrix_input_gpio || s->matrix_input_row_mask ||
-        (s->matrix_input_low5 && s->matrix_input_descriptor != 0x01816618) ||
+        (s->matrix_input_low5 && s->matrix_input_descriptor != 0x01816618 &&
+         s->matrix_input_descriptor != 0x0181661c) ||
         qemu_strtou64(value, NULL, 16, &descriptor) || !descriptor ||
         descriptor > UINT32_MAX - 0x38 || descriptor & 3) {
         error_setg(errp, "board-status-descriptor requires aligned descriptor");
@@ -16048,7 +16196,8 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
 
     if (s->matrix_input_enabled ||
         (s->board_status_input_descriptor &&
-         s->board_status_input_descriptor != 0x01816618) ||
+         s->board_status_input_descriptor != 0x01816618 &&
+         s->board_status_input_descriptor != 0x0181661c) ||
         (fields != 3 && fields != 6) ||
         (fields == 3 && sscanf(value, "%x:%x:%x%c", &descriptor, &presence,
                                &sense, &trailing) != 3) ||
@@ -16085,6 +16234,43 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
         (1U << 27) | (1U << 23) | (1U << 15);
     s->matrix_input_host_enabled = true;
     s->matrix_input_enabled = true;
+}
+
+static char *msm5xxx_poc_get_matrix_kp_low5(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    (void)errp;
+    return s->matrix_input_kp_low5 ?
+        g_strdup_printf("%x:%x:%x:%x:%x", s->matrix_input_descriptor,
+                        s->matrix_input_presence_site, s->matrix_input_sense_site,
+                        s->matrix_input_contact_site, s->matrix_input_kp_contact2) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_matrix_kp_low5(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned descriptor, presence, sense, contact, contact2;
+    char trailing;
+    char base[64];
+
+    if (s->matrix_input_enabled ||
+        sscanf(value, "%x:%x:%x:%x:%x%c", &descriptor, &presence, &sense,
+               &contact, &contact2, &trailing) != 5 || !contact || !contact2 ||
+        ((contact | contact2) & 1) || contact == contact2 ||
+        contact == presence || contact == sense || contact2 == presence ||
+        contact2 == sense || s->board_status_input_enabled) {
+        error_setg(errp, "matrix-kp-low5 requires exclusive descriptor and read sites");
+        return;
+    }
+    snprintf(base, sizeof(base), "%x:%x:%x", descriptor, presence, sense);
+    msm5xxx_poc_set_matrix_low5(obj, base, errp);
+    if (!s->matrix_input_enabled) {
+        return;
+    }
+    s->matrix_input_kp_low5 = true;
+    s->matrix_input_contact_site = contact;
+    s->matrix_input_kp_contact2 = contact2;
 }
 
 static char *msm5xxx_poc_get_matrix_loop(Object *obj, Error **errp)
@@ -17738,6 +17924,41 @@ static void msm5xxx_poc_instance_init(Object *obj)
     msm5xxx_fingers_reset(&s->fingers);
 }
 
+static char *msm5xxx_poc_get_sd810_fold_irq(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    (void)errp;
+    return s->sd810_fold_irq_enabled ?
+        g_strdup_printf("%x:%x:%x:%x:%x", s->sd810_fold_group,
+                        s->sd810_fold_vector, s->sd810_fold_callback,
+                        s->sd810_fold_parent_slot, s->sd810_fold_parent_handler) :
+        g_strdup("");
+}
+
+static void msm5xxx_poc_set_sd810_fold_irq(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned group, vector, callback, slot, handler;
+    int consumed = -1;
+
+    if (s->sd810_fold_irq_enabled ||
+        sscanf(value, "%x:%x:%x:%x:%x%n", &group, &vector, &callback,
+               &slot, &handler, &consumed) != 5 || consumed < 0 ||
+        value[consumed] || !group || !vector || !callback || !slot ||
+        !handler || ((group | vector | slot) & 3) || !(callback & 1) ||
+        !(handler & 1) || group < 0x54 || slot != group - 0x54) {
+        error_setg(errp, "sd810-fold-irq requires GROUP:VECTOR:CALLBACK:SLOT:HANDLER");
+        return;
+    }
+    s->sd810_fold_group = group;
+    s->sd810_fold_vector = vector;
+    s->sd810_fold_callback = callback;
+    s->sd810_fold_parent_slot = slot;
+    s->sd810_fold_parent_handler = handler;
+    s->sd810_fold_irq_enabled = true;
+}
+
 static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -17997,6 +18218,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "board-status-descriptor",
         "Experimental live descriptor guard for halfword status GPIO");
+    object_class_property_add_str(oc, "sd810-fold-irq",
+                                  msm5xxx_poc_get_sd810_fold_irq,
+                                  msm5xxx_poc_set_sd810_fold_irq);
+    object_class_property_set_description(
+        oc, "sd810-fold-irq", "Source-qualified GPIO0 edge route");
     object_class_property_add_str(oc, "matrix-input",
                                   msm5xxx_poc_get_matrix_input,
                                   msm5xxx_poc_set_matrix_input);
@@ -18027,6 +18253,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_matrix_low5);
     object_class_property_set_description(
         oc, "matrix-low5", "Temporary descriptor-qualified low-five sense plane");
+    object_class_property_add_str(oc, "matrix-kp-low5",
+                                  msm5xxx_poc_get_matrix_kp_low5,
+                                  msm5xxx_poc_set_matrix_kp_low5);
+    object_class_property_set_description(
+        oc, "matrix-kp-low5", "KP descriptor-qualified low-five sense plane");
     object_class_property_add_str(oc, "matrix-halfword-loop",
                                   msm5xxx_poc_get_matrix_loop,
                                   msm5xxx_poc_set_matrix_loop);
