@@ -4316,6 +4316,15 @@ class Transport:
                     candidate.get("structural_evidence", {}).get("transport_class")
                     == "local-counter-direction-timing-v1"
                 )
+                if (candidate.get("structural_evidence", {}).get("transport_class")
+                        == "local-counter-literal-data-v1"):
+                    route = find_ma5_gpio_irq_candidate(detector_image, candidate)
+                    ma5_auto_irq = (
+                        route.get("status") == "candidate"
+                        and route.get("gpio", {}).get("pin") == 5
+                        and route.get("installation", {}).get("profile")
+                        == "conditional-install-direct-or-task-v1"
+                    )
                 self.config.detection_notes.append(
                     "QEMU temporary MA5 class: matched static readback producer; "
                     "1000 ns byte period and 48 kHz target are provisional; CLKI is "

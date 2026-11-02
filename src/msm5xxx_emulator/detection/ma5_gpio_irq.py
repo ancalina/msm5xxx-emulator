@@ -109,6 +109,11 @@ def _span(image: bytes, entry: int, role: str) -> dict:
                 dependencies.append([address, end - address + 1])
             pin_values[offset] = code[offset]
             code[offset] = 0
+        # The final state-object store has two observed word offsets.  They
+        # differ in one Thumb STR immediate bit; all other operands and the
+        # linked callback/registrar checks remain fixed.
+        if valid and role == 'install_conditional':
+            code[0x74] |= 1 << 7
         if valid and code == expected:
             return {'entry': entry, 'size': len(expected), 'calls': targets,
                     'literals': values, 'pins': pin_values, 'dependencies': dependencies}
@@ -120,6 +125,8 @@ def _scan(image: bytes, role: str) -> list[dict]:
     for encoded, calls, literals, pins in _SPANS[role]:
         code = bytes.fromhex(encoded)
         erased = set(literals) | set(pins)
+        if role == 'install_conditional':
+            erased.add(0x74)
         erased.update(position for offset in calls for position in range(offset, offset + 4))
         pattern = b''.join(b'.' if i in erased else re.escape(bytes([byte]))
                            for i, byte in enumerate(code))

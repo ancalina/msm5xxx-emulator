@@ -10,6 +10,30 @@ from corpus import FIRMWARE_ROOT
 ROOT = FIRMWARE_ROOT
 FIRMWARE = ROOT / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin'
 
+class SD810ConditionalInstall(unittest.TestCase):
+    def test_general_store_offset_and_route(self):
+        firmware = ROOT / 'LG-SD810-General.bin'
+        if not firmware.is_file():
+            self.skipTest('firmware corpus unavailable')
+        image = firmware.read_bytes()
+        install = candidate._span(image, 0xAB58, 'install_conditional')
+        self.assertEqual(install['pins'][0x28], 5)
+        self.assertEqual(install['pins'][0x44], 5)
+        alternate = bytearray(image)
+        alternate[0xAB58 + 0x74] ^= 1 << 7
+        self.assertEqual(candidate._span(alternate, 0xAB58, 'install_conditional')['size'],
+                         install['size'])
+        invalid = bytearray(image)
+        invalid[0xAB58 + 0x74] ^= 1 << 6
+        with self.assertRaises(candidate._Reject):
+            candidate._span(invalid, 0xAB58, 'install_conditional')
+        audio = find_ma5_readback_candidate(image)
+        route = candidate.find_ma5_gpio_irq_candidate(image, audio)
+        self.assertEqual(route['status'], 'candidate')
+        self.assertEqual(route['gpio']['pin'], 5)
+        self.assertEqual(route['installation']['profile'],
+                         'conditional-install-direct-or-task-v1')
+
 class NewParentClass(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
