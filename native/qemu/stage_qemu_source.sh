@@ -20,6 +20,12 @@ AUDIO_REQUEST_CORE="$ROOT/msm5xxx-audio-request.c"
 AUDIO_REQUEST_HEADER="$ROOT/msm5xxx-audio-request.h"
 MA2_CORE="$ROOT/msm5xxx-ma2-audio.c"
 MA2_HEADER="$ROOT/msm5xxx-ma2-audio.h"
+MA3_CORE="$ROOT/msm5xxx-ma3-audio.c"
+MA3_HEADER="$ROOT/msm5xxx-ma3-audio.h"
+MA3_RENDER_CORE="$ROOT/msm5xxx-ma3-render.c"
+MA3_RENDER_HEADER="$ROOT/msm5xxx-ma3-render.h"
+MA3_STREAM_CORE="$ROOT/msm5xxx-ma3-stream.c"
+MA3_STREAM_HEADER="$ROOT/msm5xxx-ma3-stream.h"
 AUDIO_SYNTH_CORE="$ROOT/msm5xxx-audio-synth.c"
 AUDIO_SYNTH_HEADER="$ROOT/msm5xxx-audio-synth.h"
 MA5_CORE="$ROOT/msm5xxx-ma5-audio.c"
@@ -73,6 +79,8 @@ check_sha256() {
 for file in "$ARCHIVE" "$PATCH" "$CFI02_PATCH" "$CFI01_SHARP_PCR_PATCH" "$DSOUND_PATCH" "$MACHINE" \
         "$AUDIO_REQUEST_CORE" "$AUDIO_REQUEST_HEADER" \
         "$MA2_CORE" "$MA2_HEADER" \
+        "$MA3_CORE" "$MA3_HEADER" "$MA3_RENDER_CORE" "$MA3_RENDER_HEADER" \
+        "$MA3_STREAM_CORE" "$MA3_STREAM_HEADER" \
         "$AUDIO_SYNTH_CORE" "$AUDIO_SYNTH_HEADER" \
         "$MA5_CORE" "$MA5_HEADER" "$MA5_GAIN_CORE" "$MA5_GAIN_HEADER" \
         "$MA5_WT_CORE" "$MA5_WT_HEADER" "$MA5_PCM_QUEUE_CORE" \
@@ -105,6 +113,12 @@ check_sha256 "$MSM5XXX_AUDIO_REQUEST_CORE_SHA256" "$AUDIO_REQUEST_CORE"
 check_sha256 "$MSM5XXX_MA2_CORE_SHA256" "$MA2_CORE"
 check_sha256 "$MSM5XXX_AUDIO_REQUEST_HEADER_SHA256" "$AUDIO_REQUEST_HEADER"
 check_sha256 "$MSM5XXX_MA2_HEADER_SHA256" "$MA2_HEADER"
+check_sha256 "$MSM5XXX_MA3_CORE_SHA256" "$MA3_CORE"
+check_sha256 "$MSM5XXX_MA3_HEADER_SHA256" "$MA3_HEADER"
+check_sha256 "$MSM5XXX_MA3_RENDER_CORE_SHA256" "$MA3_RENDER_CORE"
+check_sha256 "$MSM5XXX_MA3_RENDER_HEADER_SHA256" "$MA3_RENDER_HEADER"
+check_sha256 "$MSM5XXX_MA3_STREAM_CORE_SHA256" "$MA3_STREAM_CORE"
+check_sha256 "$MSM5XXX_MA3_STREAM_HEADER_SHA256" "$MA3_STREAM_HEADER"
 check_sha256 "$MSM5XXX_AUDIO_SYNTH_CORE_SHA256" "$AUDIO_SYNTH_CORE"
 check_sha256 "$MSM5XXX_AUDIO_SYNTH_HEADER_SHA256" "$AUDIO_SYNTH_HEADER"
 check_sha256 "$MSM5XXX_MA5_CORE_SHA256" "$MA5_CORE"
@@ -156,6 +170,12 @@ cp "$AUDIO_REQUEST_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 cp "$MA2_CORE" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
 cp "$AUDIO_REQUEST_HEADER" "$OUTPUT/hw/arm/msm5xxx-audio-request.h"
 cp "$MA2_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.h"
+cp "$MA3_CORE" "$OUTPUT/hw/arm/msm5xxx-ma3-audio.c"
+cp "$MA3_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma3-audio.h"
+cp "$MA3_RENDER_CORE" "$OUTPUT/hw/arm/msm5xxx-ma3-render.c"
+cp "$MA3_RENDER_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma3-render.h"
+cp "$MA3_STREAM_CORE" "$OUTPUT/hw/arm/msm5xxx-ma3-stream.c"
+cp "$MA3_STREAM_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma3-stream.h"
 cp "$AUDIO_SYNTH_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-synth.c"
 cp "$AUDIO_SYNTH_HEADER" "$OUTPUT/hw/arm/msm5xxx-audio-synth.h"
 cp "$MA5_CORE" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.c"
@@ -191,14 +211,20 @@ cp "$TONE_HEADER" "$OUTPUT/hw/arm/msm5xxx-tone.h"
     cat "$OUTPUT/hw/arm/meson.build"
 } > "$OUTPUT/hw/arm/meson.build.msm5xxx"
 mv "$OUTPUT/hw/arm/meson.build.msm5xxx" "$OUTPUT/hw/arm/meson.build"
-printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
+printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma3-audio.c', 'msm5xxx-ma3-render.c', 'msm5xxx-ma3-stream.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
 
-test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
+test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma3-audio.c', 'msm5xxx-ma3-render.c', 'msm5xxx-ma3-stream.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
 cmp "$MACHINE" "$OUTPUT/hw/arm/msm5xxx-poc.c"
 cmp "$AUDIO_REQUEST_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 cmp "$MA2_CORE" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
 cmp "$AUDIO_REQUEST_HEADER" "$OUTPUT/hw/arm/msm5xxx-audio-request.h"
 cmp "$MA2_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.h"
+cmp "$MA3_CORE" "$OUTPUT/hw/arm/msm5xxx-ma3-audio.c"
+cmp "$MA3_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma3-audio.h"
+cmp "$MA3_RENDER_CORE" "$OUTPUT/hw/arm/msm5xxx-ma3-render.c"
+cmp "$MA3_RENDER_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma3-render.h"
+cmp "$MA3_STREAM_CORE" "$OUTPUT/hw/arm/msm5xxx-ma3-stream.c"
+cmp "$MA3_STREAM_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma3-stream.h"
 cmp "$AUDIO_SYNTH_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-synth.c"
 cmp "$AUDIO_SYNTH_HEADER" "$OUTPUT/hw/arm/msm5xxx-audio-synth.h"
 cmp "$MA5_CORE" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.c"
@@ -234,6 +260,12 @@ check_sha256 "$MSM5XXX_AUDIO_REQUEST_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-
 check_sha256 "$MSM5XXX_MA2_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
 check_sha256 "$MSM5XXX_AUDIO_REQUEST_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-request.h"
 check_sha256 "$MSM5XXX_MA2_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.h"
+check_sha256 "$MSM5XXX_MA3_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma3-audio.c"
+check_sha256 "$MSM5XXX_MA3_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma3-audio.h"
+check_sha256 "$MSM5XXX_MA3_RENDER_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma3-render.c"
+check_sha256 "$MSM5XXX_MA3_RENDER_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma3-render.h"
+check_sha256 "$MSM5XXX_MA3_STREAM_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma3-stream.c"
+check_sha256 "$MSM5XXX_MA3_STREAM_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma3-stream.h"
 check_sha256 "$MSM5XXX_AUDIO_SYNTH_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-synth.c"
 check_sha256 "$MSM5XXX_AUDIO_SYNTH_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-synth.h"
 check_sha256 "$MSM5XXX_MA5_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma5-audio.c"
@@ -280,6 +312,12 @@ MSM5XXX_AUDIO_REQUEST_CORE_SHA256=$MSM5XXX_AUDIO_REQUEST_CORE_SHA256
 MSM5XXX_MA2_CORE_SHA256=$MSM5XXX_MA2_CORE_SHA256
 MSM5XXX_AUDIO_REQUEST_HEADER_SHA256=$MSM5XXX_AUDIO_REQUEST_HEADER_SHA256
 MSM5XXX_MA2_HEADER_SHA256=$MSM5XXX_MA2_HEADER_SHA256
+MSM5XXX_MA3_CORE_SHA256=$MSM5XXX_MA3_CORE_SHA256
+MSM5XXX_MA3_HEADER_SHA256=$MSM5XXX_MA3_HEADER_SHA256
+MSM5XXX_MA3_RENDER_CORE_SHA256=$MSM5XXX_MA3_RENDER_CORE_SHA256
+MSM5XXX_MA3_RENDER_HEADER_SHA256=$MSM5XXX_MA3_RENDER_HEADER_SHA256
+MSM5XXX_MA3_STREAM_CORE_SHA256=$MSM5XXX_MA3_STREAM_CORE_SHA256
+MSM5XXX_MA3_STREAM_HEADER_SHA256=$MSM5XXX_MA3_STREAM_HEADER_SHA256
 MSM5XXX_AUDIO_SYNTH_CORE_SHA256=$MSM5XXX_AUDIO_SYNTH_CORE_SHA256
 MSM5XXX_AUDIO_SYNTH_HEADER_SHA256=$MSM5XXX_AUDIO_SYNTH_HEADER_SHA256
 MSM5XXX_MA5_CORE_SHA256=$MSM5XXX_MA5_CORE_SHA256

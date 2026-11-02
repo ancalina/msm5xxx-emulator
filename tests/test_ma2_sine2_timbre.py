@@ -166,7 +166,8 @@ int main(void) {
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
                             '-fsanitize=undefined', '-fno-sanitize-recover=all',
                             '-I', str(CORE), str(harness),
-                            str(CORE / 'msm5xxx-audio-synth.c'), '-lm', '-o', str(binary)], check=True)
+                            str(CORE / 'msm5xxx-audio-synth.c'),
+                            str(CORE / 'msm5xxx-ma5-waveform.c'), '-lm', '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
     def test_prepared_decay_threshold_boundaries(self):
@@ -254,7 +255,9 @@ int main(void) {
             harness.write_text(code)
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
                             '-fsanitize=undefined', '-fno-sanitize-recover=all',
-                            '-I', str(CORE), str(harness), '-o', str(binary)], check=True)
+                            '-I', str(CORE), str(harness),
+                            str(CORE / 'msm5xxx-ma5-waveform.c'), '-lm',
+                            '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
 

@@ -58,6 +58,9 @@
 #include "msm5xxx-ma5-pcm-output.h"
 
 #include "msm5xxx-ma2-audio.h"
+#include "msm5xxx-ma3-audio.h"
+#include "msm5xxx-ma3-render.h"
+#include "msm5xxx-ma3-stream.h"
 #include "msm5xxx-audio-synth.h"
 #include "msm5xxx-audio-request.h"
 #include "msm5xxx-tone.h"
@@ -96,7 +99,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxx24LCxxState, MSM5XXX_24LCXX)
 #define MSM5XXX_POC_LCD_SIZE 0x1000
 #define MSM5XXX_POC_LCD_PORTS 4
 #define MSM5XXX_POC_AUDIO_MAX_PORTS 256
-#define MSM5XXX_POC_AUDIO_MAX_SITES 64
+#define MSM5XXX_POC_AUDIO_MAX_SITES 192
 #define MSM5XXX_POC_LCD_TRACE_BASE 0x10001000
 #define MSM5XXX_POC_LCD_TRACE_RECORD_SIZE 12
 #define MSM5XXX_POC_LCD_TRACE_CAPACITY 65536
@@ -476,6 +479,8 @@ struct MSM5xxxPOCMachineState {
     uint64_t lcd029_reads, lcd029_writes;
 
     MemoryRegion audio_opaque;
+    MemoryRegion audio_ram_overlap;
+    bool audio_ram_overlap_enabled;
     MemoryRegion lcd[MSM5XXX_POC_LCD_PORTS];
     MemoryRegion lcd_trace;
     MemoryRegion ready_status;
@@ -684,6 +689,7 @@ struct MSM5xxxPOCMachineState {
     bool matrix_input_enabled;
     uint32_t matrix_input_address;
     uint32_t matrix_input_sense_site;
+    uint32_t matrix_input_sense_site2;
     uint8_t matrix_input_no_key;
     uint8_t matrix_input_reset;
     uint8_t matrix_input_backing;
@@ -718,6 +724,7 @@ struct MSM5xxxPOCMachineState {
     QEMUTimer *tone_timer;
     uint64_t tone_register_writes;
     bool audio_ma2;
+    bool audio_ma3;
     bool audio_ma5;
     bool audio_shared_lcd;
     uint64_t ma5_byte_ns;
@@ -741,6 +748,12 @@ struct MSM5xxxPOCMachineState {
     uint32_t ma5_commit_traces;
     uint32_t ma5_irq_gate_status, ma5_irq_assertions, ma5_gpio_acks, ma5_parent_acks, ma5_chip_reads;
     MemoryRegion ma5_trigger_region;
+    uint32_t ma3_gpio_irq_route[11];
+    bool ma3_gpio_irq_configured, ma3_gpio_irq_qualified, ma3_gpio_irq_level;
+    bool ma3_gpio_irq_callback_seen;
+    uint16_t ma3_gpio_pending[3], ma3_parent_pending;
+    uint32_t ma3_gpio_irq_gate_status, ma3_gpio_irq_assertions;
+    uint32_t ma3_gpio_acks, ma3_parent_acks;
     bool audio_pcm_enabled;
     bool experimental_audio_readback;
     bool audio_readback_rejection_reported;
@@ -796,6 +809,12 @@ struct MSM5xxxPOCMachineState {
     bool audio_output_started;
     MSM5xxxAudioSynth audio_synth;
     MSM5xxxMA2Audio ma2_audio;
+    MSM5xxxMA3Audio ma3_audio;
+    MSM5xxxMA3Renderer ma3_renderer;
+    MSM5xxxMA3StreamEngine ma3_stream;
+    uint64_t ma3_mix_origin;
+    uint32_t ma3_bus_log_count;
+    QEMUTimer *ma3_audio_timer;
     QEMUTimer *ma2_audio_timer;
     QEMUTimer *ma5_audio_timer;
     uint64_t ma2_audio_events;
@@ -3836,6 +3855,13 @@ enum {
     MA5R_OVERRIDE, MA5R_CONTEXT, MA5R_COUNT
 };
 
+enum {
+    MA3G_PIN, MA3G_PARENT_INDEX, MA3G_TABLE, MA3G_CALLBACKS,
+    MA3G_PARENT_TABLE, MA3G_GPIO_DISPATCH, MA3G_PARENT_DISPATCH,
+    MA3G_CALLBACK, MA3G_PARENT_MASK, MA3G_STATUS, MA3G_ENABLE,
+    MA3G_COUNT
+};
+
 static bool msm5xxx_poc_ma5_irq_ram(MSM5xxxPOCMachineState *s,
                                     uint32_t address, unsigned size,
                                     unsigned alignment)
@@ -3855,6 +3881,322 @@ static uint16_t msm5xxx_poc_ma5_irq_guest(MSM5xxxPOCMachineState *s,
 
     cpu_physical_memory_read(address, bytes, size);
     return bytes[0] | (uint16_t)bytes[1] << 8;
+}
+
+static bool msm5xxx_poc_ma3_gpio_irq_ram(MSM5xxxPOCMachineState *s,
+                                         uint32_t address, unsigned size,
+                                         unsigned alignment)
+{
+    uint64_t end = (uint64_t)s->ram_base + MACHINE(s)->ram_size;
+
+    return !(address % alignment) && address >= s->ram_base &&
+           (uint64_t)address + size <= end;
+}
+
+static uint16_t msm5xxx_poc_ma3_gpio_irq_guest16(uint32_t address)
+{
+    uint8_t bytes[2] = {0};
+
+    cpu_physical_memory_read(address, bytes, sizeof(bytes));
+    return bytes[0] | (uint16_t)bytes[1] << 8;
+}
+
+static bool msm5xxx_poc_ma3_gpio_irq_route_values_valid(const uint32_t *r)
+{
+    static const uint32_t fixed[MA3G_COUNT] = {
+        [MA3G_PIN] = 23,
+        [MA3G_PARENT_INDEX] = 29,
+        [MA3G_TABLE] = 0x0100b914,
+        [MA3G_CALLBACKS] = 0x0129e278,
+        [MA3G_PARENT_TABLE] = 0x0100b584,
+        [MA3G_GPIO_DISPATCH] = 0x00161f69,
+        [MA3G_PARENT_DISPATCH] = 0x00161bfc,
+        [MA3G_CALLBACK] = 0x0009bb71,
+        [MA3G_PARENT_MASK] = 0x2000,
+        [MA3G_STATUS] = 0x03000c84,
+        [MA3G_ENABLE] = 0x03000c98,
+    };
+
+    return r && !memcmp(r, fixed, sizeof(fixed));
+}
+
+static bool msm5xxx_poc_ma3_gpio_irq_rex_profile_valid(
+    bool c80, bool copied, uint32_t status, uint32_t enable, uint16_t mask,
+    uint32_t vector, uint32_t wrapper, uint32_t handler_slot,
+    uint32_t handler, uint32_t handler_size, uint32_t callback_slot,
+    uint32_t callback, uint8_t banks)
+{
+    return c80 && !copied && status == 0x03000c80 &&
+           enable == 0x03000c94 && mask == 0x0200 &&
+           vector == 0x01000000 && wrapper == 0x001d3954 &&
+           handler_slot == 0x01293f0c && handler == 0x00161bfc &&
+           handler_size == 0x188 && callback_slot == 0x0100b8e0 &&
+           callback == 0x000b7898 && banks == 2;
+}
+
+static bool msm5xxx_poc_ma3_gpio_irq_latch(bool chip_level, bool qualified,
+                                            bool *callback_seen,
+                                            uint16_t *gpio_pending,
+                                            uint16_t *parent_pending,
+                                            uint16_t *rex_pending,
+                                            uint16_t gpio_enable)
+{
+    if (!chip_level) {
+        *callback_seen = false;
+        return false;
+    }
+    if (*callback_seen || !qualified || !(gpio_enable & 0x0080)) {
+        return false;
+    }
+    *callback_seen = true;
+    *gpio_pending |= 0x0080;
+    *parent_pending |= 0x2000;
+    *rex_pending |= 0x2000;
+    return true;
+}
+
+static bool msm5xxx_poc_ma3_gpio_irq_w1c(uint16_t *pending, uint16_t mask)
+{
+    bool acknowledged = (*pending & mask) != 0;
+
+    *pending &= ~mask;
+    return acknowledged;
+}
+
+/* Validates the one firmware-proven GPIO parent route used by this MA3 path. */
+static unsigned msm5xxx_poc_ma3_gpio_irq_gate(MSM5xxxPOCMachineState *s)
+{
+    const uint32_t *r = s->ma3_gpio_irq_route;
+    static const uint32_t fixed[MA3G_COUNT] = {
+        [MA3G_PIN] = 23,
+        [MA3G_PARENT_INDEX] = 29,
+        [MA3G_TABLE] = 0x0100b914,
+        [MA3G_CALLBACKS] = 0x0129e278,
+        [MA3G_PARENT_TABLE] = 0x0100b584,
+        [MA3G_GPIO_DISPATCH] = 0x00161f69,
+        [MA3G_PARENT_DISPATCH] = 0x00161bfc,
+        [MA3G_CALLBACK] = 0x0009bb71,
+        [MA3G_PARENT_MASK] = 0x2000,
+        [MA3G_STATUS] = 0x03000c84,
+        [MA3G_ENABLE] = 0x03000c98,
+    };
+    static const uint32_t bank1[4] = {
+        0x03000c8c, 0x03000ca8, 0x03000cb4, 0x03000750,
+    };
+    uint32_t descriptor = r[MA3G_PARENT_TABLE] +
+                          r[MA3G_PARENT_INDEX] * 28;
+    uint32_t row = r[MA3G_TABLE] + 24;
+    uint16_t bit = 0x0080;
+    uint16_t cache_enable, cache_polarity, cache_trigger;
+    uint16_t hw_enable, hw_polarity, hw_trigger;
+    uint32_t callback;
+    uint32_t pc = 0;
+    bool in_callback = false;
+
+    if (!s->ma3_gpio_irq_configured || !s->audio_ma3 ||
+        !s->audio_sites_enabled ||
+        !s->rex_irq_enabled ||
+        !s->rex_irq_route_active || s->rex_irq_read_consume ||
+        !msm5xxx_poc_ma3_gpio_irq_rex_profile_valid(
+            s->rex_irq_c80, s->rex_irq_copied,
+            s->rex_irq_status_address, s->rex_irq_enable_address,
+            s->rex_irq_mask, s->rex_irq_vector_target,
+            s->rex_irq_wrapper_address, s->rex_irq_handler_slot,
+            s->rex_irq_handler_address, s->rex_irq_handler_size,
+            s->rex_irq_callback_slot, s->rex_irq_callback_address,
+            s->rex_irq_bank_count) ||
+        !msm5xxx_poc_ma3_gpio_irq_route_values_valid(r) ||
+        s->rex_irq_handler_slot == 0) {
+        return 1;
+    }
+    if (!msm5xxx_poc_ma3_gpio_irq_ram(s, r[MA3G_TABLE], 72, 4) ||
+        !msm5xxx_poc_ma3_gpio_irq_ram(s, r[MA3G_CALLBACKS], 48 * 4, 4) ||
+        !msm5xxx_poc_ma3_gpio_irq_ram(s, r[MA3G_PARENT_TABLE], 31 * 28, 4)) {
+        return 2;
+    }
+    /* The relocated copy contains both descriptor tables and the bank rows. */
+    if (r[MA3G_TABLE] < s->rex_irq_vector_target ||
+        r[MA3G_TABLE] + 72 > s->rex_irq_vector_target + 0x29538 ||
+        r[MA3G_PARENT_TABLE] + 31 * 28 >
+            s->rex_irq_vector_target + 0x29538) {
+        return 2;
+    }
+    {
+        uint32_t row29[7];
+        cpu_physical_memory_read(descriptor, row29, sizeof(row29));
+        for (unsigned i = 0; i < 7; i++) {
+            row29[i] = le32_to_cpu(row29[i]);
+        }
+        if (row29[0] != 0x03000c84 || row29[1] != 0x03000c98 ||
+            row29[2] != 0x2000 || row29[3] != 0x0100b57a ||
+            row29[4] != 0x0100b580 || row29[5] != fixed[MA3G_GPIO_DISPATCH] ||
+            row29[6] != 0) {
+            return 3;
+        }
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        if (msm5xxx_poc_guest_u32(row + 4 * i) != bank1[i]) {
+            return 4;
+        }
+    }
+    if (msm5xxx_poc_guest_u32(s->rex_irq_handler_slot) !=
+            (fixed[MA3G_PARENT_DISPATCH] | 1)) {
+        return 5;
+    }
+    callback = msm5xxx_poc_guest_u32(r[MA3G_CALLBACKS] + 23 * 4);
+    if (qemu_in_vcpu_thread() && current_cpu == CPU(s->cpu)) {
+        CPUClass *cc = CPU_GET_CLASS(current_cpu);
+        pc = cc->get_pc(current_cpu) & ~1U;
+    }
+    in_callback = pc >= 0x0009bb70 && pc < 0x0009bb92;
+    if (callback != (fixed[MA3G_CALLBACK] | 1) &&
+        !(callback == 0 && in_callback)) {
+        return 6;
+    }
+    cache_enable = msm5xxx_poc_ma3_gpio_irq_guest16(row + 16);
+    cache_polarity = msm5xxx_poc_ma3_gpio_irq_guest16(row + 18);
+    cache_trigger = msm5xxx_poc_ma3_gpio_irq_guest16(row + 20);
+    hw_enable = msm5xxx_poc_backing_read(s->rex_irq_backing, 0x28, 2);
+    hw_polarity = msm5xxx_poc_backing_read(s->rex_irq_backing, 0x34, 2);
+    hw_trigger = msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                          0x750, 2);
+    if (!(cache_enable & bit) || !(hw_enable & bit) ||
+        ((cache_enable ^ hw_enable) & bit) ||
+        (cache_polarity & bit) || (hw_polarity & bit) ||
+        ((cache_trigger ^ hw_trigger) & bit)) {
+        return 7;
+    }
+    if (!(msm5xxx_poc_ma3_gpio_irq_guest16(0x0100b57a) & 0x2000) ||
+        !(msm5xxx_poc_ma3_gpio_irq_guest16(0x0100b580) & 0x2000) ||
+        !(msm5xxx_poc_backing_read(s->rex_irq_backing, 0x18, 2) & 0x2000)) {
+        return 8;
+    }
+    return 0;
+}
+
+static void msm5xxx_poc_ma3_gpio_irq_update(MSM5xxxPOCMachineState *s)
+{
+    unsigned status;
+    bool parent;
+    bool chip_level;
+
+    if (!s->ma3_gpio_irq_configured) {
+        return;
+    }
+    status = msm5xxx_poc_ma3_gpio_irq_gate(s);
+    s->ma3_gpio_irq_qualified = status == 0;
+    if (status != s->ma3_gpio_irq_gate_status) {
+        qemu_log_mask(LOG_GUEST_ERROR, "MA3 GPIO IRQ gate=%u\n", status);
+        s->ma3_gpio_irq_gate_status = status;
+    }
+    chip_level = msm5xxx_ma3_irq_line_level(&s->ma3_audio);
+    msm5xxx_poc_ma3_gpio_irq_latch(
+        chip_level, s->ma3_gpio_irq_qualified,
+        &s->ma3_gpio_irq_callback_seen, &s->ma3_gpio_pending[1],
+        &s->ma3_parent_pending, &s->rex_irq_pending[1],
+        msm5xxx_poc_backing_read(s->rex_irq_backing, 0x28, 2));
+    parent = s->ma3_gpio_irq_qualified && s->rex_irq_route_active &&
+             (s->ma3_parent_pending & 0x2000) &&
+             (msm5xxx_poc_backing_read(s->rex_irq_backing, 0x18, 2) & 0x2000);
+    if (parent && !s->ma3_gpio_irq_level) {
+        s->ma3_gpio_irq_assertions++;
+        if (s->ma3_gpio_irq_assertions <= 16) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "MA3 GPIO IRQ parent assert=%u pin=23 mask=0x2000\n",
+                          s->ma3_gpio_irq_assertions);
+        }
+    }
+    s->ma3_gpio_irq_level = parent;
+    msm5xxx_poc_rex_irq_update(s);
+}
+
+static uint64_t msm5xxx_poc_ma3_gpio_irq_read(MSM5xxxPOCMachineState *s,
+                                               hwaddr offset, unsigned size)
+{
+    uint64_t result = msm5xxx_poc_backing_read(s->rex_irq_backing, offset, size);
+
+    msm5xxx_poc_ma3_gpio_irq_update(s);
+    for (unsigned i = 0; i < size; i++) {
+        hwaddr byte = offset + i;
+        unsigned bank;
+        uint16_t pending;
+        hwaddr base;
+        unsigned shift;
+
+        if (byte < 2 || (byte >= 4 && byte < 6)) {
+            bank = byte / 4;
+            pending = s->rex_irq_pending[bank];
+            base = bank * 4;
+            shift = (byte - base) * 8;
+        } else {
+            for (bank = 0; bank < 3; bank++) {
+                base = 8 + bank * 4;
+                if (byte >= base && byte < base + 2) {
+                    break;
+                }
+            }
+            if (bank == 3) {
+                continue;
+            }
+            pending = s->ma3_gpio_pending[bank];
+            shift = (byte - base) * 8;
+        }
+        result = (result & ~(UINT64_C(255) << (i * 8))) |
+                 (uint64_t)((pending >> shift) & 255) << (i * 8);
+    }
+    return result;
+}
+
+static void msm5xxx_poc_ma3_gpio_irq_write(MSM5xxxPOCMachineState *s,
+                                            hwaddr offset, uint64_t value,
+                                            unsigned size)
+{
+    uint32_t gpio_acks = s->ma3_gpio_acks;
+    uint32_t parent_acks = s->ma3_parent_acks;
+
+    for (unsigned i = 0; i < size; i++) {
+        hwaddr byte = offset + i;
+        unsigned incoming = (value >> (i * 8)) & 255;
+        unsigned bank;
+        hwaddr base;
+        unsigned shift;
+
+        if (byte < 2 || (byte >= 4 && byte < 6)) {
+            bank = byte / 4;
+            base = bank * 4;
+            shift = (byte - base) * 8;
+            uint16_t ack = incoming << shift;
+            if (msm5xxx_poc_ma3_gpio_irq_w1c(&s->rex_irq_pending[bank], ack) &&
+                bank == 1 && (ack & 0x2000) &&
+                msm5xxx_poc_ma3_gpio_irq_w1c(&s->ma3_parent_pending, ack)) {
+                s->ma3_parent_acks++;
+            }
+            continue;
+        }
+        for (bank = 0; bank < 3; bank++) {
+            base = 8 + bank * 4;
+            if (byte >= base && byte < base + 2) {
+                break;
+            }
+        }
+        if (bank < 3) {
+            shift = (byte - base) * 8;
+            uint16_t ack = incoming << shift;
+            if (msm5xxx_poc_ma3_gpio_irq_w1c(&s->ma3_gpio_pending[bank], ack)) {
+                s->ma3_gpio_acks++;
+            }
+        } else {
+            s->rex_irq_backing[byte] = incoming;
+        }
+    }
+    if ((gpio_acks != s->ma3_gpio_acks || parent_acks != s->ma3_parent_acks) &&
+        s->ma3_gpio_acks + s->ma3_parent_acks <= 32) {
+        qemu_log_mask(LOG_GUEST_ERROR, "MA3 GPIO IRQ ACK gpio=%u parent=%u\n",
+                      s->ma3_gpio_acks, s->ma3_parent_acks);
+    }
+    msm5xxx_poc_ma3_gpio_irq_update(s);
+    msm5xxx_poc_rex_irq_update(s);
+    msm5xxx_poc_rex_irq_schedule(s);
 }
 
 /* Returns a diagnostic gate, not a claim that auxiliary software is modeled. */
@@ -4498,6 +4840,8 @@ static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
     }
     if (pc != s->matrix_input_presence_site &&
         pc != s->matrix_input_sense_site &&
+        (!s->matrix_input_low5 || !s->matrix_input_sense_site2 ||
+         pc != s->matrix_input_sense_site2) &&
         (!s->matrix_input_loop || pc != s->matrix_input_contact_site)) {
         return backing;
     }
@@ -4607,6 +4951,8 @@ static bool msm5xxx_poc_matrix_gpio_conflict(MSM5xxxPOCMachineState *s)
     if (s->primary_nor_size < 2 ||
         s->matrix_input_presence_site > s->primary_nor_size - 2 ||
         s->matrix_input_sense_site > s->primary_nor_size - 2 ||
+        (s->matrix_input_sense_site2 &&
+         s->matrix_input_sense_site2 > s->primary_nor_size - 2) ||
         s->board_status_input_descriptor) {
         return true;
     }
@@ -5653,6 +5999,138 @@ static bool msm5xxx_poc_audio_site_owned(const MSM5xxxPOCMachineState *s,
     return false;
 }
 
+static bool msm5xxx_poc_ma3_stream_active(MSM5xxxPOCMachineState *s)
+{
+    for (unsigned i = 0; i < MSM5XXX_MA3_STREAM_COUNT; i++) {
+        if (s->ma3_stream.voice[i].active) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The callback runs with the synth lock held, after FM frames have been
+ * generated. Mix only frames still present in the output ring. */
+static bool msm5xxx_poc_ma3_stream_mix(void *opaque, uint64_t first,
+                                       const int16_t *pcm, size_t frames)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    MSM5xxxAudioSynth *synth = &s->audio_synth;
+    for (size_t i = 0; i < frames; i++) {
+        uint64_t absolute = first + i;
+        if (absolute < s->ma3_mix_origin) {
+            continue;
+        }
+        uint64_t frame = absolute - s->ma3_mix_origin;
+        if (frame < synth->ring_start_frame ||
+            frame - synth->ring_start_frame >= synth->ring_count) {
+            continue;
+        }
+        size_t pos = (synth->ring_read + frame - synth->ring_start_frame) %
+                     MSM5XXX_AUDIO_MAX_FRAMES;
+        for (unsigned channel = 0; channel < 2; channel++) {
+            int32_t sample = synth->ring[pos][channel] + pcm[2 * i + channel];
+            synth->ring[pos][channel] = MAX(INT16_MIN, MIN(INT16_MAX, sample));
+        }
+    }
+    return true;
+}
+
+static void msm5xxx_poc_ma3_pcm_advance(MSM5xxxPOCMachineState *s, uint64_t now)
+{
+    MSM5xxxAudioSynth *synth = &s->audio_synth;
+    uint64_t absolute;
+    if (!s->audio_pcm_enabled || !s->audio_synth_lock_initialized) {
+        s->ma3_stream.emit = NULL;
+        msm5xxx_ma3_stream_advance(&s->ma3_stream, &s->ma3_audio, now);
+        return;
+    }
+    qemu_mutex_lock(&s->audio_synth_lock);
+    synth->external_active = msm5xxx_poc_ma3_stream_active(s);
+    msm5xxx_audio_synth_advance(synth, now);
+    absolute = (uint64_t)(((__uint128_t)now * MSM5XXX_AUDIO_SAMPLE_RATE) /
+                          UINT64_C(1000000000));
+    s->ma3_mix_origin = absolute >= synth->generated_frame ?
+                        absolute - synth->generated_frame : 0;
+    msm5xxx_ma3_stream_advance(&s->ma3_stream, &s->ma3_audio, now);
+    qemu_mutex_unlock(&s->audio_synth_lock);
+}
+
+static void msm5xxx_poc_ma3_operation(MSM5xxxPOCMachineState *s,
+                                      const MSM5xxxMA3Operation *op)
+{
+    qemu_log_mask(LOG_UNIMP, "MA3 register %03x=%02x time=%" PRIu64 "\n",
+                  op->address, op->value, op->timestamp_ns);
+    if (s->audio_pcm_enabled && s->audio_synth_lock_initialized) {
+        qemu_mutex_lock(&s->audio_synth_lock);
+        msm5xxx_ma3_renderer_operation(&s->ma3_renderer, &s->ma3_audio,
+                                       op, &s->audio_synth);
+        msm5xxx_ma3_stream_operation(&s->ma3_stream, &s->ma3_audio, op);
+        qemu_mutex_unlock(&s->audio_synth_lock);
+    } else {
+        msm5xxx_ma3_stream_operation(&s->ma3_stream, &s->ma3_audio, op);
+    }
+}
+
+static void msm5xxx_poc_ma3_audio_tick(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    MSM5xxxMA3Operation op;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), deadline;
+    unsigned budget = MSM5XXX_MA3_FIFO_CAPACITY;
+
+    while (budget-- && msm5xxx_ma3_next_deadline(&s->ma3_audio, &deadline) &&
+           deadline <= now) {
+        uint64_t step = MAX(deadline, s->ma3_audio.now_ns);
+        msm5xxx_poc_ma3_pcm_advance(s, step);
+        if (!msm5xxx_ma3_advance(&s->ma3_audio, step, &op)) {
+            break;
+        }
+        while (msm5xxx_ma3_pop_operation(&s->ma3_audio, &op)) {
+            msm5xxx_poc_ma3_operation(s, &op);
+        }
+    }
+    msm5xxx_poc_ma3_pcm_advance(s, now);
+    msm5xxx_ma3_advance_time(&s->ma3_audio, now);
+    msm5xxx_poc_ma3_gpio_irq_update(s);
+    deadline = UINT64_MAX;
+    msm5xxx_ma3_next_deadline(&s->ma3_audio, &deadline);
+    {
+        uint64_t timer_deadline;
+        if (msm5xxx_ma3_next_timer_deadline(&s->ma3_audio, &timer_deadline)) {
+            deadline = MIN(deadline, timer_deadline);
+        }
+    }
+    if (msm5xxx_poc_ma3_stream_active(s)) {
+        deadline = MIN(deadline, now + 10000000u);
+    }
+    if (s->audio_pcm_enabled && s->audio_synth_lock_initialized) {
+        qemu_mutex_lock(&s->audio_synth_lock);
+        if (!s->audio_output_started &&
+            s->audio_synth.ring_count >= MSM5XXX_AUDIO_TARGET_FRAMES) {
+            if (s->audio_stream_chardev) {
+                s->audio_output_started = true;
+            } else if (s->audio_voice) {
+                s->audio_output_started = true;
+                AUD_set_active_out(s->audio_voice, true);
+            }
+        }
+        if (msm5xxx_audio_synth_active(&s->audio_synth) ||
+            msm5xxx_poc_ma3_stream_active(s) ||
+            (!s->audio_output_started && s->audio_synth.ring_count) ||
+            (s->audio_output_started && s->audio_stream_chardev)) {
+            deadline = MIN(deadline, now + 10000000u);
+        }
+        qemu_mutex_unlock(&s->audio_synth_lock);
+        if (s->audio_stream_chardev && s->audio_output_started) {
+            msm5xxx_poc_audio_pcm_flush(s);
+        }
+    }
+    if (deadline != UINT64_MAX) {
+        timer_mod_ns(s->ma3_audio_timer, MAX(now + 1, deadline));
+    }
+}
+
 static MemTxResult msm5xxx_poc_audio_opaque_read(
     void *opaque, hwaddr offset, uint64_t *value, unsigned size,
     MemTxAttrs attrs)
@@ -5675,7 +6153,7 @@ static MemTxResult msm5xxx_poc_audio_opaque_read(
     }
     cc = CPU_GET_CLASS(cpu);
     pc = cc->get_pc(cpu) & ~1U;
-    if (s->ma5_byte_ns && !msm5xxx_poc_mmio_access_pc(s, &pc)) {
+    if ((s->ma5_byte_ns || s->audio_ma3) && !msm5xxx_poc_mmio_access_pc(s, &pc)) {
         if (!s->audio_readback_rejection_reported) {
             warn_report("experimental MA5 precise access PC unavailable");
             s->audio_readback_rejection_reported = true;
@@ -5690,6 +6168,22 @@ static MemTxResult msm5xxx_poc_audio_opaque_read(
             s->audio_readback_rejection_reported = true;
         }
         return MEMTX_ERROR;
+    }
+    if (s->audio_ma3) {
+        uint8_t result = 0;
+        bool ok;
+        msm5xxx_poc_ma3_audio_tick(s);
+        ok = offset == 0 ?
+            (result = msm5xxx_ma3_status_read(&s->ma3_audio), true) :
+            msm5xxx_ma3_data_read(&s->ma3_audio, &result,
+                                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+        if (s->ma3_bus_log_count++ < 4096) {
+            qemu_log_mask(LOG_UNIMP, "MA3 bus read pc=%x port=%" PRIx64
+                          " mode=%02x value=%02x ok=%u\n", pc,
+                          (uint64_t)offset, s->ma3_audio.mode, result, ok);
+        }
+        *value = result;
+        return ok ? MEMTX_OK : MEMTX_ERROR;
     }
     if (s->ma5_byte_ns) {
         uint8_t result;
@@ -5770,7 +6264,7 @@ static MemTxResult msm5xxx_poc_audio_opaque_write(
     }
     cc = CPU_GET_CLASS(cpu);
     pc = cc->get_pc(cpu) & ~1U;
-    if (s->ma5_byte_ns && !msm5xxx_poc_mmio_access_pc(s, &pc)) {
+    if ((s->ma5_byte_ns || s->audio_ma3) && !msm5xxx_poc_mmio_access_pc(s, &pc)) {
         if (!s->audio_readback_rejection_reported) {
             warn_report("experimental MA5 precise access PC unavailable");
             s->audio_readback_rejection_reported = true;
@@ -5785,6 +6279,28 @@ static MemTxResult msm5xxx_poc_audio_opaque_write(
             s->audio_readback_rejection_reported = true;
         }
         return MEMTX_ERROR;
+    }
+    if (s->audio_ma3) {
+        MSM5xxxMA3Operation op;
+        uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        bool ok;
+        msm5xxx_poc_ma3_audio_tick(s);
+        if (s->ma3_bus_log_count++ < 4096) {
+            qemu_log_mask(LOG_UNIMP, "MA3 bus write pc=%x port=%" PRIx64
+                          " mode=%02x value=%02x\n", pc,
+                          (uint64_t)offset, s->ma3_audio.mode,
+                          (unsigned)value & 0xff);
+        }
+        ok = offset == 0 ?
+            msm5xxx_ma3_status_write(&s->ma3_audio, value, now) :
+            msm5xxx_ma3_data_write(&s->ma3_audio, value, now);
+        while (msm5xxx_ma3_pop_operation(&s->ma3_audio, &op)) {
+            msm5xxx_poc_ma3_operation(s, &op);
+        }
+        if (s->ma3_audio_timer) {
+            timer_mod_ns(s->ma3_audio_timer, now + 1);
+        }
+        return ok ? MEMTX_OK : MEMTX_ERROR;
     }
     if (s->ma5_byte_ns) {
         uint64_t before = s->ma5_device.resets;
@@ -5847,6 +6363,130 @@ static const MemoryRegionOps msm5xxx_poc_audio_opaque_ops = {
     .impl.min_access_size = 1,
     .impl.max_access_size = 1,
 };
+
+static MemTxResult msm5xxx_poc_audio_ram_overlap_read(
+    void *opaque, hwaddr offset, uint64_t *value, unsigned size,
+    MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    MachineState *machine = MACHINE(s);
+    CPUState *cpu = current_cpu;
+    uint64_t address = (uint64_t)s->audio_base - 3 + offset;
+    uint64_t ram_offset;
+    uint32_t pc;
+
+    if (!value || size < 1 || size > 4 || address < s->ram_base ||
+        address + size < address ||
+        address + size > (uint64_t)s->ram_base + machine->ram_size) {
+        return MEMTX_ERROR;
+    }
+    if (size == 1 && (address == s->audio_base ||
+                      address == (uint64_t)s->audio_base +
+                                 s->audio_data_offset) &&
+        qemu_in_vcpu_thread() && cpu == CPU(s->cpu) && cpu->running &&
+        cpu->neg.can_do_io) {
+        if (msm5xxx_poc_mmio_access_pc(s, &pc) &&
+            msm5xxx_poc_audio_site_owned(s, false,
+                address - s->audio_base, pc)) {
+            return msm5xxx_poc_audio_opaque_read(
+                s, address - s->audio_base, value, size, attrs);
+        }
+    }
+    ram_offset = address - s->ram_base;
+    *value = msm5xxx_poc_backing_read(
+        memory_region_get_ram_ptr(machine->ram), ram_offset, size);
+    return MEMTX_OK;
+}
+
+static MemTxResult msm5xxx_poc_audio_ram_overlap_write(
+    void *opaque, hwaddr offset, uint64_t value, unsigned size,
+    MemTxAttrs attrs)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    MachineState *machine = MACHINE(s);
+    CPUState *cpu = current_cpu;
+    uint64_t address = (uint64_t)s->audio_base - 3 + offset;
+    uint64_t ram_offset;
+    uint32_t pc;
+
+    if (size < 1 || size > 4 || address < s->ram_base ||
+        address + size < address ||
+        address + size > (uint64_t)s->ram_base + machine->ram_size) {
+        return MEMTX_ERROR;
+    }
+    if (size == 1 && (address == s->audio_base ||
+                      address == (uint64_t)s->audio_base +
+                                 s->audio_data_offset) &&
+        qemu_in_vcpu_thread() && cpu == CPU(s->cpu) && cpu->running &&
+        cpu->neg.can_do_io) {
+        if (msm5xxx_poc_mmio_access_pc(s, &pc) &&
+            msm5xxx_poc_audio_site_owned(s, true,
+                address - s->audio_base, pc)) {
+            return msm5xxx_poc_audio_opaque_write(
+                s, address - s->audio_base, value, size, attrs);
+        }
+    }
+    ram_offset = address - s->ram_base;
+    msm5xxx_poc_backing_write(
+        memory_region_get_ram_ptr(machine->ram), ram_offset, value, size);
+    memory_region_set_dirty(machine->ram, ram_offset, size);
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps msm5xxx_poc_audio_ram_overlap_ops = {
+    .read_with_attrs = msm5xxx_poc_audio_ram_overlap_read,
+    .write_with_attrs = msm5xxx_poc_audio_ram_overlap_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+        .unaligned = true,
+    },
+    .impl = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+        .unaligned = true,
+    },
+};
+
+static bool msm5xxx_poc_ma3_ram_overlap_sites_valid(
+    const MSM5xxxPOCMachineState *s)
+{
+    static const struct {
+        bool write;
+        uint8_t port;
+        uint32_t pc;
+    } required[] = {
+        { true,  0, 0x0008c53c },
+        { false, 0, 0x0008c54e },
+        { true,  2, 0x0008c566 },
+        { false, 2, 0x0008c578 },
+    };
+    unsigned i;
+
+    if (!s->audio_sites_enabled || s->audio_site_count != ARRAY_SIZE(required)) {
+        return false;
+    }
+    for (i = 0; i < ARRAY_SIZE(required); i++) {
+        if (required[i].pc >= s->primary_nor_size ||
+            !msm5xxx_poc_audio_site_owned(s, required[i].write,
+                                           required[i].port,
+                                           required[i].pc)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool msm5xxx_poc_ma3_ram_overlap_profile_valid(
+    const MSM5xxxPOCMachineState *s, uint64_t ram_size)
+{
+    return s->memory_profile_enabled && s->audio_ma3 &&
+           s->audio_base == 0x01400000 && s->audio_data_offset == 2 &&
+           s->ram_base == 0x01000000 && ram_size == 0x00800000 &&
+           !s->ram_reserved_size &&
+           msm5xxx_poc_ma3_ram_overlap_sites_valid(s);
+}
 
 static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
                                           hwaddr offset, uint64_t value,
@@ -6252,6 +6892,13 @@ static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s)
 
     level |= s->ma5_irq_configured && s->ma5_irq_qualified &&
              s->rex_irq_route_active && s->ma5_irq_level;
+    if (s->ma3_gpio_irq_configured && s->ma3_gpio_irq_qualified &&
+        s->rex_irq_route_active) {
+        uint16_t second_enabled = msm5xxx_poc_backing_read(
+            s->rex_irq_backing, offset + 4, 2
+        );
+        level |= (second_enabled & s->rex_irq_pending[1]) != 0;
+    }
     if (level && !s->rex_irq_level) {
         s->rex_irq_assertions++;
     }
@@ -6323,6 +6970,9 @@ static uint64_t msm5xxx_poc_rex_irq_read(void *opaque, hwaddr offset,
     if (offset + size > s->rex_irq_controller_size) {
         return 0;
     }
+    if (s->ma3_gpio_irq_configured) {
+        return msm5xxx_poc_ma3_gpio_irq_read(s, offset, size);
+    }
     if (s->ma5_irq_configured) {
         return msm5xxx_poc_ma5_irq_read(s, offset, size);
     }
@@ -6389,6 +7039,10 @@ static void msm5xxx_poc_rex_irq_write(void *opaque, hwaddr offset,
     uint16_t pending_before = s->rex_irq_pending[0];
 
     if (offset + size > s->rex_irq_controller_size) {
+        return;
+    }
+    if (s->ma3_gpio_irq_configured) {
+        msm5xxx_poc_ma3_gpio_irq_write(s, offset, value, size);
         return;
     }
     if (s->ma5_irq_configured) {
@@ -10671,7 +11325,8 @@ static int msm5xxx_poc_ma5_shared_lcd_port(const MSM5xxxPOCMachineState *s)
     int selected = -1;
     unsigned index;
 
-    if (!s->audio_enabled || !s->audio_ma5 || !s->ma5_byte_ns ||
+    if (!s->audio_enabled ||
+        !((s->audio_ma5 && s->ma5_byte_ns) || s->audio_ma3) ||
         end <= first) {
         return -1;
     }
@@ -11387,6 +12042,21 @@ static void msm5xxx_poc_audio_reset(void *opaque)
     }
     if (s->tone_timer) {
         timer_del(s->tone_timer);
+    }
+    if (s->ma3_audio_timer) {
+        timer_del(s->ma3_audio_timer);
+    }
+    if (s->audio_ma3) {
+        msm5xxx_ma3_reset(&s->ma3_audio);
+        s->ma3_bus_log_count = 0;
+        msm5xxx_ma3_renderer_init(&s->ma3_renderer);
+        msm5xxx_ma3_stream_init(&s->ma3_stream, msm5xxx_poc_ma3_stream_mix, s);
+        s->ma3_gpio_pending[1] = 0;
+        s->ma3_parent_pending = 0;
+        s->ma3_gpio_irq_qualified = false;
+        s->ma3_gpio_irq_level = false;
+        s->ma3_gpio_irq_callback_seen = false;
+        s->rex_irq_pending[1] &= ~0x2000;
     }
     if (s->audio_voice) {
         AUD_set_active_out(s->audio_voice, false);
@@ -13885,6 +14555,8 @@ static void msm5xxx_poc_init(MachineState *machine)
              (uint64_t)s->ram_base + machine->ram_size ||
          s->matrix_input_presence_site >= s->primary_nor_size - 2 ||
          s->matrix_input_sense_site >= s->primary_nor_size - 2 ||
+         (s->matrix_input_sense_site2 &&
+          s->matrix_input_sense_site2 >= s->primary_nor_size - 2) ||
          ((s->matrix_input_loop || s->matrix_input_kp_low5 || s->matrix_input_sv130_low5) &&
           s->matrix_input_contact_site >= s->primary_nor_size - 2) ||
          (s->board_status_input_enabled &&
@@ -14407,6 +15079,31 @@ static void msm5xxx_poc_init(MachineState *machine)
                                             &s->ma5_trigger_region, 1);
         warn_report("experimental MA5 GPIO/parent IRQ: live callback gates; auxiliary paths unverified");
     }
+    if (s->ma3_gpio_irq_configured) {
+        if (s->ma5_irq_configured || !s->audio_ma3 || !s->rex_irq_enabled ||
+            s->rex_irq_read_consume ||
+            !msm5xxx_poc_ma3_gpio_irq_rex_profile_valid(
+                s->rex_irq_c80, s->rex_irq_copied,
+                s->rex_irq_status_address, s->rex_irq_enable_address,
+                s->rex_irq_mask, s->rex_irq_vector_target,
+                s->rex_irq_wrapper_address, s->rex_irq_handler_slot,
+                s->rex_irq_handler_address, s->rex_irq_handler_size,
+                s->rex_irq_callback_slot, s->rex_irq_callback_address,
+                s->rex_irq_bank_count) ||
+            (s->eeprom_gpio_enabled && s->eeprom_gpio_base < 0x03000758 &&
+             (uint64_t)s->eeprom_gpio_base + MSM5XXX_POC_EEPROM_GPIO_SIZE >
+                 0x0300074c)) {
+            error_report("ma3-gpio-irq requires the confirmed SC C80/MA3 route and exclusive GPIO trigger aperture");
+            exit(EXIT_FAILURE);
+        }
+        s->rex_irq_controller_size = MAX(s->rex_irq_controller_size, 0x3a);
+        memory_region_init_io(&s->ma5_trigger_region, OBJECT(machine),
+                              &msm5xxx_poc_ma5_trigger_ops, s,
+                              "msm5xxx-poc.ma3-gpio-trigger", 12);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x0300074c,
+                                            &s->ma5_trigger_region, 1);
+        warn_report("MA3 GPIO parent IRQ: live callback and relocated descriptor gates");
+    }
     if (s->board_revision_enabled) {
         memory_region_init_io(&s->board_revision, OBJECT(machine),
                               &msm5xxx_poc_board_revision_ops, s,
@@ -14849,6 +15546,10 @@ static void msm5xxx_poc_init(MachineState *machine)
         bool have_data_site = false;
         unsigned index;
 
+        if (!s->audio_ma3 && s->audio_site_count > 64) {
+            error_report("non-MA3 audio-sites limited to 64 entries");
+            exit(EXIT_FAILURE);
+        }
         for (index = 0; index < s->audio_site_count; index++) {
             if (!s->audio_enabled ||
                 s->audio_site_port[index] > s->audio_data_offset) {
@@ -14948,11 +15649,29 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("opaque audio-aperture requires audio-sites");
         exit(EXIT_FAILURE);
     }
+    if (s->audio_ma3) {
+        if (!s->audio_sites_enabled) {
+            error_report("MA3 requires owned audio sites");
+            exit(EXIT_FAILURE);
+        }
+        if (s->audio_base < (uint64_t)s->ram_base + machine->ram_size &&
+            (uint64_t)s->audio_base + s->audio_data_offset + 1 >
+                s->ram_base) {
+            if (!msm5xxx_poc_ma3_ram_overlap_profile_valid(
+                    s, machine->ram_size)) {
+                error_report("MA3 RAM overlap requires the confirmed SC indexed profile and exact four owner sites");
+                exit(EXIT_FAILURE);
+            }
+            s->audio_ram_overlap_enabled = true;
+        }
+        s->ma3_audio_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                          msm5xxx_poc_ma3_audio_tick, s);
+    }
     if (s->audio_enabled) {
         bool ma5_pcm_output = s->audio_ma5 && s->ma5_pcm_output_enabled &&
                               s->audio_sites_enabled;
 
-        if ((s->audio_ma2 && s->audio_sites_enabled) || ma5_pcm_output) {
+        if (((s->audio_ma2 || s->audio_ma3) && s->audio_sites_enabled) || ma5_pcm_output) {
             struct audsettings settings = {
                 MSM5XXX_AUDIO_SAMPLE_RATE, 2, AUDIO_FORMAT_S16, 0
             };
@@ -15035,13 +15754,26 @@ static void msm5xxx_poc_init(MachineState *machine)
                 error_report("opaque audio-aperture overlaps upper NOR");
                 exit(EXIT_FAILURE);
             }
-            memory_region_init_io(
-                &s->audio_opaque, OBJECT(machine),
-                &msm5xxx_poc_audio_opaque_ops, s,
-                "msm5xxx-poc.audio-opaque", s->audio_data_offset + 1
-            );
-            memory_region_add_subregion(get_system_memory(), s->audio_base,
-                                        &s->audio_opaque);
+            if (s->audio_ram_overlap_enabled) {
+                memory_region_init_io(
+                    &s->audio_ram_overlap, OBJECT(machine),
+                    &msm5xxx_poc_audio_ram_overlap_ops, s,
+                    "msm5xxx-poc.audio-ram-overlap",
+                    s->audio_data_offset + 7
+                );
+                memory_region_add_subregion_overlap(
+                    get_system_memory(), (uint64_t)s->audio_base - 3,
+                    &s->audio_ram_overlap, 1
+                );
+            } else {
+                memory_region_init_io(
+                    &s->audio_opaque, OBJECT(machine),
+                    &msm5xxx_poc_audio_opaque_ops, s,
+                    "msm5xxx-poc.audio-opaque", s->audio_data_offset + 1
+                );
+                memory_region_add_subregion(get_system_memory(), s->audio_base,
+                                            &s->audio_opaque);
+            }
         }
     }
     if (s->tone_enabled) {
@@ -15671,6 +16403,64 @@ static void msm5xxx_poc_set_ma5_irq_route(Object *obj, const char *value,
     }
     memcpy(s->ma5_irq_route, r, sizeof(r));
     s->ma5_irq_configured = true;
+}
+
+static char *msm5xxx_poc_get_ma3_gpio_irq(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *text = g_string_new("");
+
+    if (s->ma3_gpio_irq_configured) {
+        for (unsigned i = 0; i < MA3G_COUNT; i++) {
+            g_string_append_printf(text, "%s%x", i ? ":" : "",
+                                   s->ma3_gpio_irq_route[i]);
+        }
+    }
+    return g_string_free(text, false);
+}
+
+static void msm5xxx_poc_set_ma3_gpio_irq(Object *obj, const char *value,
+                                          Error **errp)
+{
+    static const uint32_t expected[MA3G_COUNT] = {
+        [MA3G_PIN] = 23,
+        [MA3G_PARENT_INDEX] = 29,
+        [MA3G_TABLE] = 0x0100b914,
+        [MA3G_CALLBACKS] = 0x0129e278,
+        [MA3G_PARENT_TABLE] = 0x0100b584,
+        [MA3G_GPIO_DISPATCH] = 0x00161f69,
+        [MA3G_PARENT_DISPATCH] = 0x00161bfc,
+        [MA3G_CALLBACK] = 0x0009bb71,
+        [MA3G_PARENT_MASK] = 0x2000,
+        [MA3G_STATUS] = 0x03000c84,
+        [MA3G_ENABLE] = 0x03000c98,
+    };
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) parts = g_strsplit(value ? value : "", ":", -1);
+    uint32_t route[MA3G_COUNT];
+
+    if (g_strv_length(parts) != MA3G_COUNT) {
+        error_setg(errp, "ma3-gpio-irq requires 11 hex fields");
+        return;
+    }
+    for (unsigned i = 0; i < MA3G_COUNT; i++) {
+        const char *end;
+        uint64_t number;
+
+        if (!g_ascii_isxdigit(parts[i][0]) ||
+            qemu_strtou64(parts[i], &end, 16, &number) < 0 || *end ||
+            number > UINT32_MAX) {
+            error_setg(errp, "invalid ma3-gpio-irq field");
+            return;
+        }
+        route[i] = number;
+    }
+    if (memcmp(route, expected, sizeof(route))) {
+        error_setg(errp, "ma3-gpio-irq is outside the confirmed SC route");
+        return;
+    }
+    memcpy(s->ma3_gpio_irq_route, route, sizeof(route));
+    s->ma3_gpio_irq_configured = true;
 }
 
 static char *msm5xxx_poc_get_audio_packet_bus(Object *obj, Error **errp)
@@ -16804,6 +17594,7 @@ static char *msm5xxx_poc_get_audio_aperture(Object *obj, Error **errp)
     return s->audio_enabled ?
         g_strdup_printf("%x:%x:%s", s->audio_base, s->audio_data_offset,
                         s->audio_ma2 ? "ma2" :
+                        s->audio_ma3 ? "ma3" :
                         s->audio_ma5 ? "ma5" : "opaque") :
         g_strdup("");
 }
@@ -16815,13 +17606,14 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
     unsigned base, data_offset;
     char family[7];
     char trailing;
-    bool legacy, tagged, ma2, ma5, opaque;
-    bool ma2_valid, ma5_valid, opaque_valid;
+    bool legacy, tagged, ma2, ma3, ma5, opaque;
+    bool ma2_valid, ma3_valid, ma5_valid, opaque_valid;
 
     legacy = sscanf(value, "%x:%x%c", &base, &data_offset, &trailing) == 2;
     tagged = sscanf(value, "%x:%x:%6[a-z0-9]%c", &base, &data_offset,
                     family, &trailing) == 3;
     ma2 = legacy || (tagged && !strcmp(family, "ma2"));
+    ma3 = tagged && !strcmp(family, "ma3");
     ma5 = tagged && !strcmp(family, "ma5");
     opaque = tagged && !strcmp(family, "opaque");
     ma2_valid = ma2 && ((base == 0x02880000 && data_offset == 2) ||
@@ -16834,8 +17626,11 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
     /* New apertures require the explicit experimental device at realize. */
     ma5_valid = ma5 && base >= 0x02001000 && base <= 0x02ffff00 &&
                 (data_offset == 2 || data_offset == 4 || data_offset == 128);
+    ma3_valid = ma3 && base >= 0x01400000 && base <= 0x02ffff00 &&
+                (data_offset == 2 || data_offset == 4 ||
+                 (base == 0x02800000 && data_offset == 128));
     opaque_valid = opaque && base == 0x02880000 && data_offset == 2;
-    if (!ma2_valid && !ma5_valid && !opaque_valid) {
+    if (!ma2_valid && !ma3_valid && !ma5_valid && !opaque_valid) {
         error_setg(errp,
                    "audio-aperture must be LCD-BASE:2[:ma2] or "
                    "02840000:2:ma5 or 02880000:2:opaque");
@@ -16844,6 +17639,7 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
     s->audio_base = base;
     s->audio_data_offset = data_offset;
     s->audio_ma2 = ma2;
+    s->audio_ma3 = ma3;
     s->audio_ma5 = ma5;
     s->audio_enabled = true;
 }
@@ -17221,17 +18017,24 @@ static char *msm5xxx_poc_get_matrix_low5(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
 
-    return s->matrix_input_low5 ?
+    if (!s->matrix_input_low5) {
+        return g_strdup("");
+    }
+    return s->matrix_input_sense_site2 ?
+        g_strdup_printf("%x:%x:%x:%x", s->matrix_input_descriptor,
+                        s->matrix_input_presence_site,
+                        s->matrix_input_sense_site,
+                        s->matrix_input_sense_site2) :
         g_strdup_printf("%x:%x:%x", s->matrix_input_descriptor,
                         s->matrix_input_presence_site,
-                        s->matrix_input_sense_site) : g_strdup("");
+                        s->matrix_input_sense_site);
 }
 
 static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
                                          Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    unsigned descriptor, presence, sense, contact1 = 0, contact2 = 0, init = 0;
+    unsigned descriptor, presence, sense, sense2 = 0, contact1 = 0, contact2 = 0, init = 0;
     char trailing;
     int fields = sscanf(value, "%x:%x:%x:%x:%x:%x%c", &descriptor, &presence,
                         &sense, &contact1, &contact2, &init, &trailing);
@@ -17241,9 +18044,11 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
          s->board_status_input_descriptor != 0x01816618 &&
          s->board_status_input_descriptor != 0x0181661c &&
          s->board_status_input_descriptor != 0x01103684) ||
-        (fields != 3 && fields != 5 && fields != 6) ||
+        (fields != 3 && fields != 4 && fields != 5 && fields != 6) ||
         (fields == 3 && sscanf(value, "%x:%x:%x%c", &descriptor, &presence,
                                &sense, &trailing) != 3) ||
+        (fields == 4 && sscanf(value, "%x:%x:%x:%x%c", &descriptor, &presence,
+                               &sense, &sense2, &trailing) != 4) ||
         (fields == 5 && sscanf(value, "%x:%x:%x:%x:%x%c", &descriptor,
                                &presence, &sense, &contact1, &contact2,
                                &trailing) != 5) ||
@@ -17261,9 +18066,11 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
          descriptor != s->board_status_input_descriptor) ||
         presence & 1 || sense & 1 ||
         presence == sense || presence > UINT32_MAX - 2 ||
-        sense > UINT32_MAX - 2) {
+        sense > UINT32_MAX - 2 ||
+        (fields == 4 && (!sense2 || sense2 & 1 || sense2 > UINT32_MAX - 2 ||
+                         sense2 == presence || sense2 == sense))) {
         error_setg(errp, "matrix-low5 requires exclusive aligned "
-                   "DESCRIPTOR:PRESENCE_SITE:SENSE_SITE");
+                   "DESCRIPTOR:PRESENCE_SITE:SENSE_SITE[:SENSE_SITE2]");
         return;
     }
     s->matrix_input_low5 = true;
@@ -17274,6 +18081,7 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
     s->matrix_input_descriptor = descriptor;
     s->matrix_input_presence_site = presence;
     s->matrix_input_sense_site = sense;
+    s->matrix_input_sense_site2 = fields == 4 ? sense2 : 0;
     s->matrix_input_address = MSM5XXX_POC_MSM_BASE + 0x72c;
     s->matrix_input_no_key = 0x1f;
     s->matrix_input_rows = 6;
@@ -19581,6 +20389,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "experimental-ma5-irq-route",
                                   msm5xxx_poc_get_ma5_irq_route,
                                   msm5xxx_poc_set_ma5_irq_route);
+    object_class_property_add_str(oc, "ma3-gpio-irq",
+                                  msm5xxx_poc_get_ma3_gpio_irq,
+                                  msm5xxx_poc_set_ma3_gpio_irq);
     object_class_property_set_description(
         oc, "experimental-ma5-irq-route",
         "Opt-in same-image GPIO/parent route with live callback/polarity/enable gates");

@@ -7,9 +7,125 @@ from pathlib import Path
 
 
 class TestAudioSynthC(unittest.TestCase):
+    def test_legacy_fm_algorithms_match_pre_ma3_sample_path(self):
+        repo = Path(__file__).resolve().parents[1]
+        core = repo / "native" / "qemu" / "msm5xxx-audio-synth.c"
+        waveform = repo / "native" / "qemu" / "msm5xxx-ma5-waveform.c"
+        harness = r"""
+#include <assert.h>
+#include <string.h>
+#include "msm5xxx-audio-synth.c"
+
+static int32_t legacy_operator(MSM5xxxAudioVoice *voice, size_t index,
+                               int64_t modulation)
+{
+    uint32_t amplitude;
+    uint32_t phase = voice->timbre_phase[index] +
+        (uint32_t)((int64_t)modulation * MSM5XXX_AUDIO_TIMBRE_MODULATION_SCALE);
+    int32_t sample;
+
+    if (voice->timbre_envelope_state[index] == 0u) {
+        return 0;
+    }
+    audio_timbre_advance_envelope(voice, index, 1u);
+    amplitude = (uint32_t)((uint64_t)
+        audio_timbre_gain(voice->timbre_level[index]) *
+        (voice->timbre_envelope[index] >> 16u) >> 15u);
+    sample = audio_sine(phase);
+    sample = (int32_t)((int64_t)sample * amplitude >> 15u);
+    voice->timbre_phase[index] +=
+        voice->phase_step * voice->timbre_multiplier[index];
+    return sample;
+}
+
+static int32_t legacy_sample(MSM5xxxAudioVoice *voice)
+{
+    int32_t first, second;
+    if (voice->timbre_algorithm == 0u) {
+        int64_t feedback = voice->timbre_feedback == 6u ?
+            (int64_t)voice->timbre_feedback_history[0] +
+            voice->timbre_feedback_history[1] : 0;
+        first = legacy_operator(voice, 0u, feedback);
+        voice->timbre_feedback_history[1] =
+            voice->timbre_feedback_history[0];
+        voice->timbre_feedback_history[0] = first;
+        second = legacy_operator(voice, 1u, first);
+        voice->active = voice->timbre_envelope_state[0] != 0u ||
+                        voice->timbre_envelope_state[1] != 0u;
+        return second;
+    }
+    assert(voice->timbre_algorithm == 5u);
+    first = legacy_operator(voice, 0u, 0);
+    second = legacy_operator(voice, 2u, 0);
+    first = legacy_operator(voice, 1u, first);
+    second = legacy_operator(voice, 3u, second);
+    for (size_t index = 0u;
+         index < MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT; index++) {
+        if (voice->timbre_envelope_state[index] != 0u) {
+            return (first + second) / 2;
+        }
+    }
+    voice->active = false;
+    return (first + second) / 2;
+}
+
+static void initialize_voice(MSM5xxxAudioVoice *voice, unsigned algorithm,
+                             unsigned feedback)
+{
+    memset(voice, 0, sizeof(*voice));
+    voice->timbre_algorithm = (uint8_t)algorithm;
+    voice->timbre_operator_count = algorithm == 0u ? 2u : 4u;
+    voice->timbre_feedback = (uint8_t)feedback;
+    voice->phase_step = UINT32_C(0x013579bd);
+    voice->active = true;
+    for (unsigned index = 0u; index < voice->timbre_operator_count; index++) {
+        voice->timbre_phase[index] = UINT32_C(0x12765432) * (index + 1u);
+        voice->timbre_envelope[index] = UINT32_C(0x70000000) -
+                                        index * UINT32_C(0x08000000);
+        voice->timbre_envelope_state[index] = 5u;
+        voice->timbre_sustain_factor[index] = UINT32_C(0x3ffff123);
+        voice->timbre_release_factor[index] = UINT32_C(0x3f123456);
+        voice->timbre_level[index] = (uint8_t)(12u + index * 7u);
+        voice->timbre_multiplier[index] = (uint8_t)(index + 1u);
+        /* Legacy shared-synth events did not select MA3 waveforms. */
+        voice->timbre_waveform[index] = 7u;
+    }
+    voice->timbre_feedback_history[0] = 1234567;
+    voice->timbre_feedback_history[1] = -765432;
+}
+
+int main(void)
+{
+    static const unsigned algorithm[] = {0u, 0u, 5u};
+    static const unsigned feedback[] = {0u, 6u, 0u};
+    for (unsigned algorithm_index = 0u; algorithm_index < 3u;
+         algorithm_index++) {
+        MSM5xxxAudioVoice actual, expected;
+        initialize_voice(&actual, algorithm[algorithm_index],
+                         feedback[algorithm_index]);
+        expected = actual;
+        for (unsigned frame = 0u; frame < 128u; frame++) {
+            assert(audio_timbre_sample(&actual) == legacy_sample(&expected));
+            assert(memcmp(&actual, &expected, sizeof(actual)) == 0);
+        }
+    }
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "legacy.c"
+            binary = Path(directory) / "legacy"
+            source.write_text(harness)
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+                            "-I", str(core.parent), str(source), str(waveform),
+                            "-lm", "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_silent_batches_preserve_pcm_and_full_state(self):
         repo = Path(__file__).resolve().parents[1]
         core = repo / "native" / "qemu" / "msm5xxx-audio-synth.c"
+        waveform = repo / "native" / "qemu" / "msm5xxx-ma5-waveform.c"
         text = core.read_text()
         # Oracle is the unchanged slow renderer; remove only the optimization.
         begin = text.index("    /* Only batch-entry silence:")
@@ -89,13 +205,14 @@ int main(void) {
                           ["-fsanitize=undefined", "-fno-sanitize-recover=all"])
             subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra",
                             "-Werror", *sanitizers, "-I", str(core.parent),
-                            str(source), str(core), str(baseline),
-                            "-o", str(binary)], check=True, timeout=30)
+                            str(source), str(core), str(baseline), str(waveform),
+                            "-lm", "-o", str(binary)], check=True, timeout=30)
             subprocess.run([str(binary)], check=True, timeout=10)
 
     def test_integer_synth_and_bounded_ring(self):
         repo = Path(__file__).resolve().parents[1]
         core = repo / "native" / "qemu" / "msm5xxx-audio-synth.c"
+        waveform = repo / "native" / "qemu" / "msm5xxx-ma5-waveform.c"
         harness = textwrap.dedent(
             r"""
             #include <assert.h>
@@ -460,8 +577,8 @@ int main(void) {
             source.write_text(harness, encoding="utf-8")
             subprocess.run(
                 ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                 "-I", str(core.parent), str(source), str(core),
-                 "-o", str(binary)],
+                 "-I", str(core.parent), str(source), str(core), str(waveform),
+                 "-lm", "-o", str(binary)],
                 check=True,
             )
             subprocess.run([str(binary)], check=True)

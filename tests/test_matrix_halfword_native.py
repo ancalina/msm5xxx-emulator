@@ -79,8 +79,10 @@ int main(void) {
                          "static const MemoryRegionOps msm5xxx_poc_eeprom_gpio_ops")
         overlap = section("    /* Reject an EEPROM boundary through either mapped halfword register. */",
                           "    /* Final property ordering must preserve GPIO owners and code bounds. */")
-        low5 = section("static void msm5xxx_poc_set_matrix_low5(",
+        low5 = section("static char *msm5xxx_poc_get_matrix_low5(",
                        "static void msm5xxx_poc_set_fujitsu_x16_nor")
+        low5 = low5.replace("    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);",
+                            "    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);\n    (void)errp;", 1)
         half = section("static char *msm5xxx_poc_get_matrix_halfword(",
                        "static char *msm5xxx_poc_get_matrix_low5")
         direct = section("static void msm5xxx_poc_set_matrix_input(",
@@ -177,7 +179,8 @@ typedef struct {
     bool matrix_input_host_enabled, matrix_input_pressed;
     uint32_t matrix_input_contact_precheck[3];
     uint32_t matrix_input_descriptor, matrix_input_presence_site;
-    uint32_t matrix_input_sense_site, matrix_input_address, matrix_input_sense_bitmap;
+    uint32_t matrix_input_sense_site, matrix_input_sense_site2;
+    uint32_t matrix_input_address, matrix_input_sense_bitmap;
     unsigned matrix_input_rows, matrix_input_no_key, matrix_input_sideband_mask;
     unsigned matrix_input_reset, matrix_input_row_register;
     unsigned matrix_input_row, matrix_input_sense;
@@ -311,8 +314,11 @@ int main(void) {
     assert(!msm5xxx_poc_low5_sense(0x6dd2,0,0,true,true,0,31,&value));
     MSM5xxxPOCMachineState s = { .cpu = &cpu_state };
     Error *err = NULL;
-    msm5xxx_poc_set_matrix_low5(&s,"1801000:78956:78a9e",&err);
+    msm5xxx_poc_set_matrix_low5(&s,"1801000:78956:78a9e:78aa4",&err);
     assert(!err && s.matrix_input_enabled && s.matrix_input_low5);
+    assert(s.matrix_input_sense_site2 == 0x78aa4);
+    char *low5_property = msm5xxx_poc_get_matrix_low5(&s,&err);
+    assert(!strcmp(low5_property,"1801000:78956:78a9e:78aa4")); free(low5_property);
     assert(s.matrix_input_sense_bitmap & (1U << 30));
     descriptor_words[0] = 0x3000720; descriptor_words[4] = 0x3000724;
     descriptor_words[8] = 0x3000728; descriptor_words[13] = 0x300072c;
@@ -323,6 +329,11 @@ int main(void) {
     assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dde);
     pc = 0x78a9e; put(0x728,0xa17); put(0x724,0x6843);
     assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dde);
+    pc = s.matrix_input_sense_site2;
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dde);
+    pc = s.matrix_input_sense_site2 + 2;
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2);
+    pc = s.matrix_input_sense_site;
     s.matrix_input_row = 0;
     assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6ddf);
     put(0x728,0xa16);
@@ -388,7 +399,7 @@ int main(void) {
     err = NULL; msm5xxx_poc_set_matrix_halfword(&s,"1801000:78956:78a9e",&err); assert(!err);
     msm5xxx_poc_set_matrix_low5(&s,"1801000:78956:78a9e",&err); assert(err);
     for (unsigned i = 0; i < 5; i++) {
-        const char *invalid[] = {"0:2:4","1801001:2:4","1801000:3:4","1801000:2:2","1801000:2:4:6"};
+        const char *invalid[] = {"0:2:4","1801001:2:4","1801000:3:4","1801000:2:2","1801000:2:4:2"};
         s = (MSM5xxxPOCMachineState){0}; err = NULL;
         msm5xxx_poc_set_matrix_low5(&s,invalid[i],&err); assert(err && !s.matrix_input_enabled);
     }

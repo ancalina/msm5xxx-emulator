@@ -14,11 +14,17 @@ import numpy as np
 from msm5xxx_emulator.detection.audio import (
     _marker_families, _synthesized_base_accesses,
 )
-from msm5xxx_emulator.detection.audio import find_audio_transport, find_ma5_readback_candidate
+from msm5xxx_emulator.detection.audio import (
+    find_audio_transport, find_ma3_indexed_candidate,
+    find_ma3_kp6200_candidate,
+    find_ma3_packetized_candidate, find_ma3_readback_candidate,
+    find_ma5_readback_candidate,
+)
 from msm5xxx_emulator.detection.arm import thumb_bl_target
 from msm5xxx_emulator.detection.memory_layout import find_linker_layout
 from msm5xxx_emulator.devices.audio import AudioMixin
 from msm5xxx_emulator.devices.audio_lle import AudioTransport
+from msm5xxx_emulator.qemu.transport import qemu_audio_sites
 
 
 def _access(image: bytearray, offset: int, base: int,
@@ -191,6 +197,100 @@ class AudioTransportTests(unittest.TestCase):
         self.assertNotEqual(find_audio_transport(bytes(altered)).get(
             "irq_controller_candidate", {}).get("profile"),
             "byte-count-halfword-mask-v1")
+
+    def test_kp6200_ma3_readback_fifo_owner_graph_is_closed(self):
+        image = firmware_path("LG-KP6200.bin").read_bytes()
+        candidate = find_ma3_kp6200_candidate(image)
+        self.assertEqual(candidate["static_status"], "accepted")
+        self.assertEqual(candidate["grammar"], "ma3-kp-readback-fifo-v1")
+        self.assertEqual(candidate["base"], 0x02C00000)
+        self.assertEqual(candidate["data_offset"], 4)
+        self.assertEqual(candidate["verifier_entry"], 0xE316E)
+        self.assertEqual(candidate["register_reader"], 0xE230C)
+        self.assertEqual(candidate["fifo_writers"], [0xE22A4])
+        self.assertEqual({name: len(sites)
+                          for name, sites in candidate["sites"].items()},
+                         {"write_0": 63, "write_4": 67,
+                          "read_0": 6, "read_4": 1})
+        transport = find_audio_transport(image)
+        self.assertEqual(transport, candidate)
+        serialized = qemu_audio_sites(transport)
+        self.assertIsNotNone(serialized)
+        entries = set(serialized.split(";"))
+        self.assertEqual(len(entries), 137)
+        self.assertIn("w4/e22c6", entries)
+        self.assertIn("r0/1147f4", entries)
+        self.assertNotIn("w0/8e9c", entries)
+        self.assertNotIn("r0/1147bc", entries)
+        altered = dict(transport)
+        altered["sites"] = dict(transport["sites"])
+        altered["sites"]["write_4"] = list(altered["sites"]["write_4"])
+        altered["sites"]["write_4"][0] ^= 2
+        self.assertIsNone(qemu_audio_sites(altered))
+
+    def test_kp6200_ma3_profile_fails_closed_on_link_and_owner_changes(self):
+        image = bytearray(firmware_path("LG-KP6200.bin").read_bytes())
+        self.assertEqual(find_ma3_kp6200_candidate(image)["static_status"],
+                         "accepted")
+
+        changed = bytearray(image)
+        changed[0xE3178] ^= 1
+        self.assertNotEqual(find_ma3_kp6200_candidate(changed)["static_status"],
+                            "accepted")
+
+        changed = bytearray(image)
+        changed[0xE22C6] = 0x00
+        self.assertNotEqual(find_ma3_kp6200_candidate(changed)["static_status"],
+                            "accepted")
+
+        changed = bytearray(image)
+        changed[0x8F4C:0x8F50] = b"\x00\x00\x00\x00"
+        self.assertNotEqual(find_ma3_kp6200_candidate(changed)["static_status"],
+                            "accepted")
+
+    def test_sv130_packetized_ma3_owner_graph_and_transport(self):
+        image = firmware_path("LG-SV130.bin").read_bytes()
+        candidate = find_ma3_packetized_candidate(image)
+        self.assertEqual(candidate["static_status"], "accepted")
+        self.assertEqual(candidate["grammar"], "ma3-readback-fifo-v1")
+        self.assertEqual(candidate["base"], 0x02800000)
+        self.assertEqual(candidate["data_offset"], 0x80)
+        self.assertEqual(candidate["verifier_entry"], 0x1767BE)
+        self.assertEqual(candidate["register_reader"], 0x175924)
+        self.assertEqual(candidate["sites"]["read_128"], [0x175810, 0x1759D4])
+        self.assertNotIn(0xAAA4, candidate["sites"]["write_0"])
+
+        transport = find_audio_transport(image)
+        self.assertEqual(transport, candidate)
+        serialized = qemu_audio_sites(transport)
+        self.assertIsNotNone(serialized)
+        entries = set(serialized.split(";"))
+        self.assertIn("w0/17580c", entries)
+        self.assertIn("w80/175844", entries)
+        self.assertIn("r80/1759d4", entries)
+        self.assertEqual(len(entries), 149)
+
+    def test_sv130_packetized_ma3_profile_fails_closed_on_linkage_changes(self):
+        image = bytearray(firmware_path("LG-SV130.bin").read_bytes())
+        self.assertEqual(find_ma3_packetized_candidate(image)["static_status"],
+                         "accepted")
+
+        bad = bytearray(image)
+        bad[0x1767D0] ^= 1
+        self.assertNotEqual(find_ma3_packetized_candidate(bad)["static_status"],
+                            "accepted")
+
+        bad = bytearray(image)
+        bad[0x175982] ^= 1
+        self.assertNotEqual(find_ma3_packetized_candidate(bad)["static_status"],
+                            "accepted")
+
+        bad = bytearray(image)
+        bad[0x176845] ^= 0x08
+        self.assertNotEqual(find_ma3_packetized_candidate(bad)["static_status"],
+                            "accepted")
+        self.assertNotEqual(find_audio_transport(bad)["static_status"],
+                            "accepted")
 
     def test_optional_clear_contract_relocated_and_byte_dependencies(self):
         for shift in (0, 0x2000):
@@ -619,7 +719,74 @@ class AudioTransportTests(unittest.TestCase):
         self.assertEqual(
             (detected["family"], detected["grammar"],
              detected["static_status"], detected["reject_reason"]),
-            ("ma3", None, "rejected", "protocol-unsupported"),
+            ("ma3", "ma3-readback-v1", "rejected", "wrapper-sites-unmatched"),
+        )
+
+    def test_ma3_readback_requires_linked_verifier_reader_and_mmio_wrappers(self) -> None:
+        image = bytearray(0x27B5EC)
+        for start, name in (
+            (0x279268, "ma3_reader_e140"),
+            (0x27A11E, "ma3_verifier_e140"),
+            (0x27B456, "ma3_wrappers_e140"),
+            (0x27B5B8, "ma3_status_poll_e140"),
+        ):
+            part = snippet("test_audio_transport", name)
+            image[start:start + len(part)] = part
+        detected = find_ma3_readback_candidate(bytes(image))
+        self.assertEqual(
+            (detected["family"], detected["grammar"], detected["static_status"],
+             detected["base"], detected["data_offset"]),
+            ("ma3", "ma3-readback-v1", "accepted", 0x02840000, 2),
+        )
+        self.assertEqual(detected["register_readback"], [
+            [0x90, 0xA0, 0x60], [0xA0, 0xB0, 0x3C],
+            [0x14A, 0x152, 0x40],
+        ])
+        changed = bytearray(image)
+        struct.pack_into("<H", changed, 0x27A11E + 18, 0x2861)
+        self.assertNotEqual(
+            find_ma3_readback_candidate(bytes(changed))["static_status"],
+            "accepted",
+        )
+
+    def test_ma3_indexed_014_requires_verifier_reader_fifo_and_owned_wrappers(self) -> None:
+        spans = (
+            (0x8B0C8, "ma3_indexed_014_fifo_a"),
+            (0x8B13C, "ma3_indexed_014_reader"),
+            (0x8B20C, "ma3_indexed_014_fifo_b"),
+            (0x8B350, "ma3_indexed_014_fifo_c"),
+            (0x8C008, "ma3_indexed_014_verifier"),
+            (0x8C536, "ma3_indexed_014_wrappers"),
+            (0x8C64E, "ma3_indexed_014_poller"),
+        )
+        image = bytearray(b"\xff" * 0x8C674)
+        for start, name in spans:
+            part = snippet("test_audio_transport", name)
+            image[start:start + len(part)] = part
+        detected = find_ma3_indexed_candidate(bytes(image))
+        self.assertEqual(
+            (detected["family"], detected["grammar"],
+             detected["static_status"], detected["base"],
+             detected["data_offset"]),
+            ("ma3", "ma3-indexed-v1", "accepted", 0x01400000, 2),
+        )
+        self.assertEqual(detected["verifier_entry"], 0x8C00A)
+        self.assertEqual(detected["register_reader"], 0x8B13C)
+        self.assertEqual(detected["status_poller"], 0x8C64E)
+        self.assertEqual(detected["fifo_writers"],
+                         [0x8B0C8, 0x8B20C, 0x8B350])
+        self.assertEqual(detected["wrapper_helper"], 0x8C518)
+        self.assertEqual(detected["sites"], {
+            "write_0": [0x8C53C], "read_0": [0x8C54E],
+            "write_2": [0x8C566], "read_2": [0x8C578],
+        })
+        self.assertEqual(find_audio_transport(bytes(image)), detected)
+
+        changed = bytearray(image)
+        struct.pack_into("<H", changed, 0x8C566, 0x46C0)
+        self.assertNotEqual(
+            find_ma3_indexed_candidate(bytes(changed))["static_status"],
+            "accepted",
         )
 
     def test_ma2_stream_keeps_sticky_register_and_fifo_indexes(self) -> None:

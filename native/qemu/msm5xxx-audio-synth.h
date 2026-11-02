@@ -34,6 +34,8 @@ typedef struct MSM5xxxAudioEvent {
     uint8_t timbre_algorithm;
     uint8_t timbre_operator_count;
     uint8_t timbre_feedback;
+    uint8_t timbre_waveform[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
+    uint8_t timbre_operator_feedback[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint8_t timbre_multiplier[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint8_t timbre_level[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint32_t timbre_attack_step[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
@@ -43,6 +45,7 @@ typedef struct MSM5xxxAudioEvent {
     uint32_t timbre_release_factor[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     bool timbre_decay_threshold_valid;
     bool timbre_valid;
+    bool timbre_operator_feedback_valid;
 } MSM5xxxAudioEvent;
 
 typedef struct MSM5xxxAudioVoice {
@@ -62,9 +65,12 @@ typedef struct MSM5xxxAudioVoice {
     uint8_t timbre_algorithm;
     uint8_t timbre_operator_count;
     uint8_t timbre_feedback;
+    uint8_t timbre_waveform[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
+    uint8_t timbre_operator_feedback[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint8_t timbre_multiplier[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint8_t timbre_level[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     int32_t timbre_feedback_history[2];
+    int32_t timbre_feedback_history_op2[2];
     uint32_t timbre_phase[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint32_t timbre_envelope[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint32_t timbre_attack_step[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
@@ -73,6 +79,7 @@ typedef struct MSM5xxxAudioVoice {
     uint32_t timbre_sustain_factor[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint32_t timbre_release_factor[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
     uint8_t timbre_envelope_state[MSM5XXX_AUDIO_TIMBRE_OPERATOR_COUNT];
+    bool timbre_operator_feedback_valid;
     bool active;
     bool releasing;
     bool timbre_decay_threshold_valid;
@@ -100,6 +107,7 @@ typedef struct MSM5xxxAudioSynth {
     uint64_t last_late_timestamp_ns;
     uint64_t last_late_target_ns;
     bool clock_initialized;
+    bool external_active;
     bool last_late_valid;
 } MSM5xxxAudioSynth;
 

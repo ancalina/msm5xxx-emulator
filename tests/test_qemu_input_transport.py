@@ -6,12 +6,13 @@ import io
 import os
 from pathlib import Path
 import queue
+import shutil
 import struct
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from corpus import snippet
+from corpus import firmware_path, snippet
 from unittest import mock
 
 from msm5xxx_emulator.detection.boot import (
@@ -26,6 +27,84 @@ MODULE = importlib.import_module("msm5xxx_emulator.qemu.live_display")
 
 
 class QEMUInputTransportTests(unittest.TestCase):
+    def test_sv130_low5_property_from_real_qemu_decoder(self):
+        from msm5xxx_emulator.detection.firmware import detect
+        from msm5xxx_emulator.qemu.decoder import QemuDecoder
+
+        source = firmware_path("LG-SV130.bin")
+        with tempfile.TemporaryDirectory(prefix="sv130-qemu-decoder-") as directory:
+            copied = Path(directory) / "renamed-input.bin"
+            shutil.copyfile(source, copied)
+            config = detect(copied)
+            config.flash_state = str(Path(directory) / "state.flash")
+            if config.secondary_flash_address:
+                config.secondary_flash_state = str(
+                    Path(directory) / "state.secondary"
+                )
+            if config.upper_flash_address is not None:
+                config.upper_flash_state = str(Path(directory) / "state.upper")
+
+            decoder = QemuDecoder(config)
+            profile = decoder.direct_input_profile
+            self.assertEqual(decoder.direct_input_detection, "accepted")
+            self.assertEqual(profile["function"], 0x8216c)
+            self.assertEqual(profile["prologue"], 0x8216e)
+            self.assertEqual(profile["global_sense_sites"], [0x82192])
+            self.assertEqual(profile["row_sense_sites"], [0x822b8, 0x822d4])
+            self.assertEqual(decoder.direct_input_positions[11], (ord("1"), 1, 3))
+            self.assertEqual(MODULE.qemu_low5_matrix_property(
+                decoder.image, config, profile
+            ), ("matrix-low5=18383f4:82194:822ba:822d6", None))
+            self.assertEqual(MODULE.qemu_low5_rex_c80_property(
+                config, profile
+            ), ("rex-static-c80=3000c80:3000c94:200:4c4b40:1800000:3460:"
+                "1a3c398:3800068:21c:183c548:e3a4:3", None))
+            full_image = copied.read_bytes()
+            rex_property = MODULE.qemu_low5_rex_c80_property(
+                config, profile
+            )[0]
+            expected_seed = (0x01800000, 0x00800000, 0x01800000)
+            self.assertEqual(MODULE.qemu_sv130_initial_ram_seed(
+                full_image, config, profile, rex_property, enabled=True
+            ), expected_seed)
+            from copy import copy
+            without_model = copy(config)
+            without_model.model = None
+            self.assertEqual(MODULE.qemu_sv130_initial_ram_seed(
+                full_image, without_model, profile, rex_property, enabled=True
+            ), expected_seed)
+            altered_code = bytearray(full_image)
+            altered_code[0x00da1530] ^= 1
+            self.assertIsNone(MODULE.qemu_sv130_initial_ram_seed(
+                altered_code, without_model, profile, rex_property, enabled=True
+            ))
+            self.assertIsNone(MODULE.qemu_sv130_initial_ram_seed(
+                full_image, config, profile, rex_property, enabled=False
+            ))
+            self.assertIsNone(MODULE.qemu_sv130_initial_ram_seed(
+                full_image, config, profile, "rex-static-c80=wrong", enabled=True
+            ))
+            from copy import copy, deepcopy
+            bad_layout = copy(config)
+            bad_layout.ram_image_offset += 4
+            self.assertIsNone(MODULE.qemu_sv130_initial_ram_seed(
+                full_image, bad_layout, profile, rex_property, enabled=True
+            ))
+            bad_source = bytearray(full_image)
+            bad_source[0x01800000] = 0
+            self.assertIsNone(MODULE.qemu_sv130_initial_ram_seed(
+                bad_source, config, profile, rex_property, enabled=True
+            ))
+            wrong_scanner = dict(profile, row_sense_sites=[0x822b8])
+            self.assertEqual(MODULE.qemu_low5_rex_c80_property(
+                config, wrong_scanner
+            ), (None, None))
+            wrong_route = deepcopy(profile)
+            wrong_route["timer_bridge"]["irq_route"]["status_bank_count"] = 2
+            self.assertEqual(MODULE.qemu_low5_rex_c80_property(
+                config, wrong_route
+            ), (None, "scanner-c80-route-unclosed"))
+
     def test_distributed_sideband_source_admission_and_release(self):
         from copy import deepcopy
         from msm5xxx_emulator.devices.input import InputMixin
@@ -563,6 +642,25 @@ class QEMUInputTransportTests(unittest.TestCase):
         helper = MODULE.qemu_low5_matrix_property
         self.assertEqual(helper(bytes(image), config, profile),
                          ('matrix-low5=1800100:12:22', None))
+        # This exact descriptor scanner performs two separately decoded row
+        # reads; both must be redirected so its row-zero branch sees the same
+        # five-bit electrical input as the primary row scan.
+        paired_load = 0x80000
+        paired_image = bytearray(0x2400)
+        for site in (0x82192, 0x822b8, 0x822d4):
+            offset = site - paired_load
+            paired_image[offset:offset + 4] = snippet('test_qemu_input_transport',
+                                                      'sv130_low5_pair_load')
+        paired_config = SimpleNamespace(load_address=paired_load,
+            flash_size=len(paired_image), ram_base=0x1800000,
+            ram_size=0x800000, board_status_input=None)
+        paired_profile = dict(profile, function=0x8216c, prologue=0x8216e,
+            global_sense_sites=[0x82192], row_sense_sites=[0x822b8, 0x822d4])
+        self.assertEqual(helper(bytes(paired_image), paired_config, paired_profile),
+            ('matrix-low5=1800100:82194:822ba:822d6', None))
+        self.assertEqual(helper(bytes(paired_image), paired_config,
+            dict(paired_profile, row_sense_sites=[0x822b8, 0x822d6])),
+            (None, 'ambiguous-sense-roles'))
         for changed, reason in (
             ({'descriptor_pointer': 0x2000000}, 'descriptor-outside-ram'),
             ({'timer_bridge': None}, 'unclosed-scanner-profile'),

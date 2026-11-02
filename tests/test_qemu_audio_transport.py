@@ -121,6 +121,20 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertEqual(transport.audio_stream_status, 'rejected')
         self.assertEqual(transport.audio_stream_reject_reason, 'qemu-audio-order-gap')
 
+    def test_native_ma3_pcm_ignores_unclassified_mmio_write_replay(self):
+        transport = self.native_transport()
+        transport.decoder = SimpleNamespace(audio_transport=None)
+        transport.audio_native = True
+        transport.audio_native_ma3_pcm = True
+        record = bytearray(16)
+        record[0:2] = bytes((AUDIO_WRITE, 1))
+        struct.pack_into('<III', record, 4, 0x1234, 0x0480, 1)
+        transport._replay_audio_write(record)
+        self.assertEqual(transport.audio_stream_status, 'native')
+        self.assertIsNone(transport.audio_stream_reject_reason)
+        self.assertTrue(transport.audio_stream_seen)
+        self.assertEqual(transport.audio_stream_order, 1)
+
     def test_ma5_cold_property_requires_explicit_period_and_same_image_graph(self):
         from test_audio_transport import _ma5_readback_image
         image = _ma5_readback_image(0x2000)
@@ -398,6 +412,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
         transport.audio_reject_witness = None
         transport.audio_native = True
         transport.audio_native_ma5_pcm = False
+        transport.audio_native_ma3_pcm = False
         transport.audio_stream_seen = False
         transport.audio_stream_order = 0
         transport._audio_lock = threading.RLock()
@@ -424,6 +439,15 @@ class QEMUAudioTransportTests(unittest.TestCase):
                 transport._replay_audio_status(record)
                 self.assertEqual(transport.audio_stream_status, "rejected")
                 self.assertEqual(transport.audio_stream_reject_reason, reason)
+
+    def test_native_ma3_sink_stop_has_specific_failure_reason(self):
+        record = bytes((AUDIO_STATUS, AUDIO_STATUS_REJECTED)) + bytes(14)
+        transport = self.native_transport()
+        transport.audio_native_ma3_pcm = True
+        transport._replay_audio_status(record)
+        self.assertEqual(transport.audio_stream_status, "rejected")
+        self.assertEqual(transport.audio_stream_reject_reason,
+                         "qemu-ma3-pcm-output-stopped")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux socket bound")
     def test_audio_socket_pair_bounds_qemu_sender(self) -> None:
@@ -490,6 +514,48 @@ class QEMUAudioTransportTests(unittest.TestCase):
             "w2/586;w2/58e;w2/1056a;w2/10572;w2/37cb1e;"
             "w2/37cb48;w2/37cb74",
         )
+        ma3 = {
+            "family": "ma3", "grammar": "ma3-readback-v1",
+            "static_status": "accepted", "base": 0x02840000,
+            "data_offset": 2, "verifier_entry": 0x100,
+            "register_reader": 0x200,
+            "register_readback": [
+                [0x90, 0xA0, 0x60], [0xA0, 0xB0, 0x3C],
+                [0x14A, 0x152, 0x40],
+            ],
+            "sites": {"write_0": [0x300], "read_0": [0x310],
+                      "write_2": [0x320], "read_2": [0x330]},
+        }
+        self.assertEqual(qemu_audio_sites(ma3),
+                         "r0/310;r2/330;w0/300;w2/320")
+        self.assertIsNone(qemu_audio_sites({**ma3, "register_reader": None}))
+        ma3_indexed = {
+            "family": "ma3", "grammar": "ma3-indexed-v1",
+            "static_status": "accepted", "base": 0x01400000,
+            "data_offset": 2, "verifier_entry": 0x8C00A,
+            "register_reader": 0x8B13C,
+            "fifo_writers": [0x8B0C8, 0x8B20C, 0x8B350],
+            "status_poller": 0x8C64E, "wrapper_helper": 0x8C518,
+            "register_readback": [
+                [0x90, 0xA0, 0x60], [0xA0, 0xB0, 0x3C],
+                [0x14A, 0x152, 0x40],
+            ],
+            "sites": {
+                "write_0": [0x8C53C], "read_0": [0x8C54E],
+                "write_2": [0x8C566], "read_2": [0x8C578],
+            },
+        }
+        self.assertEqual(
+            qemu_audio_sites(ma3_indexed),
+            "r0/8c54e;r2/8c578;w0/8c53c;w2/8c566",
+        )
+        self.assertIsNone(qemu_audio_sites({
+            **ma3_indexed, "fifo_writers": [0x8B0C8],
+        }))
+        self.assertIsNone(qemu_audio_sites({
+            **ma3_indexed,
+            "sites": {**ma3_indexed["sites"], "read_0": [0x8C54C]},
+        }))
         opaque = {
             "family": "opaque", "grammar": "command-status-data-v1",
             "base": 0x02880000, "data_offset": 2,

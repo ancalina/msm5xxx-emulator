@@ -216,6 +216,9 @@ int main(void) {
 #include "msm5xxx-audio-request.h"
 #include "msm5xxx-ma5-audio.h"
 #include "msm5xxx-ma5-pcm-output.h"
+#include "msm5xxx-ma3-audio.h"
+#include "msm5xxx-ma3-render.h"
+#include "msm5xxx-ma3-stream.h"
 #include "msm5xxx-ma5-wt-engine.h"
 #include "msm5xxx-small-page-nand.h"
 #include "msm5xxx-tone.h"
@@ -302,7 +305,17 @@ typedef struct {
     uint64_t ma2_audio_gate_offs, ma2_audio_ends;
     bool dmd5100_enabled;
     uint16_t *dmd5100_even, *dmd5100_odd;
-    int ma2_audio;
+    MSM5xxxMA2Audio ma2_audio;
+    void *ma3_audio_timer;
+    uint32_t ma3_bus_log_count;
+    bool audio_ma3;
+    MSM5xxxMA3Audio ma3_audio;
+    MSM5xxxMA3Renderer ma3_renderer;
+    MSM5xxxMA3StreamEngine ma3_stream;
+    bool ma3_gpio_irq_qualified, ma3_gpio_irq_level;
+    bool ma3_gpio_irq_callback_seen;
+    uint16_t ma3_gpio_pending[3], ma3_parent_pending;
+    uint16_t rex_irq_pending[3];
     void *watchdog_timer;
 } MSM5xxxPOCMachineState;
 typedef MSM5xxxPOCMachineState Object;
@@ -395,7 +408,25 @@ static void AUD_set_active_out(void *voice, bool active) {
 static void msm5xxx_poc_ma2_pending_clear(MSM5xxxPOCMachineState *state) {
     assert(state == &s);
 }
-static void msm5xxx_ma2_reset(int *ma2) { assert(ma2 == &s.ma2_audio && core_held); }
+void msm5xxx_ma2_reset(MSM5xxxMA2Audio *ma2) {
+    assert(ma2 == &s.ma2_audio && core_held);
+}
+static bool msm5xxx_poc_ma3_stream_mix(void *opaque, uint64_t first,
+                                       const int16_t *pcm, size_t frames) {
+    (void)opaque; (void)first; (void)pcm; (void)frames; return true;
+}
+void msm5xxx_ma3_reset(MSM5xxxMA3Audio *audio) {
+    memset(audio, 0, sizeof(*audio));
+}
+void msm5xxx_ma3_renderer_init(MSM5xxxMA3Renderer *renderer) {
+    memset(renderer, 0, sizeof(*renderer));
+}
+void msm5xxx_ma3_stream_init(MSM5xxxMA3StreamEngine *engine,
+                             MSM5xxxMA3StreamEmit emit, void *opaque) {
+    memset(engine, 0, sizeof(*engine));
+    engine->emit = emit;
+    engine->emit_opaque = opaque;
+}
 static void msm5xxx_poc_audio_stream_status(MSM5xxxPOCMachineState *state) {
     assert(state == &s && !core_held);
 }
@@ -582,6 +613,19 @@ int main(void) {
     assert(s.ma5_pcm_output.queue.epoch == 2 &&
            s.ma5_pcm_output.rate.epoch == 2 &&
            s.audio_stream_reset_epoch == 2 && !s.ma5_pcm_output_failed);
+    setup();
+    s.audio_ma3 = true;
+    s.ma3_gpio_pending[1] = 0x1234;
+    s.ma3_parent_pending = 0x4321;
+    s.ma3_gpio_irq_qualified = true;
+    s.ma3_gpio_irq_level = true;
+    s.ma3_gpio_irq_callback_seen = true;
+    s.rex_irq_pending[1] = 0x6000;
+    msm5xxx_poc_audio_reset(&s);
+    assert(!s.ma3_gpio_pending[1] && !s.ma3_parent_pending);
+    assert(!s.ma3_gpio_irq_qualified && !s.ma3_gpio_irq_level &&
+           !s.ma3_gpio_irq_callback_seen);
+    assert(s.rex_irq_pending[1] == 0x4000);
     msm5xxx_poc_instance_finalize(&s);
     return 0;
 }
@@ -593,13 +637,14 @@ int main(void) {
                             '-Wno-unused-parameter', '-fsanitize=undefined',
                             '-fno-sanitize-recover=undefined', '-I', str(native),
                             str(path / 'check.c'), str(native / 'msm5xxx-audio-synth.c'),
+                            str(native / 'msm5xxx-ma5-waveform.c'),
                             str(native / 'msm5xxx-audio-request.c'),
                             str(native / 'msm5xxx-tone.c'),
                             str(native / 'msm5xxx-ma5-audio.c'),
                             str(native / 'msm5xxx-ma5-pcm-queue.c'),
                             str(native / 'msm5xxx-ma5-rateconv.c'),
                             str(native / 'msm5xxx-ma5-pcm-output.c'),
-                            '-o', str(path / 'check')], check=True, timeout=30)
+                            '-lm', '-o', str(path / 'check')], check=True, timeout=30)
             subprocess.run([str(path / 'check')], check=True, timeout=10)
 
 

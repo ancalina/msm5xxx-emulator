@@ -48,7 +48,7 @@ from msm5xxx_emulator.detection.input_matrix import (
     resolve_distributed_matrix_input,
 )
 from msm5xxx_emulator.core.config import BoardStatusInput
-from msm5xxx_emulator.devices.input import SAMSUNG_RING32_KEY_EVENTS
+from msm5xxx_emulator.devices.input import InputMixin, SAMSUNG_RING32_KEY_EVENTS
 from msm5xxx_emulator.detection.arm import (
     _thumb_path_preserves_register,
     thumb_bl_target,
@@ -62,8 +62,12 @@ from msm5xxx_emulator.detection.boot import (
 )
 from msm5xxx_emulator.detection.firmware_image import load_firmware_image
 from msm5xxx_emulator.detection.memory_layout import restore_sparse_nor_gap
-from msm5xxx_emulator.detection.audio import find_audio_transport, find_ma5_readback_candidate
+from msm5xxx_emulator.detection.audio import (
+    _KP6200_MA3_SITES, _SV130_MA3_SITES, find_audio_transport,
+    find_ma5_readback_candidate,
+)
 from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
+from msm5xxx_emulator.detection.ma3_gpio_irq import find_ma3_gpio_irq_candidate
 from msm5xxx_emulator.detection.rex_stack_w1c import find_stack_w1c_irq_profile
 from msm5xxx_emulator.detection.nv_nor_word import find_word_offset_nv_nor
 from msm5xxx_emulator.detection.nv_nor_byte import find_byte_offset_nv_nor
@@ -357,13 +361,26 @@ def qemu_low5_matrix_property(
     if (type(descriptor) is not int or descriptor & 3
             or not config.ram_base <= descriptor <= config.ram_base + config.ram_size - 0x38):
         return None, "descriptor-outside-ram"
+    global_sites = profile.get("global_sense_sites")
+    row_sites = profile.get("row_sense_sites")
+    if (not isinstance(global_sites, (list, tuple)) or len(global_sites) != 1
+            or not isinstance(row_sites, (list, tuple))
+            or len(row_sites) not in (1, 2)):
+        return None, "ambiguous-sense-roles"
+    # The paired-site form is confined to the verified scanner layout whose
+    # second read rechecks the same port for its row-zero special case.
+    if len(row_sites) == 2 and (
+            profile.get("function") != 0x8216c
+            or profile.get("prologue") != 0x8216e
+            or global_sites != [0x82192]
+            or row_sites != [0x822b8, 0x822d4]):
+        return None, "ambiguous-sense-roles"
+    role_sites = [global_sites[0], *row_sites]
+    if any(type(site) is not int or site & 1 for site in role_sites):
+        return None, "ambiguous-sense-roles"
     sites = []
-    for role in ("global_sense_sites", "row_sense_sites"):
-        candidates = profile.get(role)
-        if (not isinstance(candidates, (list, tuple)) or len(candidates) != 1
-                or type(candidates[0]) is not int or candidates[0] & 1):
-            return None, "ambiguous-sense-roles"
-        offset = candidates[0] - config.load_address
+    for candidate in role_sites:
+        offset = candidate - config.load_address
         if not 0 <= offset <= min(len(image), config.flash_size) - 4:
             return None, "sense-outside-primary-nor"
         pointer, read = struct.unpack_from("<HH", image, offset)
@@ -371,9 +388,11 @@ def qemu_low5_matrix_property(
         if (pointer & 0xF800 != 0x6800 or (pointer >> 6 & 31) != 0x34 // 4
                 or read != 0x8800 | register << 3 | register):
             return None, "sense-load-shape-mismatch"
-        sites.append(candidates[0] + 2)  # Actual LDRH, not its pointer load.
-    if sites[0] == sites[1]:
+        sites.append(candidate + 2)  # Actual LDRH, not its pointer load.
+    if len(set(sites)) != len(sites):
         return None, "ambiguous-sense-roles"
+    if len(sites) == 3:
+        return f"matrix-low5={descriptor:x}:{sites[0]:x}:{sites[1]:x}:{sites[2]:x}", None
     suffix = ""
     contact_sites = (qemu_sd840_low5_contacts(image, config, profile)
                      or qemu_sd9210_low5_contacts(image, config, profile))
@@ -787,6 +806,151 @@ def qemu_sd840_status_source(
     return all((0x2f00 | event) in checks for event in ASCII_KEY_EVENTS)
 
 
+def qemu_low5_rex_c80_property(
+        config: object, profile: dict[str, object] | None,
+) -> tuple[str | None, str | None]:
+    """Encode the paired scanner's independently validated 5 ms parent route."""
+    if profile is None or (
+            profile.get("grammar") != "lg-descriptor-low5-6x5-raw-v1"
+            or profile.get("function") != 0x8216c
+            or profile.get("prologue") != 0x8216e
+            or profile.get("descriptor_pointer") != 0x018383f4
+            or profile.get("global_sense_sites") != [0x82192]
+            or profile.get("row_sense_sites") != [0x822b8, 0x822d4]
+            or profile.get("event_sink_validation") !=
+                "validated-raw-enqueue-callsites"):
+        return None, None
+    bridge = profile.get("timer_bridge")
+    if not isinstance(bridge, dict) or (
+            bridge.get("signature") != "legacy-rex-5ms-scanner-timer-v1"
+            or bridge.get("tick_ms") != 5
+            or bridge.get("scanner") != profile["function"]):
+        return None, "scanner-timer-bridge-unclosed"
+    route = bridge.get("irq_route")
+    if not isinstance(route, dict) or (
+            route.get("signature") != "legacy-rex-5ms-irq-route-v1"
+            or route.get("controller_class") !=
+                "legacy-c80-three-bank-group14-v1"
+            or route.get("status") != 0x03000c80
+            or route.get("enable") != 0x03000c94
+            or route.get("mask") != 0x0200
+            or route.get("vector") != 0x18
+            or route.get("index") != 43
+            or route.get("status_bank_count") != 3
+            or route.get("group_row_size") != 14
+            or route.get("status_banks") !=
+                (0x03000c80, 0x03000c84, 0x03000cb0)
+            or route.get("clear_banks") !=
+                (0x03000c80, 0x03000c84, 0x03000ccc)
+            or route.get("controller_write_banks") !=
+                (0x03000c94, 0x03000c98, 0x03000cc4)
+            or route.get("controller_aperture") !=
+                (0x03000c80, 0x03000cce)
+            or not InputMixin._rex_legacy_irq_route_metadata_valid(route)):
+        return None, "scanner-c80-route-unclosed"
+    fields = (
+        "vector_target", "wrapper", "handler_slot", "handler",
+        "handler_validation_size", "callback_slot", "outer_callback",
+        "wrapper_file_offset", "wrapper_validation_size", "handler_file_offset",
+    )
+    if any(type(route.get(field)) is not int for field in fields):
+        return None, "scanner-c80-route-unclosed"
+    ram_base = getattr(config, "ram_base", None)
+    ram_size = getattr(config, "ram_size", None)
+    flash_size = getattr(config, "flash_size", None)
+    handler_file = int(route["handler_file_offset"])
+    handler_size = int(route["handler_validation_size"])
+    wrapper_size = int(route["wrapper_validation_size"])
+    if (getattr(config, "load_address", None) != 0
+            or ram_base != 0x01800000 or ram_size != 0x00800000
+            or type(flash_size) is not int or flash_size <= 0
+            or route["vector_target"] != ram_base
+            or not 0 <= int(route["handler_slot"]) <= 0xFFFFFFFF - 4
+            or not ram_base <= int(route["handler_slot"]) <= ram_base + ram_size - 4
+            or not ram_base <= int(route["callback_slot"]) <= ram_base + ram_size - 4
+            or route["callback_slot"] & 3 or route["handler_slot"] & 3
+            or not 0 <= handler_file <= flash_size - handler_size
+            or not 0 <= int(route["wrapper_file_offset"]) <= flash_size - wrapper_size
+            or not 0 <= int(bridge.get("outer_callback_file_offset", -1)) < flash_size
+            or route["outer_callback"] != bridge.get("outer_callback")
+            or route["outer_callback"] != bridge.get("outer_callback_file_offset")
+            or route["wrapper"] != route["wrapper_file_offset"]):
+        return None, "scanner-c80-route-outside-memory"
+    overlay = [
+        item for item in getattr(config, "overlays", ())
+        if all(type(getattr(item, name, None)) is int
+               for name in ("source", "target", "size"))
+        and item.source <= handler_file
+        and handler_file + handler_size <= item.source + item.size
+        and item.target + handler_file - item.source == route["handler"]
+    ]
+    if len(overlay) != 1:
+        return None, "scanner-c80-handler-overlay-unclosed"
+    values = (
+        int(route["status"]), int(route["enable"]), int(route["mask"]),
+        int(bridge["tick_ms"]) * 1_000_000,
+        int(route["vector_target"]), int(route["wrapper"]),
+        int(route["handler_slot"]), int(route["handler"]), handler_size,
+        int(route["callback_slot"]), int(route["outer_callback"]), 3,
+    )
+    return "rex-static-c80=" + ":".join(f"{value:x}" for value in values), None
+
+
+def qemu_sv130_initial_ram_seed(
+        image: bytes, config: object, profile: dict[str, object] | None,
+        rex_property: str | None, *, enabled: bool,
+) -> tuple[int, int, int] | None:
+    """Return the validated SV130 RAM-seed source and destination range.
+
+    This is intentionally opt-in and bound to the exact low-five scanner/C80
+    route. The segment must be the complete detector-qualified RAM tail, and
+    its initial vector branch must point at the route's checked wrapper.
+    """
+    if type(enabled) is not bool or not enabled or profile is None:
+        return None
+    if (not sv130_keypad_source(image, config, profile)
+            or getattr(config, "load_address", None) != 0
+            or getattr(config, "image_offset", None) != 0
+            or getattr(config, "entry", None) != 0
+            or getattr(config, "flash_size", None) != 0x01800000
+            or getattr(config, "ram_base", None) != 0x01800000
+            or getattr(config, "ram_size", None) != 0x00800000
+            or getattr(config, "ram_image_offset", None) != 0x01800000
+            or getattr(config, "ram_image_size", None) != 0x00800000
+            or len(image) != 0x02000000):
+        return None
+    low5_property, _ = qemu_low5_matrix_property(image, config, profile)
+    expected_rex, _ = qemu_low5_rex_c80_property(config, profile)
+    if (low5_property != "matrix-low5=18383f4:82194:822ba:822d6"
+            or expected_rex is None or rex_property != expected_rex):
+        return None
+    fields = expected_rex.partition("=")[2].split(":")
+    try:
+        values = tuple(int(field, 16) for field in fields)
+    except ValueError:
+        return None
+    if (len(values) != 12 or values[0:6] != (
+            0x03000c80, 0x03000c94, 0x0200, 5_000_000,
+            0x01800000, 0x3460) or values[-1] != 3):
+        return None
+    seed_offset, seed_size, seed_base = (
+        config.ram_image_offset, config.ram_image_size, config.ram_base
+    )
+    if (not 0 <= seed_offset <= len(image) - seed_size
+            or seed_offset + seed_size != len(image)
+            or seed_base + seed_size > 0x02000000):
+        return None
+    word = struct.unpack_from("<I", image, seed_offset)[0]
+    if word & 0xff000000 != 0xea000000:
+        return None
+    displacement = (word & 0x00ffffff) << 2
+    if displacement & (1 << 25):
+        displacement -= 1 << 26
+    if (seed_base + 8 + displacement) & 0xffffffff != values[5]:
+        return None
+    return seed_offset, seed_size, seed_base
+
+
 def qemu_ram_argument(size: int) -> str:
     """Preserve exact bytes; keep MiB spelling for aligned RAM allocations."""
     if type(size) is not int or size <= 0:
@@ -1029,6 +1193,31 @@ def qemu_audio_irq_property(audio: object, config: FirmwareConfig) -> tuple[str 
         return None, 'audio-route-controller-unverified'
     suffix = ':1' if route.get('profile') == 'byte-count-halfword-mask-v1' else ''
     return 'audio-irq-route=' + ':'.join(f'{value:x}' for value in fields) + suffix, None
+
+
+def qemu_ma3_gpio_irq_property(
+        image: bytes, config: object, audio: object,
+) -> tuple[str | None, str | None]:
+    """Serialize the statically closed SC GPIO23-to-parent route for native checks."""
+    if (not isinstance(audio, dict)
+            or audio.get("family") != "ma3"
+            or audio.get("grammar") != "ma3-indexed-v1"
+            or audio.get("static_status") != "accepted"):
+        return None, "ma3-audio-profile-unverified"
+    if (getattr(config, "chipset", None) != "MSM5100"
+            or getattr(config, "flash_size", None) != 0x01000000
+            or getattr(config, "ram_base", None) != 0x01000000
+            or getattr(config, "ram_size", None) != 0x00800000):
+        return None, "ma3-ram-profile-unverified"
+    candidate = find_ma3_gpio_irq_candidate(image)
+    fields = candidate.get("fields") if candidate.get("status") == "candidate" else None
+    if (candidate.get("profile") != "ma3-sc-gpio23-v1"
+            or not isinstance(fields, list) or len(fields) != 11
+            or fields != [0x17, 0x1D, 0x0100B914, 0x0129E278,
+                          0x0100B584, 0x00161F69, 0x00161BFC,
+                          0x0009BB71, 0x2000, 0x03000C84, 0x03000C98]):
+        return None, str(candidate.get("reject_reason") or "ma3-irq-route-unverified")
+    return "ma3-gpio-irq=" + ":".join(f"{value:x}" for value in fields), None
 
 
 def qemu_audio_packet_property(image: bytes, config: object,
@@ -1648,6 +1837,67 @@ def qemu_audio_sites(audio: object) -> str | None:
         and type(data_offset) is int and data_offset == 2
         and audio.get("aperture_write_sites") == ma5_signature
     )
+    ma3_readback = (
+        family == "ma3" and grammar == "ma3-readback-v1"
+        and audio.get("static_status") == "accepted"
+        and base == 0x02840000 and data_offset == 2
+        and isinstance(audio.get("verifier_entry"), int)
+        and isinstance(audio.get("register_reader"), int)
+        and audio.get("register_readback") == [
+            [0x90, 0xA0, 0x60], [0xA0, 0xB0, 0x3C], [0x14A, 0x152, 0x40]
+        ]
+    )
+    ma3_indexed = (
+        family == "ma3" and grammar == "ma3-indexed-v1"
+        and audio.get("static_status") == "accepted"
+        and base == 0x01400000 and data_offset == 2
+        and audio.get("verifier_entry") == 0x8C00A
+        and audio.get("register_reader") == 0x8B13C
+        and audio.get("fifo_writers") == [0x8B0C8, 0x8B20C, 0x8B350]
+        and audio.get("status_poller") == 0x8C64E
+        and audio.get("wrapper_helper") == 0x8C518
+        and audio.get("register_readback") == [
+            [0x90, 0xA0, 0x60], [0xA0, 0xB0, 0x3C],
+            [0x14A, 0x152, 0x40],
+        ]
+        and audio.get("sites") == {
+            "write_0": [0x8C53C], "read_0": [0x8C54E],
+            "write_2": [0x8C566], "read_2": [0x8C578],
+        }
+    )
+    ma3_packetized = (
+        family == "ma3" and grammar == "ma3-readback-fifo-v1"
+        and audio.get("static_status") == "accepted"
+        and base == 0x02800000 and data_offset == 0x80
+        and audio.get("verifier_entry") == 0x1767BE
+        and audio.get("register_reader") == 0x175924
+        and audio.get("fifo_writers") == [0x1758B0, 0x175B10]
+        and audio.get("status_pollers") == [0x1B66FE, 0x1B66D8, 0x1B676C]
+        and audio.get("register_readback") == [
+            [0x90, 0xA0, 0x60], [0xA0, 0xB0, 0x3C],
+            [0x14A, 0x152, 0x40],
+        ]
+        and audio.get("sites") == {
+            name: list(sites) for name, sites in _SV130_MA3_SITES.items()
+        }
+    )
+    ma3_kp6200 = (
+        family == "ma3" and grammar == "ma3-kp-readback-fifo-v1"
+        and audio.get("static_status") == "accepted"
+        and base == 0x02C00000 and data_offset == 4
+        and audio.get("verifier_entry") == 0xE316E
+        and audio.get("register_reader") == 0xE230C
+        and audio.get("fifo_writers") == [0xE22A4]
+        and audio.get("status_pollers") == [0x1148A0, 0x1147EA, 0x114824]
+        and audio.get("register_readback") == [
+            [0x90, 0xA0, 0x60], [0xA0, 0xB0, 0x3C],
+            [0x14A, 0x152, 0x40],
+        ]
+        and audio.get("sites") == {
+            name: list(sites) for name, sites in _KP6200_MA3_SITES.items()
+        }
+    )
+    ma3 = ma3_readback or ma3_indexed or ma3_packetized or ma3_kp6200
     begin = audio.get("begin")
     opaque_sites = audio.get("sites")
     opaque = (
@@ -1661,9 +1911,9 @@ def qemu_audio_sites(audio: object) -> str | None:
         }
     )
     sites = audio.get(
-        "sites" if ma2 or opaque else "aperture_write_sites"
+        "sites" if ma2 or opaque or ma3 else "aperture_write_sites"
     )
-    if (not ma2 and not ma5 and not opaque) or not isinstance(sites, dict):
+    if (not ma2 and not ma5 and not opaque and not ma3) or not isinstance(sites, dict):
         return None
 
     entries: list[tuple[str, int, int]] = []
@@ -1676,23 +1926,27 @@ def qemu_audio_sites(audio: object) -> str | None:
         is_data_read = (
             ma2 and name == f"read_{data_offset}"
             or opaque and name in ("read_0", f"read_{data_offset}")
+            or ma3 and name in ("read_0", f"read_{data_offset}")
         )
         if ma5 and not is_write:
             return None
         if not is_write and not is_data_read:
             continue
         suffix = name[name.index("_") + 1:]
-        if (not suffix or len(suffix) > 2
+        ma3_wide = ma3_packetized or ma3_kp6200
+        if (not suffix or len(suffix) > (3 if ma3_packetized else 2)
                 or any(character not in "0123456789"
                                for character in suffix)):
             return None
         port = int(suffix, 10)
-        if (str(port) != suffix or port > data_offset or port >= 16
+        if (str(port) != suffix or port > data_offset
+                or port >= (256 if ma3_packetized else 16)
                 or not isinstance(values, (list, tuple)) or not values):
             return None
         if is_write:
             write_ports.add(port)
-        if len(values) > AUDIO_SITE_LIMIT:
+        site_limit = 192 if ma3_wide else AUDIO_SITE_LIMIT
+        if len(values) > site_limit:
             return None
         for value in values:
             if (type(value) is not int or not 0 <= value <= 0xFFFFFFFF
@@ -1703,7 +1957,7 @@ def qemu_audio_sites(audio: object) -> str | None:
             seen.add(value)
             entry = ("w" if is_write else "r", port, value)
             entries.append(entry)
-            if len(entries) > AUDIO_SITE_LIMIT:
+            if len(entries) > (192 if ma3_wide else AUDIO_SITE_LIMIT):
                 return None
     if 0 not in write_ports or data_offset not in write_ports:
         return None
@@ -4549,6 +4803,7 @@ class Transport:
         ) = None
         self.audio_native = False
         self.audio_native_ma5_pcm = False
+        self.audio_native_ma3_pcm = False
         self._audio_lock = threading.RLock()
         self._audio_ready = threading.Condition(self._audio_lock)
         self.native_audio_packets: deque[bytes] = deque(maxlen=4)
@@ -4898,6 +5153,40 @@ class Transport:
                 self.config.detection_notes.append(
                     "QEMU five-column matrix temporary: descriptor/selector-gated electrical input"
                 )
+                if (self.rex_c80_profile is None
+                        and self.rex_read_consume_profile is None
+                        and self.rex_w1c_profile is None
+                        and self.rex_stack_w1c_profile is None):
+                    input_rex_property, input_rex_reject = (
+                        qemu_low5_rex_c80_property(self.config, direct)
+                    )
+                    if input_rex_property is not None:
+                        self.rex_c80_profile = input_rex_property.split("=", 1)[1]
+                        self.config.rex_static_controller_experimental = True
+                        self.config.detection_notes.append(
+                            "QEMU explicit low-five input enables its closed 5 ms C80 parent route; live vector and callback gates remain active"
+                        )
+                        seed_range = qemu_sv130_initial_ram_seed(
+                            detector_image, self.config, direct,
+                            input_rex_property, enabled=experimental_low5,
+                        )
+                        if seed_range is not None:
+                            seed_offset, seed_size, seed_base = seed_range
+                            seed_path = temporary / "sv130-initial-ram-seed.raw"
+                            seed_path.write_bytes(
+                                detector_image[seed_offset:seed_offset + seed_size]
+                            )
+                            self.ram_seed_loader_args = [
+                                "-device",
+                                f"loader,file={seed_path},addr=0x{seed_base:x},force-raw=on",
+                            ]
+                            self.config.detection_notes.append(
+                                "QEMU explicit SV130 input experiment seeds the full validated RAM image; default RAM remains unseeded"
+                            )
+                    elif input_rex_reject is not None:
+                        self.config.detection_notes.append(
+                            f"QEMU low-five C80 parent route rejected: {input_rex_reject}; scanner remains untriggered"
+                        )
             elif low5_reject is not None:
                 self.config.detection_notes.append(
                     f"QEMU five-column matrix rejected: {low5_reject}; native fallback retained"
@@ -5009,6 +5298,13 @@ class Transport:
                 )
                 machine += ",audiodev=msm5xxx"
                 self.audio_native = True
+        ma3_indexed_ram_profile = (
+            audio_family == "ma3" and audio_grammar == "ma3-indexed-v1"
+            and getattr(self.config, "chipset", None) == "MSM5100"
+            and getattr(self.config, "flash_size", None) == 0x01000000
+            and getattr(self.config, "ram_base", None) == 0x01000000
+            and getattr(self.config, "ram_size", None) == 0x00800000
+        )
         ma5_property = None
         ma5_auto_profile = False
         ma5_auto_irq = False
@@ -5141,8 +5437,14 @@ class Transport:
               and audio.get("static_status") == "accepted"
               and (audio_family, audio_grammar) in {
                   ("ma5", "indexed-rw-v1"),
+                  ("ma3", "ma3-readback-v1"),
+                  ("ma3", "ma3-readback-fifo-v1"),
+                  ("ma3", "ma3-kp-readback-fifo-v1"),
+                  ("ma3", "ma3-indexed-v1"),
                   ("opaque", "command-status-data-v1"),
               }
+              and (audio_grammar != "ma3-indexed-v1"
+                   or ma3_indexed_ram_profile)
               and not upper_nor_present):
             audio_sites = qemu_audio_sites(audio)
             if audio_sites is not None:
@@ -5155,9 +5457,38 @@ class Transport:
                     "QEMU MA5 indexed write-only boot aperture enabled; "
                     "reads remain fail-closed"
                     if audio_family == "ma5" else
+                    "QEMU MA3 register transport enabled with linked "
+                    "readback and MMIO accessors"
+                    if audio_family == "ma3" else
                     "QEMU command/status/data boot aperture enabled with "
                     "inactive zero readback"
                 )
+                if audio_family == "ma3":
+                    self.audio_native = True
+                    self.audio_native_ma3_pcm = True
+                    self.audio_stream_enabled = True
+                    self.audio_stream_status = "pending"
+                    irq_property, irq_reject = qemu_ma3_gpio_irq_property(
+                        detector_image, self.config, audio)
+                    if irq_property is not None:
+                        machine += "," + irq_property
+                        self.config.detection_notes.append(
+                            "QEMU MA3 GPIO23 route enabled with linked parent, "
+                            "dispatcher, and reset-copy evidence; native RAM gates remain active")
+                    else:
+                        self.config.detection_notes.append(
+                            f"QEMU MA3 GPIO IRQ route rejected: {irq_reject}; audio transport retained")
+                    if not audio_pcm:
+                        machine += ",audio-pcm=off"
+                    elif (audio_listener is not None
+                          or audio_qemu_socket is not None):
+                        machine += ",audio-stream-chardev=audio"
+                    else:
+                        desktop_audio_driver = (
+                            "coreaudio" if sys.platform == "darwin" else
+                            "dsound" if sys.platform == "win32" else "alsa"
+                        )
+                        machine += ",audiodev=msm5xxx"
         elif (audio is not None
               and audio_grammar == "repeated-bit-sequence-v1"
               and not upper_nor_present):
@@ -6298,6 +6629,7 @@ class Transport:
                         loader, self.config.ram_size, temporary, loader_size,
                         loader_exclude,
                     ),
+                    *getattr(self, "ram_seed_loader_args", ()),
                     *storage_args,
                     *(
                         ("-audiodev",
@@ -6864,7 +7196,8 @@ class Transport:
         if order != expected:
             self._reject_audio_stream("qemu-audio-order-gap")
             return
-        if getattr(self, "audio_native_ma5_pcm", False):
+        if (getattr(self, "audio_native_ma5_pcm", False)
+                or getattr(self, "audio_native_ma3_pcm", False)):
             self.audio_stream_seen = True
             self.audio_stream_order = order
             return
@@ -6891,7 +7224,8 @@ class Transport:
         status = record[1]
         order, dropped, detail = struct.unpack_from("<III", record, 4)
         admitted = (self.audio_stream_enabled
-                    or getattr(self, "audio_native_ma5_pcm", False) is True)
+                    or getattr(self, "audio_native_ma5_pcm", False) is True
+                    or getattr(self, "audio_native_ma3_pcm", False) is True)
         if (not admitted
                 and status == AUDIO_STATUS_RESET
                 and record[2:4] == b"\0\0"
@@ -6949,6 +7283,9 @@ class Transport:
         elif (status == AUDIO_STATUS_REJECTED and order == dropped == detail == 0
               and getattr(self, "audio_native_ma5_pcm", False)):
             self._reject_audio_stream("qemu-ma5-pcm-output-stopped")
+        elif (status == AUDIO_STATUS_REJECTED and order == dropped == detail == 0
+              and getattr(self, "audio_native_ma3_pcm", False)):
+            self._reject_audio_stream("qemu-ma3-pcm-output-stopped")
         elif status == AUDIO_STATUS_NATIVE and order == dropped == detail == 0:
             self.audio_native = True
             self.audio_stream_status = "native"

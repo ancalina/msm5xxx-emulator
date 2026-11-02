@@ -905,17 +905,15 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 if (runtime := mapped_runtime(position)) is not None
             ],
         }
-        detection_notes.append(
-            f"Yamaha {audio_transport['family'].upper()} "
-            f"{audio_transport['grammar']} audio transport detected"
-        )
+        if audio_transport["family"] != "ma3":
+            detection_notes.append(
+                f"Yamaha {audio_transport['family'].upper()} "
+                f"{audio_transport['grammar']} audio transport detected"
+            )
     elif audio_transport["static_status"] == "rejected":
-        detection_notes.append(
-            "Yamaha audio transport rejected: "
-            f"{audio_transport['reject_reason']}"
-        )
-    # Candidate-only classes carry diagnostics in audio_transport; runtime
-    # remains unchanged and does not need a new general detection note.
+        reason = ("protocol-unsupported" if audio_transport["family"] == "ma3"
+                  else audio_transport["reject_reason"])
+        detection_notes.append(f"Yamaha audio transport rejected: {reason}")
     elif (audio_transport["static_status"] == "candidate"
           and audio_transport.get("structural_evidence", {}).get("transport_class")
           not in ("alternate-reset-readback-v1", "alternate-direct-reset-readback-v1")):
