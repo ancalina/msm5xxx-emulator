@@ -35,6 +35,9 @@ class LGKPLegacyScannerTest(unittest.TestCase):
                 altered = dict(profile)
                 altered["timer_bridge"] = {**profile["timer_bridge"], "irq_route": {}}
                 self.assertIsNone(qemu_kp_low5_property(image, config, altered))
+                altered = dict(profile)
+                altered["single_key_column_sense"] = [29, 30, 27, 23, 15]
+                self.assertIsNone(qemu_kp_low5_property(image, config, altered))
                 helper = thumb_bl_target(image, scanner["function"] + 0x5a)
                 for offset in (0x0c, 0x26, 0x42):
                     changed = bytearray(image)

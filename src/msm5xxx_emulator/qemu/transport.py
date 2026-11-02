@@ -430,6 +430,10 @@ def qemu_kp_low5_property(image: bytes, config: object,
             return None
     if (profile.get("descriptor_pointer") != source["descriptor_pointer"]
             or profile.get("event_codes") != source["event_codes"]
+            or profile.get("single_key_column_sense") != source["single_key_column_sense"]
+            or profile.get("descriptor_mmio_provenance") != source["descriptor_mmio_provenance"]
+            or (profile.get("rows"), profile.get("columns"), profile.get("no_key")) != (6, 5, 31)
+            or profile.get("register") != 0x0300072c
             or bridge.get("scanner") != profile["function"]):
         return None
     try:
