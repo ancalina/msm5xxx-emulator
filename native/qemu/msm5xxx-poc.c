@@ -851,6 +851,8 @@ struct MSM5xxxPOCMachineState {
     unsigned gpio_lcd_pc_count;
     uint64_t gpio_lcd_captures;
     MemoryRegion gpio_lcd_region;
+    bool gpio728_raster_enabled;
+    MemoryRegion gpio728_raster_region;
     uint32_t spi_nv_source_geometry;
     bool spi_nv_geometry_ready;
     uint64_t spi_nv_geometry_mismatches;
@@ -11361,6 +11363,88 @@ static char *msm5xxx_poc_get_gpio_lcd_state(Object *obj, Error **errp)
                            s->gpio_lcd_enabled, s->gpio_lcd_captures);
 }
 
+/* Observe clock edges belonging to the copied secondary raster producer.
+ * The data latch remains owned by the normal GPIO/input mapping. */
+static uint64_t msm5xxx_poc_gpio728_raster_read(void *opaque, hwaddr offset,
+                                                unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                   0x728 + offset, size);
+}
+
+static void msm5xxx_poc_gpio728_raster_write(void *opaque, hwaddr offset,
+                                             uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc, column, row, bit, sample;
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              0x728 + offset, value, size);
+    memory_region_set_dirty(&s->msm, 0x728 + offset, size);
+    if (offset || size != 2 || !(value & 0x200) || s->cpu->env.thumb ||
+        !msm5xxx_poc_boot_storage_guest(s) ||
+        !msm5xxx_poc_mmio_access_pc(s, &pc) || pc != 0x0380c930 ||
+        msm5xxx_poc_guest_u32(s->cpu->env.regs[13] + 8) != 0x0380c3a0) {
+        return;
+    }
+    column = msm5xxx_poc_guest_u32(s->cpu->env.regs[13]);
+    row = s->cpu->env.regs[8];
+    bit = s->cpu->env.regs[4];
+    if (column >= 50 || row >= 32 || bit >= 8) {
+        return;
+    }
+    sample = !!(msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                         0x724, 2) & 0x1000);
+    if (!column && !row && !bit) {
+        sample |= 0x8000;
+    }
+    if (column == 49 && row == 31 && bit == 7) {
+        sample |= 0x4000;
+    }
+    msm5xxx_poc_lcd_trace_write(s, 0x03000728, sample, 2);
+}
+
+static const MemoryRegionOps msm5xxx_poc_gpio728_raster_ops = {
+    .read = msm5xxx_poc_gpio728_raster_read,
+    .write = msm5xxx_poc_gpio728_raster_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 2 },
+};
+
+static bool msm5xxx_poc_get_gpio728_raster(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->gpio728_raster_enabled;
+}
+
+static void msm5xxx_poc_set_gpio728_raster(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->gpio728_raster_enabled = value;
+}
+
+static void msm5xxx_poc_gpio728_raster_init(MachineState *machine,
+                                           MSM5xxxPOCMachineState *s)
+{
+    MemoryRegionSection section;
+    bool free;
+    if (!s->gpio728_raster_enabled) {
+        return;
+    }
+    section = memory_region_find(get_system_memory(), 0x03000728, 2);
+    free = section.mr == &s->msm && section.offset_within_region == 0x728 &&
+           int128_eq(section.size, int128_make64(2));
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    if (!free) {
+        return;
+    }
+    memory_region_init_io(&s->gpio728_raster_region, OBJECT(machine),
+                          &msm5xxx_poc_gpio728_raster_ops, s,
+                          "msm5xxx-poc.gpio728-raster", 2);
+    memory_region_add_subregion_overlap(get_system_memory(), 0x03000728,
+                                        &s->gpio728_raster_region, 1);
+}
+
 static bool msm5xxx_poc_spi_nv_geometry_bounds(MSM5xxxPOCMachineState *s)
 {
     uint64_t address = s->spi_nv_source_geometry;
@@ -14135,6 +14219,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     msm5xxx_poc_boot_keysense_init(machine, s, &error_fatal);
     msm5xxx_poc_boot_contact_init(machine, s, &error_fatal);
     msm5xxx_poc_gpio_lcd_init(machine, s, &error_fatal);
+    msm5xxx_poc_gpio728_raster_init(machine, s);
     if (s->uart_console_rearm_enabled) {
         if (!msm5xxx_poc_uart_rearm_valid(s)) {
             error_report("uart-console-rearm requires FF/DD and an exclusive passive MSM RAM CR underlay");
@@ -17832,6 +17917,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         msm5xxx_poc_get_gpio_lcd, msm5xxx_poc_set_gpio_lcd);
     object_class_property_add_str(oc, "gpio660-lcd-state",
         msm5xxx_poc_get_gpio_lcd_state, NULL);
+    object_class_property_add_bool(oc, "experimental-gpio728-raster",
+        msm5xxx_poc_get_gpio728_raster, msm5xxx_poc_set_gpio728_raster);
 
     object_class_property_add_str(oc, "dmd5000-program",
                                   msm5xxx_poc_get_dmd5000, msm5xxx_poc_set_dmd5000);

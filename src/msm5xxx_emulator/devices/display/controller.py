@@ -744,7 +744,9 @@ class DisplayControllerMixin:
                     return indexed.snapshot()
             return None
         with self._display_lock:
-            return {"width": 96, "height": 64, "frame": panel.frame,
+            width, height = ((128, 48) if getattr(panel, "gpio_raster", False)
+                             else (96, 64))
+            return {"width": width, "height": height, "frame": panel.frame,
                     "qualified": panel.committed and panel.rejection is None,
                     "enabled": panel.enabled, "column_offset": panel.bias,
                     "rejection": panel.rejection, "port": panel.port,
@@ -1252,6 +1254,8 @@ class DisplayControllerMixin:
         complete path, since they can independently own the same aperture.
         """
         panel = getattr(self, "_lcd_secondary_panel", None)
+        if getattr(panel, "gpio_raster", False):
+            return
         parallel_data = ((address, size) == (0x02800002, 2)
                          and getattr(self, "_lcd_protocol", None) == "parallel-2")
         page_data = (getattr(self, "_lcd_page_qualified", False) and size in (1, 2)
@@ -1333,6 +1337,12 @@ class DisplayControllerMixin:
 
     def _lcd_write_slow(self, uc: object, access: int, address: int, size: int,
                         value: int, user_data: object) -> None:
+        panel = getattr(self, "_lcd_secondary_panel", None)
+        if getattr(panel, "gpio_raster", False):
+            if address == panel.port:
+                with self._display_lock:
+                    panel.write(address, size, value)
+                return
         if self._lcd_legacy_write(address, size, value):
             return
         if self._lcd_source_window_write(address, size, value):
@@ -1379,6 +1389,8 @@ class DisplayControllerMixin:
         # Continue native routing even after qualification, preserving fallback.
         self._lcd_observe_paired_state(address, size, value)
         panel = getattr(self, "_lcd_secondary_panel", None)
+        if getattr(panel, "gpio_raster", False):
+            panel = None
         primary_port = getattr(self, "_lcd_primary_page_port", None)
         mixed_port = getattr(self, "_lcd_mixed_primary_power_port", None)
         if mixed_port is not None and panel is not None and panel.committed and panel.rejection is None:

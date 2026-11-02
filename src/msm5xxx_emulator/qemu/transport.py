@@ -4049,6 +4049,16 @@ class Transport:
             "msm5xxx-poc,lcd-trace-chardev=lcd,input-chardev=input,"
             f"memory-profile={memory_profile}"
         )
+        from msm5xxx_emulator.detection.secondary_gpio_raster import find_secondary_gpio_raster
+        secondary_gpio = find_secondary_gpio_raster(
+            detector_image, self.config.ram_base, self.config.ram_size)
+        if (secondary_gpio is not None and self.decoder._lcd_secondary_panel is None
+                and find_secondary_gpio_raster(self.decoder.image, self.config.ram_base,
+                                               self.config.ram_size) == secondary_gpio):
+            from msm5xxx_emulator.devices.display.secondary_gpio_raster import SecondaryGpioRaster
+            self.decoder._lcd_secondary_panel = SecondaryGpioRaster()
+            self.decoder._lcd_secondary_reason = "copied-gpio-raster-awaiting-complete-frame"
+            machine += ",experimental-gpio728-raster=on"
         if ram_reserved is not None:
             machine += "," + ram_reserved
         self.virtual_cell_status = "native"
