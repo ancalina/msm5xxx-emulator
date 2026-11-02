@@ -7,7 +7,7 @@ from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu.transport import (
-    qemu_kp2100_low5_property, qemu_sd840_numeric_profile,
+    qemu_kp2100_low5_property, qemu_lg_matrix_irq_property, qemu_sd840_numeric_profile,
 )
 
 
@@ -24,6 +24,7 @@ class KP2100KeypadTest(unittest.TestCase):
         self.assertEqual(decoder.direct_input_detection, "accepted")
         self.assertEqual(qemu_kp2100_low5_property(image, config, profile),
                          "matrix-low5=1103684:6fb98:6fc3a:6fb86:6fc4a")
+        self.assertTrue(qemu_lg_matrix_irq_property(config, profile).startswith('3000c80:3000c94:200:'))
         numeric = qemu_sd840_numeric_profile(profile)
         self.assertEqual(set(decoder._direct_matrix_positions(numeric)), set(range(11, 23)))
         for offset in (0x80, 0x84, 0x90, 0x94, 0x136, 0x146, 0x148):
@@ -37,5 +38,6 @@ class KP2100KeypadTest(unittest.TestCase):
         altered = dict(profile)
         altered["timer_bridge"] = {**profile["timer_bridge"], "irq_route": {}}
         self.assertIsNone(qemu_kp2100_low5_property(image, config, altered))
+        self.assertIsNone(qemu_lg_matrix_irq_property(config, altered))
         wrong = SimpleNamespace(model="LG-SD810", board_status_input=None)
         self.assertIsNone(qemu_kp2100_low5_property(image, wrong, profile))

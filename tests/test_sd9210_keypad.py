@@ -6,7 +6,7 @@ import unittest
 from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu.transport import (
-    qemu_low5_matrix_property, qemu_sd9210_low5_contacts,
+    qemu_low5_matrix_property, qemu_lg_matrix_irq_property, qemu_sd9210_low5_contacts,
     qemu_sd840_numeric_profile,
 )
 
@@ -24,6 +24,7 @@ class SD9210KeypadTest(unittest.TestCase):
         self.assertEqual(decoder.direct_input_detection, "accepted")
         self.assertEqual(qemu_sd9210_low5_contacts(image, config, profile),
                          (0x78784, 0x787aa))
+        self.assertTrue(qemu_lg_matrix_irq_property(config, profile).startswith('3000c80:3000c94:200:'))
         numeric = qemu_sd840_numeric_profile(profile)
         self.assertEqual(set(decoder._direct_matrix_positions(numeric)), set(range(11, 23)))
         prop, reason = qemu_low5_matrix_property(image, config, numeric)

@@ -553,6 +553,51 @@ def qemu_kp2100_low5_property(image: bytes, config: object,
             f"{scanner + 0x82:x}:{scanner + 0x146:x}")
 
 
+def qemu_lg_matrix_irq_property(config: object,
+                                profile: dict[str, object] | None) -> str | None:
+    """Promote a detector-closed LG scan timer to the native C80 route."""
+    if (profile is None or getattr(config, "model", None) not in {
+            "LG-KP2000", "LG-KP2006", "LG-KP2100", "LG-SD9210"}
+            or getattr(config, "rex_irq_arm_address", None) is not None):
+        return None
+    bridge = profile.get("timer_bridge")
+    route = bridge.get("irq_route") if isinstance(bridge, dict) else None
+    if (not isinstance(route, dict)
+            or route.get("controller_class") != "legacy-c80-two-bank-group10-v1"
+            or not QemuDecoder._rex_legacy_irq_route_metadata_valid(route)
+            or bridge.get("scanner") != profile.get("function")
+            or bridge.get("initial") != 25 or bridge.get("reload") != 25
+            or bridge.get("outer_callback") != route.get("outer_callback")):
+        return None
+    fields = ("vector_target", "wrapper", "handler_slot", "handler",
+              "handler_runtime_size", "callback_slot", "outer_callback")
+    if any(type(route.get(field)) is not int for field in fields):
+        return None
+    vector, wrapper, handler_slot, handler, size, callback_slot, callback = (
+        route[field] for field in fields)
+    ram_base, ram_end = config.ram_base, config.ram_base + config.ram_size
+    if (route.get("status") != 0x03000c80 or route.get("enable") != 0x03000c94
+            or route.get("mask") != 0x200 or vector != ram_base
+            or not all(ram_base <= slot <= ram_end - 4 and not slot & 3
+                       for slot in (handler_slot, callback_slot))
+            or not 0 < size <= 0x400 or handler & 1 or wrapper & 3 or callback & 1
+            or not 0 <= handler <= config.flash_size - size
+            or not 0 <= wrapper < config.flash_size
+            or not 0 <= callback < config.flash_size
+            or getattr(config, "rex_tick_ms", None) != 5
+            or getattr(config, "rex_tick_address", None) != callback
+            or getattr(config, "rex_irq_wrapper_address", None) != wrapper
+            or getattr(config, "rex_irq_handler_address", None) != handler
+            or getattr(config, "rex_irq_handler_slot", None) != handler_slot
+            or getattr(config, "rex_irq_callback_slot", None) != callback_slot
+            or getattr(config, "rex_irq_status_address", None) != route["status"]
+            or getattr(config, "rex_irq_enable_address", None) != route["enable"]
+            or getattr(config, "rex_irq_mask", None) != route["mask"]):
+        return None
+    return (f"3000c80:3000c94:200:4c4b40:{vector:x}:{wrapper:x}:"
+            f"{handler_slot:x}:{handler:x}:{size:x}:{callback_slot:x}:{callback:x}")
+
+
 def qemu_sd840_status_source(
         image: bytes, config: object, profile: dict[str, object],
 ) -> bool:
@@ -4541,20 +4586,29 @@ class Transport:
         sd840_source_closed = (direct is not None and
                                qemu_sd840_low5_contacts(detector_image, self.config, direct)
                                is not None)
+        matrix_irq = qemu_lg_matrix_irq_property(self.config, direct)
+        matrix_irq_available = bool(
+            self.rex_c80_profile is not None or
+            (matrix_irq is not None and self.rex_read_consume_profile is None
+             and self.rex_w1c_profile is None and self.rex_stack_w1c_profile is None
+             and not experimental_ma5_irq)
+        )
         sd9210_source_closed = (direct is not None and
                                 qemu_sd9210_low5_contacts(detector_image, self.config, direct)
-                                is not None)
+                                is not None and matrix_irq_available)
         if sd840_source_closed or sd9210_source_closed:
             # The table proves digit identities, but not the nonnumeric
             # physical labels. Do not fall back to positional key numbering.
             direct = qemu_sd840_numeric_profile(direct)
             self.decoder.direct_input_profile = direct
             self.decoder.direct_input_positions = self.decoder._direct_matrix_positions(direct)
-        kp_property = qemu_kp_low5_property(detector_image, self.config, direct)
+        kp_property = (qemu_kp_low5_property(detector_image, self.config, direct)
+                       if matrix_irq_available else None)
         if kp_property is not None:
             machine += f",{kp_property}"
             self.matrix_input_profile = direct
-        kp2100_property = qemu_kp2100_low5_property(detector_image, self.config, direct)
+        kp2100_property = (qemu_kp2100_low5_property(detector_image, self.config, direct)
+                           if matrix_irq_available else None)
         if kp2100_property is not None:
             direct = qemu_sd840_numeric_profile(direct)
             self.decoder.direct_input_profile = direct
@@ -4593,6 +4647,10 @@ class Transport:
                 self.config.detection_notes.append(
                     f"QEMU five-column matrix rejected: {low5_reject}; native fallback retained"
                 )
+        if (self.matrix_input_profile is not None and self.rex_c80_profile is None
+                and matrix_irq_available and matrix_irq is not None):
+            self.rex_c80_profile = matrix_irq
+            self.config.rex_static_controller_experimental = True
         if experimental_halfword or direct is None:
             halfword, status, _ = resolve_indirect_matrix_input(
                 detector_image, self.config.load_address

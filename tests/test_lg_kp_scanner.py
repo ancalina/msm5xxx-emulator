@@ -6,7 +6,7 @@ from msm5xxx_emulator.detection.input_lg_kp import find_kp_legacy_scanner
 from msm5xxx_emulator.detection.arm import thumb_bl_target
 from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
-from msm5xxx_emulator.qemu.transport import qemu_kp_low5_property
+from msm5xxx_emulator.qemu.transport import qemu_kp_low5_property, qemu_lg_matrix_irq_property
 
 
 class LGKPLegacyScannerTest(unittest.TestCase):
@@ -28,10 +28,12 @@ class LGKPLegacyScannerTest(unittest.TestCase):
                 profile = decoder.direct_input_profile
                 self.assertEqual(decoder.direct_input_detection, "accepted")
                 self.assertIsNotNone(qemu_kp_low5_property(image, config, profile))
+                self.assertTrue(qemu_lg_matrix_irq_property(config, profile).startswith('3000c80:3000c94:200:'))
                 self.assertEqual(set(decoder.direct_input_positions), set(range(11, 23)))
                 altered = dict(profile)
                 altered["timer_bridge"] = None
                 self.assertIsNone(qemu_kp_low5_property(image, config, altered))
+                self.assertIsNone(qemu_lg_matrix_irq_property(config, altered))
                 altered = dict(profile)
                 altered["timer_bridge"] = {**profile["timer_bridge"], "irq_route": {}}
                 self.assertIsNone(qemu_kp_low5_property(image, config, altered))
