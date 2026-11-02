@@ -909,7 +909,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             "Yamaha audio transport rejected: "
             f"{audio_transport['reject_reason']}"
         )
-    elif audio_transport["static_status"] == "candidate":
+    # Candidate-only classes carry diagnostics in audio_transport; runtime
+    # remains unchanged and does not need a new general detection note.
+    elif (audio_transport["static_status"] == "candidate"
+          and audio_transport.get("structural_evidence", {}).get("transport_class")
+          not in ("alternate-reset-readback-v1", "alternate-direct-reset-readback-v1")):
         detection_notes.append(
             "Yamaha MA5 structural readback candidate; runtime timing and "
             "device mapping unverified; native fallback retained"

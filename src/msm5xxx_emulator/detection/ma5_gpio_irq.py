@@ -661,6 +661,9 @@ def find_ma5_gpio_irq_candidate(image: bytes, audio_candidate: object) -> dict:
             or audio_candidate.get('static_status') != 'candidate'
             or find_ma5_readback_candidate(image) != audio_candidate):
         return {**rejected, 'reject_reason': 'audio-same-image-unmatched'}
+    if audio_candidate.get('structural_evidence', {}).get('transport_class') in (
+            'alternate-reset-readback-v1', 'alternate-direct-reset-readback-v1'):
+        return {**rejected, 'reject_reason': 'audio-class-irq-unverified'}
     try:
         scanned = {role: _scan(image, role) for role in
                    ('gpio_init', 'gpio_register', 'soc_dispatch', 'parent_init', 'chip_isr',

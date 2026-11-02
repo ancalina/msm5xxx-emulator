@@ -651,6 +651,157 @@ def _ma5_timed_transport(image: bytes, common: dict, entries: dict) -> dict | No
     }
 
 
+def _ma5_alternate_readback(image: bytes) -> list[dict[str, object]]:
+    """Find the alternate bounded checker linked to its byte-port wrappers."""
+    def conditional_target(at: int, condition: int) -> int | None:
+        op = struct.unpack_from('<H', image, at)[0]
+        if op >> 8 != (0xd0 | condition):
+            return None
+        delta = op & 0xff
+        return at + 4 + ((delta - 256 if delta & 0x80 else delta) * 2)
+
+    found = []
+    anchor = struct.pack('<H', 0x27c0)  # movs r7, #0xc0
+    position = 0
+    while (at := image.find(anchor, position)) >= 0:
+        position = at + 1
+        check = at - 2
+        if check < 0 or check & 1 or check + 0x46 > len(image):
+            continue
+        if any(struct.unpack_from('<H', image, check + off)[0] != opcode
+               for off, opcode in ((0x16, 0x2860), (0x1c, 0x2fd0),
+                                   (0x20, 0x27d0), (0x30, 0x283c),
+                                   (0x3e, 0x2fe0))):
+            continue
+        if (conditional_target(check + 0x1e, 3) != check + 8
+                or conditional_target(check + 0x40, 3) != check + 0x22
+                or conditional_target(check + 0x18, 1) != check + 0x34
+                or conditional_target(check + 0x32, 0) != check + 0x3c):
+            continue
+        read = thumb_bl_target(image, check + 0xa)
+        if (read is None or read != thumb_bl_target(image, check + 0x24)
+                or read < 0 or read + 0x90 > len(image)):
+            continue
+        if any(struct.unpack_from('<H', image, read + off)[0] != opcode
+               for off, opcode in ((0x14, 0x2003), (0x6c, 0x2080),
+                                   (0x72, 0x2040), (0x84, 0x2041))):
+            continue
+        select = thumb_bl_target(image, read + 0x16)
+        empty = thumb_bl_target(image, read + 0x1a)
+        write = thumb_bl_target(image, read + 0x4a)
+        wait = thumb_bl_target(image, read + 0x74)
+        dataread = thumb_bl_target(image, read + 0x8a)
+        if (None in (select, empty, write, wait, dataread)
+                or select != thumb_bl_target(image, read + 0x86)
+                or any(thumb_bl_target(image, read + off) != write
+                       for off in (0x54, 0x5c, 0x68, 0x6e))
+                or not all(0 <= p <= len(image) - 0x100
+                           for p in (select, empty, write, wait, dataread))):
+            continue
+        index = thumb_bl_target(image, select + 0x1e)
+        status = thumb_bl_target(image, wait + 0xa)
+        if (index is None or status is None
+                or status != thumb_bl_target(image, empty + 8)):
+            continue
+        timed = (status - index in (0x1e, 0x20)
+                 and write - status == 0x1c and dataread - write == 0x7c)
+        direct = (status - index in (0x12, 0x14)
+                  and write - status == 0x14 and dataread - write == 0x34)
+        if not (timed or direct):
+            continue
+        delay = None
+        if timed:
+            delay_calls = (index + 4, status + 2, write + 4, dataread + 2,
+                           write + 0x28, write + 0x3e,
+                           write + 0x58, write + 0x6a)
+            delay = thumb_bl_target(image, delay_calls[0])
+            if (delay is None or not 0 <= delay <= len(image) - 2
+                    or any(thumb_bl_target(image, at) != delay for at in delay_calls)):
+                continue
+        resets = []
+        for match in _THUMB_BL.finditer(image, max(0, check - 0x2000),
+                                        min(len(image), check + 0x2000)):
+            call = match.start()
+            if (call & 1 or call < 0x18 or call + 14 > len(image)
+                    or thumb_bl_target(image, call) != check):
+                continue
+            immediates = ((-0x18, 0x2004), (-0x12, 0x2080), (-0xc, 0x2000)) if timed else (
+                (-0x12, 0x2004), (-0xc, 0x2080), (-6, 0x2000))
+            calls = (-0x16, -0x10, -0xa) if timed else (-0x10, -0xa, -4)
+            count_compare = struct.unpack_from('<H', image, call + 0xa)[0]
+            count_register = count_compare >> 8 & 7
+            if (all(struct.unpack_from('<H', image, call + off)[0] == op
+                    for off, op in immediates)
+                    and count_compare & 0xf8ff == 0x280a
+                    and struct.unpack_from('<H', image, call + 8)[0] ==
+                    (0x3001 | count_register << 8)
+                    and [thumb_bl_target(image, call + off) for off in calls]
+                    == [index, write, write]
+                    and conditional_target(call + 0xc, 3) ==
+                    call - (0x18 if timed else 0x12)):
+                resets.append(call)
+        if len(resets) != 1:
+            continue
+        blocks = [write + 0x3c, write + 0x68] if timed else [write + 0x28]
+        load, advance, store = (struct.unpack_from('<H', image, off)[0]
+                                for off in (blocks[0] - 4, blocks[0] - 2, blocks[0]))
+        source_reg = load >> 3 & 7
+        if (load & 0xffc0 != 0x7800 or load & 7 != store & 7
+                or advance != (0x3001 | source_reg << 8)
+                or store & 0xf800 != 0x7000
+                or (timed and struct.unpack_from('<H', image, blocks[1])[0] & 7 != 4)):
+            continue
+        context = thumb_literal_value(image, read + 4, 0)
+        direction_refs = ([(index + 8, 1), (status + 6, 1), (write + 8, 1),
+                           (dataread + 6, 1)] if timed else
+                          [(index, 2), (status, 1), (write, 2), (dataread, 1)])
+        direction = thumb_literal_value(image, *direction_refs[0])
+        if (context is None or direction is None
+                or thumb_literal_value(image, select, 2) != context
+                or any(thumb_literal_value(image, *ref) != direction
+                       for ref in direction_refs)
+                or context & 3 or direction & 3
+                or not 0x01000000 <= context <= 0x02000000 - (4 if timed else 8)
+                or not 0x01000000 <= direction <= 0x01fffff8):
+            continue
+        needed = ({'write_0': index + 0x12, 'read_0': status + 0x10,
+                   'write_2': write + 0x12, 'read_2': dataread + 0x10} if timed else
+                  {'write_0': index + 0xa, 'read_0': status + 0xa,
+                   'write_2': write + 0xa, 'read_2': dataread + 0xa})
+        for c in _transport_clusters(image):
+            if c['base'] not in ((0x02840000, 0x02c00000) if timed else (0x02c00000,)):
+                continue
+            sites = {f'{kind}_{port}': [int(s['offset']) for s in c['sites']
+                     if s['kind'] == kind and s['port_offset'] == port]
+                     for kind in ('read', 'write') for port in (0, 2)}
+            if (any(value not in sites[key] for key, value in needed.items())
+                    or any(block not in sites['write_2'] for block in blocks)
+                    or any(block not in c['block_write_offsets'] for block in blocks)
+                    or len({x for values in sites.values() for x in values}) > 64):
+                continue
+            found.append({'family': 'ma5', 'grammar': 'ma5-readback-v1',
+                'static_status': 'candidate', 'reject_reason': None,
+                'protocol_status': 'temporary-evidence-gated',
+                'base': c['base'], 'data_offset': 2, 'sites': sites,
+                'block_write_offsets': blocks,
+                'structural_evidence': {'transport_class': (
+                    'alternate-reset-readback-v1' if timed else
+                    'alternate-direct-reset-readback-v1'),
+                    'entries': {'check': check, 'read': read, 'select': select,
+                                'index': index, 'status': status, 'write': write,
+                                'dataread': dataread, 'reset_check': resets[0]},
+                    'default_ranges': [[0xc0, 0xd0, 0x60], [0xd0, 0xe0, 0x3c]]},
+                'ram_dependencies': [[context, 4 if timed else 8], [direction, 8]],
+                'nor_dependencies': [[check, 0x46], [read, 0x90],
+                    [select, 0x30], [empty, 0x40], [wait, 0x40],
+                    [resets[0] - 0x18, 0x24],
+                    [int(c['begin']), int(c['end']) - int(c['begin'])]] + (
+                        [[delay, 2]] if delay is not None else []) + [
+                        [((off + 4) & ~3) + (struct.unpack_from('<H', image, off)[0] & 255) * 4, 4]
+                        for off in (read + 4, select, *(ref[0] for ref in direction_refs))]})
+    return found
+
+
 def find_ma5_readback_candidate(image: bytes) -> dict[str, object]:
     """Find a closed reset/readback producer; never enable default admission."""
     rejected = {"family": "ma5", "grammar": "ma5-readback-v1",
@@ -686,7 +837,10 @@ def find_ma5_readback_candidate(image: bytes) -> dict[str, object]:
                 accepted.append(candidate)
             if len(accepted) > 1:
                 return {**rejected, "reject_reason": "structural-ambiguous"}
-    return accepted[0] if accepted else rejected
+    if not accepted:
+        accepted = _ma5_alternate_readback(image)
+    return accepted[0] if len(accepted) == 1 else (
+        {**rejected, 'reject_reason': 'structural-ambiguous'} if accepted else rejected)
 
 
 def find_audio_transport(image: bytes) -> dict[str, object]:
