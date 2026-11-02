@@ -1341,7 +1341,10 @@ class DisplayControllerMixin:
         if getattr(panel, "gpio_raster", False):
             if address == panel.port:
                 with self._display_lock:
+                    previous = panel.sequence
                     panel.write(address, size, value)
+                    if panel.sequence != previous:
+                        self._lcd_secondary_reason = "complete-copied-gpio-raster"
                 return
         if self._lcd_legacy_write(address, size, value):
             return
