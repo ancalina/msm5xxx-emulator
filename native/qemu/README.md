@@ -97,6 +97,13 @@ and erase. Blocks reset to locked. The machine mode enables this capability;
 default is low). This fixed virtual pin does not establish original GPIO wiring.
 Partition timing and read-while-write execution remain unimplemented.
 
+Automatic EFS selection requires a source-qualified Sharp driver, descriptor,
+and relocated table, rechecked against the loaded image. The selected range is
+seeded from the capture and excluded from raw loader writes. The observed x16
+driver configures PCR separately from block locks; it unlocks before erase and
+relocks after programming. This admission does not establish physical WP# wiring
+or the original part's reset orientation.
+
 `intel-adjacent-nv16=BASE:SIZE:SECTOR:ID0:ID1` selects a single x16 CFI01 device
 between the primary ROM end and RAM, with the same exclusive-owner checks as
 `intel-adjacent-nv`. Its status lane is `0x80`; the older adjacent mode retains

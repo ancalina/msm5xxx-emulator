@@ -1994,6 +1994,7 @@ def qemu_uart_console_property(
 def qemu_loaded_uart_console_property(
         profile: dict, original: bytes, loaded: bytes, config: object,
         *, ram_claimed: bool = False,
+        nor_overlay: tuple[int, int] | None = None,
 ) -> tuple[str | None, str | None]:
     """Qualify source-bound boot consoles against their actual loaded source."""
     if not isinstance(profile, dict) or profile.get("signature") not in _UART_SOURCE_GUARDED_SIGNATURES:
@@ -2023,6 +2024,16 @@ def qemu_loaded_uart_console_property(
         return None, "console-loaded-source-mismatch"
     if ram_claimed:
         return None, "console-loaded-memory-owner-unclosed"
+    if nor_overlay is not None:
+        begin, end = nor_overlay
+        spans = profile.get("guard_intervals")
+        if (not 0 <= begin < end <= min(limit, config.ram_base)
+                or not isinstance(spans, (list, tuple)) or not spans
+                or any(not isinstance(span, (list, tuple)) or len(span) != 2
+                       or any(type(value) is not int for value in span)
+                       or not 0 <= span[0] < span[1] <= limit
+                       or (span[0] < end and begin < span[1]) for span in spans)):
+            return None, "console-loaded-nor-owner-unclosed"
     if getattr(config, "ram_bootstrap_profile", None) is not None:
         return None, "console-loaded-reserved-owner-unclosed"
     for field, begin, end in (("ram_intervals", config.ram_base,
@@ -4515,12 +4526,20 @@ class Transport:
             self.config.load_address, self.config.flash_size,
             0, self.config.ram_base, self.config.ram_size,
         )
+        from msm5xxx_emulator.detection.sharp_intel import find_sharp_intel_profile
+        sharp_intel = None
+        if intel_profile is None and self.config.load_address == 0:
+            sharp_intel = find_sharp_intel_profile(
+                detector_image, self.config.flash_size, self.config.ram_base, self.config.ram_size)
+            if sharp_intel is not None:
+                intel_profile = sharp_intel["geometry"]
         amd_profile, amd_reject = direct_amd_x16_nor_profile(
             detector_image, self.config.load_address, self.config.flash_size,
             0, self.config.ram_base, self.config.ram_size,
         )
         direct_protocol_conflict = intel_profile is not None and amd_profile is not None
         if direct_protocol_conflict:
+            sharp_intel = None
             intel_profile = None
             amd_profile = None
             self.config.detection_notes.append(
@@ -4696,6 +4715,11 @@ class Transport:
                 f"QEMU watchdog rejected: {watchdog_reject}")
         if len(primary_seed) != self.config.flash_size:
             raise ValueError("primary seed size does not match flash size")
+        if sharp_intel is not None and find_sharp_intel_profile(
+                primary_seed[:len(detector_image)], self.config.flash_size,
+                self.config.ram_base, self.config.ram_size) != sharp_intel:
+            sharp_intel = intel_profile = None
+            self.config.detection_notes.append("Sharp EFS partition rejected: loaded source mismatch")
         if (self.rex_stack_w1c_profile is not None and
                 qemu_stack_w1c_property(detector_image,self.config,loaded=primary_seed)
                 != self.rex_stack_w1c_profile):
@@ -4800,9 +4824,12 @@ class Transport:
             loaded_uart, loaded_uart_reject = qemu_loaded_uart_console_property(
                 self.config.uart_console, detector_image, primary_seed, self.config,
                 ram_claimed=any(value is not None for value in (
-                    ram_reserved, mapped_primary_profile, upper_x16_profile, intel_profile, amd_profile,
+                    ram_reserved, mapped_primary_profile, upper_x16_profile,
+                    intel_profile if sharp_intel is None else None, amd_profile,
                     self.config.upper_flash_address, self.config.secondary_flash_address,
-                    self.config.nand_image)))
+                    self.config.nand_image)),
+                nor_overlay=(sharp_intel["geometry"][0], sum(sharp_intel["geometry"][:2]))
+                if sharp_intel is not None else None)
             if loaded_uart is not None:
                 machine += f",{loaded_uart}"
             else:
@@ -5052,9 +5079,13 @@ class Transport:
                 if intel_state.stat().st_size != size:
                     raise ValueError("persistent Intel x16 NOR size mismatch")
             else:
-                intel_state.write_bytes(b"\xff" * size)
+                seed = primary_seed[base:base + size] if sharp_intel is not None else b""
+                intel_state.write_bytes(seed + b"\xff" * (size - len(seed)))
+            selector = "sharp-primary-nv" if sharp_intel is not None else "intel-x16-nor"
+            if sharp_intel is not None:
+                loader_exclude = base, base + size
             machine += (
-                f",intel-x16-nor={base:x}:{size:x}:{sector_size:x}:"
+                f",{selector}={base:x}:{size:x}:{sector_size:x}:"
                 f"{id0:x}:{id1:x}"
             )
             storage_args.extend((
