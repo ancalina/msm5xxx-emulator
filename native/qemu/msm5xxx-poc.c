@@ -16053,7 +16053,9 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
         (fields == 3 && sscanf(value, "%x:%x:%x%c", &descriptor, &presence,
                                &sense, &trailing) != 3) ||
         !descriptor || descriptor & 3 ||
-        (fields == 6 && (descriptor != 0x01816618 || !contact1 || !contact2 || !init ||
+        (fields == 6 && ((descriptor != 0x01816618 &&
+                          descriptor != 0x0181661c) ||
+                         !contact1 || !contact2 || !init ||
                          contact1 & 1 || contact2 & 1 || init & 1 ||
                          contact1 == contact2 || init == contact1 || init == contact2)) ||
         descriptor > UINT32_MAX - 0x38 ||
@@ -16077,7 +16079,8 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
     s->matrix_input_address = MSM5XXX_POC_MSM_BASE + 0x72c;
     s->matrix_input_no_key = 0x1f;
     s->matrix_input_rows = 6;
-    s->matrix_input_sideband_mask = fields == 6 ? 0x10 : 0;
+    s->matrix_input_sideband_mask =
+        fields == 6 && descriptor == 0x01816618 ? 0x10 : 0;
     s->matrix_input_sense_bitmap = (1U << 30) | (1U << 29) |
         (1U << 27) | (1U << 23) | (1U << 15);
     s->matrix_input_host_enabled = true;

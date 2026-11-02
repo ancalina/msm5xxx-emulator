@@ -37,11 +37,13 @@ from msm5xxx_emulator.detection.input_sd810 import (
     sd810_fold_event_source, sd810_gpio_board_status_profile,
 )
 from msm5xxx_emulator.detection.input_matrix import (
+    ASCII_KEY_EVENTS,
     _samsung_sideband_51_family_metadata,
     resolve_distributed_matrix_input,
 )
 from msm5xxx_emulator.devices.input import SAMSUNG_RING32_KEY_EVENTS
 from msm5xxx_emulator.detection.arm import (
+    _thumb_path_preserves_register,
     thumb_bl_target,
     thumb_literal_value,
 )
@@ -298,7 +300,10 @@ def qemu_low5_matrix_property(
     if sites[0] == sites[1]:
         return None, "ambiguous-sense-roles"
     suffix = ""
-    if status is not None:
+    sd840_contacts = qemu_sd840_low5_contacts(image, config, profile)
+    if sd840_contacts is not None:
+        suffix = ":" + ":".join(f"{site:x}" for site in sd840_contacts)
+    elif status is not None:
         # The scanner also checks the shared fifth sense line before driving
         # an individual row. Close both conditional halfword reads.
         start = int(profile["function"]) - config.load_address
@@ -329,6 +334,65 @@ def qemu_low5_matrix_property(
         contact_sites.append(config.load_address + init + 2)
         suffix = ":" + ":".join(f"{site:x}" for site in contact_sites)
     return f"matrix-low5={descriptor:x}:{sites[0]:x}:{sites[1]:x}{suffix}", None
+
+
+def qemu_sd840_low5_contacts(
+        image: bytes, config: object, profile: dict[str, object],
+) -> tuple[int, int, int] | None:
+    """Close SD840's sense-bit prechecks over its verified timer callback."""
+    if (getattr(config, "board_status_input", None) is not None
+            or profile.get("descriptor_pointer") != 0x0181661c):
+        return None
+    scanner = profile.get("function")
+    bridge = profile.get("timer_bridge")
+    registration = bridge.get("registration_callsite") if isinstance(bridge, dict) else None
+    if (type(scanner) is not int or type(registration) is not int
+            or bridge.get("scanner") != scanner
+            or bridge.get("initial") != 25 or bridge.get("reload") != 25):
+        return None
+    events = profile.get("event_codes")
+    if not isinstance(events, (list, tuple)) or any(
+            events.count(event) != 1 for event in ASCII_KEY_EVENTS):
+        return None
+    load = config.load_address
+    start, call = scanner - load, registration - load
+    if (start < 0 or start + 0x88 > len(image) or call < 0x15c
+            or call + 4 > len(image)
+            or thumb_literal_value(image, call - 0x15c, 7) != 0x0181661c):
+        return None
+    # The precheck isolates all five row drives before re-reading bit 4.
+    if struct.unpack_from("<7H", image, start + 0x68) != (
+            0x231f, 0x8d91, 0x4319, 0x8591, 0x8d91, 0x6a12, 0x8011):
+        return None
+    contacts = []
+    for offset in (0x5a, 0x80):
+        pos = start + offset
+        pointer, read, shift, branch = struct.unpack_from("<4H", image, pos)
+        reg = pointer & 7
+        if (pointer & 0xf800 != 0x6800 or (pointer >> 6 & 31) != 13
+                or read != 0x8800 | reg << 3 | reg
+                or shift != 0x0800 | 5 << 6 | reg << 3 | reg
+                or branch & 0xff00 != 0xd200
+                or thumb_literal_value(image, pos - 2, (pointer >> 3) & 7)
+                   != 0x0181661c):
+            return None
+        contacts.append(load + pos + 2)
+    init = call - 0xc2
+    if (init < 0
+            or not _thumb_path_preserves_register(
+                image, call - 0x15a, init, init + 2, 7)
+            or struct.unpack_from("<5H", image, init) !=
+            (0x6b78, 0x8800, 0x0940, 0xd207, 0x2051)):
+        return None
+    return contacts[0], contacts[1], load + init + 2
+
+
+def qemu_sd840_numeric_profile(profile: dict[str, object]) -> dict[str, object]:
+    """Keep only table-proven numeric key labels for this scanner."""
+    return {**profile, "provisional_mappings": {
+        bit: {"event": event}
+        for bit, event in zip(range(11, 23), ASCII_KEY_EVENTS)
+    }}
 
 
 def qemu_ram_argument(size: int) -> str:
@@ -4250,7 +4314,16 @@ class Transport:
                 )
                 self.matrix_input_profile = direct
                 self.matrix_input_sideband_producer = sideband
-        if experimental_low5 or sd810_status:
+        sd840_source_closed = (direct is not None and
+                               qemu_sd840_low5_contacts(detector_image, self.config, direct)
+                               is not None)
+        if sd840_source_closed:
+            # The table proves digit identities, but not the nonnumeric
+            # physical labels. Do not fall back to positional key numbering.
+            direct = qemu_sd840_numeric_profile(direct)
+            self.decoder.direct_input_profile = direct
+            self.decoder.direct_input_positions = self.decoder._direct_matrix_positions(direct)
+        if experimental_low5 or sd810_status or sd840_source_closed:
             low5_property, low5_reject = qemu_low5_matrix_property(
                 detector_image, self.config, direct
             )

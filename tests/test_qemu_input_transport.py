@@ -630,6 +630,52 @@ class QEMUInputTransportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.matrix_senses(dict(profile, grammar='direct-low-nibble-6-row-v1'))
 
+    def test_sd840_contacts_require_timer_descriptor_and_isolation(self):
+        image = bytearray(0x600)
+        scanner, registration, descriptor = 0x100, 0x400, 0x181661c
+        for site in (0x10, 0x20):
+            struct.pack_into('<2H', image, site, 0x6b40, 0x8800)
+        for offset in (0x5a, 0x80):
+            struct.pack_into('<4H', image, scanner + offset,
+                             0x6b40, 0x8800, 0x0940, 0xd200)
+        struct.pack_into('<7H', image, scanner + 0x68,
+                         0x231f, 0x8d91, 0x4319, 0x8591, 0x8d91, 0x6a12, 0x8011)
+        struct.pack_into('<5H', image, registration - 0xc2,
+                         0x6b78, 0x8800, 0x0940, 0xd207, 0x2051)
+        profile = dict(grammar='lg-descriptor-low5-6x5-raw-v1', rows=6,
+                       columns=5, sense_bits=5, no_key=31,
+                       single_key_column_sense=[30,29,27,23,15],
+                       register=0x300072c, descriptor_pointer=descriptor,
+                       descriptor_mmio_provenance='closed',
+                       event_sink_validation='validated-raw-enqueue-callsites',
+                       event_sink_family='lg-descriptor-raw-keypad-v1',
+                       function=scanner, event_codes=list(b'123456789*0#') + [0]*18,
+                       timer_bridge={'scanner':scanner, 'initial':25, 'reload':25,
+                                     'registration_callsite':registration},
+                       global_sense_sites=[0x10], row_sense_sites=[0x20])
+        config = SimpleNamespace(load_address=0, flash_size=len(image),
+                                 ram_base=0x1800000, ram_size=0x800000,
+                                 board_status_input=None)
+        with mock.patch.dict(MODULE.qemu_sd840_low5_contacts.__globals__,
+                             thumb_literal_value=lambda *args: descriptor):
+            self.assertEqual(MODULE.qemu_low5_matrix_property(bytes(image), config, profile),
+                ('matrix-low5=181661c:12:22:15c:182:340', None))
+            numeric = MODULE.qemu_sd840_numeric_profile(profile)
+            self.assertEqual({bit: v['event'] for bit, v in numeric['provisional_mappings'].items()},
+                             dict(zip(range(11,23), b'123456789*0#')))
+            from msm5xxx_emulator.devices.input import InputMixin
+            positions = InputMixin._direct_matrix_positions(numeric)
+            self.assertEqual(set(positions), set(range(11,23)))
+            self.assertEqual(positions[11][0], ord('1'))
+            self.assertEqual(positions[21][0], ord('0'))
+            image[scanner + 0x68] = 0x0f  # Preserve row 4: SD9210-like precheck.
+            self.assertIsNone(MODULE.qemu_sd840_low5_contacts(bytes(image), config, profile))
+            image[scanner + 0x68] = 0x1f
+            bad = dict(profile, timer_bridge=dict(profile['timer_bridge'], reload=20))
+            self.assertIsNone(MODULE.qemu_sd840_low5_contacts(bytes(image), config, bad))
+            struct.pack_into('<H', image, registration - 0x15a, 0x2700)
+            self.assertIsNone(MODULE.qemu_sd840_low5_contacts(bytes(image), config, profile))
+
     def test_loop_matrix_property_and_numeric_packets(self):
         image = bytearray(0x100)
         for site in (0x12, 0x22, 0x32):
