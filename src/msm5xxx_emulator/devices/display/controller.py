@@ -520,6 +520,30 @@ class DisplayControllerMixin:
                 or loaded != original[:cfg.flash_size].ljust(cfg.flash_size,b'\xff')
                 or ram_claimed or getattr(cfg,'missing_overlays',None)
                 or getattr(cfg,'ram_bootstrap_profile',None) is not None):
+            failures = []
+            if getattr(cfg, 'chipset', None) not in ('MSM5100', 'MSM5105'):
+                failures.append('chipset')
+            if getattr(cfg, 'image_kind', None) != 'firmware':
+                failures.append('image-kind')
+            keys = ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size')
+            if any(type(getattr(cfg, key, None)) is not int for key in keys):
+                failures.append('layout-fields')
+            else:
+                if (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0):
+                    failures.append('load-layout')
+                if (not isinstance(original, bytes) or not isinstance(loaded, bytes)
+                        or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size):
+                    failures.append('image-size')
+                elif loaded != original[:cfg.flash_size].ljust(cfg.flash_size, b'\xff'):
+                    failures.append('loaded-image')
+            if ram_claimed:
+                failures.append('memory-claimed')
+            if getattr(cfg, 'missing_overlays', None):
+                failures.append('missing-overlays')
+            if getattr(cfg, 'ram_bootstrap_profile', None) is not None:
+                failures.append('ram-bootstrap')
+            self._lcd_boot_page_reason = 'source-layout-unverified: ' + ', '.join(failures)
+            cfg.detection_notes.append('Boot page rejected: ' + self._lcd_boot_page_reason)
             return False
         profile,reason=find_boot_page_profile(original)
         self._lcd_boot_page_reason=reason

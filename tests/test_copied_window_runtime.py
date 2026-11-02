@@ -32,7 +32,8 @@ class Harness(DisplayControllerMixin):
     def __init__(self):
         self.config = SimpleNamespace(image_kind='firmware', load_address=0,
             image_offset=0, entry=0, flash_size=0x1000, ram_base=0x1000000,
-            ram_size=0x800000, width=176, height=220, display_geometry_source='auto-default')
+            ram_size=0x800000, width=176, height=220, display_geometry_source='auto-default',
+            detection_notes=[])
         self.framebuffer = bytearray(176 * 220 * 3)
         self.display_frame = bytes(self.framebuffer)
         self._display_lock = threading.Lock()
@@ -261,7 +262,9 @@ class BootPageRuntimeTests(unittest.TestCase):
             self.assertFalse(self.bind(h),field)
         h=Harness();h.config.chipset='MSM5105'
         self.assertFalse(self.bind(h,ram_claimed=True))
+        self.assertIn('memory-claimed', h.config.detection_notes[-1])
         self.assertFalse(self.bind(h,loaded=bytes(0xfff)+b'\1'))
+        self.assertIn('loaded-image', h.config.detection_notes[-1])
 
 
 class ByteBootPageRuntimeTests(unittest.TestCase):
