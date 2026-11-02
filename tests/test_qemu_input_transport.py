@@ -3289,6 +3289,19 @@ class RAMBootstrapTransportTests(unittest.TestCase):
 
 
 class FoldInputTransportTests(unittest.TestCase):
+    def test_sd810_fold_requires_source_closed_event_producer(self) -> None:
+        transport = MODULE.Transport.__new__(MODULE.Transport)
+        transport.config = SimpleNamespace(model="LG-SD810", board_status_input=SimpleNamespace(
+            address=0x03000720, mask=1, default=1))
+        transport.board_status_snapshot = {"level": 1}
+        transport.decoder = SimpleNamespace(input_error="")
+        transport.input_socket = mock.Mock()
+        self.assertFalse(transport.can_set_fold())
+        transport._sd810_fold_source_closed = True
+        self.assertTrue(transport.can_set_fold())
+        self.assertTrue(transport.set_fold(False))
+        transport.input_socket.sendall.assert_called_once_with(bytes((0x81, 0, 0, 0)))
+
     def test_capability_readback_and_key_independence(self) -> None:
         transport = MODULE.Transport.__new__(MODULE.Transport)
         transport.config = SimpleNamespace(board_status_input=SimpleNamespace(

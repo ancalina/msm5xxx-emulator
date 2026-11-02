@@ -33,7 +33,9 @@ from msm5xxx_emulator.detection.middle_nand import find_middle_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
-from msm5xxx_emulator.detection.input_sd810 import sd810_gpio_board_status_profile
+from msm5xxx_emulator.detection.input_sd810 import (
+    sd810_fold_event_source, sd810_gpio_board_status_profile,
+)
 from msm5xxx_emulator.detection.input_matrix import (
     _samsung_sideband_51_family_metadata,
     resolve_distributed_matrix_input,
@@ -4168,6 +4170,14 @@ class Transport:
                 # Native code verifies it before overlaying this input bit.
                 machine += ",board-status-descriptor=1816618"
         direct = self.decoder.direct_input_profile
+        self._sd810_fold_source_closed = bool(
+            sd810_status and direct is not None
+            and type(direct.get("raw_enqueue")) is int
+            and sd810_fold_event_source(
+                detector_image,
+                int(direct["raw_enqueue"]) - self.config.load_address,
+            )
+        )
         if (direct is not None
                 and direct.get("grammar") == "direct-low-nibble-6-row-v1"
                 and int(direct.get("sense_bits", 0)) == 4):
@@ -6771,9 +6781,10 @@ class Transport:
         profile = self.config.board_status_input
         if (getattr(self.config, "model", None) == "LG-SD810" and profile is not None
                 and (profile.address, profile.mask) == (0x03000720, 1)):
-            # The electrical input enables display updates; its physical
-            # function is unknown and must not be exposed as a fold switch.
-            return False
+            # The UI name is inferred: the source proves the logical status
+            # produces open/closed events and gates keys, not the sensor type.
+            if not getattr(self, "_sd810_fold_source_closed", False):
+                return False
         return (profile is not None and profile.mask > 0
                 and profile.mask & (profile.mask - 1) == 0
                 and self.board_status_snapshot is not None)

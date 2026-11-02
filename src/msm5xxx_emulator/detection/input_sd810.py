@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import struct
 
+from .arm import thumb_bl_target
+
 
 GPIO_PORT_POINTER_GLOBAL = 0x01816618
 GPIO_PORT_ADDRESS = 0x03000720
@@ -90,3 +92,28 @@ def sd810_gpio_board_status_profile(image: bytes) -> tuple[int, int, int] | None
     """Return address/mask/asserted-default only for one proven reader site."""
     return ((GPIO_PORT_ADDRESS, 1, 1)
             if len(sd810_gpio_reader_sites(image)) == 1 else None)
+
+
+def sd810_fold_event_source(image: bytes, raw_enqueue: int) -> bool:
+    """Close both GPIO status branches over the scanner's raw event sink.
+
+    This establishes the firmware's open/closed event convention; it does not
+    identify the physical component connected to the input.
+    """
+    sites = sd810_gpio_reader_sites(image)
+    if len(sites) != 1 or type(raw_enqueue) is not int:
+        return False
+    base = sites[0]
+    if base + 110 > len(image):
+        return False
+    branch = _u16(image, base + 22)
+    if (branch is None or branch & 0xff00 != 0xd100
+            or base + 26 + ((branch & 0xff) << 1) != base + 94):
+        return False
+    # High stores logical 1 and emits raw 6; low stores logical 0 and emits
+    # raw 8. Both paths enqueue FF after the transition event.
+    if tuple(_u16(image, base + offset) for offset in (24, 26, 32, 94, 96, 98, 104)) != (
+            0x7141, 0x2008, 0x20ff, 0x2101, 0x7141, 0x2006, 0x20ff):
+        return False
+    return all(thumb_bl_target(image, base + offset) == raw_enqueue
+               for offset in (28, 34, 100, 106))

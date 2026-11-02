@@ -2,7 +2,9 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.input_sd810 import sd810_gpio_board_status_profile
+from msm5xxx_emulator.detection.input_sd810 import (
+    sd810_fold_event_source, sd810_gpio_board_status_profile,
+)
 
 
 def reader(image, start, pointer=0x01816618):
@@ -24,6 +26,24 @@ class SD810StatusTests(unittest.TestCase):
                          (0x03000720, 1, 1))
         reader(image, 0x200)
         self.assertIsNone(sd810_gpio_board_status_profile(image))
+
+    def test_fold_events_require_both_polarities_and_same_raw_sink(self):
+        image = bytearray(0x400)
+        start, sink = 0x100, 0x300
+        reader(image, start)
+        struct.pack_into('<H', image, start + 22, 0xd122)
+        for offset, value in ((94, 0x2101), (96, 0x7141), (98, 0x2006),
+                              (104, 0x20ff)):
+            struct.pack_into('<H', image, start + offset, value)
+        for offset in (28, 34, 100, 106):
+            displacement = sink - (start + offset + 4)
+            struct.pack_into('<2H', image, start + offset,
+                             0xf000 | ((displacement >> 12) & 0x7ff),
+                             0xf800 | ((displacement >> 1) & 0x7ff))
+        self.assertTrue(sd810_fold_event_source(image, sink))
+        self.assertFalse(sd810_fold_event_source(image, sink + 2))
+        struct.pack_into('<H', image, start + 98, 0x2008)
+        self.assertFalse(sd810_fold_event_source(image, sink))
 
     def test_rejects_wrong_pointer_or_branch(self):
         image = bytearray(0x400)
