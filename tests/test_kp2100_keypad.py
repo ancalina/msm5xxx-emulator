@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 from msm5xxx_emulator.detection import detect
+from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu.transport import (
     qemu_kp2100_low5_property, qemu_sd840_numeric_profile,
@@ -29,6 +30,10 @@ class KP2100KeypadTest(unittest.TestCase):
             changed = bytearray(image)
             changed[profile["function"] + offset] ^= 1
             self.assertIsNone(qemu_kp2100_low5_property(changed, config, profile))
+        provenance = _descriptor_mmio_provenance(image, profile['descriptor_pointer'])
+        changed = bytearray(image)
+        changed[provenance['source'] + 0x20] ^= 1
+        self.assertIsNone(qemu_kp2100_low5_property(changed, config, profile))
         altered = dict(profile)
         altered["timer_bridge"] = {**profile["timer_bridge"], "irq_route": {}}
         self.assertIsNone(qemu_kp2100_low5_property(image, config, altered))

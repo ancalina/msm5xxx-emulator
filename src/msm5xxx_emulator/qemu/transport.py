@@ -506,6 +506,9 @@ def qemu_kp2100_low5_property(image: bytes, config: object,
             or profile.get("event_sink_validation") != "validated-raw-enqueue-callsites"
             or profile.get("row_order") != [0, 1, 2, 3, 4, 5]):
         return None
+    provenance = _descriptor_mmio_provenance(image, 0x01103684)
+    if provenance is None or provenance["kind"] != profile["descriptor_mmio_provenance"]:
+        return None
     scanner = profile.get("function")
     bridge = profile.get("timer_bridge")
     if (type(scanner) is not int or not isinstance(bridge, dict)
