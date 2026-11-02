@@ -4414,7 +4414,8 @@ static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
     if (s->matrix_input_low5 && s->matrix_input_contact_precheck[0] &&
         (pc == s->matrix_input_contact_precheck[0] ||
          pc == s->matrix_input_contact_precheck[1] ||
-         pc == s->matrix_input_contact_precheck[2])) {
+         (s->matrix_input_contact_precheck[2] &&
+          pc == s->matrix_input_contact_precheck[2]))) {
         unsigned low = msm5xxx_poc_backing_read(msm, 0x728, 2) & 0x1f;
         unsigned selected = (low ^ 0x1f) |
             ((msm5xxx_poc_backing_read(msm, 0x724, 2) & 0x4000) ? 0 : 0x20);
@@ -16199,15 +16200,19 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
         (s->board_status_input_descriptor &&
          s->board_status_input_descriptor != 0x01816618 &&
          s->board_status_input_descriptor != 0x0181661c) ||
-        (fields != 3 && fields != 6) ||
+        (fields != 3 && fields != 5 && fields != 6) ||
         (fields == 3 && sscanf(value, "%x:%x:%x%c", &descriptor, &presence,
                                &sense, &trailing) != 3) ||
+        (fields == 5 && sscanf(value, "%x:%x:%x:%x:%x%c", &descriptor,
+                               &presence, &sense, &contact1, &contact2,
+                               &trailing) != 5) ||
         !descriptor || descriptor & 3 ||
-        (fields == 6 && ((descriptor != 0x01816618 &&
+        (fields >= 5 && ((descriptor != 0x01816618 &&
                           descriptor != 0x0181661c) ||
-                         !contact1 || !contact2 || !init ||
-                         contact1 & 1 || contact2 & 1 || init & 1 ||
-                         contact1 == contact2 || init == contact1 || init == contact2)) ||
+                         !contact1 || !contact2 ||
+                         contact1 & 1 || contact2 & 1 || contact1 == contact2 ||
+                         (fields == 6 && (!init || (init & 1) ||
+                          init == contact1 || init == contact2)))) ||
         descriptor > UINT32_MAX - 0x38 ||
         (s->board_status_input_descriptor &&
          descriptor != s->board_status_input_descriptor) ||

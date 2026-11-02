@@ -304,9 +304,10 @@ def qemu_low5_matrix_property(
     if sites[0] == sites[1]:
         return None, "ambiguous-sense-roles"
     suffix = ""
-    sd840_contacts = qemu_sd840_low5_contacts(image, config, profile)
-    if sd840_contacts is not None:
-        suffix = ":" + ":".join(f"{site:x}" for site in sd840_contacts)
+    contact_sites = (qemu_sd840_low5_contacts(image, config, profile)
+                     or qemu_sd9210_low5_contacts(image, config, profile))
+    if contact_sites is not None:
+        suffix = ":" + ":".join(f"{site:x}" for site in contact_sites)
     elif status is not None:
         # The scanner also checks the shared fifth sense line before driving
         # an individual row. Close both conditional halfword reads.
@@ -393,6 +394,48 @@ def qemu_sd840_low5_contacts(
             (0x6b78, 0x8800, 0x0940, 0xd207, 0x2051)):
         return None
     return contacts[0], contacts[1], load + init + 2
+
+
+def qemu_sd9210_low5_contacts(
+        image: bytes, config: object, profile: dict[str, object],
+) -> tuple[int, int] | None:
+    """Close SD9210's two released bit-4 prechecks for numeric keys."""
+    bridge = profile.get("timer_bridge")
+    scanner = profile.get("function")
+    if (getattr(config, "model", None) != "LG-SD9210"
+            or getattr(config, "board_status_input", None) is not None
+            or profile.get("descriptor_pointer") != 0x01816618
+            or profile.get("row_order") != [4, 0, 1, 2, 3, 5]
+            or type(scanner) is not int or not isinstance(bridge, dict)
+            or bridge.get("scanner") != scanner
+            or bridge.get("initial") != 25 or bridge.get("reload") != 25
+            or not isinstance(bridge.get("irq_route"), dict)
+            or not QemuDecoder._rex_legacy_irq_route_metadata_valid(bridge["irq_route"])):
+        return None
+    events = profile.get("event_codes")
+    if not isinstance(events, (list, tuple)) or any(
+            events.count(event) != 1 for event in ASCII_KEY_EVENTS):
+        return None
+    start = scanner - config.load_address
+    if start < 0 or start + 0x68 > len(image):
+        return None
+    if struct.unpack_from("<7H", image, start + 0x48) != (
+            0x220f, 0x8d99, 0x4311, 0x8599, 0x8d99, 0x6a1a, 0x8011):
+        return None
+    contacts = []
+    for offset in (0x3a, 0x60):
+        pos = start + offset
+        pointer, read, shift, branch = struct.unpack_from("<4H", image, pos)
+        reg = pointer & 7
+        if (pointer & 0xf800 != 0x6800 or (pointer >> 6 & 31) != 13
+                or read != 0x8800 | reg << 3 | reg
+                or shift != 0x0800 | 5 << 6 | reg << 3 | reg
+                or branch & 0xff00 != 0xd200
+                or thumb_literal_value(image, pos - 2, (pointer >> 3) & 7)
+                   != 0x01816618):
+            return None
+        contacts.append(config.load_address + pos + 2)
+    return contacts[0], contacts[1]
 
 
 def qemu_sd840_numeric_profile(profile: dict[str, object]) -> dict[str, object]:
@@ -4433,7 +4476,10 @@ class Transport:
         sd840_source_closed = (direct is not None and
                                qemu_sd840_low5_contacts(detector_image, self.config, direct)
                                is not None)
-        if sd840_source_closed:
+        sd9210_source_closed = (direct is not None and
+                                qemu_sd9210_low5_contacts(detector_image, self.config, direct)
+                                is not None)
+        if sd840_source_closed or sd9210_source_closed:
             # The table proves digit identities, but not the nonnumeric
             # physical labels. Do not fall back to positional key numbering.
             direct = qemu_sd840_numeric_profile(direct)
@@ -4443,7 +4489,7 @@ class Transport:
         if kp_property is not None:
             machine += f",{kp_property}"
             self.matrix_input_profile = direct
-        if experimental_low5 or sd810_status or sd840_source_closed:
+        if experimental_low5 or sd810_status or sd840_source_closed or sd9210_source_closed:
             low5_property, low5_reject = qemu_low5_matrix_property(
                 detector_image, self.config, direct
             )
