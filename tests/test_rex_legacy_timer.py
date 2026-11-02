@@ -200,6 +200,26 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
                 compact, bridge
             ))
 
+        tighter = bytearray(compact)
+        tighter_words = list(struct.unpack_from("<56H", tighter, registrar))
+        tighter_words[19:25] = (0x201C, 0x4916, 0x4360, 0x1840, 0, 0)
+        tighter_words[26:31] = (0x630F, 0xE000, 0x6147, 0, 0)
+        struct.pack_into("<56H", tighter, registrar, *tighter_words)
+
+        def tighter_literals(_image, position, register):
+            if register == 1 and position == registrar + 40:
+                return base
+            if register == 1 and position in (registrar + 42, registrar + 44):
+                return None
+            return literals(_image, position, register)
+
+        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
+                    side_effect=tighter_literals),
+              patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
+            self.assertIsNotNone(find_rex_legacy_5ms_irq_route(tighter, bridge))
+            struct.pack_into("<H", tighter, registrar + 42, 0x4361)
+            self.assertIsNone(find_rex_legacy_5ms_irq_route(tighter, bridge))
+
         newer = bytearray(compact)
         newer_handler = loop - 0x150
         struct.pack_into("<2H", newer, handler, 0, 0)

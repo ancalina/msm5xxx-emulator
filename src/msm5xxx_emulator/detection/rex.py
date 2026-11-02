@@ -2461,7 +2461,7 @@ def find_rex_legacy_5ms_irq_route(
         layouts = [
             (multiply, descriptor_load)
             for multiply, descriptor_load, stores in (
-                (21, 44, 28), (20, 42, 27),
+                (21, 44, 28), (20, 42, 27), (19, 40, 26),
             )
             if words[multiply:multiply + 4]
             == (0x201C, words[multiply + 1], 0x4360, 0x1840)
