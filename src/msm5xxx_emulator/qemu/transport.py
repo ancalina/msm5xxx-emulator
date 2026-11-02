@@ -254,6 +254,34 @@ def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
     return senses
 
 
+def qemu_sd810_sxs_menu_selection(image: bytes, config: object,
+                                  profile: dict[str, object]) -> dict[str, object] | None:
+    """Use the SXS menu-selection contact verified through the guest UI."""
+    events = profile.get("event_codes")
+    table = 0x25d957
+    if (getattr(config, "load_address", None) != 0
+            or getattr(config, "flash_size", 0) < table + 30
+            or profile.get("function") != 0x7877c
+            or profile.get("descriptor_pointer") != 0x01816618
+            or profile.get("raw_enqueue") != 0x784a4
+            or profile.get("event_table") != table
+            or not isinstance(events, (list, tuple)) or len(events) != 30
+            or any(type(event) is not int or not 0 <= event <= 255 for event in events)
+            or bytes(events) != image[table:table + 30]
+            or events.count(0x8c) != 1
+            or sd810_gpio_board_status_profile(image) != (0x03000720, 1, 1)):
+        return None
+    mappings = profile.get("provisional_mappings")
+    if not isinstance(mappings, dict) or not mappings:
+        return None
+    mappings = dict(mappings)
+    # This contact selects the highlighted menu item; its previous volume
+    # label was provisional and would send the same contact for two keys.
+    mappings.pop(8, None)
+    mappings[5] = {"event": 0x8c, "rule": "sxs-guest-menu-selection"}
+    return {**profile, "provisional_mappings": mappings}
+
+
 def qemu_low5_matrix_property(
         image: bytes, config: object, profile: dict[str, object] | None,
 ) -> tuple[str | None, str | None]:
@@ -4716,6 +4744,14 @@ class Transport:
             )
             if low5_property is not None:
                 machine += f",{low5_property}"
+                if sd810_status:
+                    verified = qemu_sd810_sxs_menu_selection(
+                        detector_image, self.config, direct)
+                    if verified is not None:
+                        direct = verified
+                        self.decoder.direct_input_profile = direct
+                        self.decoder.direct_input_positions = (
+                            self.decoder._direct_matrix_positions(direct))
                 self.matrix_input_profile = direct
                 if sd810_status:
                     # The pre-scan active-low contact emits the KEYEMUL E event.

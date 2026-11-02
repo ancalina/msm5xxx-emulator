@@ -1,10 +1,12 @@
 """Tests for the SD810 halfword GPIO reader admission."""
 import struct
 import unittest
+from types import SimpleNamespace
 
 from msm5xxx_emulator.detection.input_sd810 import (
     sd810_fold_event_source, sd810_fold_irq_source, sd810_gpio_board_status_profile,
 )
+from msm5xxx_emulator.qemu.transport import qemu_sd810_sxs_menu_selection
 
 
 def reader(image, start, pointer=0x01816618):
@@ -19,6 +21,31 @@ def reader(image, start, pointer=0x01816618):
 
 
 class SD810StatusTests(unittest.TestCase):
+    def test_sxs_menu_selection_requires_matching_source_and_table(self):
+        table = 0x25d957
+        image = bytearray(table + 30)
+        reader(image, 0x100)
+        events = list(range(30))
+        events[17] = 0x8c
+        image[table:table + 30] = bytes(events)
+        config = SimpleNamespace(load_address=0, flash_size=len(image))
+        profile = dict(function=0x7877c, descriptor_pointer=0x01816618,
+                       raw_enqueue=0x784a4, event_table=table,
+                       event_codes=events,
+                       provisional_mappings={5: {"event": 0x8d},
+                                             8: {"event": 0x8c},
+                                             11: {"event": 0x31}})
+        result = qemu_sd810_sxs_menu_selection(image, config, profile)
+        self.assertEqual(result['provisional_mappings'][5]['event'], 0x8c)
+        self.assertNotIn(8, result['provisional_mappings'])
+        self.assertEqual(result['provisional_mappings'][11]['event'], 0x31)
+        self.assertEqual(profile['provisional_mappings'][5]['event'], 0x8d)
+        for field in ('function', 'descriptor_pointer', 'raw_enqueue', 'event_table'):
+            changed = dict(profile, **{field: profile[field] + 2})
+            self.assertIsNone(qemu_sd810_sxs_menu_selection(image, config, changed))
+        image[table + 17] ^= 1
+        self.assertIsNone(qemu_sd810_sxs_menu_selection(image, config, profile))
+
     def test_requires_unique_matching_reader(self):
         image = bytearray(0x400)
         reader(image, 0x100)
