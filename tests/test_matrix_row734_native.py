@@ -99,7 +99,7 @@ int main(void) {
     def test_actual_callback_property_host_reset_and_fallback(self):
         source = self.source()
         names = ("msm5xxx_poc_halfword_sense", "msm5xxx_poc_mapped_halfword_sense",
-                 "msm5xxx_poc_low5_sense", "msm5xxx_poc_row734_sense", "msm5xxx_poc_loop_sense",
+                 "msm5xxx_poc_low5_sense", "msm5xxx_poc_kp_low5_sense", "msm5xxx_poc_row734_sense", "msm5xxx_poc_loop_sense",
                  "msm5xxx_poc_row734_u16", "msm5xxx_poc_matrix_row734_reset",
                  "msm5xxx_poc_matrix_row734_read", "msm5xxx_poc_matrix_halfword_read",
                  "msm5xxx_poc_matrix_halfword_write", "msm5xxx_poc_loop_status_matches",
@@ -170,11 +170,11 @@ static uint32_t msm5xxx_poc_guest_u32(hwaddr address) {
 typedef struct {
     CPUState *cpu; int msm;
     bool matrix_input_enabled,matrix_input_host_enabled,matrix_input_pressed;
-    bool matrix_input_halfword,matrix_input_low5,matrix_input_loop,matrix_input_row734;
+    bool matrix_input_halfword,matrix_input_low5,matrix_input_kp_low5,matrix_input_loop,matrix_input_row734;
     bool matrix_row734_boot_seen;
     uint32_t matrix_input_contact_precheck[3];
     uint32_t matrix_input_descriptor,matrix_input_presence_site,matrix_input_sense_site;
-    uint32_t matrix_input_contact_site,matrix_row734_presence2,matrix_row734_sense2,matrix_row734_boot_site;
+    uint32_t matrix_input_contact_site,matrix_input_kp_contact2,matrix_row734_presence2,matrix_row734_sense2,matrix_row734_boot_site;
     uint32_t matrix_row734_row_tables[2],ram_base;
     uint32_t matrix_input_address,matrix_input_no_key,matrix_input_rows,matrix_input_sideband_mask;
     uint32_t matrix_input_sense_bitmap,matrix_input_row,matrix_input_sense,primary_nor_size;
