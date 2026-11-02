@@ -35,6 +35,7 @@ from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_in
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
 from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
 from msm5xxx_emulator.detection.input_lg_kp import find_kp_legacy_scanner
+from msm5xxx_emulator.detection.input_sv130 import sv130_keypad_source
 from msm5xxx_emulator.detection.input_sd810 import (
     sd810_fold_irq_source, sd810_gpio_board_status_profile,
 )
@@ -4559,6 +4560,21 @@ class Transport:
             self.decoder.direct_input_profile = direct
             self.decoder.direct_input_positions = self.decoder._direct_matrix_positions(direct)
             machine += f",{kp2100_property}"
+            self.matrix_input_profile = direct
+        sv130_source_closed = bool(
+            direct is not None and self.rex_c80_profile is None
+            and self.rex_read_consume_profile is None and self.rex_w1c_profile is None
+            and self.rex_stack_w1c_profile is None and not experimental_ma5_irq
+            and self.config.rex_irq_arm_address is None
+            and sv130_keypad_source(detector_image, self.config, direct)
+            and QemuDecoder._rex_legacy_irq_route_metadata_valid(
+                direct['timer_bridge']['irq_route'])
+        )
+        if sv130_source_closed:
+            direct = qemu_sd840_numeric_profile(direct)
+            self.decoder.direct_input_profile = direct
+            self.decoder.direct_input_positions = self.decoder._direct_matrix_positions(direct)
+            machine += ",matrix-sv130=on,rex-sv130=on"
             self.matrix_input_profile = direct
         if experimental_low5 or sd810_status or sd840_source_closed or sd9210_source_closed:
             low5_property, low5_reject = qemu_low5_matrix_property(

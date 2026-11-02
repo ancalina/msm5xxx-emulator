@@ -139,6 +139,8 @@ static void msm5xxx_poc_backing_write(uint8_t *ram, hwaddr offset,
 }
 static uint32_t descriptor_words[14];
 static uint32_t msm5xxx_poc_guest_u32(hwaddr address) {
+    if (address >= 0x018383f4 && address <= 0x01838428)
+        return descriptor_words[(address - 0x018383f4) / 4];
     assert(address >= 0x01801000 && address <= 0x01801034);
     return descriptor_words[(address - 0x01801000) / 4];
 }
@@ -154,7 +156,7 @@ typedef struct {
     bool board_status_input_enabled;
     uint32_t board_status_input_address, board_status_input_mask;
     uint32_t board_status_input_default, board_status_input_level, board_status_input_rejections;
-    bool matrix_input_halfword, matrix_input_low5, matrix_input_kp_low5, matrix_input_loop, matrix_input_enabled;
+    bool matrix_input_halfword, matrix_input_low5, matrix_input_kp_low5, matrix_input_sv130_low5, matrix_input_loop, matrix_input_enabled;
     uint32_t matrix_input_kp_contact2;
     bool matrix_input_row734, matrix_row734_boot_seen;
     uint32_t matrix_row734_presence2, matrix_row734_sense2, matrix_row734_boot_site;
@@ -1043,6 +1045,23 @@ int main(void) {
         if(conflict==2) msm5xxx_poc_set_matrix_low5(&s,"1801000:2:4",&err);
         if(conflict==3) msm5xxx_poc_set_board_status_input(&s,"3000668:1:0",&err);
         assert(!err); msm5xxx_poc_set_matrix_gpio(&s,gpio_property,&err); assert(err);
+    }
+
+    s=(MSM5xxxPOCMachineState){.cpu=&cpu_state};err=NULL;
+    msm5xxx_poc_set_matrix_sv130(&s,"on",&err);
+    assert(!err && s.matrix_input_sv130_low5);
+    property=msm5xxx_poc_get_matrix_sv130(&s,&err);
+    assert(!strcmp(property,"on"));free(property);
+    descriptor_words[0]=0x3000720;descriptor_words[8]=0x3000728;
+    descriptor_words[13]=0x300072c;put(0x72c,0x73e0);
+    for(unsigned row=0;row<6;row++) {
+        s.matrix_input_pressed=true;s.matrix_input_row=row;s.matrix_input_sense=23;
+        put(0x728,0);put(0x720,0);pc=0x82194;
+        assert(msm5xxx_poc_matrix_halfword_read(&s,0,2)==0x73f7);
+        put(0x728,row==5 ? 0x1e : (0x1e & ~(1u<<row)));
+        put(0x720,row==5 ? 0 : 0x10);pc=0x822ba;
+        assert(msm5xxx_poc_matrix_halfword_read(&s,0,2)==0x73f7);
+        pc=0x822d6;assert(msm5xxx_poc_matrix_halfword_read(&s,0,2)==0x73f0);
     }
 
     /* KP drives four rows on 728 and two on 720. */

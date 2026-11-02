@@ -102,7 +102,7 @@ typedef struct {
     uint32_t rex_irq_callback_slot, rex_irq_callback_address;
     uint32_t rex_irq_halfword_arm_pc, rex_irq_interval;
     uint64_t rex_irq_next;
-    bool rex_irq_copied, rex_irq_armed;
+    bool rex_irq_copied, rex_irq_armed, rex_irq_sv130_overlay;
 } MSM5xxxPOCMachineState;
 static uint8_t memory[0x4000];
 static unsigned scheduled, dirtied;
@@ -193,8 +193,8 @@ int main(void) {
     return 0;
 }
 '''
-        code = code.replace('    bool rex_irq_copied, rex_irq_armed;',
-                            '    bool rex_irq_copied, rex_irq_armed, rex_irq_route_active;')
+        code = code.replace('    bool rex_irq_copied, rex_irq_armed, rex_irq_sv130_overlay;',
+                            '    bool rex_irq_copied, rex_irq_armed, rex_irq_sv130_overlay, rex_irq_route_active;')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path/'check.c').write_text(code)

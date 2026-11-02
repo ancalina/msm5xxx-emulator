@@ -660,6 +660,7 @@ struct MSM5xxxPOCMachineState {
     uint8_t matrix_input_gpio_mask[3];
     bool matrix_input_halfword;
     bool matrix_input_low5;
+    bool matrix_input_sv130_low5;
     bool matrix_input_kp_low5;
     uint32_t matrix_input_kp_contact2;
     bool matrix_input_row734, matrix_row734_boot_seen;
@@ -796,6 +797,7 @@ struct MSM5xxxPOCMachineState {
     bool rex_irq_enabled;
     bool rex_irq_c80;
     bool rex_irq_copied;
+    bool rex_irq_sv130_overlay;
     uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size;
     uint32_t rex_irq_vector_rom, rex_irq_halfword_arm_pc;
     bool rex_irq_read_consume;
@@ -4365,6 +4367,39 @@ static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
         return msm5xxx_poc_matrix_row734_read(s, backing, pc);
     }
 
+    if (s->matrix_input_sv130_low5) {
+        uint16_t value;
+        if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor) !=
+                MSM5XXX_POC_MSM_BASE + 0x720 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x20) !=
+                MSM5XXX_POC_MSM_BASE + 0x728 ||
+            msm5xxx_poc_guest_u32(s->matrix_input_descriptor + 0x34) !=
+                MSM5XXX_POC_MSM_BASE + 0x72c) {
+            return backing;
+        }
+        if (pc == s->matrix_input_contact_site) {
+            return backing | 0x10;
+        }
+        if (pc != s->matrix_input_presence_site &&
+            pc != s->matrix_input_sense_site) {
+            return backing;
+        }
+        if (!msm5xxx_poc_low5_sense(backing,
+                msm5xxx_poc_halfword_backing_read(s, 0x728, 2),
+                (msm5xxx_poc_halfword_backing_read(s, 0x720, 2) & 0x10) ?
+                    0x4000 : 0,
+                pc == s->matrix_input_presence_site,
+                s->matrix_input_pressed, s->matrix_input_row,
+                s->matrix_input_sense, &value)) {
+            s->matrix_input_rejections++;
+            return backing;
+        }
+        if (s->matrix_input_pressed && (value & 31) != 31) {
+            s->matrix_input_active_reads++;
+        }
+        return value;
+    }
+
     if (s->matrix_input_kp_low5) {
         uint16_t value;
         if (msm5xxx_poc_guest_u32(s->matrix_input_descriptor) !=
@@ -6053,6 +6088,15 @@ static bool msm5xxx_poc_rex_static_gate(MSM5xxxPOCMachineState *s)
         s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_CALLBACK_WAIT;
         return false;
     }
+    if (s->rex_irq_sv130_overlay) {
+        uint8_t loaded[0x27c], original[0x27c];
+        cpu_physical_memory_read(0x03800068, loaded, sizeof(loaded));
+        cpu_physical_memory_read(0x00de5d00, original, sizeof(original));
+        if (memcmp(loaded, original, sizeof(loaded))) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_HANDLER_WAIT;
+            return false;
+        }
+    }
     s->rex_irq_route_active = true;
     s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_ACCEPTED;
     return true;
@@ -6317,6 +6361,49 @@ static void msm5xxx_poc_rex_irq_arm_write(void *opaque, hwaddr offset,
         msm5xxx_poc_rex_irq_schedule(s);
     }
 }
+
+static uint64_t msm5xxx_poc_sv130_arm_read(void *opaque, hwaddr offset,
+                                            unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                   0x7a0 + offset, size);
+}
+
+static void msm5xxx_poc_sv130_arm_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t pc;
+    uint8_t opcode[2];
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                             0x7a0 + offset, value, size);
+    memory_region_set_dirty(&s->msm, 0x7a0 + offset, size);
+    if (offset || size != 1 || value != 2 || !s->cpu->env.thumb ||
+        !msm5xxx_poc_boot_storage_guest(s) ||
+        !msm5xxx_poc_mmio_access_pc(s, &pc) || pc != 0xe414 ||
+        s->cpu->env.regs[1] != 0x030007a0 ||
+        (s->cpu->env.regs[0] & 0xff) != 2 || s->rex_irq_armed) {
+        return;
+    }
+    cpu_physical_memory_read(pc, opcode, 2);
+    if (lduw_le_p(opcode) != 0x7008) { /* STRB r0, [r1] */
+        return;
+    }
+    s->rex_irq_armed = true;
+    s->rex_irq_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      s->rex_irq_interval;
+    msm5xxx_poc_rex_irq_schedule(s);
+}
+
+static const MemoryRegionOps msm5xxx_poc_sv130_arm_ops = {
+    .read = msm5xxx_poc_sv130_arm_read,
+    .write = msm5xxx_poc_sv130_arm_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
 
 static uint64_t msm5xxx_poc_rex_copied_arm_read(void *opaque, hwaddr offset,
                                                 unsigned size)
@@ -12868,17 +12955,18 @@ static void msm5xxx_poc_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
     /* Reject an EEPROM boundary through either mapped halfword register. */
-    if ((s->matrix_input_row_mask || s->matrix_input_loop || s->matrix_input_kp_low5) && s->eeprom_gpio_enabled) {
+    if ((s->matrix_input_row_mask || s->matrix_input_loop || s->matrix_input_kp_low5 ||
+         s->matrix_input_sv130_low5) && s->eeprom_gpio_enabled) {
         uint64_t start = s->eeprom_gpio_base;
         uint64_t end = start + MSM5XXX_POC_EEPROM_GPIO_SIZE;
 
         const unsigned loop_offsets[] = { 0x720, 0x728, 0x72c };
-        for (unsigned port_index = 0; port_index < ((s->matrix_input_loop || s->matrix_input_kp_low5) ? 3 : 2); port_index++) {
-            unsigned offset = (s->matrix_input_loop || s->matrix_input_kp_low5) ? loop_offsets[port_index] : 0x724 + 8 * port_index;
+        for (unsigned port_index = 0; port_index < ((s->matrix_input_loop || s->matrix_input_kp_low5 || s->matrix_input_sv130_low5) ? 3 : 2); port_index++) {
+            unsigned offset = (s->matrix_input_loop || s->matrix_input_kp_low5 || s->matrix_input_sv130_low5) ? loop_offsets[port_index] : 0x724 + 8 * port_index;
             uint64_t address = MSM5XXX_POC_MSM_BASE + offset;
 
             if (start < address + 2 && end > address &&
-                (s->matrix_input_kp_low5 ||
+                (s->matrix_input_kp_low5 || s->matrix_input_sv130_low5 ||
                  !(start <= address && end >= address + 2))) {
                 error_report("mapped halfword register partially overlaps "
                              "EEPROM GPIO aperture");
@@ -12887,7 +12975,7 @@ static void msm5xxx_poc_init(MachineState *machine)
         }
     }
     /* Loop selector and sense apertures cannot bypass unrelated owners. */
-    if (s->matrix_input_loop || s->matrix_input_kp_low5) {
+    if (s->matrix_input_loop || s->matrix_input_kp_low5 || s->matrix_input_sv130_low5) {
         const unsigned offsets[] = { 0x720, 0x728, 0x72c };
         for (unsigned port_index = 0; port_index < sizeof(offsets) / sizeof(offsets[0]); port_index++) {
             uint64_t address = MSM5XXX_POC_MSM_BASE + offsets[port_index];
@@ -13008,7 +13096,8 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("matrix-gpio conflicts with the final memory map");
         exit(EXIT_FAILURE);
     }
-    if (s->matrix_input_kp_low5 && s->board_status_input_enabled) {
+    if ((s->matrix_input_kp_low5 || s->matrix_input_sv130_low5) &&
+        s->board_status_input_enabled) {
         error_report("matrix-kp-low5 conflicts with board-status-input");
         exit(EXIT_FAILURE);
     }
@@ -13023,7 +13112,7 @@ static void msm5xxx_poc_init(MachineState *machine)
              (uint64_t)s->ram_base + machine->ram_size ||
          s->matrix_input_presence_site >= s->primary_nor_size - 2 ||
          s->matrix_input_sense_site >= s->primary_nor_size - 2 ||
-         ((s->matrix_input_loop || s->matrix_input_kp_low5) &&
+         ((s->matrix_input_loop || s->matrix_input_kp_low5 || s->matrix_input_sv130_low5) &&
           s->matrix_input_contact_site >= s->primary_nor_size - 2) ||
          (s->board_status_input_enabled &&
           s->board_status_input_address >= MSM5XXX_POC_MSM_BASE + 0x72c &&
@@ -13121,7 +13210,8 @@ static void msm5xxx_poc_init(MachineState *machine)
                  0x03810000) :
             s->rex_irq_wrapper_address >= s->primary_nor_size;
 
-        if (vector_invalid || wrapper_invalid ||
+        if ((s->rex_irq_sv130_overlay && s->ma5_irq_configured) ||
+                vector_invalid || wrapper_invalid ||
                 (!handler_in_nor && !handler_in_iram) ||
                 s->rex_irq_callback_address >= s->primary_nor_size ||
                 s->rex_irq_handler_slot < s->ram_base ||
@@ -13634,6 +13724,22 @@ static void msm5xxx_poc_init(MachineState *machine)
         );
     }
     if (s->rex_irq_enabled) {
+        if (s->rex_irq_sv130_overlay) {
+            MemoryRegionSection section = memory_region_find(
+                get_system_memory(), 0x030007a0, 4);
+            bool conflict = section.mr != &s->msm ||
+                section.offset_within_region != 0x7a0 ||
+                !int128_eq(section.size, int128_make64(4));
+            if (section.mr) {
+                memory_region_unref(section.mr);
+            }
+            if (conflict || !s->memory_profile_enabled ||
+                (uint64_t)0x00de5d00 + 0x27c > s->primary_nor_size ||
+                0xe416 > s->primary_nor_size) {
+                error_report("SV130 IRQ requires exclusive arm and bounded ROM source");
+                exit(EXIT_FAILURE);
+            }
+        }
         s->rex_irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                         msm5xxx_poc_rex_irq_tick, s);
         memory_region_init_io(&s->rex_irq_controller, OBJECT(machine),
@@ -13682,6 +13788,12 @@ static void msm5xxx_poc_init(MachineState *machine)
                 "msm5xxx-poc.rex-copied-arm", 4);
             memory_region_add_subregion_overlap(get_system_memory(),
                 0x030007a0, &s->rex_irq_arm, 1);
+        } else if (s->rex_irq_sv130_overlay) {
+            memory_region_init_io(&s->rex_irq_arm, OBJECT(machine),
+                                  &msm5xxx_poc_sv130_arm_ops, s,
+                                  "msm5xxx-poc.sv130-arm", 4);
+            memory_region_add_subregion_overlap(get_system_memory(),
+                                                0x030007a0, &s->rex_irq_arm, 1);
         } else {
             memory_region_init_io(&s->rex_irq_arm, OBJECT(machine),
                                   &msm5xxx_poc_rex_irq_arm_ops, s,
@@ -16253,6 +16365,30 @@ static char *msm5xxx_poc_get_matrix_kp_low5(Object *obj, Error **errp)
                         s->matrix_input_contact_site, s->matrix_input_kp_contact2) : g_strdup("");
 }
 
+static char *msm5xxx_poc_get_matrix_sv130(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    (void)errp;
+    return g_strdup(s->matrix_input_sv130_low5 ? "on" : "");
+}
+
+static void msm5xxx_poc_set_matrix_sv130(Object *obj, const char *value,
+                                         Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (strcmp(value, "on") || s->matrix_input_enabled ||
+        s->board_status_input_enabled) {
+        error_setg(errp, "matrix-sv130 requires exclusive source-qualified GPIO");
+        return;
+    }
+    msm5xxx_poc_set_matrix_low5(obj, "18383f4:82194:822ba", errp);
+    if (!s->matrix_input_enabled) {
+        return;
+    }
+    s->matrix_input_sv130_low5 = true;
+    s->matrix_input_contact_site = 0x822d6;
+}
+
 static void msm5xxx_poc_set_matrix_kp_low5(Object *obj, const char *value,
                                            Error **errp)
 {
@@ -16959,6 +17095,30 @@ static void msm5xxx_poc_set_rex_static_c80(Object *obj, const char *value,
     s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
     s->rex_irq_c80 = true;
     s->rex_irq_enabled = true;
+}
+
+static char *msm5xxx_poc_get_rex_sv130(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    (void)errp;
+    return g_strdup(s->rex_irq_sv130_overlay ? "on" : "");
+}
+
+static void msm5xxx_poc_set_rex_sv130(Object *obj, const char *value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (strcmp(value, "on") || s->rex_irq_enabled) {
+        error_setg(errp, "rex-sv130 requires exclusive source-qualified IRQ");
+        return;
+    }
+    msm5xxx_poc_set_rex_static_c80(obj,
+        "3000c80:3000c94:200:4c4b40:1800000:3460:1a3c398:"
+        "3800068:25c:183c548:e3a4:3", errp);
+    if (!s->rex_irq_enabled) {
+        return;
+    }
+    s->rex_irq_arm_address = 0x030007a0;
+    s->rex_irq_sv130_overlay = true;
 }
 
 static char *msm5xxx_poc_get_rex_copied_c80(Object *obj, Error **errp)
@@ -18265,6 +18425,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_matrix_kp_low5);
     object_class_property_set_description(
         oc, "matrix-kp-low5", "KP descriptor-qualified low-five sense plane");
+    object_class_property_add_str(oc, "matrix-sv130",
+                                  msm5xxx_poc_get_matrix_sv130,
+                                  msm5xxx_poc_set_matrix_sv130);
+    object_class_property_set_description(
+        oc, "matrix-sv130", "SV130 descriptor-qualified low-five sense plane");
     object_class_property_add_str(oc, "matrix-halfword-loop",
                                   msm5xxx_poc_get_matrix_loop,
                                   msm5xxx_poc_set_matrix_loop);
@@ -18437,6 +18602,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "rex-static-c80",
         "Explicit detector- and runtime-gated C80 periodic IRQ route");
+    object_class_property_add_str(oc, "rex-sv130",
+                                  msm5xxx_poc_get_rex_sv130,
+                                  msm5xxx_poc_set_rex_sv130);
+    object_class_property_set_description(
+        oc, "rex-sv130", "Source-qualified byte-armed overlay IRQ route");
     object_class_property_add_str(
         oc, "rex-static-read-consume",
         msm5xxx_poc_get_rex_static_read_consume,

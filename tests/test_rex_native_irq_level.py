@@ -69,6 +69,12 @@ int main(void) {
     s.rex_irq_backing[0x19] = 0;
     msm5xxx_poc_rex_irq_update(&s); assert(!cpu); /* Parent masked. */
     s.rex_irq_pending[1] = 0;
+    s.rex_irq_bank_count = 3;
+    s.rex_irq_pending[0] = 0x200;
+    s.rex_irq_backing[0x15] = 2;
+    msm5xxx_poc_rex_irq_update(&s); assert(cpu); /* SV130 bank 0 tick. */
+    s.rex_irq_pending[0] = 0;
+    msm5xxx_poc_rex_irq_update(&s); assert(!cpu); /* Tick acknowledged. */
     s.rex_irq_route_active = false;
     s.irq_level = true;
     msm5xxx_poc_rex_irq_update(&s); assert(cpu && !s.rex_irq_level);
