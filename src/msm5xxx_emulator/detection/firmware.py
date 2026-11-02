@@ -13,6 +13,7 @@ from ..core.config import FirmwareConfig
 
 from .arm import arm_vector_score
 from .audio import find_audio_transport
+from .tone import tone_admission
 from .bootstrap_sdram import reset_copy_ram_profile
 from .boot_extent import boot_nor_extent
 from .small_page_nand import small_page_nand_profile
@@ -878,6 +879,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                 )
 
     audio_transport = find_audio_transport(primary_image)
+    tone_generator = tone_admission(primary_image, audio_transport)
+    if tone_generator["static_status"] == "accepted":
+        detection_notes.append("MSM5000 two-channel tone generator detected")
+        audio_transport = {**audio_transport, "tone_generator": tone_generator}
     if audio_transport["static_status"] == "accepted":
         audio_transport = {
             **audio_transport,

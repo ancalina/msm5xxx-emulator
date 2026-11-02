@@ -32,6 +32,7 @@ def drain_harness(source, baseline=False):
 #include "msm5xxx-audio-synth.h"
 #include "msm5xxx-ma5-pcm-output.h"
 #include "msm5xxx-ma5-wt-engine.h"
+#include "msm5xxx-tone.h"
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define QEMU_CLOCK_VIRTUAL 0
 #define G_IO_OUT 1u
@@ -52,6 +53,8 @@ typedef struct {
     bool ma5_pcm_initialized, ma5_pcm_output_failed, ma5_pcm_resync_pending;
     bool audio_core_lock_initialized, audio_synth_lock_initialized;
     bool audio_pcm_failed, audio_stream_rejected, audio_output_started;
+    bool tone_enabled;
+    MSM5xxxTone tone;
     QemuMutex audio_core_lock, audio_synth_lock;
     MSM5xxxMA5PCMOutput ma5_pcm_output;
     MSM5xxxAudioSynth audio_synth;
@@ -272,6 +275,7 @@ int main(void) {
 
 NATIVE_SOURCES = (
     'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-pcm-output.c',
+    'msm5xxx-tone.c',
     'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c',
     'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-wt-engine.c',
     'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-fm-voice.c',

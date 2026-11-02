@@ -105,8 +105,8 @@ reinitialized or unloaded. Fatal exits on other native threads may leave QEMU
 unusable; this protects QEMU's direct exit calls, not assertions/abort, crashes,
 or process termination inside third-party libraries. No global libc interposing
 or longjmp across QEMU frames is used. Device validation of clean quit and NAND
-persistence is required. Audio playback and virtual networking are disabled in
-the initial iOS adapter; the shared transport still provides their existing paths.
+persistence is required. The iOS adapter plays native PCM for statically admitted
+tone-generator firmware; virtual networking remains optional.
 
 After a signed device build, choose firmware, tap Run, check display progress and
 supported keys (including release), then Stop. The app must stay open; relaunch

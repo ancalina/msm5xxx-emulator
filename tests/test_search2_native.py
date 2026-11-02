@@ -15,6 +15,12 @@ class Search2NativeTests(unittest.TestCase):
         # Keep all coupled search/decoder callbacks, ending at their own final ops.
         last_ops = source.index("static const MemoryRegionOps msm5xxx_poc_decoder_init_ops = {", start)
         functions = source[start:source.index("\n};", last_ops) + len("\n};")]
+        # The tone MMIO callbacks now sit inside this broad decoder slice, but
+        # this fixture exercises search/decoder callbacks only.
+        tone_start = functions.index("static uint64_t msm5xxx_poc_tone_read(")
+        tone_end = functions.index(
+            "static uint64_t msm5xxx_poc_decoder_output_read(", tone_start)
+        functions = functions[:tone_start] + functions[tone_end:]
         mmio_start = source.index("static bool msm5xxx_poc_mmio_access_pc(")
         mmio_end = source.index("\n}", mmio_start) + len("\n}")
         mmio = source[mmio_start:mmio_end] + "\n"

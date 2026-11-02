@@ -234,6 +234,7 @@ def session_audio():
     if _session_error is not None or _session.process.poll() is not None:
         return b""
     metadata = getattr(_session.config, "audio_transport", None)
+    tone_metadata = getattr(_session.config, "tone_generator", None)
     transport = getattr(_session.decoder, "audio_transport", None)
     accepted_ma2 = (isinstance(metadata, dict)
                     and metadata.get("family") == "ma2"
@@ -243,7 +244,9 @@ def session_audio():
     native_ma5 = (getattr(_session, "audio_native", False) is True
                   and getattr(_session, "audio_native_ma5_pcm", False) is True
                   and _session.audio_stream_status == "native")
-    if (not (accepted_ma2 or native_ma5)
+    accepted_tone = (isinstance(tone_metadata, dict)
+                     and tone_metadata.get("static_status") == "accepted")
+    if (not (accepted_ma2 or native_ma5 or accepted_tone)
             or not _session.audio_stream_enabled
             or _session.audio_stream_status == "rejected"
             or not callable(getattr(_session, "take_native_audio", None))):

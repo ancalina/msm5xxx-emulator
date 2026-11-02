@@ -4886,6 +4886,28 @@ class Transport:
         audio = self.config.audio_transport
         audio_family = audio.get("family") if audio is not None else None
         audio_grammar = audio.get("grammar") if audio is not None else None
+        tone_generator = getattr(self.config, "tone_generator", None)
+        if (isinstance(tone_generator, dict) and
+                tone_generator.get("static_status") == "accepted"):
+            machine += ",tone=on"
+            if os.environ.get("MSM5XXX_TONE_LOG") == "1":
+                machine += ",tone-log=on"
+            self.config.detection_notes.append(
+                "QEMU register-level two-channel tone block enabled from static firmware evidence")
+            if not audio_pcm:
+                machine += ",audio-pcm=off"
+                self.audio_stream_status = "native"
+            elif audio_listener is not None or audio_qemu_socket is not None:
+                machine += ",audio-stream-chardev=audio"
+                self.audio_stream_enabled = True
+                self.audio_stream_status = "pending"
+            else:
+                desktop_audio_driver = (
+                    "coreaudio" if sys.platform == "darwin" else
+                    "dsound" if sys.platform == "win32" else "alsa"
+                )
+                machine += ",audiodev=msm5xxx"
+                self.audio_native = True
         ma5_property = None
         ma5_auto_profile = False
         ma5_auto_irq = False

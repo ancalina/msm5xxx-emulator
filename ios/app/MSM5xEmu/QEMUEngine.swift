@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Combine
 import CoreGraphics
+import AVFoundation
 
 @_silgen_name("csops")
 private func csops(_ pid: pid_t, _ ops: UInt32, _ useraddr: UnsafeMutableRawPointer?, _ usersize: Int) -> Int32
@@ -20,6 +21,10 @@ final class QEMUEngine: ObservableObject {
     private let queue = DispatchQueue(label: "me.ancal.msm5xemu.python")
     private var runtimeReady = false
     private var polling = false
+    // All Python entry points stay on `queue`; it also services audio packets at
+    // short intervals without tying guest audio cadence to screen refresh.
+    private var audioPolling = false
+    private var audioSink: MSM5xxxAudioSink?
 
     /// True when this process may turn freshly written memory executable, as QEMU's split-wx TCG
     /// does: an attached debugger (TrollStore "Open with JIT", Dopamine, StikJIT, Jitterbug) or the
@@ -99,6 +104,21 @@ final class QEMUEngine: ObservableObject {
                 let result = try PythonBridge.call("start_session", argument: String(decoding: json, as: UTF8.self))
                 let started = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any]
                 let bits = Set(started?["input_bits"] as? [Int] ?? [])
+                let audioTransport = (profile as? [String: Any])?["audio_transport"] as? [String: Any]
+                let tone = audioTransport?["tone_generator"] as? [String: Any]
+                if tone?["static_status"] as? String == "accepted" {
+                    let sink = MSM5xxxAudioSink()
+                    if sink.start() {
+                        self.audioSink = sink
+                    } else {
+                        NSLog("MSM5xEmu iOS audio unavailable; QEMU remains running")
+                    }
+                    // Keep draining the bounded native stream even if the host
+                    // audio session cannot start, so playback failure cannot
+                    // stall guest execution.
+                    self.audioPolling = true
+                    self.pollAudio()
+                }
                 DispatchQueue.main.async {
                     self.running = true
                     self.inputBits = bits
@@ -125,6 +145,7 @@ final class QEMUEngine: ObservableObject {
         inputBits = []
         queue.async {
             do {
+                self.stopAudio()
                 _ = try PythonBridge.call("stop_session", argument: nil)
                 DispatchQueue.main.async { self.status = "Stopped. Relaunch app for another session." }
             } catch { self.report(error) }
@@ -156,6 +177,7 @@ final class QEMUEngine: ObservableObject {
                 let status = try PythonBridge.call("session_status", argument: nil)
                 let value = try JSONSerialization.jsonObject(with: Data(status.utf8)) as? [String: Any]
                 if value?["process_running"] as? Bool == false {
+                    self.stopAudio()
                     DispatchQueue.main.async {
                         self.running = false; self.inputBits = []
                         self.status = "QEMU exited. Relaunch app for another session."
@@ -168,9 +190,190 @@ final class QEMUEngine: ObservableObject {
         }
     }
 
+    private func pollAudio() {
+        guard audioPolling else { return }
+        do {
+            let packet = try PythonBridge.bytes("session_audio")
+            if !packet.isEmpty, let sink = audioSink, !sink.offer(packet) {
+                NSLog("MSM5xEmu rejected malformed or discontinuous M5P2 audio")
+                stopAudio()
+                return
+            }
+        } catch {
+            NSLog("MSM5xEmu iOS audio stopped: %@", String(describing: error))
+            stopAudio()
+            return
+        }
+        queue.asyncAfter(deadline: .now() + .milliseconds(3)) { self.pollAudio() }
+    }
+
+    private func stopAudio() {
+        audioPolling = false
+        audioSink?.close()
+        audioSink = nil
+    }
+
     private func report(_ error: Error) {
         NSLog("MSM5xEmu error: %@", String(describing: error))
         DispatchQueue.main.async { self.status = error.localizedDescription }
     }
 
+}
+
+/// Plays detector-admitted native PCM packets. QEMU and guest scheduling stay
+/// independent of this host consumer; a playback failure only disables audio.
+private final class MSM5xxxAudioSink {
+    private static let sampleRate = 44_100.0
+    private static let packetBytes = 1_796
+    private static let headerBytes = 32
+    private static let frameBytes = 4
+    private static let prebufferFrames: AVAudioFrameCount = 2_646
+    private static let maximumQueuedFrames: AVAudioFrameCount = 8_820
+    private static let shortToneStartDelay = DispatchTimeInterval.milliseconds(10)
+
+    private let engine = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    private let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
+    private let lock = NSLock()
+    private var pendingFrames: AVAudioFrameCount = 0
+    private var playing = false
+    private var generation: UInt64 = 0
+    private var epoch: UInt64 = 0
+    private var sequence: UInt64 = 0
+    private var nextFrame: UInt64 = 0
+    private var closed = false
+
+    func start() -> Bool {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+            engine.attach(player)
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+            engine.prepare()
+            try engine.start()
+            return true
+        } catch {
+            NSLog("MSM5xEmu AVAudioEngine start failed: %@", String(describing: error))
+            close()
+            return false
+        }
+    }
+
+    /// Accept exactly one M5P2 packet and preserve the native frame timeline.
+    func offer(_ data: Data) -> Bool {
+        guard !closed, data.count == Self.packetBytes,
+              data[0] == 0x4d, data[1] == 0x35, data[2] == 0x50, data[3] == 0x32,
+              readUInt(data, 4, 4) == 2 else { return false }
+        let packetEpoch = readUInt(data, 8, 8)
+        let packetSequence = readUInt(data, 16, 8)
+        let startFrame = readUInt(data, 24, 8)
+        let frames = (data.count - Self.headerBytes) / Self.frameBytes
+        guard packetEpoch > 0, packetSequence > 0, frames > 0,
+              (data.count - Self.headerBytes) % Self.frameBytes == 0,
+              startFrame <= UInt64(Int64.max) - UInt64(frames) else { return false }
+
+        if packetEpoch != epoch {
+            guard packetSequence == 1 else { return false }
+            resetTimeline()
+            epoch = packetEpoch
+            sequence = 0
+            nextFrame = startFrame
+        }
+        guard packetSequence == sequence + 1, startFrame == nextFrame else { return false }
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let channels = buffer.floatChannelData else { return false }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        for frame in 0..<frames {
+            for channel in 0..<2 {
+                let offset = Self.headerBytes + frame * Self.frameBytes + channel * 2
+                let bits = UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+                channels[channel][frame] = Float(Int16(bitPattern: bits)) / 32_768.0
+            }
+        }
+
+        sequence = packetSequence
+        nextFrame = startFrame + UInt64(frames)
+        schedule(buffer)
+        return true
+    }
+
+    private func schedule(_ buffer: AVAudioPCMBuffer) {
+        let frames = buffer.frameLength
+        lock.lock()
+        // Guest time can run ahead of the speaker. Drop excess new audio rather
+        // than allowing the scheduled AVAudioPlayerNode queue to add latency.
+        guard frames <= Self.maximumQueuedFrames - pendingFrames else {
+            lock.unlock()
+            return
+        }
+        pendingFrames += frames
+        let shouldStart = !playing && pendingFrames >= Self.prebufferFrames
+        if shouldStart { playing = true }
+        let scheduledGeneration = generation
+        let shouldScheduleFallback = !playing
+        lock.unlock()
+        player.scheduleBuffer(buffer) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            if self.generation == scheduledGeneration {
+                self.pendingFrames = self.pendingFrames >= frames
+                    ? self.pendingFrames - frames : 0
+            }
+            self.lock.unlock()
+        }
+        if shouldStart { player.play() }
+        else if shouldScheduleFallback {
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + Self.shortToneStartDelay
+            ) { [weak self] in
+                self?.startIfQueued(generation: scheduledGeneration)
+            }
+        }
+    }
+
+    private func resetTimeline() {
+        lock.lock()
+        generation &+= 1
+        pendingFrames = 0
+        playing = false
+        lock.unlock()
+        player.stop()
+        player.reset()
+    }
+
+    private func startIfQueued(generation expectedGeneration: UInt64) {
+        lock.lock()
+        guard !closed, generation == expectedGeneration,
+              !playing, pendingFrames > 0 else {
+            lock.unlock()
+            return
+        }
+        playing = true
+        player.play()
+        lock.unlock()
+    }
+
+    private func readUInt(_ data: Data, _ offset: Int, _ count: Int) -> UInt64 {
+        (0..<count).reduce(UInt64(0)) { value, byte in
+            value | (UInt64(data[offset + byte]) << (byte * 8))
+        }
+    }
+
+    func close() {
+        lock.lock()
+        guard !closed else {
+            lock.unlock()
+            return
+        }
+        closed = true
+        generation &+= 1
+        pendingFrames = 0
+        playing = false
+        lock.unlock()
+        player.stop()
+        engine.stop()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
 }

@@ -48,6 +48,8 @@ PROTECTED_NOR_CORE="$ROOT/msm5xxx-protected-nor.c"
 PROTECTED_NOR_HEADER="$ROOT/msm5xxx-protected-nor.h"
 SEARCH2_CORE="$ROOT/msm5xxx-search2.c"
 SEARCH2_HEADER="$ROOT/msm5xxx-search2.h"
+TONE_CORE="$ROOT/msm5xxx-tone.c"
+TONE_HEADER="$ROOT/msm5xxx-tone.h"
 TRANSPORT="$ROOT/../../src/msm5xxx_emulator/qemu/transport.py"
 
 sha256() {
@@ -82,7 +84,7 @@ for file in "$ARCHIVE" "$PATCH" "$CFI02_PATCH" "$CFI01_SHARP_PCR_PATCH" "$DSOUND
         "$SMALL_NAND_CORE" "$SMALL_NAND_HEADER" \
         "$SPI_NV_CORE" "$SPI_NV_HEADER" \
         "$PROTECTED_NOR_CORE" "$PROTECTED_NOR_HEADER" \
-        "$SEARCH2_CORE" "$SEARCH2_HEADER" "$TRANSPORT"; do
+        "$SEARCH2_CORE" "$SEARCH2_HEADER" "$TONE_CORE" "$TONE_HEADER" "$TRANSPORT"; do
     if [ ! -f "$file" ]; then
         echo "missing build input: $file" >&2
         exit 1
@@ -131,6 +133,8 @@ check_sha256 "$MSM5XXX_PROTECTED_NOR_CORE_SHA256" "$PROTECTED_NOR_CORE"
 check_sha256 "$MSM5XXX_PROTECTED_NOR_HEADER_SHA256" "$PROTECTED_NOR_HEADER"
 check_sha256 "$MSM5XXX_SEARCH2_CORE_SHA256" "$SEARCH2_CORE"
 check_sha256 "$MSM5XXX_SEARCH2_HEADER_SHA256" "$SEARCH2_HEADER"
+check_sha256 "$MSM5XXX_TONE_CORE_SHA256" "$TONE_CORE"
+check_sha256 "$MSM5XXX_TONE_HEADER_SHA256" "$TONE_HEADER"
 check_sha256 "$MSM5XXX_TRANSPORT_SHA256" "$TRANSPORT"
 
 mkdir -p "$OUTPUT"
@@ -180,14 +184,16 @@ cp "$PROTECTED_NOR_CORE" "$OUTPUT/hw/arm/msm5xxx-protected-nor.c"
 cp "$PROTECTED_NOR_HEADER" "$OUTPUT/hw/arm/msm5xxx-protected-nor.h"
 cp "$SEARCH2_CORE" "$OUTPUT/hw/arm/msm5xxx-search2.c"
 cp "$SEARCH2_HEADER" "$OUTPUT/hw/arm/msm5xxx-search2.h"
+cp "$TONE_CORE" "$OUTPUT/hw/arm/msm5xxx-tone.c"
+cp "$TONE_HEADER" "$OUTPUT/hw/arm/msm5xxx-tone.h"
 {
     printf '%s\n' '# Modified by MSM5xxx emulator contributors, 2026-10-02: register the MSM5xxx machine and audio sources.'
     cat "$OUTPUT/hw/arm/meson.build"
 } > "$OUTPUT/hw/arm/meson.build.msm5xxx"
 mv "$OUTPUT/hw/arm/meson.build.msm5xxx" "$OUTPUT/hw/arm/meson.build"
-printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
+printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
 
-test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
+test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
 cmp "$MACHINE" "$OUTPUT/hw/arm/msm5xxx-poc.c"
 cmp "$AUDIO_REQUEST_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 cmp "$MA2_CORE" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
@@ -221,6 +227,8 @@ cmp "$PROTECTED_NOR_CORE" "$OUTPUT/hw/arm/msm5xxx-protected-nor.c"
 cmp "$PROTECTED_NOR_HEADER" "$OUTPUT/hw/arm/msm5xxx-protected-nor.h"
 cmp "$SEARCH2_CORE" "$OUTPUT/hw/arm/msm5xxx-search2.c"
 cmp "$SEARCH2_HEADER" "$OUTPUT/hw/arm/msm5xxx-search2.h"
+cmp "$TONE_CORE" "$OUTPUT/hw/arm/msm5xxx-tone.c"
+cmp "$TONE_HEADER" "$OUTPUT/hw/arm/msm5xxx-tone.h"
 check_sha256 "$MSM5XXX_MACHINE_SHA256" "$OUTPUT/hw/arm/msm5xxx-poc.c"
 check_sha256 "$MSM5XXX_AUDIO_REQUEST_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 check_sha256 "$MSM5XXX_MA2_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
@@ -254,6 +262,8 @@ check_sha256 "$MSM5XXX_PROTECTED_NOR_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-protec
 check_sha256 "$MSM5XXX_PROTECTED_NOR_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-protected-nor.h"
 check_sha256 "$MSM5XXX_SEARCH2_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-search2.c"
 check_sha256 "$MSM5XXX_SEARCH2_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-search2.h"
+check_sha256 "$MSM5XXX_TONE_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-tone.c"
+check_sha256 "$MSM5XXX_TONE_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-tone.h"
 
 cat > "$OUTPUT/MSM5XXX_STAGING_INFO" <<EOF
 QEMU_VERSION=$QEMU_VERSION

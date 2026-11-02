@@ -140,8 +140,18 @@ class FirmwareConfig:
     uis_idle_entry_address: int | None = None
     uis_idle_body_address: int | None = None
 
+    @property
+    def tone_generator(self) -> dict[str, object] | None:
+        """Tone evidence nested in audio ownership without changing old configs."""
+        if self.audio_transport is None:
+            return None
+        tone = self.audio_transport.get("tone_generator")
+        return tone if isinstance(tone, dict) else None
+
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)
+        if self.tone_generator is not None:
+            result["tone_generator"] = self.tone_generator
         result["file_size_hex"] = f"0x{self.file_size:X}"
         return result
 

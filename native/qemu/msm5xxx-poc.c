@@ -60,6 +60,7 @@
 #include "msm5xxx-ma2-audio.h"
 #include "msm5xxx-audio-synth.h"
 #include "msm5xxx-audio-request.h"
+#include "msm5xxx-tone.h"
 
 #define TYPE_MSM5XXX_POC_MACHINE MACHINE_TYPE_NAME("msm5xxx-poc")
 OBJECT_DECLARE_SIMPLE_TYPE(MSM5xxxPOCMachineState, MSM5XXX_POC_MACHINE)
@@ -709,6 +710,12 @@ struct MSM5xxxPOCMachineState {
     uint32_t audio_irq_gate_status;
     uint32_t audio_irq_assertions;
     bool audio_enabled;
+    bool tone_enabled;
+    bool tone_log_enabled;
+    MemoryRegion tone_region;
+    MSM5xxxTone tone;
+    QEMUTimer *tone_timer;
+    uint64_t tone_register_writes;
     bool audio_ma2;
     bool audio_ma5;
     bool audio_shared_lcd;
@@ -4736,7 +4743,12 @@ static void msm5xxx_poc_audio_backend_callback(void *opaque, int available)
             size_t frames = MSM5XXX_AUDIO_CHUNK_FRAMES;
 
             qemu_mutex_lock(&s->audio_synth_lock);
-            if (s->ma5_pcm_initialized) {
+            if (s->tone_enabled) {
+                MSM5xxxToneMetadata metadata;
+
+                frames = msm5xxx_tone_read_pcm(&s->tone,
+                    s->audio_backend_pcm, frames, &metadata);
+            } else if (s->ma5_pcm_initialized) {
                 size_t provided;
                 MSM5xxxMA5PCMMetadata metadata;
 
@@ -4795,7 +4807,24 @@ static void msm5xxx_poc_audio_pcm_prepare(MSM5xxxPOCMachineState *s)
         return;
     }
     qemu_mutex_lock(&s->audio_synth_lock);
-    if (s->ma5_pcm_initialized) {
+    if (s->tone_enabled) {
+        MSM5xxxToneMetadata metadata;
+        size_t provided;
+
+        if (s->tone.ring_count < MSM5XXX_AUDIO_CHUNK_FRAMES) {
+            qemu_mutex_unlock(&s->audio_synth_lock);
+            return;
+        }
+        provided = msm5xxx_tone_read_pcm(&s->tone, pcm,
+            MSM5XXX_AUDIO_CHUNK_FRAMES, &metadata);
+        if (provided != MSM5XXX_AUDIO_CHUNK_FRAMES) {
+            qemu_mutex_unlock(&s->audio_synth_lock);
+            return;
+        }
+        epoch = metadata.epoch;
+        sequence = metadata.sequence;
+        start_frame = metadata.start_frame;
+    } else if (s->ma5_pcm_initialized) {
         size_t provided;
 
         if (s->ma5_pcm_output_failed ||
@@ -8500,6 +8529,121 @@ static unsigned msm5xxx_poc_decoder_output_words(MSM5xxxPOCMachineState *s)
     return 0;
 }
 
+static uint64_t msm5xxx_poc_tone_read(void *opaque, hwaddr offset,
+                                      unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t value = 0;
+
+    if (s->tone_enabled) {
+        msm5xxx_tone_read_register(&s->tone, offset, size, &value);
+    }
+    return value;
+}
+
+static void msm5xxx_poc_tone_write(void *opaque, hwaddr offset,
+                                   uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned channel = offset >= 20u ? 1u : 0u;
+    MSM5xxxToneChannel *state;
+    bool was_active;
+
+    if (!s->tone_enabled || size != 1u || offset >= MSM5XXX_TONE_REGISTER_BYTES ||
+        (offset & 3u)) {
+        return;
+    }
+    qemu_mutex_lock(&s->audio_synth_lock);
+    msm5xxx_tone_advance(&s->tone, now);
+    was_active = msm5xxx_tone_active(&s->tone);
+    msm5xxx_tone_write(&s->tone, offset, size, value);
+    if (!was_active && msm5xxx_tone_active(&s->tone) &&
+        !s->tone.ring_count) {
+        msm5xxx_tone_resync(&s->tone);
+    }
+    s->tone_register_writes++;
+    state = &s->tone.channel[channel];
+    if (s->tone_log_enabled) {
+        uint32_t frequency_millihz = state->enabled && state->period ?
+            (uint32_t)(((uint64_t)state->clock_hz * 1000u +
+                        state->period / 2u) / state->period) : 0u;
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "tone write ns=%" PRIu64 " addr=%08x value=%02x ch=%u "
+            "enabled=%u selector=%u period=%u q=%u freq_mHz=%u\n",
+            now, 0x030006b8u + (unsigned)offset, (unsigned)value & 0xffu,
+            channel, state->enabled, s->tone.registers[channel * 20u + 16u] & 0x3fu,
+            state->period,
+            (unsigned)s->tone.registers[channel * 20u] |
+                ((unsigned)s->tone.registers[channel * 20u + 4u] << 8u),
+            frequency_millihz);
+    }
+    if (state->enabled) {
+        s->audio_output_started = true;
+        if (s->audio_voice) {
+            AUD_set_active_out(s->audio_voice, true);
+        }
+        if (s->tone_timer && s->audio_pcm_enabled) {
+            timer_mod(s->tone_timer, now + 10000000u);
+        }
+    }
+    qemu_mutex_unlock(&s->audio_synth_lock);
+}
+
+static const MemoryRegionOps msm5xxx_poc_tone_ops = {
+    .read = msm5xxx_poc_tone_read,
+    .write = msm5xxx_poc_tone_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
+
+static void msm5xxx_poc_tone_tick(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    bool active;
+    size_t buffered;
+
+    if (!s->tone_enabled || !s->audio_synth_lock_initialized) {
+        return;
+    }
+    qemu_mutex_lock(&s->audio_synth_lock);
+    msm5xxx_tone_advance(&s->tone, now);
+    active = msm5xxx_tone_active(&s->tone);
+    buffered = s->tone.ring_count;
+    qemu_mutex_unlock(&s->audio_synth_lock);
+
+    if (s->audio_stream_chardev && !s->audio_stream_rejected) {
+        qemu_mutex_lock(&s->audio_core_lock);
+        qemu_mutex_lock(&s->audio_synth_lock);
+        if (!active && s->tone.ring_count &&
+            s->tone.ring_count < MSM5XXX_AUDIO_CHUNK_FRAMES) {
+            msm5xxx_tone_fill_silence(
+                &s->tone, MSM5XXX_AUDIO_CHUNK_FRAMES - s->tone.ring_count);
+        }
+        buffered = s->tone.ring_count;
+        qemu_mutex_unlock(&s->audio_synth_lock);
+        if (buffered >= MSM5XXX_AUDIO_CHUNK_FRAMES || (!active && buffered)) {
+            s->audio_output_started = true;
+            if (msm5xxx_poc_audio_pcm_flush(s) < 0) {
+                s->audio_pcm_failed = true;
+            }
+        }
+        qemu_mutex_unlock(&s->audio_core_lock);
+        qemu_mutex_lock(&s->audio_synth_lock);
+        buffered = s->tone.ring_count;
+        qemu_mutex_unlock(&s->audio_synth_lock);
+    }
+    if (s->audio_pcm_enabled && (active || buffered)) {
+        timer_mod(s->tone_timer, now + 10000000u);
+    } else if (s->audio_voice) {
+        AUD_set_active_out(s->audio_voice, false);
+    }
+}
+
 static uint64_t msm5xxx_poc_decoder_output_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
@@ -10635,6 +10779,9 @@ static void msm5xxx_poc_audio_reset(void *opaque)
     if (s->ma5_audio_timer) {
         timer_del(s->ma5_audio_timer);
     }
+    if (s->tone_timer) {
+        timer_del(s->tone_timer);
+    }
     if (s->audio_voice) {
         AUD_set_active_out(s->audio_voice, false);
     }
@@ -10642,6 +10789,10 @@ static void msm5xxx_poc_audio_reset(void *opaque)
     s->audio_pcm_length = 0u;
     s->audio_pcm_offset = 0u;
     s->audio_pcm_failed = false;
+    if (s->tone_enabled) {
+        msm5xxx_tone_reset(&s->tone);
+        s->tone_register_writes = 0;
+    }
     s->audio_backend_pcm_length = 0u;
     s->audio_backend_pcm_offset = 0u;
     s->ma5_pcm_output_reported = false;
@@ -14253,6 +14404,47 @@ static void msm5xxx_poc_init(MachineState *machine)
                                         &s->audio_opaque);
         }
     }
+    if (s->tone_enabled) {
+        if (!s->audio_synth_lock_initialized) {
+            qemu_mutex_init(&s->audio_synth_lock);
+            qemu_mutex_init(&s->audio_core_lock);
+            s->audio_synth_lock_initialized = true;
+            s->audio_core_lock_initialized = true;
+        }
+        msm5xxx_tone_init(&s->tone);
+        s->tone_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                     msm5xxx_poc_tone_tick, s);
+        if (s->audio_pcm_enabled && !s->audio_stream_chardev &&
+            !s->audio_voice) {
+            struct audsettings settings = {
+                MSM5XXX_AUDIO_SAMPLE_RATE, 2, AUDIO_FORMAT_S16, 0
+            };
+            Error *audio_error = NULL;
+
+            s->audio_backend = machine->audiodev ?
+                audio_be_by_name(machine->audiodev, &audio_error) :
+                audio_get_default_audio_be(&audio_error);
+            if (s->audio_backend) {
+                s->audio_voice = AUD_open_out(
+                    s->audio_backend, NULL, "msm5xxx-tone", s,
+                    msm5xxx_poc_audio_backend_callback, &settings);
+            }
+            if (!s->audio_voice) {
+                if (audio_error) {
+                    error_report_err(audio_error);
+                } else {
+                    warn_report("MSM5xxx tone audio backend unavailable");
+                }
+            } else {
+                AUD_set_active_out(s->audio_voice, false);
+            }
+        }
+        memory_region_init_io(&s->tone_region, OBJECT(machine),
+                              &msm5xxx_poc_tone_ops, s,
+                              "msm5xxx-poc.tone", MSM5XXX_TONE_REGISTER_BYTES);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x030006b8,
+                                            &s->tone_region, 2);
+    }
     if (s->search2_probe_description || s->search2_virtual_description) {
         const unsigned code_fields[] = {0, 1, 3, 4, 6, 7};
         const unsigned code_sizes[] = {36, 22, 0x32, 0x80, 0x174, 0x260};
@@ -14594,7 +14786,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     if (s->memory_profile_enabled) {
         qemu_register_reset(msm5xxx_poc_reset, s);
         msm5xxx_poc_reset(s);
-    } else if (s->audio_enabled) {
+    } else if (s->audio_enabled || s->tone_enabled) {
         qemu_register_reset(msm5xxx_poc_audio_reset, s);
         msm5xxx_poc_audio_reset(s);
     }
@@ -14608,6 +14800,32 @@ static bool msm5xxx_poc_get_sbi(Object *obj, Error **errp)
 static bool msm5xxx_poc_get_audio_pcm(Object *obj, Error **errp)
 {
     return MSM5XXX_POC_MACHINE(obj)->audio_pcm_enabled;
+}
+
+static bool msm5xxx_poc_get_tone(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->tone_enabled;
+}
+
+static void msm5xxx_poc_set_tone(Object *obj, bool value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (s->tone_enabled || s->tone_timer) {
+        error_setg(errp, "tone must be selected before machine realization");
+        return;
+    }
+    s->tone_enabled = value;
+}
+
+static bool msm5xxx_poc_get_tone_log(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->tone_log_enabled;
+}
+
+static void msm5xxx_poc_set_tone_log(Object *obj, bool value, Error **errp)
+{
+    MSM5XXX_POC_MACHINE(obj)->tone_log_enabled = value;
 }
 
 static void msm5xxx_poc_set_audio_pcm(Object *obj, bool value, Error **errp)
@@ -18271,6 +18489,16 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                    msm5xxx_poc_set_audio_pcm);
     object_class_property_set_description(
         oc, "audio-pcm", "Enable host PCM synthesis and output");
+    object_class_property_add_bool(oc, "tone",
+                                   msm5xxx_poc_get_tone,
+                                   msm5xxx_poc_set_tone);
+    object_class_property_set_description(
+        oc, "tone", "Enable the register-level MSM5xxx two-channel tone block");
+    object_class_property_add_bool(oc, "tone-log",
+                                   msm5xxx_poc_get_tone_log,
+                                   msm5xxx_poc_set_tone_log);
+    object_class_property_set_description(
+        oc, "tone-log", "Log tone register writes with guest timestamps");
     object_class_property_add_bool(oc, "experimental-ma5-pcm-output",
                                    msm5xxx_poc_get_ma5_pcm_output,
                                    msm5xxx_poc_set_ma5_pcm_output);

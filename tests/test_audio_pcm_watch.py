@@ -218,6 +218,7 @@ int main(void) {
 #include "msm5xxx-ma5-pcm-output.h"
 #include "msm5xxx-ma5-wt-engine.h"
 #include "msm5xxx-small-page-nand.h"
+#include "msm5xxx-tone.h"
 typedef uint64_t hwaddr;
 typedef unsigned guint;
 typedef int gboolean;
@@ -247,6 +248,9 @@ typedef struct {
     unsigned audio_pcm_length, audio_pcm_offset;
     guint audio_pcm_watch;
     bool audio_pcm_failed, audio_stream_rejected, audio_output_started;
+    bool tone_enabled;
+    MSM5xxxTone tone;
+    uint64_t tone_register_writes;
     bool audio_reset_initialized, audio_core_lock_initialized;
     bool audio_synth_lock_initialized, audio_readback_rejection_reported;
     bool audio_stream_started, audio_irq_asserted, ma2_audio_timer_rejected;
@@ -263,7 +267,7 @@ typedef struct {
     uint16_t ma5_gpio_pending[3], ma5_parent_pending;
     bool ma5_irq_configured, ma5_irq_qualified, ma5_irq_level;
     unsigned ma5_irq_gate_status, ma5_commit_traces;
-    void *ma2_audio_timer, *ma5_audio_timer, *audio_voice;
+    void *ma2_audio_timer, *ma5_audio_timer, *tone_timer, *audio_voice;
     void *search1_timer;
     char *search1_description;
     char *finger_description;
@@ -585,6 +589,7 @@ int main(void) {
                             '-fno-sanitize-recover=undefined', '-I', str(native),
                             str(path / 'check.c'), str(native / 'msm5xxx-audio-synth.c'),
                             str(native / 'msm5xxx-audio-request.c'),
+                            str(native / 'msm5xxx-tone.c'),
                             str(native / 'msm5xxx-ma5-audio.c'),
                             str(native / 'msm5xxx-ma5-pcm-queue.c'),
                             str(native / 'msm5xxx-ma5-rateconv.c'),
