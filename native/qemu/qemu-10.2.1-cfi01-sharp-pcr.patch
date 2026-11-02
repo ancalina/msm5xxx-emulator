@@ -1,12 +1,13 @@
 --- a/hw/block/pflash_cfi01.c
 +++ b/hw/block/pflash_cfi01.c
-@@ -85,6 +85,15 @@
+@@ -85,6 +85,16 @@
      void *storage;
      VMChangeStateEntry *vmstate;
      bool old_multiple_chip_handling;
 +    bool sharp_pcr_enabled;
 +    bool defer_erase_confirm;
 +    bool sharp_locks_enabled, sharp_wp_high;
++    uint8_t sharp_status_mirror;
 +    uint8_t sharp_wp_migration_level;
 +    uint8_t *sharp_lock_state;
 +    uint16_t sharp_pcr;
@@ -16,11 +17,10 @@
  
      /* block update buffer */
      unsigned char *blk_bytes;
-@@ -111,6 +120,197 @@
-         VMSTATE_END_OF_LIST()
+@@ -112,6 +122,213 @@
      }
  };
-+
+ 
 +/* Optional Sharp partition configuration latch. This does not add partition
 + * timing or asynchronous read-while-write execution to the CFI01 model. */
 +static bool pflash_sharp_pcr_needed(void *opaque)
@@ -211,20 +211,38 @@
 +    pfl->status = (pfl->status & ~0x44) | 0x80;
 +    return true;
 +}
- 
++
++static bool pflash_sharp_status_mirror_needed(void *opaque)
++{
++    return ((PFlashCFI01 *)opaque)->sharp_status_mirror;
++}
++
++static const VMStateDescription vmstate_pflash_sharp_status_mirror = {
++    .name = "pflash_cfi01/sharp-status-mirror",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pflash_sharp_status_mirror_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT8_EQUAL(sharp_status_mirror, PFlashCFI01, "Sharp status wiring differs"),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
  static const VMStateDescription vmstate_pflash = {
      .name = "pflash_cfi01",
-@@ -126,6 +326,9 @@
+     .version_id = 1,
+@@ -126,6 +343,10 @@
      },
      .subsections = (const VMStateDescription * const []) {
          &vmstate_pflash_blk_write,
 +        &vmstate_pflash_sharp_pcr,
 +        &vmstate_pflash_sharp_locks,
++        &vmstate_pflash_sharp_status_mirror,
 +        &vmstate_pflash_deferred_erase,
          NULL
      }
  };
-@@ -229,6 +432,20 @@
+@@ -229,6 +450,20 @@
          resp = pfl->ident1;
          trace_pflash_device_id(pfl->name, resp);
          break;
@@ -245,7 +263,17 @@
      default:
          trace_pflash_device_info(pfl->name, offset);
          return 0;
-@@ -402,6 +619,48 @@
+@@ -308,6 +543,9 @@
+              */
+             ret |= pfl->status << 16;
+         }
++        if (pfl->sharp_status_mirror && width == 2) {
++            ret |= pfl->status << 8;
++        }
+         trace_pflash_read_status(pfl->name, ret);
+         break;
+     case 0x90:
+@@ -402,6 +640,48 @@
      }
  }
  
@@ -294,7 +322,7 @@
  /* copy current flash content to block update buffer */
  static void pflash_blk_write_start(PFlashCFI01 *pfl, hwaddr offset)
  {
-@@ -409,6 +668,13 @@
+@@ -409,6 +689,13 @@
  
      trace_pflash_write_block_start(pfl->name, pfl->counter);
      pfl->blk_offset = offset & mask;
@@ -308,7 +336,7 @@
      memcpy(pfl->blk_bytes, pfl->storage + pfl->blk_offset,
             pfl->writeblock_size);
  }
-@@ -418,6 +684,10 @@
+@@ -418,6 +705,10 @@
  {
      g_assert(pfl->blk_offset != -1);
      trace_pflash_write_block_flush(pfl->name);
@@ -319,7 +347,7 @@
      memcpy(pfl->storage + pfl->blk_offset, pfl->blk_bytes,
             pfl->writeblock_size);
      pflash_update(pfl, pfl->blk_offset, pfl->writeblock_size);
-@@ -436,6 +706,10 @@
+@@ -436,6 +727,10 @@
  {
      uint8_t *p;
  
@@ -330,7 +358,7 @@
      if (pfl->blk_offset != -1) {
          /* block write: redirect writes to block update buffer */
          if ((offset < pfl->blk_offset) ||
-@@ -484,12 +758,17 @@
+@@ -484,12 +779,17 @@
              trace_pflash_write(pfl->name, "single byte program (0)");
              break;
          case 0x20: /* Block erase */
@@ -349,7 +377,7 @@
                  memset(p + offset, 0xff, pfl->sector_len);
                  pflash_update(pfl, offset, pfl->sector_len);
              } else {
-@@ -497,11 +776,21 @@
+@@ -497,11 +797,21 @@
              }
              pfl->status |= 0x80; /* Ready! */
              break;
@@ -373,7 +401,7 @@
              trace_pflash_write(pfl->name, "block unlock");
              break;
          case 0x70: /* Status Register */
-@@ -549,7 +838,9 @@
+@@ -549,7 +859,9 @@
          case 0x28:
              if (cmd == 0xd0) { /* confirm */
                  pfl->wcycle = 0;
@@ -384,7 +412,7 @@
              } else if (cmd == 0xff) { /* Read Array */
                  goto mode_read_array;
              } else
-@@ -571,7 +862,12 @@
+@@ -571,7 +883,12 @@
              pfl->wcycle++;
              break;
          case 0x60:
@@ -398,7 +426,7 @@
                  pfl->wcycle = 0;
                  pfl->status |= 0x80;
              } else if (cmd == 0x01) {
-@@ -652,6 +948,7 @@
+@@ -652,6 +969,7 @@
                    "\n", __func__, offset, pfl->wcycle, pfl->cmd, value);
  
   mode_read_array:
@@ -406,7 +434,7 @@
      trace_pflash_mode_read_array(pfl->name);
      memory_region_rom_device_set_romd(&pfl->mem, true);
      pfl->wcycle = 0;
-@@ -806,6 +1103,32 @@
+@@ -806,6 +1124,37 @@
      uint64_t total_len;
      int ret;
  
@@ -432,6 +460,11 @@
 +        error_setg(errp, "sharp-locks requires a bounded x16 block geometry");
 +        return;
 +    }
++    if (pfl->sharp_status_mirror > 1 || (pfl->sharp_status_mirror &&
++        (!pfl->sharp_locks_enabled || pfl->bank_width != 2 || pfl->device_width != 2))) {
++        error_setg(errp, "sharp-status-mirror requires Sharp x16 locks");
++        return;
++    }
 +    pfl->sharp_wp_migration_level = pfl->sharp_wp_high;
 +    if (pfl->sharp_locks_enabled) {
 +        pfl->sharp_lock_state = g_new0(uint8_t, pfl->nb_blocs);
@@ -439,7 +472,7 @@
      if (pfl->sector_len == 0) {
          error_setg(errp, "attribute \"sector-length\" not specified or zero.");
          return;
-@@ -891,12 +1214,22 @@
+@@ -891,12 +1240,23 @@
       * This model deliberately ignores this delay.
       */
      pfl->status = 0x80;
@@ -458,11 +491,12 @@
 +    DEFINE_PROP_BOOL("sharp-pcr", PFlashCFI01, sharp_pcr_enabled, false),
 +    DEFINE_PROP_BOOL("sharp-locks", PFlashCFI01, sharp_locks_enabled, false),
 +    DEFINE_PROP_BOOL("sharp-wp-high", PFlashCFI01, sharp_wp_high, false),
++    DEFINE_PROP_UINT8("sharp-status-mirror", PFlashCFI01, sharp_status_mirror, 0),
 +    DEFINE_PROP_UINT16("sharp-pcr-reset", PFlashCFI01, sharp_pcr_reset, 0x0100),
      /* num-blocks is the number of blocks actually visible to the guest,
       * ie the total size of the device divided by the sector length.
       * If we're emulating flash devices wired in parallel the actual
-@@ -945,12 +1278,19 @@
+@@ -945,12 +1305,19 @@
      set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
  }
  

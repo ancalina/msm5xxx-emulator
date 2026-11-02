@@ -296,7 +296,7 @@ struct MSM5xxxPOCMachineState {
     /* The mutually exclusive direct CFI01/CFI02 profiles share geometry. */
     bool intel_x16_nor_enabled;
     bool intel_adjacent_nv, intel_adjacent_x16;
-    bool sharp_primary_nv, sharp_nv_wp_high;
+    bool sharp_primary_nv, sharp_nv_wp_high, sharp_nv_status_mirror;
     uint32_t intel_x16_nor_base;
     uint32_t intel_x16_nor_size;
     uint32_t intel_x16_nor_sector_size;
@@ -12612,6 +12612,10 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("intel-adjacent-nv requires exclusive contiguous ROM/NV/RAM layout");
         exit(EXIT_FAILURE);
     }
+    if (s->sharp_nv_status_mirror && !s->sharp_primary_nv) {
+        error_report("sharp-nv-status-mirror requires sharp-primary-nv");
+        exit(EXIT_FAILURE);
+    }
     if (s->sharp_nv_wp_high && !s->sharp_primary_nv) {
         error_report("sharp-nv-wp-high requires sharp-primary-nv");
         exit(EXIT_FAILURE);
@@ -13083,6 +13087,7 @@ static void msm5xxx_poc_init(MachineState *machine)
                 qdev_prop_set_bit(dev, "sharp-pcr", true);
                 qdev_prop_set_bit(dev, "sharp-locks", true);
                 qdev_prop_set_bit(dev, "sharp-wp-high", s->sharp_nv_wp_high);
+                qdev_prop_set_uint8(dev, "sharp-status-mirror", s->sharp_nv_status_mirror);
             }
         }
         qdev_prop_set_uint16(dev, "id0", s->intel_x16_nor_id0);
@@ -16376,6 +16381,21 @@ static void msm5xxx_poc_set_sharp_nv_wp_high(Object *obj, bool value, Error **er
     s->sharp_nv_wp_high = value;
 }
 
+static bool msm5xxx_poc_get_sharp_nv_status_mirror(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->sharp_nv_status_mirror;
+}
+
+static void msm5xxx_poc_set_sharp_nv_status_mirror(Object *obj, bool value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "sharp-nv-status-mirror must be configured before realization");
+        return;
+    }
+    s->sharp_nv_status_mirror = value;
+}
+
 static char *msm5xxx_poc_get_sharp_primary_nv(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -17976,6 +17996,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "intel-x16-nor",
         "Detector-provided external direct-command Intel x16 NOR");
+    object_class_property_add_bool(oc, "sharp-nv-status-mirror",
+                                  msm5xxx_poc_get_sharp_nv_status_mirror,
+                                  msm5xxx_poc_set_sharp_nv_status_mirror);
     object_class_property_add_bool(oc, "sharp-nv-wp-high",
                                   msm5xxx_poc_get_sharp_nv_wp_high,
                                   msm5xxx_poc_set_sharp_nv_wp_high);

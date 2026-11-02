@@ -29,7 +29,7 @@ class SharpPCRDeviceTests(unittest.TestCase):
             def session(action, sharp=True):
                 machine = (
                     "memory-profile=800000:1000000:1007ffc,"
-                    "sharp-primary-nv=600000:200000:10000:b0:b1"
+                    "sharp-primary-nv=600000:200000:10000:b0:b1,sharp-nv-status-mirror=on"
                     if sharp
                     else "memory-profile=600000:1000000:1007ffc,"
                     "intel-adjacent-nv16=600000:200000:10000:b0:b1"
@@ -116,11 +116,17 @@ class SharpPCRDeviceTests(unittest.TestCase):
                     self.assertEqual(read(0x600002), 0xB1)
                     write(0x600000, 0xFF)
                     self.assertEqual(read(0x60000C), 0xFFFF)
+                # A locked program reports the same protection error on both lanes.
+                write(0x600100, 0x40)
+                write(0x600100, 0x1234)
+                self.assertEqual(read(0x600100) & 0x9292, 0x9292)
+                write(0x600100, 0x50)
+                write(0x600100, 0xFF)
                 write(0x600100, 0x60)
                 write(0x600100, 0xD0)
                 write(0x600100, 0x40)
                 write(0x600100, 0x1234)
-                self.assertTrue(read(0x600100) & 0x80)
+                self.assertEqual(read(0x600100) & 0x8080, 0x8080)
                 write(0x600100, 0xFF)
                 self.assertEqual(read(0x600100), 0x1234)
                 write(0x600000, 0x90)

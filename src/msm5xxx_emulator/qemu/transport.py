@@ -5084,6 +5084,7 @@ class Transport:
             selector = "sharp-primary-nv" if sharp_intel is not None else "intel-x16-nor"
             if sharp_intel is not None:
                 loader_exclude = base, base + size
+                machine += ",sharp-nv-status-mirror=on"
             machine += (
                 f",{selector}={base:x}:{size:x}:{sector_size:x}:"
                 f"{id0:x}:{id1:x}"
