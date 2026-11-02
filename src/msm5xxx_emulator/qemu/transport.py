@@ -499,8 +499,11 @@ def qemu_kp_low5_property(image: bytes, config: object,
 def qemu_kp2100_low5_property(image: bytes, config: object,
                                profile: dict[str, object] | None) -> str | None:
     """Close KP2100's distinct global read and two bit-4 checks."""
+    status = getattr(config, "board_status_input", None)
     if (profile is None or getattr(config, "model", None) != "LG-KP2100"
-            or getattr(config, "board_status_input", None) is not None
+            or (status is not None and
+                ((status.address, status.mask, status.default) != (0x03000720, 1, 1)
+                 or not qemu_kp2100_status_source(image, config, profile)))
             or profile.get("grammar") != "lg-descriptor-low5-6x5-raw-v1"
             or profile.get("descriptor_pointer") != 0x01103684
             or not profile.get("descriptor_mmio_provenance")
@@ -551,6 +554,59 @@ def qemu_kp2100_low5_property(image: bytes, config: object,
         return None
     return (f"matrix-low5=1103684:{scanner + 0x94:x}:{scanner + 0x136:x}:"
             f"{scanner + 0x82:x}:{scanner + 0x146:x}")
+
+
+def qemu_kp2100_status_source(image: bytes, config: object,
+                               profile: dict[str, object] | None) -> bool:
+    """Link GPIO720 bit 0 to this scanner's ordinary-key admission flag."""
+    if (getattr(config, "model", None) != "LG-KP2100" or profile is None
+            or profile.get("descriptor_pointer") != 0x01103684
+            or profile.get("raw_enqueue") != 0x6f794
+            or getattr(config, "load_address", None) != 0
+            or len(image) < 0x173844):
+        return False
+    provenance = _descriptor_mmio_provenance(image, 0x01103684)
+    if (provenance is None or provenance["source"] + 8 > len(image)
+            or struct.unpack_from("<I", image, provenance["source"] + 4)[0] != 0x03000720):
+        return False
+    reader, sink = 0x1737ec, 0x6f794
+    operations = {
+        0x06: 0x2001, 0x0a: 0x6849, 0x0c: 0x8809, 0x0e: 0x0849,
+        0x10: 0xd200, 0x12: 0x2000, 0x16: 0x6208, 0x1a: 0x69c0,
+        0x1c: 0x6a09, 0x1e: 0x4288, 0x20: 0xd010, 0x24: 0x6a00,
+        0x28: 0x61c8, 0x2c: 0x69c0, 0x30: 0x2221, 0x32: 0x0192,
+        0x34: 0x1889, 0x36: 0x7248,
+    }
+    if (any(struct.unpack_from("<H", image, reader + off)[0] != word
+            for off, word in operations.items())
+            or thumb_literal_value(image, reader + 8, 1) != 0x01103684
+            or any(thumb_literal_value(image, reader + off, reg) != 0x0146aa14
+                   for off, reg in ((0x14, 1), (0x18, 0), (0x22, 0),
+                                    (0x26, 1), (0x2a, 0)))
+            or thumb_literal_value(image, reader + 0x2e, 1) != 0x011abaa8
+            or struct.unpack_from("<I", image, 0x1f35c)[0] != 0x70cc1
+            or thumb_literal_value(image, 0x70cde, 4) != 0x01103684
+            or thumb_literal_value(image, 0x70cec, 0) != 0x011abaa8
+            or tuple(struct.unpack_from("<H", image, pos)[0] for pos in
+                     (0x70ce0, 0x70ce2, 0x70ce4, 0x70ce6, 0x70ce8, 0x70cea,
+                      0x70cf2, 0x70cf4, 0x70cfa, 0x70cfc, 0x70d02,
+                      0x70d0e, 0x70d10, 0x70d16)) !=
+               (0x6860, 0x8800, 0x07c1, 0x0fc9, 0x2221, 0x0192,
+                0x1810, 0x2900, 0x7247, 0x2006, 0x20ff,
+                0x7245, 0x2008, 0x20ff)
+            or any(thumb_bl_target(image, pos) != sink
+                   for pos in (0x70cfe, 0x70d04, 0x70d12, 0x70d18))
+            or struct.unpack_from("<4H", image, 0x173622) !=
+               (0x2f1a, 0xd001, 0x2f1b, 0xd1e7)
+            or thumb_bl_target(image, 0x17362a) != reader
+            or thumb_literal_value(image, sink + 6, 0) != 0x011abaa8
+            or tuple(struct.unpack_from("<H", image, sink + off)[0]
+                     for off in (4, 8, 10, 12, 14)) !=
+               (0x2121, 0x0189, 0x1841, 0x7a49, 0x2900)):
+        return False
+    compares = {struct.unpack_from("<H", image, pos)[0]
+                for pos in range(sink + 0x12, sink + 0x78, 2)}
+    return all((0x2f00 | value) in compares for value in b"1234567890")
 
 
 def qemu_lg_matrix_irq_property(config: object,
@@ -4521,7 +4577,17 @@ class Transport:
             board_status is None and direct is not None
             and qemu_sd840_status_source(detector_image, self.config, direct)
         )
-        if self._sd840_status_source_closed:
+        self._kp2100_status_source_closed = bool(
+            board_status is None and direct is not None
+            and qemu_kp2100_low5_property(detector_image, self.config, direct) is not None
+            and qemu_kp2100_status_source(detector_image, self.config, direct)
+            and qemu_lg_matrix_irq_property(self.config, direct) is not None
+            and (self.rex_c80_profile is None or qemu_matching_lg_irq(
+                self.rex_c80_profile, qemu_lg_matrix_irq_property(self.config, direct)))
+            and self.rex_read_consume_profile is None and self.rex_w1c_profile is None
+            and self.rex_stack_w1c_profile is None and not experimental_ma5_irq
+        )
+        if self._sd840_status_source_closed or self._kp2100_status_source_closed:
             # The scanner's admission gate consumes this active-high status.
             board_status = BoardStatusInput(0x03000720, 1, 1)
             self.config.board_status_input = board_status
@@ -4537,7 +4603,7 @@ class Transport:
                 f",board-status-input={board_status.address:x}:"
                 f"{board_status.mask:x}:{board_status.default:x}"
             )
-            if sd810_status or self._sd840_status_source_closed:
+            if sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed:
                 # The firmware keeps the port pointer in descriptor + 4.
                 # Native code verifies it before overlaying this input bit.
                 descriptor = 0x01816618 if sd810_status else int(direct['descriptor_pointer'])
@@ -7220,7 +7286,8 @@ class Transport:
 
     def can_set_fold(self) -> bool:
         profile = self.config.board_status_input
-        if getattr(self, "_sd840_status_source_closed", False):
+        if (getattr(self, "_sd840_status_source_closed", False)
+                or getattr(self, "_kp2100_status_source_closed", False)):
             # The default is source-proven; its edge IRQ is not modeled yet.
             return False
         if (getattr(self.config, "model", None) == "LG-SD810" and profile is not None

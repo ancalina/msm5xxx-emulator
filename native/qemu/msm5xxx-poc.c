@@ -13143,7 +13143,8 @@ static void msm5xxx_poc_init(MachineState *machine)
                                         s->matrix_input_loop ? 0x10 : 4) ||
          (s->matrix_input_low5 &&
           s->board_status_input_descriptor != 0x01816618 &&
-          s->board_status_input_descriptor != 0x0181661c))) {
+          s->board_status_input_descriptor != 0x0181661c &&
+          s->board_status_input_descriptor != 0x01103684))) {
         error_report("board-status-descriptor requires matching halfword "
                      "matrix and status GPIO class");
         exit(EXIT_FAILURE);
@@ -15871,7 +15872,8 @@ static void msm5xxx_poc_set_board_status_descriptor(Object *obj,
 
     if (s->matrix_input_gpio || s->matrix_input_row_mask ||
         (s->matrix_input_low5 && s->matrix_input_descriptor != 0x01816618 &&
-         s->matrix_input_descriptor != 0x0181661c) ||
+         s->matrix_input_descriptor != 0x0181661c &&
+         s->matrix_input_descriptor != 0x01103684) ||
         qemu_strtou64(value, NULL, 16, &descriptor) || !descriptor ||
         descriptor > UINT32_MAX - 0x38 || descriptor & 3) {
         error_setg(errp, "board-status-descriptor requires aligned descriptor");
@@ -16311,7 +16313,8 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
     if (s->matrix_input_enabled ||
         (s->board_status_input_descriptor &&
          s->board_status_input_descriptor != 0x01816618 &&
-         s->board_status_input_descriptor != 0x0181661c) ||
+         s->board_status_input_descriptor != 0x0181661c &&
+         s->board_status_input_descriptor != 0x01103684) ||
         (fields != 3 && fields != 5 && fields != 6) ||
         (fields == 3 && sscanf(value, "%x:%x:%x%c", &descriptor, &presence,
                                &sense, &trailing) != 3) ||

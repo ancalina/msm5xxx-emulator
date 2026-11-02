@@ -139,6 +139,8 @@ static void msm5xxx_poc_backing_write(uint8_t *ram, hwaddr offset,
 }
 static uint32_t descriptor_words[14];
 static uint32_t msm5xxx_poc_guest_u32(hwaddr address) {
+    if (address >= 0x01103684 && address <= 0x011036b8)
+        return descriptor_words[(address - 0x01103684) / 4];
     if (address >= 0x018383f4 && address <= 0x01838428)
         return descriptor_words[(address - 0x018383f4) / 4];
     assert(address >= 0x01801000 && address <= 0x01801034);
@@ -402,6 +404,10 @@ int main(void) {
     assert(!err && s.matrix_input_contact_precheck[0] == 0x6fb86 &&
            s.matrix_input_contact_precheck[1] == 0x6fc4a &&
            !s.matrix_input_contact_precheck[2] && !s.matrix_input_sideband_mask);
+    msm5xxx_poc_set_board_status_descriptor(&s,"1103684",&err);
+    msm5xxx_poc_set_board_status_input(&s,"3000720:1:1",&err);
+    assert(!err);s.cpu=&cpu_state;descriptor_words[1]=0x3000720;put(0x720,0x600);
+    assert(msm5xxx_poc_board_status_halfword_read(&s,0,2)==0x601);
     s = (MSM5xxxPOCMachineState){0}; err = NULL;
     msm5xxx_poc_set_matrix_low5(&s,"1801000:2:4:6:8",&err);
     assert(err && !s.matrix_input_enabled);
