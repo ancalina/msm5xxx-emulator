@@ -31,7 +31,7 @@ class SharpPCRDeviceTests(unittest.TestCase):
                     "memory-profile=800000:1000000:1007ffc,"
                     "sharp-primary-nv=600000:200000:10000:b0:b1"
                     if sharp
-                    else "memory-profile=400000:1000000:1007ffc,"
+                    else "memory-profile=600000:1000000:1007ffc,"
                     "intel-adjacent-nv16=600000:200000:10000:b0:b1"
                 )
                 with socket.socket() as listener, (root / "qemu.log").open("ab") as log:
