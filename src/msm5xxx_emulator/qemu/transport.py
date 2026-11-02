@@ -598,6 +598,19 @@ def qemu_lg_matrix_irq_property(config: object,
             f"{handler_slot:x}:{handler:x}:{size:x}:{callback_slot:x}:{callback:x}")
 
 
+def qemu_matching_lg_irq(existing: str | None, candidate: str | None) -> bool:
+    """The handler span may differ; all route endpoints must match."""
+    if existing is None or candidate is None:
+        return False
+    try:
+        left = tuple(int(value, 16) for value in existing.split(':'))
+        right = tuple(int(value, 16) for value in candidate.split(':'))
+    except ValueError:
+        return False
+    return (len(left) == len(right) == 11 and left[8] > 0 and right[8] > 0
+            and left[:8] == right[:8] and left[9:] == right[9:])
+
+
 def qemu_sd840_status_source(
         image: bytes, config: object, profile: dict[str, object],
 ) -> bool:
@@ -4588,8 +4601,9 @@ class Transport:
                                is not None)
         matrix_irq = qemu_lg_matrix_irq_property(self.config, direct)
         matrix_irq_available = bool(
-            self.rex_c80_profile is not None or
-            (matrix_irq is not None and self.rex_read_consume_profile is None
+            qemu_matching_lg_irq(self.rex_c80_profile, matrix_irq) or
+            (self.rex_c80_profile is None and matrix_irq is not None
+             and self.rex_read_consume_profile is None
              and self.rex_w1c_profile is None and self.rex_stack_w1c_profile is None
              and not experimental_ma5_irq)
         )
