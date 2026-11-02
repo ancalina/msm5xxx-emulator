@@ -412,6 +412,13 @@ def qemu_sd9210_low5_contacts(
             or not isinstance(bridge.get("irq_route"), dict)
             or not QemuDecoder._rex_legacy_irq_route_metadata_valid(bridge["irq_route"])):
         return None
+    route = bridge["irq_route"]
+    if (bridge.get("outer_callback") != route.get("outer_callback")
+            or getattr(config, "rex_tick_address", None) != bridge.get("outer_callback")
+            or getattr(config, "rex_irq_handler_address", None) != route.get("handler")
+            or getattr(config, "rex_irq_status_address", None) != route.get("status")
+            or getattr(config, "rex_irq_enable_address", None) != route.get("enable")):
+        return None
     events = profile.get("event_codes")
     if not isinstance(events, (list, tuple)) or any(
             events.count(event) != 1 for event in ASCII_KEY_EVENTS):
