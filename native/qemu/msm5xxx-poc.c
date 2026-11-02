@@ -16208,7 +16208,8 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
                                &trailing) != 5) ||
         !descriptor || descriptor & 3 ||
         (fields >= 5 && ((descriptor != 0x01816618 &&
-                          descriptor != 0x0181661c) ||
+                          descriptor != 0x0181661c &&
+                          !(fields == 5 && descriptor == 0x01103684)) ||
                          !contact1 || !contact2 ||
                          contact1 & 1 || contact2 & 1 || contact1 == contact2 ||
                          (fields == 6 && (!init || (init & 1) ||

@@ -495,6 +495,60 @@ def qemu_kp_low5_property(image: bytes, config: object,
             f"{profile['contact_site']:x}:{profile['contact2_site']:x}")
 
 
+def qemu_kp2100_low5_property(image: bytes, config: object,
+                               profile: dict[str, object] | None) -> str | None:
+    """Close KP2100's distinct global read and two bit-4 checks."""
+    if (profile is None or getattr(config, "model", None) != "LG-KP2100"
+            or getattr(config, "board_status_input", None) is not None
+            or profile.get("grammar") != "lg-descriptor-low5-6x5-raw-v1"
+            or profile.get("descriptor_pointer") != 0x01103684
+            or not profile.get("descriptor_mmio_provenance")
+            or profile.get("event_sink_validation") != "validated-raw-enqueue-callsites"
+            or profile.get("row_order") != [0, 1, 2, 3, 4, 5]):
+        return None
+    scanner = profile.get("function")
+    bridge = profile.get("timer_bridge")
+    if (type(scanner) is not int or not isinstance(bridge, dict)
+            or bridge.get("scanner") != scanner or bridge.get("initial") != 25
+            or bridge.get("reload") != 25 or not isinstance(bridge.get("irq_route"), dict)):
+        return None
+    route = bridge["irq_route"]
+    if (not QemuDecoder._rex_legacy_irq_route_metadata_valid(route)
+            or bridge.get("outer_callback") != route.get("outer_callback")
+            or getattr(config, "rex_tick_address", None) != bridge.get("outer_callback")
+            or getattr(config, "rex_irq_handler_address", None) != route.get("handler")
+            or getattr(config, "rex_irq_status_address", None) != route.get("status")
+            or getattr(config, "rex_irq_enable_address", None) != route.get("enable")):
+        return None
+    events = profile.get("event_codes")
+    if not isinstance(events, (list, tuple)) or any(events.count(x) != 1 for x in ASCII_KEY_EVENTS):
+        return None
+    try:
+        matrix_senses(profile)
+    except (KeyError, TypeError, ValueError):
+        return None
+    start = scanner - config.load_address
+    if (start < 0 or start + 0x14c > len(image)
+            or thumb_literal_value(image, start + 0x1a, 4) != 0x01103684):
+        return None
+    operations = {
+        0x02: 0xb5f0, 0x04: 0x7908, 0x06: 0x2800,
+        0x80: 0x6b60, 0x82: 0x8800, 0x84: 0x0940,
+        0x86: 0xd201, 0x88: 0x2751,
+        0x90: 0x6b60, 0x92: 0x1c26, 0x94: 0x8800,
+        0x96: 0x06c0, 0x98: 0x0ec0, 0x9a: 0x281f,
+        0x134: 0x6b70, 0x136: 0x8800, 0x138: 0x06c0,
+        0x13a: 0x0ec0, 0x13c: 0x281f,
+        0x144: 0x6b71, 0x146: 0x8809, 0x148: 0x0949,
+        0x14a: 0xd201,
+    }
+    if any(struct.unpack_from("<H", image, start + off)[0] != word
+           for off, word in operations.items()):
+        return None
+    return (f"matrix-low5=1103684:{scanner + 0x94:x}:{scanner + 0x136:x}:"
+            f"{scanner + 0x82:x}:{scanner + 0x146:x}")
+
+
 def qemu_sd840_status_source(
         image: bytes, config: object, profile: dict[str, object],
 ) -> bool:
@@ -4495,6 +4549,13 @@ class Transport:
         kp_property = qemu_kp_low5_property(detector_image, self.config, direct)
         if kp_property is not None:
             machine += f",{kp_property}"
+            self.matrix_input_profile = direct
+        kp2100_property = qemu_kp2100_low5_property(detector_image, self.config, direct)
+        if kp2100_property is not None:
+            direct = qemu_sd840_numeric_profile(direct)
+            self.decoder.direct_input_profile = direct
+            self.decoder.direct_input_positions = self.decoder._direct_matrix_positions(direct)
+            machine += f",{kp2100_property}"
             self.matrix_input_profile = direct
         if experimental_low5 or sd810_status or sd840_source_closed or sd9210_source_closed:
             low5_property, low5_reject = qemu_low5_matrix_property(

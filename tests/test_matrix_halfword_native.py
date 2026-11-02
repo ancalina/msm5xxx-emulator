@@ -396,6 +396,11 @@ int main(void) {
            s.matrix_input_contact_precheck[1] == 0x787aa &&
            !s.matrix_input_contact_precheck[2] && !s.matrix_input_sideband_mask);
     s = (MSM5xxxPOCMachineState){0}; err = NULL;
+    msm5xxx_poc_set_matrix_low5(&s,"1103684:6fb98:6fc3a:6fb86:6fc4a",&err);
+    assert(!err && s.matrix_input_contact_precheck[0] == 0x6fb86 &&
+           s.matrix_input_contact_precheck[1] == 0x6fc4a &&
+           !s.matrix_input_contact_precheck[2] && !s.matrix_input_sideband_mask);
+    s = (MSM5xxxPOCMachineState){0}; err = NULL;
     msm5xxx_poc_set_matrix_low5(&s,"1801000:2:4:6:8",&err);
     assert(err && !s.matrix_input_enabled);
 
