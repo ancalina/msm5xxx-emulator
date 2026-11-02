@@ -12877,7 +12877,8 @@ static void msm5xxx_poc_init(MachineState *machine)
             uint64_t address = MSM5XXX_POC_MSM_BASE + offset;
 
             if (start < address + 2 && end > address &&
-                !(start <= address && end >= address + 2)) {
+                (s->matrix_input_kp_low5 ||
+                 !(start <= address && end >= address + 2))) {
                 error_report("mapped halfword register partially overlaps "
                              "EEPROM GPIO aperture");
                 exit(EXIT_FAILURE);

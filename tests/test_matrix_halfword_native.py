@@ -1041,6 +1041,9 @@ int main(void) {
     assert(!err && s.matrix_input_kp_low5);
     property=msm5xxx_poc_get_matrix_kp_low5(&s,&err);
     assert(!strcmp(property,"10bd680:2:4:6:8"));free(property);
+    s.eeprom_gpio_enabled=true;s.eeprom_gpio_base=0x3000720;
+    assert(partial_owner_rejected(&s));
+    s.eeprom_gpio_enabled=false;
     for(unsigned row=0;row<6;row++) {
         unsigned p728=0x1e, p720=0x600;
         if(row<4) p728 &= ~(1u<<(row+1));
