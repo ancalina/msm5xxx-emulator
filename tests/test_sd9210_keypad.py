@@ -6,7 +6,7 @@ import unittest
 from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu.transport import (
-    qemu_low5_matrix_property, qemu_lg_matrix_irq_property, qemu_matching_lg_irq, qemu_sd9210_low5_contacts,
+    c80_rex_irq_profile, qemu_low5_matrix_property, qemu_lg_matrix_irq_property, qemu_matching_lg_irq, qemu_sd9210_low5_contacts,
     qemu_sd840_numeric_profile,
 )
 
@@ -19,6 +19,7 @@ class SD9210KeypadTest(unittest.TestCase):
             self.skipTest("private SD9210 firmware not available")
         image = path.read_bytes()
         config = detect(path)
+        existing_route = c80_rex_irq_profile(config, False)
         decoder = QemuDecoder(config)
         profile = decoder.direct_input_profile
         self.assertEqual(decoder.direct_input_detection, "accepted")
@@ -26,6 +27,7 @@ class SD9210KeypadTest(unittest.TestCase):
                          (0x78784, 0x787aa))
         self.assertTrue(qemu_lg_matrix_irq_property(config, profile).startswith('3000c80:3000c94:200:'))
         route = qemu_lg_matrix_irq_property(config, profile)
+        self.assertTrue(qemu_matching_lg_irq(existing_route, route))
         self.assertTrue(qemu_matching_lg_irq(route, route))
         pieces = route.split(':')
         pieces[8] = '1b6'
