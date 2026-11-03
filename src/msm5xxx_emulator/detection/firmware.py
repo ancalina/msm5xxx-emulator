@@ -717,7 +717,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             "closed active-low boot-download GPIO: released key default"
             in detection_notes
         )
-        if not boot_release:
+        seven_row_lid = (
+            "source-closed seven-row lid GPIO: open/high default" in detection_notes
+        )
+        if not boot_release and not seven_row_lid:
             detection_notes.append(
                 "Thumb byte-status mask/branch/debounce shape detected board-status input"
             )

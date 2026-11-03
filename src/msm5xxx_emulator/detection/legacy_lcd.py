@@ -8,6 +8,28 @@ Color channels remain a temporary preview interpretation.
 from __future__ import annotations
 import hashlib
 from .arm import thumb_bl_target, thumb_literal_value
+from .thumb_patterns import mov, lsl, halfword, match
+
+# Additional halfword-window producer: boot fill/text and the later UI scanout
+# use 75/15/5c with columns 140..267 and visible rows 0..159.  Only the source
+# grammar is admitted here; the existing panel still requires live coverage.
+_COLUMN16_BOOT = (
+    (0xc1c, mov(2, 0x80)), (0xc26, mov(0, 0x7d)),
+    (0xc28, lsl(0, 0, 3)), (0xc2e, mov(0, 0xbc)),
+    (0xd22, mov(4, 0x75)), (0xd24, mov(6, 5)),
+    (0xd26, lsl(6, 6, 0x17)), (0xd2a, halfword(False, 4, 6)),
+    (0xd2c, halfword(False, 1, 6, 4)), (0xd2e, halfword(False, 3, 6, 4)),
+    (0xd30, mov(4, 0x15)), (0xd32, halfword(False, 4, 6)),
+    (0xd76, mov(1, 0)), (0xd78, mov(7, 0)),
+    (0xe32, mov(2, 0)), (0xe34, mov(0, 0x75)),
+    (0xe36, mov(4, 5)), (0xe38, lsl(4, 4, 0x17)),
+    (0xe3a, halfword(False, 0, 4)), (0xe40, mov(5, 0xaf)),
+    (0xe42, halfword(False, 5, 4, 4)), (0xe44, mov(0, 0x15)),
+    (0x1b441c, mov(0, 0x75)), (0x1b441e, mov(3, 5)),
+    (0x1b4420, lsl(3, 3, 0x17)), (0x1b4422, halfword(False, 0, 3)),
+    (0x1b442a, mov(1, 0x9f)), (0x1b442e, mov(1, 0x15)),
+    (0x1b4432, mov(1, 0x8c)),
+)
 
 _SPECS = {'byte565_boot': [(619920, 124, 'baca6df280c63bba679ad60d3c828af8ac0e99ca63b2d64552a9699ce3cd08ef',
   ((10, 9888), (14, 614488), (18, 614912), (22, 618994), (26, 619052), (52, 619416),
@@ -311,4 +333,21 @@ def find_legacy_lcd_profile(image: bytes, ram_base: int, ram_size: int) -> str |
         if protocol == "byte31" and len(image) < 0x2cb9c8:
             continue
         matches.append(protocol)
+    if (match(image, _COLUMN16_BOOT)
+            and all(thumb_bl_target(image, at) == target for at, target in (
+                (0xC22, 0x5788), (0xC2A, 0x2614), (0xC80, 0x2614),
+                (0xC8A, 0x2614), (0xCD4, 0x2614), (0xCF2, 0x2614),
+                (0xCFE, 0x2614)))
+            and all(thumb_literal_value(image, at, reg) == value
+                    for at, reg, value in (
+                        (0xC20, 1, 0x6048), (0xC7E, 0, 0x14C08),
+                        (0xC88, 0, 0x13880), (0xCDE, 5, 0x10021C2),
+                        (0xCEE, 4, 3000), (0xDD2, 4, 0x5BD4),
+                        (0xDF4, 5, 0xFFFF), (0xE5A, 7, 0x42B852),
+                        (0x1B4424, 0, 0x102B818), (0x1B4448, 2, 0x119E2F4)))
+            and all(ram_base <= at <= ram_base + ram_size - size
+                    for at, size in ((0x10021C2, 1), (0x102B818, 0x20),
+                                     (0x119E2F4, 0xA000)))
+            and len(image) >= 0x42B852 + 0xA000):
+        matches.append("column16")
     return matches[0] if len(matches) == 1 else None

@@ -25,6 +25,10 @@ from ..core.initial_state import REGISTER_NAMES, initial_register_state
 from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO
 from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
+from msm5xxx_emulator.detection.boot_format_nor import find_boot_format_nor
+from msm5xxx_emulator.detection.input_seven_row import (
+    find_seven_row_scanners, find_seven_row_board_status,
+)
 from msm5xxx_emulator.detection.boot_keysense import find_boot_keysense_release
 from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
 from msm5xxx_emulator.detection.ready_poll import (
@@ -2075,6 +2079,13 @@ def qemu_halfword_matrix_property(image: bytes, config: object,
                                   profile: dict, *, enabled: bool = True) -> tuple[str | None, str | None]:
     """Serialize closed classes; explicit opt-in retains raw mapped gate backing."""
     grammar = profile.get("grammar")
+    if grammar == "indirect-halfword-seven-row-ring32-v1":
+        if (config.load_address != 0 or profile not in find_seven_row_scanners(image)
+                or not config.ram_base <= profile["descriptor"]
+                <= config.ram_base + config.ram_size - 0x38):
+            return None, "seven-row-source-mismatch"
+        return "matrix-halfword=" + ":".join(f"{profile[k]:x}" for k in
+            ("descriptor", "presence_site", "sense_site", "row_select_mask")), None
     automatic_mapped = (not enabled and grammar == "indirect-halfword-mapped-row-v1"
                         and isinstance(profile.get("scan_gates"), dict))
     if not enabled and not automatic_mapped and not (
@@ -4670,6 +4681,8 @@ class Transport:
         detector_image = detector_firmware_image(
             firmware_image, self.config.image_offset
         )
+        self.boot_format_nor_profile = find_boot_format_nor(
+            detector_image, self.config.ram_base, self.config.ram_size)
         from msm5xxx_emulator.detection.input_row734 import find_row734_input_profile
         from msm5xxx_emulator.detection.protected_nor import find_protected_nor_profile
         self.row734_source_profile = self.protected_nor_source_profile = None
@@ -4694,7 +4707,7 @@ class Transport:
                     f"QEMU {label} source rejected: {reason}; native fallback retained")
         upper_x16_profile = find_upper_amd_x16_nor(detector_image)
         self.rex_c80_profile = c80_rex_irq_profile(
-            self.config, experimental_c80
+            self.config, experimental_c80 or self.boot_format_nor_profile is not None
         )
         self.rex_read_consume_profile = read_consume_rex_irq_profile(
             self.config, experimental_c80
@@ -5006,6 +5019,7 @@ class Transport:
             # The scanner's admission gate consumes this active-high status.
             board_status = BoardStatusInput(0x03000720, 1, 1)
             self.config.board_status_input = board_status
+        seven_row_status = find_seven_row_board_status(detector_image)
         sd810_status = (board_status is not None
                          and getattr(self.config, "sd810_gpio_profile", None) == (0x03000720, 1, 1)
                          and self.config.chipset == "MSM5100"
@@ -5780,6 +5794,15 @@ class Transport:
         watchdog_property, watchdog_reject = qemu_watchdog_property(
             getattr(self.config, "watchdog", None), primary_seed
         )
+        if self.boot_format_nor_profile is not None:
+            profile = self.boot_format_nor_profile
+            if find_boot_format_nor(primary_seed, self.config.ram_base,
+                                    self.config.ram_size) != profile:
+                raise ValueError("loaded boot formatter source mismatch")
+            # A conservative virtual deadline, not a measured physical period.
+            watchdog_property = (f"watchdog-register={profile['watchdog_register']},"
+                                 f"watchdog-mask={profile['watchdog_mask']},"
+                                 "watchdog-timeout-ms=30000")
         if watchdog_property is not None:
             machine += f",{watchdog_property}"
         elif watchdog_reject is not None:
@@ -5792,6 +5815,9 @@ class Transport:
                 self.config.ram_base, self.config.ram_size) != sharp_intel:
             sharp_intel = intel_profile = None
             self.config.detection_notes.append("Sharp EFS partition rejected: loaded source mismatch")
+        if (seven_row_status is not None and board_status == seven_row_status
+                and find_seven_row_board_status(primary_seed) != seven_row_status):
+            raise ValueError("loaded seven-row lid source mismatch")
         if (self.rex_stack_w1c_profile is not None and
                 qemu_stack_w1c_property(detector_image,self.config,loaded=primary_seed)
                 != self.rex_stack_w1c_profile):
@@ -5967,6 +5993,20 @@ class Transport:
                 "physical geometry and logical bounds kept distinct; "
                 "compatible virtual device, original chip identity unverified"
             )
+        native_ram_size = self.config.ram_size
+        if self.boot_format_nor_profile is not None:
+            if any(p is not None for p in (amd_profile, intel_profile,
+                    primary_profile, record_profile, mapped_primary_profile,
+                    upper_x16_profile, ram_reserved)):
+                raise ValueError("boot-format NOR conflicts with an existing owner")
+            profile = self.boot_format_nor_profile
+            amd_profile = (profile["base"], profile["size"], 0x2000, profile["id0"], profile["id1"], 0)
+            # Bundled QEMU admits AMD devices inside its RAM allocation only.
+            # Every byte of this extra backing is covered by the NOR device.
+            native_ram_size = profile["base"] + profile["size"] - self.config.ram_base
+            self.config.detection_notes.append(
+                "copied formatter: missing 0x01800000 AMD x16 NOR and pulse watchdog enabled; "
+                "both compatible 8MiB parts use source-described mixed erase sectors")
         loader = temporary / "primary.raw"
         loader.write_bytes(primary_seed)
         if primary_imported:
@@ -5984,6 +6024,13 @@ class Transport:
         loader_size = None
         loader_exclude = None
         storage_args: list[str] = []
+        if self.boot_format_nor_profile is not None:
+            # CFI02's independent region properties survive the machine's
+            # scalar capacity setup. Both AMD 8MiB devices share this geometry.
+            for index, (count, length) in enumerate(self.boot_format_nor_profile["erase_regions"]):
+                for prop, value in (("num-blocks", count), ("sector-length", length)):
+                    storage_args.extend(("-global",
+                        f"driver=cfi.pflash02,property={prop}{index},value={value}"))
         pflash_unit = 0
         if primary_profile is not None:
             base, size, sector_size, id0, id1 = primary_profile
@@ -6624,7 +6671,7 @@ class Transport:
             self.process = launch_qemu(
                 [
                     *qemu_prefix, str(qemu), "-M", machine, "-cpu", "ti925t",
-                    "-m", qemu_ram_argument(self.config.ram_size),
+                    "-m", qemu_ram_argument(native_ram_size),
                     *raw_loader_arguments(
                         loader, self.config.ram_size, temporary, loader_size,
                         loader_exclude,
@@ -7591,6 +7638,12 @@ class Transport:
                 return None
             index = profile["event_codes"].index(event)
             return event, index % profile["rows"], index // profile["rows"]
+        if profile is not None and profile.get("grammar") == "indirect-halfword-seven-row-ring32-v1":
+            event = ({**SAMSUNG_RING32_KEY_EVENTS, 5: 0x53, 8: 0x64, 10: 0x63}.get(bit)
+                     if event_code is None else event_code)
+            cells = [cell for cell in profile["token_cells"] if cell["event"] == event]
+            return ((event, cells[0]["row"], cells[0]["column"])
+                    if len(cells) == 1 else None)
         if profile is not None and profile.get("grammar") == "descriptor-row734-low5-6x5-v1":
             position = self.decoder.direct_input_positions.get(bit) if type(bit) is int and 11 <= bit <= 22 else None
             if position is None or event_code is not None and event_code != position[0]:

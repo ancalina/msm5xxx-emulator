@@ -1049,7 +1049,9 @@ def resolve_indirect_matrix_input(image: bytes, load_address: int=0):
     """Return only a unique linked scanner with unambiguous semantic cells."""
     if load_address != 0:
         return (None, 'unsupported-load-address', [])
-    candidates = find_indirect_matrix_scanners(image) + find_mapped_row_scanners(image) + find_loop_row_scanners(image)
+    from .input_seven_row import find_seven_row_scanners
+    candidates = (find_indirect_matrix_scanners(image) + find_mapped_row_scanners(image)
+                  + find_loop_row_scanners(image) + find_seven_row_scanners(image))
     if not candidates:
         return (None, 'not-found', [])
     if len(candidates) != 1:

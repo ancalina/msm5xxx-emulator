@@ -32,6 +32,16 @@ class LegacyPanelTests(unittest.TestCase):
   p.write(p.port+4,2,0x7e0);self.assertTrue(p.qualified)
   self.assertEqual(p.frame[:3],b'\xff\x00\x00')
   self.assertEqual(p.frame[128*14*3:128*14*3+3],b'\x00\xff\x00')
+ def test_column_window_clips_offscreen_rows_and_advances_cursor(self):
+  p=LegacyPanel('column16');self.column_window(p,159,175)
+  for _ in range(128):p.write(p.port+4,2,0xf800)
+  self.assertEqual(p.coverage,128)
+  for _ in range(128*16):p.write(p.port+4,2,0x7e0)
+  self.assertEqual(p.coverage,128)
+  self.assertEqual(p.ram[-3:],b'\xff\x00\x00')
+  self.assertIsNone(p.window)
+  self.column_window(p,0,176)
+  self.assertIsNone(p.window)
  def test_byte565_boot_requires_setup_and_one_complete_little_endian_frame(self):
   p=LegacyPanel('byte565_boot');cmd=p.port+2;data=p.port
   for address,value in ((cmd,8),(data,0),(data,1),(cmd,9),(data,0x40)):p.write(address,1,value)

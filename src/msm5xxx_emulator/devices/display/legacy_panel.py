@@ -52,10 +52,12 @@ class LegacyPanel:
         self.window = None
         self.cursor = 0
 
-    def _begin(self, window):
+    def _begin(self, window, *, rows=None):
         x0,y0,x1,y1 = window
         self._finish()
-        if 0 <= x0 <= x1 < self.width and 0 <= y0 <= y1 < self.height:
+        if rows is None:
+            rows = self.height
+        if 0 <= x0 <= x1 < self.width and 0 <= y0 <= y1 < rows:
             self.window = window
 
     def _rgb(self, value):
@@ -73,12 +75,15 @@ class LegacyPanel:
             x,y = x0+i//h,y0+i%h
         else:
             x,y = x0+i%w,y0+i//w
-        at = y*self.width+x
-        if not self.covered[at]:
-            self.covered[at] = 1
-            self.coverage += 1
-        self.ram[at*3:at*3+3] = self._rgb(value)
-        self.dirty = True
+        # Controller address RAM can extend below the visible glass. Its
+        # cursor still advances there, but those writes cover no visible pixel.
+        if y < self.height:
+            at = y*self.width+x
+            if not self.covered[at]:
+                self.covered[at] = 1
+                self.coverage += 1
+            self.ram[at*3:at*3+3] = self._rgb(value)
+            self.dirty = True
         self.cursor += 1
         if self.cursor == w*h:
             self._finish()
@@ -203,15 +208,19 @@ class LegacyPanel:
                 y0,y1 = self.axes[0x75]
                 lo0,hi0,lo1,hi1 = self.axes[0x15]
                 x0,x1 = lo0|hi0<<8,lo1|hi1<<8
+                # The admitted boot producer programs rows 0..175 but sends
+                # only the 128x160 visible prefix; command 63 receives 160.
                 choices = [(x,y) for x,y in ((140,0),(4,16))
-                           if x <= x0 <= x1 < x+128 and y <= y0 <= y1 < y+160]
+                           if x <= x0 <= x1 < x+128 and
+                           y <= y0 <= y1 < y+(176 if (x,y) == (140,0) else 160)]
                 if len(choices) == 1:
                     origin = choices[0]
                     if self.origin is not None and origin != self.origin:
                         self.covered = bytearray(len(self.covered));self.coverage=0
                         self.ram = bytearray(len(self.ram));self.qualified=False
                     self.origin = origin
-                    self._begin((x0-origin[0],y0-origin[1],x1-origin[0],y1-origin[1]))
+                    self._begin((x0-origin[0],y0-origin[1],x1-origin[0],y1-origin[1]),
+                                rows=176 if origin == (140,0) else 160)
                 self.pending = None;self.axes={}
             else:
                 self.pending = None;self.axes={}
