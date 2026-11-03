@@ -29,7 +29,7 @@ typedef uint64_t hwaddr;
 typedef struct CPUState { bool running; struct {bool can_do_io;} neg; } CPUState;
 typedef struct {uint32_t (*get_pc)(CPUState *);} CPUClass;
 typedef struct { CPUState *cpu; bool rex_irq_c80, legacy_cdma, rex_irq_route_active;
- bool ma5_irq_configured, rex_irq_read_consume; unsigned rex_irq_controller_size;
+ bool ma5_irq_configured, sd810_fold_irq_enabled, rex_irq_read_consume; unsigned rex_irq_controller_size;
  unsigned rex_irq_bank_count; uint16_t rex_irq_pending[3], rex_irq_mask;
  uint8_t rex_irq_backing[128]; unsigned rex_irq_acks; uint32_t rex_irq_handler_address, rex_irq_handler_size;
 } MSM5xxxPOCMachineState;
@@ -46,6 +46,7 @@ static void msm5xxx_poc_backing_write(uint8_t *b, hwaddr o, uint64_t v, unsigned
 }
 static uint64_t msm5xxx_poc_ma5_irq_read(MSM5xxxPOCMachineState *s, hwaddr o, unsigned n) { (void)s;(void)o;(void)n;return 0; }
 static void msm5xxx_poc_ma5_irq_write(MSM5xxxPOCMachineState *s, hwaddr o, uint64_t v, unsigned n) { (void)s;(void)o;(void)v;(void)n; }
+static uint16_t msm5xxx_poc_fold_gpio_ack(uint16_t old, uint16_t value) { (void)old;(void)value;assert(false);return 0; }
 static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s) {(void)s;}
 static void msm5xxx_poc_rex_irq_schedule(MSM5xxxPOCMachineState *s) {(void)s;}
 static void msm5xxx_poc_ma2_irq_update(MSM5xxxPOCMachineState *s) {(void)s;}
