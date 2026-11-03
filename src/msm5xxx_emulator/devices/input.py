@@ -32,6 +32,15 @@ DUAL_PLANE_5X6_KEY_EVENTS = {
 def _evidenced_key_events(profile: dict[str, object]) -> dict[int, int]:
     family = profile.get("event_sink_family", profile.get("family"))
     if family == SAMSUNG_RING32:
+        # The event table distinguishes navigation from volume contacts.
+        if (profile.get("grammar") == "direct-low-nibble-6-row-v1"
+                and tuple(profile.get("event_codes", ())) == (
+                    0x63, 0x66, 0x31, 0x34, 0x37, 0x2A,
+                    0x5B, 0x53, 0x32, 0x35, 0x38, 0x30,
+                    0x65, 0x50, 0x33, 0x36, 0x39, 0x23,
+                    0x87, 0x64, 0x52, 0x00, 0x54, 0x55)):
+            return {**SAMSUNG_RING32_KEY_EVENTS,
+                    1: 0x63, 5: 0x53, 8: 0x55, 9: 0x64, 10: 0x54}
         return SAMSUNG_RING32_KEY_EVENTS
     if (family == SAMSUNG_DUAL_PLANE_RING32
             and profile.get("grammar") == "n330-5x6-dual-plane-ring32-v1"):

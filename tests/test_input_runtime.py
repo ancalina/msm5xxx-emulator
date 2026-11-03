@@ -65,11 +65,19 @@ class InputRuntimeTests(unittest.TestCase):
     def test_samsung_matrix_uses_evidenced_events_not_table_order(self) -> None:
         emulator = self._direct_emulator()
 
-        self.assertEqual(len(emulator.direct_input_positions), 19)
+        self.assertEqual(len(emulator.direct_input_positions), 22)
         self.assertEqual(emulator.direct_input_positions[0], (0x5B, 0, 1))
         self.assertEqual(emulator.direct_input_positions[2], (0x52, 2, 3))
         self.assertEqual(emulator.direct_input_positions[14], (0x34, 3, 0))
-        self.assertNotIn(5, emulator.direct_input_positions)
+        self.assertEqual(emulator.direct_input_positions[5], (0x53, 1, 1))
+        self.assertEqual(emulator.direct_input_positions[9], (0x64, 1, 3))
+
+    def test_samsung_mapping_requires_full_table(self) -> None:
+        profile = self._direct_profile()
+        profile["event_codes"][0] = 0x62
+        positions = QemuDecoder._direct_matrix_positions(profile)
+        self.assertNotIn(5, positions)
+        self.assertEqual(positions[9], (0x55, 5, 3))
 
 
     def test_direct_matrix_prefers_evidence_gated_semantic_metadata(self) -> None:
@@ -85,7 +93,7 @@ class InputRuntimeTests(unittest.TestCase):
         positions = QemuDecoder._direct_matrix_positions(profile)
         self.assertEqual(positions[5], (0x53, 1, 1))
         self.assertEqual(positions[14], (0x34, 3, 0))
-        self.assertEqual(len(positions), 20)
+        self.assertEqual(len(positions), 22)
 
 
     def test_direct_matrix_recognized_profiles_share_raw_table_order(
@@ -165,7 +173,7 @@ class InputRuntimeTests(unittest.TestCase):
 
     def test_manual_event_requires_a_unique_detected_cell(self):
         decoder = self._direct_emulator()
-        self.assertFalse(decoder.can_set_key(5))
+        self.assertTrue(decoder.can_set_key(5))
         self.assertTrue(decoder.can_set_key(5, 0x53))
         self.assertFalse(decoder.can_set_key(5, 0x7f))
         decoder.direct_input_profile['event_codes'][0] = 0x53
