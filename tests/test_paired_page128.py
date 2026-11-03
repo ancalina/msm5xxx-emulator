@@ -31,7 +31,7 @@ class PairedPage128Tests(unittest.TestCase):
         image = fixture()
         profile = find_paired_page128(image)
         self.assertEqual((profile['width'], profile['height']), (128, 128))
-        for address in (0x1000 + 6, 0x1000 + 0x8a, 0x1b38 + 46,
+        for address in (0x1000 + 6, 0x1000 + 0x8a, 0x1b38 + 46, 0x1b38 + 48,
                         0x1b38 + 0x64, 0x1b38 + 0xa98 + 28):
             changed = bytearray(image)
             changed[address] ^= 1

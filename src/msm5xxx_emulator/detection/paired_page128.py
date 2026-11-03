@@ -30,15 +30,16 @@ _TRANSFER = (
     (30, _add_reg(6, 2, 3)), (34, _add_reg(3, 6, 3)),
     (36, _ldrb(6, 3, 1)), (38, _strb(6, 7, 4)),
     (40, _ldrb(3, 3, 2)), (42, _strb(3, 7, 4)),
-    (46, cmp_imm(1, 128)), (52, cmp_imm(0, 16)),
+    (46, cmp_imm(1, 128)), (48, 0xdbf4),
+    (52, cmp_imm(0, 16)), (54, 0xdbe8),
 )
 _CLEAR = (
     (2, mov(0, 0)), (4, mov(7, 16)), (6, lsl(2, 7, 21)),
     (8, mov(1, 0)), (10, mov(3, 0xb0)),
     (14, _strb(3, 2)), (16, _strb(7, 2)), (18, _strb(1, 2)),
     (20, mov(3, 0)), (22, _strb(1, 2, 4)),
-    (24, _strb(1, 2, 4)), (28, cmp_imm(3, 128)),
-    (34, cmp_imm(0, 16)),
+    (24, _strb(1, 2, 4)), (28, cmp_imm(3, 128)), (30, 0xdbfa),
+    (34, cmp_imm(0, 16)), (36, 0xdbf1),
 )
 # Shift carry selects colour bit 1 for the second plane and bit 0 for the
 # first. The producer writes those two independent masks to adjacent bytes.
