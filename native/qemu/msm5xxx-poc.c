@@ -805,6 +805,9 @@ struct MSM5xxxPOCMachineState {
     bool rex_irq_enabled;
     bool rex_irq_c80;
     bool legacy_cdma;
+    uint32_t legacy_masks_i, legacy_masks_q;
+    MemoryRegion legacy_pn_reset;
+    uint32_t legacy_search_hits;
     bool rex_irq_copied;
     bool rex_irq_sv130_overlay;
     uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size;
@@ -6624,6 +6627,143 @@ static const MemoryRegionOps msm5xxx_poc_eeprom_gpio_ops = {
     .impl.max_access_size = 4,
 };
 
+static void msm5xxx_poc_legacy_search_start(MSM5xxxPOCMachineState *s);
+
+static void msm5xxx_poc_legacy_search_complete(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (!msm5xxx_search2_complete(&s->search2, &s->search2.job,
+                                  s->search2_samples)) {
+        return;
+    }
+    s->search2_position = s->search2_pending_position;
+    s->search2_completions++;
+    if (s->search2_samples[0]) {
+        s->legacy_search_hits++;
+    }
+    if (msm5xxx_search2_dump_requested(&s->search2)) {
+        s->rex_irq_pending[0] |= 0x80;
+        msm5xxx_poc_rex_irq_update(s);
+    }
+    msm5xxx_poc_legacy_search_start(s);
+}
+
+static void msm5xxx_poc_legacy_search_start(MSM5xxxPOCMachineState *s)
+{
+    MSM5xxxSearch2Job job;
+    MSM5xxxSearch2Parameters p;
+    uint16_t masks[2];
+    uint8_t bytes[2];
+    unsigned i;
+
+    if (s->search2.active || !s->search2.queued_records ||
+        s->search2.result_records == MSM5XXX_SEARCH2_DEPTH ||
+        !msm5xxx_search2_begin(&s->search2, &job)) {
+        return;
+    }
+    if (!msm5xxx_search2_decode(&job, &p)) {
+        memset(s->search2_samples, 0, sizeof(s->search2_samples));
+        s->search2_pending_position = s->search2_position;
+    } else {
+        for (i = 0; i < 2; i++) {
+            cpu_physical_memory_read((i ? s->legacy_masks_q : s->legacy_masks_i) +
+                                     2 * p.phase_index, bytes, sizeof(bytes));
+            masks[i] = bytes[0] | (bytes[1] << 8);
+        }
+        if (!msm5xxx_search2_virtual_result(&p, s->search2_position,
+            s->search2_pilot_phase,
+            p.mask_i == masks[0] && p.mask_q == masks[1] ?
+                s->search2_peak_energy : 0,
+            s->search2_samples, &s->search2_pending_position)) {
+            memset(s->search2_samples, 0, sizeof(s->search2_samples));
+            s->search2_pending_position = s->search2_position;
+        }
+    }
+    timer_mod(s->search2_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
+}
+
+static uint64_t msm5xxx_poc_legacy_search_read(void *opaque, hwaddr offset,
+                                                unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint16_t value;
+
+    if (size == 2 && (offset == 0 || offset == 4)) {
+        return (s->search2_position >> (offset * 4)) & 0xffff;
+    }
+    if (msm5xxx_search2_read(&s->search2, offset, size, &value)) {
+        if (offset == 12) {
+            s->search2_result_reads++;
+            msm5xxx_poc_legacy_search_start(s);
+        }
+        return value;
+    }
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                    0x290 + offset, size);
+}
+
+static void msm5xxx_poc_legacy_search_write(void *opaque, hwaddr offset,
+                                             uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              0x290 + offset, value, size);
+    if (msm5xxx_search2_write(&s->search2, offset, size, value)) {
+        if (offset == 4 && size == 2 && !s->search2.queue_sub) {
+            s->search2_submits++;
+        }
+        if (msm5xxx_search2_dump_requested(&s->search2)) {
+            s->rex_irq_pending[0] |= 0x80;
+            msm5xxx_poc_rex_irq_update(s);
+        }
+        msm5xxx_poc_legacy_search_start(s);
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_legacy_search_ops = {
+    .read = msm5xxx_poc_legacy_search_read,
+    .write = msm5xxx_poc_legacy_search_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 4,
+    .impl.min_access_size = 1, .impl.max_access_size = 4,
+};
+
+static uint64_t msm5xxx_poc_legacy_pn_read(void *opaque, hwaddr offset,
+                                            unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                    0x130 + offset, size);
+}
+
+static void msm5xxx_poc_legacy_pn_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              0x130 + offset, value, size);
+    if (!offset && size == 1 && !value) {
+        s->search2_position = 0;
+        s->search2_pending_position = 0;
+        s->search1_position = 0;
+        for (unsigned i = 0; i < MSM5XXX_FINGER_COUNT; i++) {
+            s->fingers.bank[i].position = 0;
+            s->fingers.bank[i].latched_position = 0;
+        }
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_legacy_pn_ops = {
+    .read = msm5xxx_poc_legacy_pn_read,
+    .write = msm5xxx_poc_legacy_pn_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 1,
+    .impl.min_access_size = 1, .impl.max_access_size = 1,
+};
+
 static bool msm5xxx_poc_radio_irq_gate(MSM5xxxPOCMachineState *s)
 {
     uint32_t target;
@@ -10617,6 +10757,8 @@ static uint64_t msm5xxx_poc_read(void *opaque, hwaddr offset, unsigned size)
                (s->search1_have_results << 9) | (s->search1_rejected << 10);
     case 0x134:
         return s->search1_position;
+    case 0x264:
+        return s->legacy_search_hits;
     case 0x150:
         return s->finger_latches;
     case 0x154:
@@ -12697,6 +12839,7 @@ static void msm5xxx_poc_reset(void *opaque)
     msm5xxx_search2_reset(&s->search2);
     s->search2_probe_done = s->search2_probe_rejected = false;
     s->search2_submits = s->search2_completions = s->search2_result_reads = 0;
+    s->legacy_search_hits = 0;
     s->search2_rejections = 0;
     s->search2_reject_reason = s->search2_reject_pc = 0;
     s->search2_reject_value = s->search2_reject_expected_pc = 0;
@@ -14514,6 +14657,28 @@ static void msm5xxx_poc_init(MachineState *machine)
                               "msm5xxx-poc.tone", MSM5XXX_TONE_REGISTER_BYTES);
         memory_region_add_subregion_overlap(get_system_memory(), 0x030006b8,
                                             &s->tone_region, 2);
+    }
+    if (s->legacy_cdma && s->legacy_masks_i && s->legacy_masks_q) {
+        if (!s->rex_irq_enabled || !s->rex_irq_c80 ||
+            s->rex_irq_status_address != 0x03000c80 ||
+            s->legacy_masks_i > s->primary_nor_size - 1024 ||
+            s->legacy_masks_q > s->primary_nor_size - 1024 ||
+            s->search2_probe_description || s->search2_virtual_description) {
+            error_report("legacy search requires C80 and bounded PN tables");
+            exit(EXIT_FAILURE);
+        }
+        s->search2_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                        msm5xxx_poc_legacy_search_complete, s);
+        memory_region_init_io(&s->search2_region, OBJECT(machine),
+                              &msm5xxx_poc_legacy_search_ops, s,
+                              "msm5xxx-poc.legacy-search", 0x18);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x03000290,
+                                            &s->search2_region, 1);
+        memory_region_init_io(&s->legacy_pn_reset, OBJECT(machine),
+                              &msm5xxx_poc_legacy_pn_ops, s,
+                              "msm5xxx-poc.legacy-pn-reset", 1);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x03000130,
+                                            &s->legacy_pn_reset, 1);
     }
     if (s->search2_probe_description || s->search2_virtual_description) {
         const unsigned code_fields[] = {0, 1, 3, 4, 6, 7};
@@ -18391,6 +18556,33 @@ static void msm5xxx_poc_set_legacy_cdma(Object *obj, const char *value,
     }
 }
 
+static char *msm5xxx_poc_get_legacy_search(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup_printf("%x:%x:%x:%x", s->search2_pilot_phase,
+                           s->search2_peak_energy, s->legacy_masks_i,
+                           s->legacy_masks_q);
+}
+
+static void msm5xxx_poc_set_legacy_search(Object *obj, const char *value,
+                                          Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned phase, energy, masks_i, masks_q;
+    int end = -1;
+
+    if (sscanf(value, "%x:%x:%x:%x%n", &phase, &energy, &masks_i,
+               &masks_q, &end) != 4 || end < 0 || value[end] ||
+        phase > 0x3ffff || energy > 0xffff || !masks_i || !masks_q) {
+        error_setg(errp, "legacy-search requires PHASE:ENERGY:MASK_I:MASK_Q");
+        return;
+    }
+    s->search2_pilot_phase = phase;
+    s->search2_peak_energy = energy;
+    s->legacy_masks_i = masks_i;
+    s->legacy_masks_q = masks_q;
+}
+
 static void msm5xxx_poc_instance_init(Object *obj)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -18456,6 +18648,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "legacy-cdma",
                                   msm5xxx_poc_get_legacy_cdma,
                                   msm5xxx_poc_set_legacy_cdma);
+    object_class_property_add_str(oc, "legacy-search",
+                                  msm5xxx_poc_get_legacy_search,
+                                  msm5xxx_poc_set_legacy_search);
     object_class_property_add_str(oc, "search2-probe",
                                   msm5xxx_poc_get_search2_probe,
                                   msm5xxx_poc_set_search2_probe);
