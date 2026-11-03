@@ -281,6 +281,8 @@ typedef struct {
     char *decoder_traffic_frame_description;
     char *traffic_service_description;
     void *search2_timer;
+    void *legacy_decoder_timer, *legacy_roll_timer;
+    char *legacy_decoder_description;
     char *search2_probe_description;
     char *search2_virtual_description;
     uint8_t audio_index, audio_backing[4], audio_readback[4];
@@ -382,10 +384,10 @@ void ma5_wt_engine_reset(MA5WTEngine *engine, uint64_t origin) {
 void ma5_wt_engine_free(MA5WTEngine *engine) { (void)engine; }
 static void timer_del(void *timer) { (void)timer; assert(core_held); }
 static void timer_free(void *timer) {
-    assert(timer == s.ma5_audio_timer || timer == s.search2_timer || timer == s.search1_timer || timer == s.decoder_init_timer || timer == s.tx_init_timer); timer_frees++;
+    assert(timer == s.ma5_audio_timer || timer == s.search2_timer || timer == s.search1_timer || timer == s.decoder_init_timer || timer == s.tx_init_timer || timer == s.legacy_decoder_timer || timer == s.legacy_roll_timer); timer_frees++;
 }
 static void g_free(void *value) {
-    if (value) { assert(value == s.search2_probe_description || value == s.search2_virtual_description || value == s.search1_description || value == s.finger_description || value == s.decoder_init_description || value == s.decoder_sync_description || value == s.decoder_paging_description || value == s.decoder_traffic_description || value == s.decoder_traffic_frame_description || value == s.tx_init_description || value == s.traffic_service_description); description_frees++; }
+    if (value) { assert(value == s.search2_probe_description || value == s.search2_virtual_description || value == s.search1_description || value == s.finger_description || value == s.decoder_init_description || value == s.decoder_sync_description || value == s.decoder_paging_description || value == s.decoder_traffic_description || value == s.decoder_traffic_frame_description || value == s.tx_init_description || value == s.traffic_service_description || value == s.legacy_decoder_description); description_frees++; }
 }
 static void AUD_set_active_out(void *voice, bool active) {
     (void)voice; assert(!active && core_held);
@@ -522,11 +524,14 @@ int main(void) {
     s.tx_init_timer = &s.tx_init_timer;
     s.tx_init_description = "tx-init";
     s.search2_timer = &s;
+    s.legacy_decoder_timer = &s.legacy_decoder_timer;
+    s.legacy_roll_timer = &s.legacy_roll_timer;
+    s.legacy_decoder_description = "legacy-decoder";
     s.search2_probe_description = "probe";
     s.search2_virtual_description = "virtual";
     msm5xxx_poc_instance_finalize(&s);
     assert(!active_watch && !s.audio_pcm_watch && removals == 1);
-    assert(timer_frees == 5 && description_frees == 11);
+    assert(timer_frees == 7 && description_frees == 12);
 
     const GIOCondition errors[] = {G_IO_HUP, G_IO_ERR, G_IO_NVAL};
     for (unsigned i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
