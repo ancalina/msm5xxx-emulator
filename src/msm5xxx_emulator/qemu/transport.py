@@ -36,6 +36,7 @@ from msm5xxx_emulator.detection.ready_poll import (
 )
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from msm5xxx_emulator.detection.middle_nand import find_middle_nand_profile
+from msm5xxx_emulator.detection.guarded_middle_nand import find_guarded_middle_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
@@ -1103,6 +1104,15 @@ def qemu_raw_nand_main_profile(
     """Admit the closed, main-area-only small-page x16 NAND class."""
     if not getattr(config, "nand_enabled", False):
         return None, None
+    guarded = find_guarded_middle_nand_profile(image)
+    if guarded is not None:
+        if (getattr(config, "load_address", None) != 0
+                or getattr(config, "flash_size", 0) > 0x01000000
+                or getattr(config, "ram_base", None) != 0x01000000
+                or getattr(config, "ram_size", None) != 0x800000
+                or getattr(config, "upper_flash_address", None) is not None):
+            return None, "guarded-middle-aperture-mapping-conflict"
+        return (0x01800000, 0x01900000, 0x01a00000, 0x2000000, 512, 32, 2), None
     middle = find_middle_nand_profile(image)
     if middle is not None:
         if (getattr(config, "chipset", None) != "MSM5500"
@@ -6532,13 +6542,17 @@ class Transport:
             raw_nand_reject = "mtd-owner-conflict"
         middle_nand_ready = None
         if raw_nand_profile is not None and raw_nand_profile[0] == 0x01800000:
-            source_profile = find_middle_nand_profile(detector_image)
-            loaded_profile = find_middle_nand_profile(primary_seed[:len(detector_image)])
+            source_profile = (find_guarded_middle_nand_profile(detector_image)
+                              or find_middle_nand_profile(detector_image))
+            loaded_profile = (find_guarded_middle_nand_profile(primary_seed[:len(detector_image)])
+                              or find_middle_nand_profile(primary_seed[:len(detector_image)]))
             if source_profile is None or source_profile != loaded_profile:
                 raw_nand_profile, raw_nand_reject = None, "middle-loaded-source-mismatch"
             else:
                 start, end = source_profile["source_interval"]
-                if primary_seed[start:end] != detector_image[start:end]:
+                if (primary_seed[start:end] != detector_image[start:end]
+                        or any(primary_seed[a:b] != detector_image[a:b]
+                               for a, b in source_profile["code_intervals"])):
                     raw_nand_profile, raw_nand_reject = None, "middle-loaded-overlay-mismatch"
                 else:
                     middle_nand_ready = (source_profile["ready_address"], source_profile["ready_mask"])
