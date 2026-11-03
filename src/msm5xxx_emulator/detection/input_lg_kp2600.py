@@ -10,8 +10,7 @@ from .input_matrix import ASCII_KEY_EVENTS
 
 def find_kp2600_scanner(image: bytes, config: object) -> dict[str, object] | None:
     """Recover the KP2600 numeric contacts without assigning special keys."""
-    if (getattr(config, 'model', None) != 'LG-KP2600'
-            or getattr(config, 'load_address', None) != 0
+    if (getattr(config, 'load_address', None) != 0
             or getattr(config, 'flash_size', 0) < 0x77c254
             or len(image) < 0x77c254):
         return None

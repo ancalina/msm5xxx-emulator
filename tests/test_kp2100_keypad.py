@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from types import SimpleNamespace
+import copy
 import unittest
 
 from msm5xxx_emulator.detection import detect
@@ -21,6 +21,7 @@ class KP2100KeypadTest(unittest.TestCase):
             self.skipTest("private KP2100 firmware not available")
         image = path.read_bytes()
         config = detect(path)
+        config.model = None
         decoder = QemuDecoder(config)
         profile = decoder.direct_input_profile
         self.assertEqual(decoder.direct_input_detection, "accepted")
@@ -50,5 +51,6 @@ class KP2100KeypadTest(unittest.TestCase):
         altered["timer_bridge"] = {**profile["timer_bridge"], "irq_route": {}}
         self.assertIsNone(qemu_kp2100_low5_property(image, config, altered))
         self.assertIsNone(qemu_lg_matrix_irq_property(config, altered))
-        wrong = SimpleNamespace(model="LG-SD810", board_status_input=None)
-        self.assertIsNone(qemu_kp2100_low5_property(image, wrong, profile))
+        wrong = copy.copy(config)
+        wrong.model = "LG-SD810"
+        self.assertIsNotNone(qemu_kp2100_low5_property(image, wrong, profile))

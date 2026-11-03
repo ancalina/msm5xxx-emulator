@@ -17,6 +17,7 @@ class SV130KeypadTest(unittest.TestCase):
             self.skipTest("private SV130 firmware not available")
         image = path.read_bytes()
         config = detect(path)
+        config.model = None
         decoder = QemuDecoder(config)
         profile = decoder.direct_input_profile
         self.assertTrue(sv130_keypad_source(image, config, profile))

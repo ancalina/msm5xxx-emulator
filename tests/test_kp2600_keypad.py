@@ -22,6 +22,7 @@ class KP2600KeypadTests(unittest.TestCase):
     def setUpClass(cls):
         cls.image = IMAGE.read_bytes()
         cls.config = detect(IMAGE)
+        cls.config.model = None
         cls.profile = find_kp2600_scanner(cls.image, cls.config)
 
     def test_numeric_positions_follow_split_rows(self):

@@ -471,8 +471,7 @@ def qemu_sd9210_low5_contacts(
     """Close SD9210's two released bit-4 prechecks for numeric keys."""
     bridge = profile.get("timer_bridge")
     scanner = profile.get("function")
-    if (getattr(config, "model", None) != "LG-SD9210"
-            or getattr(config, "board_status_input", None) is not None
+    if (getattr(config, "board_status_input", None) is not None
             or profile.get("descriptor_pointer") != 0x01816618
             or profile.get("row_order") != [4, 0, 1, 2, 3, 5]
             or type(scanner) is not int or not isinstance(bridge, dict)
@@ -528,7 +527,7 @@ def qemu_kp_low5_property(image: bytes, config: object,
     if (profile is None or profile.get("grammar") != "lg-kp-legacy-low5-6x5-v1"
             or getattr(config, "board_status_input", None) is not None):
         return None
-    source = find_kp_legacy_scanner(image, getattr(config, "model", ""))
+    source = find_kp_legacy_scanner(image)
     bridge = profile.get("timer_bridge")
     if (source is None or not isinstance(bridge, dict)
             or not isinstance(bridge.get("irq_route"), dict)
@@ -568,7 +567,7 @@ def qemu_kp2100_low5_property(image: bytes, config: object,
                                profile: dict[str, object] | None) -> str | None:
     """Close KP2100's distinct global read and two bit-4 checks."""
     status = getattr(config, "board_status_input", None)
-    if (profile is None or getattr(config, "model", None) != "LG-KP2100"
+    if (profile is None
             or (status is not None and
                 ((status.address, status.mask, status.default) != (0x03000720, 1, 1)
                  or not qemu_kp2100_status_source(image, config, profile)))
@@ -627,7 +626,7 @@ def qemu_kp2100_low5_property(image: bytes, config: object,
 def qemu_kp2100_status_source(image: bytes, config: object,
                                profile: dict[str, object] | None) -> bool:
     """Link GPIO720 bit 0 to this scanner's ordinary-key admission flag."""
-    if (getattr(config, "model", None) != "LG-KP2100" or profile is None
+    if (profile is None
             or profile.get("descriptor_pointer") != 0x01103684
             or profile.get("raw_enqueue") != 0x6f794
             or getattr(config, "load_address", None) != 0
@@ -680,8 +679,10 @@ def qemu_kp2100_status_source(image: bytes, config: object,
 def qemu_lg_matrix_irq_property(config: object,
                                 profile: dict[str, object] | None) -> str | None:
     """Promote a detector-closed LG scan timer to the native C80 route."""
-    if (profile is None or getattr(config, "model", None) not in {
-            "LG-KP2000", "LG-KP2006", "LG-KP2100", "LG-SD9210"}
+    if (profile is None or (profile.get("grammar"), profile.get("descriptor_pointer")) not in {
+            ("lg-kp-legacy-low5-6x5-v1", 0x010bd680),
+            ("lg-descriptor-low5-6x5-raw-v1", 0x01103684),
+            ("lg-descriptor-low5-6x5-raw-v1", 0x01816618)}
             or getattr(config, "rex_irq_arm_address", None) is not None):
         return None
     bridge = profile.get("timer_bridge")

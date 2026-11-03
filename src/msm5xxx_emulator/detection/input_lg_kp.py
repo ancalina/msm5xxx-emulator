@@ -11,10 +11,8 @@ from .input_descriptor import (
 from .input_matrix import ASCII_KEY_EVENTS
 
 
-def find_kp_legacy_scanner(image: bytes, model: str) -> dict[str, object] | None:
+def find_kp_legacy_scanner(image: bytes) -> dict[str, object] | None:
     """Recover one KP scanner; callers must separately close timer and IRQ paths."""
-    if model not in {"LG-KP2000", "LG-KP2006"}:
-        return None
     marker = struct.pack("<3H", 0xb5f0, 0x7910, 0x2800)
     candidates = []
     cursor = 0

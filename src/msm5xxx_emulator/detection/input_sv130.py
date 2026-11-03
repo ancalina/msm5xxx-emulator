@@ -12,7 +12,7 @@ def sv130_keypad_source(image: bytes, config: object,
                         profile: dict[str, object] | None) -> bool:
     """Verify the keypad, timer, vector, and copied dispatcher as one source."""
     image = image[:getattr(config, "flash_size", len(image))]
-    if (getattr(config, "model", None) != "LG-SV130" or profile is None
+    if (profile is None
             or getattr(config, "board_status_input", None) is not None
             or getattr(config, "load_address", None) != 0
             or profile.get("grammar") != "lg-descriptor-low5-6x5-raw-v1"

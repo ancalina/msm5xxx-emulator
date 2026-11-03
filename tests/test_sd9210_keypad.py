@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from types import SimpleNamespace
+import copy
 import unittest
 
 from msm5xxx_emulator.detection import detect
@@ -19,6 +19,7 @@ class SD9210KeypadTest(unittest.TestCase):
             self.skipTest("private SD9210 firmware not available")
         image = path.read_bytes()
         config = detect(path)
+        config.model = None
         existing_route = c80_rex_irq_profile(config, False)
         decoder = QemuDecoder(config)
         profile = decoder.direct_input_profile
@@ -48,6 +49,6 @@ class SD9210KeypadTest(unittest.TestCase):
         altered = dict(profile)
         altered['timer_bridge'] = {**profile['timer_bridge'], 'irq_route': {}}
         self.assertIsNone(qemu_sd9210_low5_contacts(image, config, altered))
-        wrong_model = SimpleNamespace(model="LG-SD810", board_status_input=None,
-                                      load_address=config.load_address)
-        self.assertIsNone(qemu_sd9210_low5_contacts(image, wrong_model, profile))
+        wrong_model = copy.copy(config)
+        wrong_model.model = "LG-SD810"
+        self.assertIsNotNone(qemu_sd9210_low5_contacts(image, wrong_model, profile))

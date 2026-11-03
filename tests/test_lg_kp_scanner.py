@@ -18,12 +18,12 @@ class LGKPLegacyScannerTest(unittest.TestCase):
                 if not path.exists():
                     self.skipTest("private LG firmware not available")
                 image = path.read_bytes()
-                scanner = find_kp_legacy_scanner(image, model)
+                scanner = find_kp_legacy_scanner(image)
                 self.assertIsNotNone(scanner)
                 self.assertEqual(scanner["descriptor_pointer"], 0x010bd680)
                 self.assertEqual(scanner["single_key_column_sense"], [30, 29, 27, 23, 15])
-                self.assertIsNone(find_kp_legacy_scanner(image, "LG-SD810"))
                 config = detect(path)
+                config.model = None
                 decoder = QemuDecoder(config)
                 profile = decoder.direct_input_profile
                 self.assertEqual(decoder.direct_input_detection, "accepted")
@@ -44,10 +44,10 @@ class LGKPLegacyScannerTest(unittest.TestCase):
                 for offset in (0x0c, 0x26, 0x42):
                     changed = bytearray(image)
                     changed[helper + offset] ^= 1
-                    self.assertIsNone(find_kp_legacy_scanner(changed, model))
+                    self.assertIsNone(find_kp_legacy_scanner(changed))
                 for offset in (0x50, 0x86, 0x116, 0x182, 0x19c,
                                0x1b8, 0x1cc, 0x1d0):
                     changed = bytearray(image)
                     changed[scanner["function"] + offset] ^= 1
-                    self.assertIsNone(find_kp_legacy_scanner(changed, model),
+                    self.assertIsNone(find_kp_legacy_scanner(changed),
                                       hex(offset))
