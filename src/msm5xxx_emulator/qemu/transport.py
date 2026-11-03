@@ -236,6 +236,27 @@ RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE = bytes.fromhex(
     "002108e06218167800ab1e7056785e701a882a800231b942f4d310210170"
 )
 
+def qemu_sharp_board_status_property(
+        image: bytes, loaded: bytes, config: object, *, claimed: bool,
+) -> tuple[str | None, str | None]:
+    """Admit one source-verified board input without replacing another owner."""
+    if claimed:
+        return None, "input-owner-conflict"
+    from msm5xxx_emulator.detection.sharp_board_status import find_sharp_board_status_profile
+    args = (config.flash_size, config.ram_base, config.ram_size)
+    profile, reason = find_sharp_board_status_profile(image, *args)
+    if profile is None:
+        return None, reason
+    if find_sharp_board_status_profile(loaded[:len(image)], *args)[0] != profile:
+        return None, "loaded-source-mismatch"
+    inputs = [item for item in (profile['rf'], profile['lid']) if item is not None]
+    if len(inputs) != 1:
+        return None, "ambiguous-board-input"
+    item = inputs[0]
+    return (f"board-status-input={item['address']:x}:{item['mask']:x}:"
+            f"{item['default']:x}"), None
+
+
 def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
     """Return the detector-admitted, unique physical sense values."""
     senses = tuple(int(value) for value in profile.get(
@@ -6104,6 +6125,25 @@ class Transport:
             self.config.detection_notes.append(
                 f"QEMU serial NVM rejected: {spi_reject}; native fallback retained"
             )
+        if sharp_intel is not None:
+            sharp_status, sharp_status_reject = qemu_sharp_board_status_property(
+                detector_image, primary_seed, self.config,
+                claimed=(board_status is not None or
+                         self.matrix_input_profile is not None or
+                         self.decoder.direct_input_profile is not None or
+                         boot_property is not None or status_property is not None or
+                         eeprom_profile is not None or spi_property is not None or
+                         experimental_status_level is not None),
+            )
+            if sharp_status is not None:
+                machine += "," + sharp_status
+                self.config.detection_notes.append(
+                    "QEMU source-bound board status input enabled"
+                )
+            elif sharp_status_reject is not None:
+                self.config.detection_notes.append(
+                    f"QEMU Sharp board status rejected: {sharp_status_reject}"
+                )
         self.stderr = tempfile.TemporaryFile(mode="w+t")
         try:
             nand_monitor_args = []
