@@ -27,9 +27,10 @@ typedef struct {
  MSM5xxxSearch2 search2; MSM5xxxFingers fingers; MemoryRegion msm;
  uint32_t search2_position, search2_pending_position, search1_position;
  uint32_t search2_pilot_phase, search2_peak_energy, legacy_masks_i, legacy_masks_q;
- uint32_t legacy_search_hits; uint64_t finger_latches, finger_reads, search2_submits,search2_completions,search2_result_reads;
+ bool legacy_rf_tuned; uint32_t legacy_search_hits; uint64_t finger_latches, finger_reads, search2_submits,search2_completions,search2_result_reads;
  uint16_t search2_samples[8], rex_irq_pending[1]; void *search2_timer;
 } MSM5xxxPOCMachineState;
+static bool msm5xxx_poc_legacy_gate(MSM5xxxPOCMachineState *s) {(void)s;return true;}
 static uint16_t lduw_le_p(const uint8_t *p) { return p[0] | (p[1] << 8); }
 static uint8_t *memory_region_get_ram_ptr(MemoryRegion *r) { (void)r;return backing; }
 static uint64_t msm5xxx_poc_backing_read(uint8_t *b, hwaddr o, unsigned n) { uint64_t v=0;for(unsigned i=0;i<n;i++)v|=(uint64_t)b[o+i]<<(8*i);return v; }
@@ -44,7 +45,7 @@ static void timer_mod(void *t,int64_t n) {(void)t;assert(n==1000100);}
 int main(void) {
  MSM5xxxPOCMachineState s={0}; msm5xxx_search2_init(&s.search2); msm5xxx_fingers_reset(&s.fingers);
  s.legacy_masks_i=16;s.legacy_masks_q=32;rom[17]=rom[33]=0x40;
- s.search2_pilot_phase=16;s.search2_peak_energy=64000;
+ s.search2_pilot_phase=16;s.search2_peak_energy=64000;s.legacy_rf_tuned=true;
  msm5xxx_poc_legacy_finger_write(&s,0x2c,4,1);
  assert(msm5xxx_poc_legacy_finger_read(&s,0x2c,2)==0);
  msm5xxx_poc_legacy_finger_write(&s,0x18,1,1);

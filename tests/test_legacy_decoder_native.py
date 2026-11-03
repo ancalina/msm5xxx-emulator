@@ -41,8 +41,9 @@ typedef struct {
  uint64_t legacy_epoch,legacy_clock_origin,legacy_roll,legacy_frame;
  uint16_t legacy_decoder_mode,legacy_decoder_words[14],legacy_combiner,rex_irq_pending[1];
  uint8_t legacy_sync[26],legacy_paging[4][255],legacy_paging_lengths[4];
- unsigned legacy_decoder_cursor;QEMUTimer *legacy_decoder_timer,*legacy_roll_timer;MemoryRegion msm;
+ bool legacy_rf_tuned;unsigned legacy_decoder_cursor;QEMUTimer *legacy_decoder_timer,*legacy_roll_timer;MemoryRegion msm;
 } MSM5xxxPOCMachineState;
+static bool msm5xxx_poc_legacy_gate(MSM5xxxPOCMachineState *s) {(void)s;return true;}
 static int64_t now;
 static uint8_t backing[4096];
 static int64_t qemu_clock_get_ns(int x){(void)x;return now;}
@@ -60,7 +61,7 @@ static void msm5xxx_poc_backing_write(uint8_t*b,hwaddr o,uint64_t v,unsigned n){
         harness += f'''
 int main(void) {{
  MSM5xxxPOCMachineState s={{0}};QEMUTimer decoder={{0}},roll={{0}};
- s.legacy_decoder_timer=&decoder;s.legacy_roll_timer=&roll;
+ s.legacy_decoder_timer=&decoder;s.legacy_roll_timer=&roll;s.legacy_rf_tuned=true;
  uint8_t sync[]={{ {arr(sync)} }};memcpy(s.legacy_sync,sync,sizeof sync);
 '''
         for i, p in enumerate(pagings):

@@ -1551,3 +1551,119 @@ def find_traffic_decoder_profile(image: bytes, tick_position: int) -> dict[str, 
                                             "irq_status", "irq_enable", "irq_mask")},
             "code_dependencies": sorted(set(code_dependencies)),
             "ram_dependencies": sorted(set(ram_dependencies))}
+
+
+def find_legacy_cdma_profile(image: bytes) -> dict[str, object]:
+    """Bind a C80, six-word searcher and dec5000 decoded FIFO to one image."""
+    def occurrences(value: bytes):
+        at = 0
+        while (at := image.find(value, at)) >= 0:
+            if not at & 1:
+                yield at
+            at += 1
+
+    def literal_users(value: int, register: int):
+        found = set()
+        for pool in occurrences(struct.pack('<I', value)):
+            for pc in range(max(0, pool - 1024) & ~1, pool, 2):
+                if _literal(image, pc, register, 0) == value:
+                    found.add(pc)
+        return found
+
+    def one(values, reason):
+        values = set(values)
+        if len(values) != 1:
+            raise ValueError(f'{reason}-cardinality:{len(values)}')
+        return next(iter(values))
+
+    try:
+        users = literal_users(0x030002a0, 1)
+        writers = []
+        consumers = []
+        for pc in users:
+            if _u16(image, pc + 2) != 0x3920:  # SUBS r1, #32
+                continue
+            stores = [at for at in range(pc + 4, min(pc + 48, len(image) - 1), 2)
+                      if (op := _load_store(_u16(image, at))) is not None
+                      and op[0] == 'strh' and op[2:] == (1, 20)]
+            if len(stores) == 6:
+                tables = (_literal(image, pc - 18, 1, 0),
+                          _literal(image, pc - 12, 1, 0))
+                if all(t is not None and 0 <= t <= len(image) - 1024 for t in tables):
+                    values = [struct.unpack_from('<512H', image, t) for t in tables]
+                    if (all(0 < v < 0x8000 for table in values for v in table)
+                            and len(set(zip(*values))) == 512):
+                        writers.append((pc, *tables))
+            at = pc + 4
+            if (_load_store(_u16(image, at)) == ('ldrh', 5, 1, 28)
+                    and _load_store(_u16(image, at + 2)) == ('ldrh', 3, 1, 28)
+                    and _load_store(_u16(image, at + 14)) == ('strh', 5, 1, 56)
+                    and _load_store(_u16(image, at + 16)) == ('strh', 3, 1, 48)
+                    and _u16(image, at + 18) == 0x2a04):  # CMP r2, #4
+                consumers.append(pc)
+        writer, masks_i, masks_q = one(writers, 'legacy-search-writer')
+        consumer = one(consumers, 'legacy-search-consumer')
+
+        descriptors = []
+        for at in occurrences(struct.pack('<III', 0x03000c80, 0x03000c94, 0x80)):
+            if at >= 6 * 28 and at + 24 * 28 <= len(image):
+                def row(index):
+                    return struct.unpack_from('<III', image, at + (index - 7) * 28)
+                if (row(1) == (0x03000c80, 0x03000c94, 0x100)
+                        and row(6) == (0x03000c80, 0x03000c94, 0x10)
+                        and row(30) == (0x03000c80, 0x03000c94, 0x200)):
+                    descriptors.append(at)
+        descriptor = one(descriptors, 'legacy-c80-descriptor')
+
+        readers = []
+        for pc in literal_users(0x03000d40, 2):
+            if (_mov_imm(_u16(image, pc + 4)) != (1, 0)
+                    or _load_store(_u16(image, pc + 6)) != ('strh', 1, 2, 24)
+                    or _mov_imm(_u16(image, pc + 12)) != (2, 6)
+                    or _u16(image, pc + 14) != 0x3830):
+                continue
+            target = thumb_bl_target(image, pc + 16)
+            if (target is not None and _load_store(_u16(image, target + 6)) == ('ldrh', 4, 0, 0)
+                    and _u16(image, target + 14) == (0x5200 | 7 << 6 | 1 << 3 | 4)):
+                readers.append((pc, target))
+        decoder, fifo_copy = one(readers, 'legacy-decoder-reader')
+        modes = {}
+        for pc, base in ((pc, base) for base in (4, 5)
+                         for pc in literal_users(0x03000d00, base)):
+            mode = _mov_imm(_u16(image, pc + 4))
+            if (mode is not None and mode[0] == 2 and mode[1] in (0x20, 0x40)
+                    and _load_store(_u16(image, pc + 12)) == ('strh', 1, base, 8)):
+                modes.setdefault(mode[1], []).append(pc)
+        sync_mode = one(modes.get(0x40, []), 'legacy-sync-mode')
+        paging_mode = one((pc for pc in modes.get(0x20, [])
+                           if sync_mode < pc < sync_mode + 0xd0),
+                          'legacy-paging-mode')
+        if not all(struct.pack('<I', value) in image for value in (0x6030b9c7, 0x0b105aa5)):
+            raise ValueError('legacy-decoder-crc-missing')
+
+        fixed24 = list(occurrences(struct.pack('<HHH', 0x2701, 0x05ff, 0x0b3e)))
+        serial22 = set()
+        for pc in occurrences(struct.pack('<H', 0x2116)):
+            target = thumb_bl_target(image, pc + 2)
+            if target is not None and any(
+                _u16(image, q) == 0x2116 and thumb_bl_target(image, q + 2) == target
+                for q in range(pc + 4, min(pc + 64, len(image) - 4), 2)
+            ):
+                serial22.add(target)
+        if len(fixed24) == 1 and not serial22:
+            pll_bits, pll = 24, fixed24[0]
+        elif not fixed24 and len(serial22) == 1:
+            pll_bits, pll = 22, next(iter(serial22))
+            if (_u16(image, pll), _u16(image, pll + 2), _u16(image, pll + 4)) != (
+                    0xb5ff, 0x1c07, 0x2001):
+                raise ValueError('legacy-pll-serializer-mismatch')
+        else:
+            raise ValueError('legacy-pll-signature-ambiguous')
+        return {'signature': 'legacy-c80-search2-dec5000-v1', 'accepted': True,
+                'writer': writer, 'consumer': consumer, 'mask_i': masks_i, 'mask_q': masks_q,
+                'descriptor': descriptor, 'decoder': decoder, 'fifo_copy': fifo_copy,
+                'sync_mode': sync_mode, 'paging_mode': paging_mode,
+                'pll_bits': pll_bits, 'pll': pll}
+    except ValueError as exc:
+        return {'signature': 'legacy-c80-search2-dec5000-v1', 'accepted': False,
+                'reject_reason': str(exc)}

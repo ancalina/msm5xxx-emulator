@@ -33,6 +33,7 @@ typedef struct { CPUState *cpu; bool rex_irq_c80, legacy_cdma, rex_irq_route_act
  unsigned rex_irq_bank_count; uint16_t rex_irq_pending[3], rex_irq_mask;
  uint8_t rex_irq_backing[128]; unsigned rex_irq_acks; uint32_t rex_irq_handler_address, rex_irq_handler_size;
 } MSM5xxxPOCMachineState;
+static bool msm5xxx_poc_legacy_gate(MSM5xxxPOCMachineState *s) {(void)s;return true;}
 static CPUState *current_cpu;
 #define CPU(x) (x)
 static bool qemu_in_vcpu_thread(void) { return false; }

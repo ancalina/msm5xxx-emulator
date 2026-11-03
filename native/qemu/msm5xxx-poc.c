@@ -809,6 +809,13 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion legacy_pn_reset;
     MemoryRegion legacy_finger_status;
     uint32_t legacy_search_hits;
+    MemoryRegion legacy_rf_gpio;
+    uint32_t legacy_rf_shift, legacy_rf_integer;
+    uint16_t legacy_cell_channel;
+    uint8_t legacy_rf_bits;
+    bool legacy_rf_integer_valid, legacy_rf_tuned;
+    bool legacy_profile_enabled, legacy_profile_checked, legacy_profile_valid;
+    uint32_t legacy_profile[9];
     bool legacy_decoder_enabled;
     char *legacy_decoder_description;
     uint8_t legacy_sync[26];
@@ -3721,6 +3728,7 @@ static bool msm5xxx_poc_loop_sense(uint16_t backing, uint16_t output728,
 
 static uint32_t msm5xxx_poc_guest_u32(hwaddr address);
 static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s);
+static bool msm5xxx_poc_legacy_gate(MSM5xxxPOCMachineState *s);
 static void msm5xxx_poc_rex_irq_schedule(MSM5xxxPOCMachineState *s);
 /* Experimental occupancy model: inclusive half-full or empty threshold.
  * Physical fetch timing and pin latch semantics remain approximations. */
@@ -6196,7 +6204,7 @@ static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s)
     CPUClass *cc;
     uint32_t pc;
 
-    if (!s->rex_irq_c80 || s->legacy_cdma) {
+    if (!s->rex_irq_c80 || (s->legacy_cdma && msm5xxx_poc_legacy_gate(s))) {
         return true;
     }
     if (!s->rex_irq_route_active) {
@@ -6638,6 +6646,7 @@ static const MemoryRegionOps msm5xxx_poc_eeprom_gpio_ops = {
     .impl.max_access_size = 4,
 };
 
+static bool msm5xxx_poc_legacy_gate(MSM5xxxPOCMachineState *s);
 static void msm5xxx_poc_legacy_search_start(MSM5xxxPOCMachineState *s);
 
 static void msm5xxx_poc_legacy_finger_latch(MSM5xxxPOCMachineState *s)
@@ -6655,7 +6664,8 @@ static void msm5xxx_poc_legacy_finger_latch(MSM5xxxPOCMachineState *s)
         masks_q[i] = lduw_le_p(bytes + 2 * i);
     }
     msm5xxx_fingers_latch(&s->fingers, s->search2_pilot_phase,
-                          s->search2_peak_energy, masks_i, masks_q);
+                          s->legacy_rf_tuned ? s->search2_peak_energy : 0,
+                          masks_i, masks_q);
     s->finger_latches++;
 }
 
@@ -6704,7 +6714,7 @@ static void msm5xxx_poc_legacy_search_start(MSM5xxxPOCMachineState *s)
         }
         if (!msm5xxx_search2_virtual_result(&p, s->search2_position,
             s->search2_pilot_phase,
-            p.mask_i == masks[0] && p.mask_q == masks[1] ?
+            s->legacy_rf_tuned && p.mask_i == masks[0] && p.mask_q == masks[1] ?
                 s->search2_peak_energy : 0,
             s->search2_samples, &s->search2_pending_position)) {
             memset(s->search2_samples, 0, sizeof(s->search2_samples));
@@ -6720,6 +6730,10 @@ static uint64_t msm5xxx_poc_legacy_search_read(void *opaque, hwaddr offset,
     MSM5xxxPOCMachineState *s = opaque;
     uint16_t value;
 
+    if (!msm5xxx_poc_legacy_gate(s)) {
+        return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                        0x290 + offset, size);
+    }
     if (size == 2 && (offset == 0 || offset == 4)) {
         return (s->search2_position >> (offset * 4)) & 0xffff;
     }
@@ -6741,6 +6755,9 @@ static void msm5xxx_poc_legacy_search_write(void *opaque, hwaddr offset,
 
     msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
                               0x290 + offset, value, size);
+    if (!msm5xxx_poc_legacy_gate(s)) {
+        return;
+    }
     if (msm5xxx_search2_write(&s->search2, offset, size, value)) {
         if (offset == 4 && size == 2 && !s->search2.queue_sub) {
             s->search2_submits++;
@@ -6776,7 +6793,7 @@ static void msm5xxx_poc_legacy_pn_write(void *opaque, hwaddr offset,
 
     msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
                               0x130 + offset, value, size);
-    if (!offset && size == 1 && !value) {
+    if (msm5xxx_poc_legacy_gate(s) && !offset && size == 1 && !value) {
         s->search2_position = 0;
         s->search2_pending_position = 0;
         s->search1_position = 0;
@@ -6804,6 +6821,9 @@ static uint64_t msm5xxx_poc_legacy_finger_read(void *opaque, hwaddr offset,
     uint16_t value;
     unsigned reg = offset + 0x60;
 
+    if (!msm5xxx_poc_legacy_gate(s)) {
+        return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm), reg, size);
+    }
     if (msm5xxx_fingers_read(&s->fingers, reg, size, &value)) {
         s->finger_reads++;
         return value;
@@ -6823,6 +6843,9 @@ static void msm5xxx_poc_legacy_finger_write(void *opaque, hwaddr offset,
 
     msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm), reg,
                               value, size);
+    if (!msm5xxx_poc_legacy_gate(s)) {
+        return;
+    }
     if (size == 1) {
         msm5xxx_fingers_write(&s->fingers, reg, 1, value);
     } else if (size == 2 && (reg == 0x94 || reg == 0x9c || reg == 0xa4 ||
@@ -6849,7 +6872,7 @@ static uint64_t msm5xxx_poc_legacy_finger_status_read(void *opaque,
     MSM5xxxPOCMachineState *s = opaque;
     unsigned i, status = 0;
 
-    if (!offset && size == 1) {
+    if (msm5xxx_poc_legacy_gate(s) && !offset && size == 1) {
         for (i = 0; i < MSM5XXX_FINGER_COUNT; i++) {
             if (s->fingers.bank[i].latched && s->fingers.bank[i].rssi) {
                 status |= 8 << i;
@@ -9262,6 +9285,154 @@ static void msm5xxx_poc_sbi_reject(MSM5xxxPOCMachineState *s)
     s->sbi_read_full = false;
 }
 
+static bool msm5xxx_poc_legacy_gate(MSM5xxxPOCMachineState *s)
+{
+    uint32_t *p = s->legacy_profile, target;
+    uint8_t writer[48], consumer[22], decoder[20], helper[16], mode[14], pll[6];
+    unsigned i, stores = 0;
+
+    if (!s->legacy_cdma || !s->legacy_profile_enabled) {
+        return false;
+    }
+    if (s->legacy_profile_checked) {
+        return s->legacy_profile_valid;
+    }
+    s->legacy_profile_checked = true;
+    if (p[0] < 18 || p[2] < 6 * 28 || p[0] + 48 > s->primary_nor_size ||
+        p[1] + 22 > s->primary_nor_size || p[2] + 23 * 28 + 12 > s->primary_nor_size ||
+        p[3] + 20 > s->primary_nor_size || p[4] + 16 > s->primary_nor_size ||
+        p[5] + 14 > s->primary_nor_size || p[6] + 14 > s->primary_nor_size ||
+        p[8] + 6 > s->primary_nor_size) {
+        return false;
+    }
+    if (!msm5xxx_poc_thumb_literal(s, p[0], 1, 0x030002a0) ||
+        !msm5xxx_poc_thumb_literal(s, p[0] - 18, 1, s->legacy_masks_i) ||
+        !msm5xxx_poc_thumb_literal(s, p[0] - 12, 1, s->legacy_masks_q) ||
+        !msm5xxx_poc_thumb_literal(s, p[1], 1, 0x030002a0) ||
+        !msm5xxx_poc_thumb_literal(s, p[3], 2, 0x03000d40) ||
+        !msm5xxx_poc_thumb_literal(s, p[5], 4, 0x03000d00) ||
+        !msm5xxx_poc_thumb_literal(s, p[6], 5, 0x03000d00) ||
+        !msm5xxx_poc_decoder_bl(s, p[3] + 16, &target) || target != p[4]) {
+        return false;
+    }
+    for (i = 0; i < 4; i++) {
+        static const int rows[] = {-6, -1, 0, 23};
+        static const uint32_t masks[] = {0x100, 0x10, 0x80, 0x200};
+        uint32_t row = p[2] + rows[i] * 28;
+        if (msm5xxx_poc_guest_u32(row) != 0x03000c80 ||
+            msm5xxx_poc_guest_u32(row + 4) != 0x03000c94 ||
+            msm5xxx_poc_guest_u32(row + 8) != masks[i]) {
+            return false;
+        }
+    }
+    cpu_physical_memory_read(p[0], writer, sizeof(writer));
+    cpu_physical_memory_read(p[1], consumer, sizeof(consumer));
+    cpu_physical_memory_read(p[3], decoder, sizeof(decoder));
+    cpu_physical_memory_read(p[4], helper, sizeof(helper));
+    if (lduw_le_p(writer + 2) != 0x3920 || lduw_le_p(consumer + 2) != 0x3920 ||
+        lduw_le_p(consumer + 4) != 0x8b8d || lduw_le_p(consumer + 6) != 0x8b8b ||
+        lduw_le_p(consumer + 18) != 0x870d || lduw_le_p(consumer + 20) != 0x860b ||
+        lduw_le_p(decoder + 4) != 0x2100 || lduw_le_p(decoder + 6) != 0x8311 ||
+        lduw_le_p(decoder + 12) != 0x2206 || lduw_le_p(decoder + 14) != 0x3830 ||
+        lduw_le_p(helper + 6) != 0x8804 || lduw_le_p(helper + 14) != 0x53cc) {
+        return false;
+    }
+    for (i = 4; i < sizeof(writer); i += 2) {
+        uint16_t op = lduw_le_p(writer + i);
+        stores += (op & 0xf800) == 0x8000 && ((op >> 3) & 7) == 1 &&
+                  ((op >> 6) & 31) == 10;
+    }
+    if (stores != 6) {
+        return false;
+    }
+    for (i = 0; i < 2; i++) {
+        cpu_physical_memory_read(p[5 + i], mode, sizeof(mode));
+        if (lduw_le_p(mode + 4) != (i ? 0x2220 : 0x2240) ||
+            lduw_le_p(mode + 12) != (i ? 0x8129 : 0x8121)) {
+            return false;
+        }
+    }
+    cpu_physical_memory_read(p[8], pll, sizeof(pll));
+    if ((p[7] == 24 && (lduw_le_p(pll) != 0x2701 ||
+                        lduw_le_p(pll + 2) != 0x05ff ||
+                        lduw_le_p(pll + 4) != 0x0b3e)) ||
+        (p[7] == 22 && (lduw_le_p(pll) != 0xb5ff ||
+                        lduw_le_p(pll + 2) != 0x1c07 ||
+                        lduw_le_p(pll + 4) != 0x2001)) ||
+        (p[7] != 22 && p[7] != 24)) {
+        return false;
+    }
+    s->legacy_profile_valid = true;
+    return true;
+}
+
+static uint64_t msm5xxx_poc_legacy_rf_read(void *opaque, hwaddr offset,
+                                            unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                    0x724 + offset, size);
+}
+
+static void msm5xxx_poc_legacy_rf_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *backing = memory_region_get_ram_ptr(&s->msm);
+    uint16_t old = msm5xxx_poc_backing_read(backing, 0x724, 2);
+
+    msm5xxx_poc_backing_write(backing, 0x724 + offset, value, size);
+    if (!msm5xxx_poc_legacy_gate(s) || offset || size != 2) {
+        return;
+    }
+    if ((old ^ value) & 0x200) {
+        s->legacy_rf_tuned = false;
+        s->legacy_rf_integer_valid = false;
+    }
+    if (!(value & 0x1000) && !(old & 0x800) && (value & 0x800)) {
+        s->legacy_rf_shift = (s->legacy_rf_shift << 1) | !!(value & 0x400);
+        if (s->legacy_rf_bits < 25) {
+            s->legacy_rf_bits++;
+        }
+    }
+    if (!(old & 0x1000) && (value & 0x1000)) {
+        uint32_t word = s->legacy_rf_shift;
+
+        if (s->legacy_rf_bits == 22 && (word & 3) == 2) {
+            s->legacy_rf_integer = (word >> 2) & 0x7ff;
+            s->legacy_rf_integer_valid = true;
+            s->legacy_rf_tuned = false;
+        } else if (s->legacy_rf_bits == 22 && (word & 3) == 3 &&
+                   s->legacy_rf_integer_valid) {
+            uint32_t frequency = 0x204040 + 50 * s->legacy_cell_channel;
+            uint32_t integer = frequency / 9600;
+            int32_t fraction = (62976 * (frequency % 9600) + 4800) / 9600;
+            if (fraction > 31488) {
+                fraction -= 62976;
+                integer++;
+            }
+            s->legacy_rf_tuned = (value & 0x200) &&
+                integer == s->legacy_rf_integer &&
+                ((word >> 2) & 0x1ffff) == ((uint32_t)fraction & 0x1ffff);
+            s->legacy_rf_integer_valid = false;
+        } else if (s->legacy_rf_bits == 24 && (word & 3) == 3 &&
+                   word >= 0x229483 && word <= 0x229483 + 4 * 1199) {
+            s->legacy_rf_tuned = (value & 0x200) &&
+                word == 0x229483U + 4U * s->legacy_cell_channel;
+        }
+        s->legacy_rf_shift = 0;
+        s->legacy_rf_bits = 0;
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_legacy_rf_ops = {
+    .read = msm5xxx_poc_legacy_rf_read,
+    .write = msm5xxx_poc_legacy_rf_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 2,
+    .impl.min_access_size = 1, .impl.max_access_size = 2,
+};
+
 static void msm5xxx_poc_legacy_decoder_tick(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
@@ -9284,7 +9455,8 @@ static void msm5xxx_poc_legacy_decoder_tick(void *opaque)
     }
     /* Ideal decoded receiver: programmed LC and combiner timing are retained,
      * while decoder latency and the silicon state-load boundary are abstracted. */
-    if (valid && !(s->rex_irq_pending[0] & 0x10)) {
+    if (valid && msm5xxx_poc_legacy_gate(s) && s->legacy_rf_tuned &&
+        !(s->rex_irq_pending[0] & 0x10)) {
         memcpy(s->legacy_decoder_words, words, sizeof(words));
         s->legacy_frame++;
         s->rex_irq_pending[0] |= 0x10;
@@ -9298,8 +9470,10 @@ static void msm5xxx_poc_legacy_roll_tick(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
 
-    s->rex_irq_pending[0] |= 0x100;
-    msm5xxx_poc_rex_irq_update(s);
+    if (msm5xxx_poc_legacy_gate(s)) {
+        s->rex_irq_pending[0] |= 0x100;
+        msm5xxx_poc_rex_irq_update(s);
+    }
     s->legacy_roll++;
     timer_mod(s->legacy_roll_timer, s->legacy_clock_origin +
               msm5xxx_combiner_deadline(s->legacy_roll));
@@ -9310,7 +9484,7 @@ static uint64_t msm5xxx_poc_legacy_decoder_read(void *opaque, hwaddr offset,
 {
     MSM5xxxPOCMachineState *s = opaque;
 
-    if (offset == 0x10 && size == 2) {
+    if (msm5xxx_poc_legacy_gate(s) && offset == 0x10 && size == 2) {
         unsigned cursor = s->legacy_decoder_cursor++;
         return cursor < G_N_ELEMENTS(s->legacy_decoder_words) ?
             s->legacy_decoder_words[cursor] : 0;
@@ -9326,6 +9500,9 @@ static void msm5xxx_poc_legacy_decoder_write(void *opaque, hwaddr offset,
 
     msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
                               0xd00 + offset, value, size);
+    if (!msm5xxx_poc_legacy_gate(s)) {
+        return;
+    }
     if (offset == 8 && size == 2) {
         unsigned mode = value & 0x60;
         if (mode != s->legacy_decoder_mode) {
@@ -9356,7 +9533,7 @@ static uint64_t msm5xxx_poc_legacy_combiner_read(void *opaque, hwaddr offset,
 {
     MSM5xxxPOCMachineState *s = opaque;
 
-    if (offset == 4 && size == 2) {
+    if (msm5xxx_poc_legacy_gate(s) && offset == 4 && size == 2) {
         return s->legacy_combiner;
     }
     return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
@@ -9370,7 +9547,7 @@ static void msm5xxx_poc_legacy_combiner_write(void *opaque, hwaddr offset,
 
     msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
                               0xf4 + offset, value, size);
-    if (!offset && size == 1 && !value) {
+    if (msm5xxx_poc_legacy_gate(s) && !offset && size == 1 && !value) {
         s->legacy_combiner = msm5xxx_combiner_position(
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->legacy_clock_origin);
     }
@@ -13087,6 +13264,9 @@ static void msm5xxx_poc_reset(void *opaque)
     s->search2_probe_done = s->search2_probe_rejected = false;
     s->search2_submits = s->search2_completions = s->search2_result_reads = 0;
     s->legacy_search_hits = 0;
+    s->legacy_rf_shift = s->legacy_rf_integer = 0;
+    s->legacy_rf_bits = 0;
+    s->legacy_rf_integer_valid = s->legacy_rf_tuned = false;
     s->search2_rejections = 0;
     s->search2_reject_reason = s->search2_reject_pc = 0;
     s->search2_reject_value = s->search2_reject_expected_pc = 0;
@@ -14936,6 +15116,11 @@ static void msm5xxx_poc_init(MachineState *machine)
                               "msm5xxx-poc.legacy-finger-status", 4);
         memory_region_add_subregion_overlap(get_system_memory(), 0x030000e4,
                                             &s->legacy_finger_status, 1);
+        memory_region_init_io(&s->legacy_rf_gpio, OBJECT(machine),
+                              &msm5xxx_poc_legacy_rf_ops, s,
+                              "msm5xxx-poc.legacy-rf-gpio", 2);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x03000724,
+                                            &s->legacy_rf_gpio, 1);
         if (s->legacy_decoder_enabled) {
             s->legacy_decoder_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                              msm5xxx_poc_legacy_decoder_tick, s);
@@ -18836,28 +19021,71 @@ static void msm5xxx_poc_set_legacy_cdma(Object *obj, const char *value,
 static char *msm5xxx_poc_get_legacy_search(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    return g_strdup_printf("%x:%x:%x:%x", s->search2_pilot_phase,
+    return g_strdup_printf("%x:%x:%x:%x:%x", s->search2_pilot_phase,
                            s->search2_peak_energy, s->legacy_masks_i,
-                           s->legacy_masks_q);
+                           s->legacy_masks_q, s->legacy_cell_channel);
 }
 
 static void msm5xxx_poc_set_legacy_search(Object *obj, const char *value,
                                           Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-    unsigned phase, energy, masks_i, masks_q;
+    unsigned phase, energy, masks_i, masks_q, channel;
     int end = -1;
 
-    if (sscanf(value, "%x:%x:%x:%x%n", &phase, &energy, &masks_i,
-               &masks_q, &end) != 4 || end < 0 || value[end] ||
-        phase > 0x3ffff || energy > 0xffff || !masks_i || !masks_q) {
-        error_setg(errp, "legacy-search requires PHASE:ENERGY:MASK_I:MASK_Q");
+    if (sscanf(value, "%x:%x:%x:%x:%x%n", &phase, &energy, &masks_i,
+               &masks_q, &channel, &end) != 5 || end < 0 || value[end] ||
+        phase > 0x3ffff || energy > 0xffff || !masks_i || !masks_q ||
+        channel > 1199) {
+        error_setg(errp, "legacy-search requires PHASE:ENERGY:MASK_I:MASK_Q:CHANNEL");
         return;
     }
     s->search2_pilot_phase = phase;
     s->search2_peak_energy = energy;
     s->legacy_masks_i = masks_i;
     s->legacy_masks_q = masks_q;
+    s->legacy_cell_channel = channel;
+}
+
+static char *msm5xxx_poc_get_legacy_profile(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return s->legacy_profile_enabled ? g_strdup_printf(
+        "%x:%x:%x:%x:%x:%x:%x:%x:%x", s->legacy_profile[0],
+        s->legacy_profile[1], s->legacy_profile[2], s->legacy_profile[3],
+        s->legacy_profile[4], s->legacy_profile[5], s->legacy_profile[6],
+        s->legacy_profile[7], s->legacy_profile[8]) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_legacy_profile(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) fields = g_strsplit(value ? value : "", ":", -1);
+    uint32_t parsed[9];
+    unsigned i;
+
+    if (s->legacy_profile_enabled || g_strv_length(fields) != 9) {
+        error_setg(errp, "legacy-profile requires nine signature fields");
+        return;
+    }
+    for (i = 0; i < G_N_ELEMENTS(parsed); i++) {
+        uint64_t number;
+        const char *end;
+        if (!fields[i][0] || qemu_strtou64(fields[i], &end, 16, &number) ||
+            *end || number > UINT32_MAX ||
+            (i != 7 && (number >= 0x10000000 || (number & 1)))) {
+            error_setg(errp, "invalid legacy-profile field");
+            return;
+        }
+        parsed[i] = number;
+    }
+    if (parsed[7] != 22 && parsed[7] != 24) {
+        error_setg(errp, "legacy-profile requires a supported PLL encoding");
+        return;
+    }
+    memcpy(s->legacy_profile, parsed, sizeof(parsed));
+    s->legacy_profile_enabled = true;
 }
 
 static bool msm5xxx_poc_legacy_packet(const char *hex, uint8_t *out,
@@ -18994,6 +19222,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "legacy-search",
                                   msm5xxx_poc_get_legacy_search,
                                   msm5xxx_poc_set_legacy_search);
+    object_class_property_add_str(oc, "legacy-profile",
+                                  msm5xxx_poc_get_legacy_profile,
+                                  msm5xxx_poc_set_legacy_profile);
     object_class_property_add_str(oc, "legacy-decoder",
                                   msm5xxx_poc_get_legacy_decoder,
                                   msm5xxx_poc_set_legacy_decoder);

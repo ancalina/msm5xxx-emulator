@@ -1131,6 +1131,16 @@ def qemu_virtual_cell_property(image: bytes, config: object,
     if scenario["decoder_init_delay_ns"] != 80000000:
         raise ValueError("virtual cell sync requires an 80ms decoder initialization")
 
+    from msm5xxx_emulator.detection.baseband import find_legacy_cdma_profile
+    legacy_profile = find_legacy_cdma_profile(image)
+    if legacy_profile.get("accepted"):
+        from .virtual_cell import virtual_cell_scenario
+        if scenario == virtual_cell_scenario(True):
+            sid, channel = ((17500, 750) if legacy_profile["pll_bits"] == 22
+                            else (4120, 625))
+            scenario = {**scenario, "sid": sid, "channel": channel,
+                        "pilot_phase": 0x20080}
+
     def crc30(value, bits):
         crc = 0x3fffffff
         for bit in range(bits - 1, -1, -1):
@@ -1147,7 +1157,7 @@ def qemu_virtual_cell_property(image: bytes, config: object,
             raise ValueError("invalid virtual cell packet") from None
         if len(data) < 5 or len(data) > maximum or data[0] != len(data):
             raise ValueError("invalid virtual cell packet length")
-        if data[1] != message_type:
+        if data[1] not in ((message_type,) if isinstance(message_type, int) else message_type):
             raise ValueError("invalid virtual cell message type")
         if crc30(int.from_bytes(data, "big"), len(data) * 8) != 0x0b105aa5:
             raise ValueError("invalid virtual cell packet CRC")
@@ -1157,7 +1167,8 @@ def qemu_virtual_cell_property(image: bytes, config: object,
     messages = scenario["paging_messages_hex"]
     if not isinstance(messages, (list, tuple)) or len(messages) != 4:
         raise ValueError("virtual cell requires four paging messages")
-    paging_messages = [packet(value, 255, index + 1)
+    paging_messages = [packet(value, 255, (3, 14) if legacy_profile.get("accepted")
+                              and index == 2 else index + 1)
                        for index, value in enumerate(messages)]
     if access_response or scenario.keys() & fields.keys():
         packets = [bytes.fromhex(value) for value in (sync, *paging_messages)]
@@ -1181,6 +1192,40 @@ def qemu_virtual_cell_property(image: bytes, config: object,
     if (getattr(config, "load_address", None) != 0
             or getattr(config, "image_offset", None) != 0):
         return None, "primary-map-unsupported"
+    if legacy_profile.get("accepted"):
+        if c80_rex_irq_profile(config, False) is None:
+            return None, "legacy-c80-route-unavailable"
+        if not allow_receive_only and (tx_delay is not None or access_response or traffic_decoder):
+            return None, "legacy-receive-only"
+        packets = [bytearray.fromhex(value) for value in (sync, *paging_messages)]
+        if tuple(map(len, packets)) != (26, 33, 19, 9, 9):
+            return None, "legacy-cell-layout-unsupported"
+
+        def replace(packet_data, start, width, value):
+            bits = len(packet_data) * 8
+            shift = bits - start - width
+            number = int.from_bytes(packet_data, "big")
+            number = (number & ~(((1 << width) - 1) << shift)) | (value << shift)
+            prefix = number >> 30
+            return bytearray(((prefix << 30) | crc30(prefix, bits - 30)).to_bytes(len(packet_data), "big"))
+
+        packets[0] = replace(replace(packets[0], 16, 8, 1), 24, 8, 1)
+        packets[3] = replace(packets[3], 8, 8, 14)
+        channel = (int.from_bytes(packets[0], "big") >> (26 * 8 - 167 - 11)) & 0x7ff
+        if channel > 1199:
+            return None, "legacy-pcs-channel-unsupported"
+        profile_keys = ("writer", "consumer", "descriptor", "decoder", "fifo_copy",
+                        "sync_mode", "paging_mode", "pll_bits", "pll")
+        words = lambda values: ":".join(format(value, "x") for value in values)
+        properties = [
+            "legacy-cdma=on",
+            "legacy-profile=" + words(legacy_profile[key] for key in profile_keys),
+            "legacy-search=" + words((scenario["pilot_phase"], scenario["raw_energy"],
+                                      legacy_profile["mask_i"], legacy_profile["mask_q"], channel)),
+            "legacy-decoder=400000000:" + ":".join(packet.hex() for packet in packets),
+        ]
+        limited = "legacy-receive-only" if tx_delay is not None or access_response or traffic_decoder else None
+        return ",".join(properties), limited
     if getattr(config, "rex_static_controller_experimental", False):
         return None, "controller-mode-unsupported"
 
