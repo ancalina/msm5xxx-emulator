@@ -804,6 +804,7 @@ struct MSM5xxxPOCMachineState {
     bool ma2_audio_timer_rejected;
     bool rex_irq_enabled;
     bool rex_irq_c80;
+    bool legacy_cdma;
     bool rex_irq_copied;
     bool rex_irq_sv130_overlay;
     uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size;
@@ -6181,7 +6182,7 @@ static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s)
     CPUClass *cc;
     uint32_t pc;
 
-    if (!s->rex_irq_c80) {
+    if (!s->rex_irq_c80 || s->legacy_cdma) {
         return true;
     }
     if (!s->rex_irq_route_active) {
@@ -18371,6 +18372,25 @@ static void msm5xxx_poc_set_traffic_service_source(Object *obj, const char *valu
     s->traffic_service_description = g_strdup(value);
 }
 
+static char *msm5xxx_poc_get_legacy_cdma(Object *obj, Error **errp)
+{
+    return g_strdup(MSM5XXX_POC_MACHINE(obj)->legacy_cdma ? "on" : "off");
+}
+
+static void msm5xxx_poc_set_legacy_cdma(Object *obj, const char *value,
+                                        Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    if (!strcmp(value, "on")) {
+        s->legacy_cdma = true;
+    } else if (!strcmp(value, "off")) {
+        s->legacy_cdma = false;
+    } else {
+        error_setg(errp, "legacy-cdma requires on or off");
+    }
+}
+
 static void msm5xxx_poc_instance_init(Object *obj)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -18433,6 +18453,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
 
     machine_add_audiodev_property(mc);
+    object_class_property_add_str(oc, "legacy-cdma",
+                                  msm5xxx_poc_get_legacy_cdma,
+                                  msm5xxx_poc_set_legacy_cdma);
     object_class_property_add_str(oc, "search2-probe",
                                   msm5xxx_poc_get_search2_probe,
                                   msm5xxx_poc_set_search2_probe);
