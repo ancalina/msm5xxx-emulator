@@ -12,6 +12,8 @@ Stage and build the pinned QEMU source on Linux or macOS:
 
 Set `MSM5XXX_DTC_SOURCE` to a checkout at the revision recorded in
 `qemu_build_inputs.env`.
+Set `MSM5XXX_TCG_INTERPRETER=1` to build QEMU with its TCG interpreter
+instead of native code generation. Interpreter builds use `-O3`.
 
 The same checked staging script is used by the Windows build. It verifies the
 upstream archive, icount patch, machine source, and transport source

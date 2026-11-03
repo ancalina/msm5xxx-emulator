@@ -18,7 +18,11 @@ case $PLATFORM in
     *) exit 2 ;;
 esac
 case $ARCH in x86_64) CPU=x86_64 ;; arm64) CPU=aarch64 ;; *) exit 2 ;; esac
-case $MODE in tcg) TCI= ;; tci) TCI=--enable-tcg-interpreter ;; *) exit 2 ;; esac
+case $MODE in
+    tcg) TCI= OPT= ;;
+    tci) TCI=--enable-tcg-interpreter OPT=-O3 ;;
+    *) exit 2 ;;
+esac
 
 mkdir -p "$7"; WORK=$(cd "$7" && pwd)
 SOURCE="$WORK/qemu" BUILD="$WORK/build" PC_DIR="$WORK/pkgconfig"
@@ -50,7 +54,7 @@ cd "$BUILD"
 "$SOURCE/configure" \
     --target-list=arm-softmmu --cpu=$CPU \
     --cc="$CLANG" --cxx="$CLANG" --objcc="$CLANG" --host-cc="$(command -v cc)" \
-    --extra-cflags="-arch $ARCH -isysroot $SDK $VERSION_FLAG $MAP" \
+    --extra-cflags="-arch $ARCH -isysroot $SDK $VERSION_FLAG $MAP $OPT" \
     --extra-objcflags="-arch $ARCH -isysroot $SDK $VERSION_FLAG" \
     --extra-ldflags="-arch $ARCH -isysroot $SDK $VERSION_FLAG" \
     --cross-prefix= --without-default-features --enable-system --enable-tcg $TCI \

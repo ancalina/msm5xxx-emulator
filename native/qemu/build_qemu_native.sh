@@ -46,6 +46,11 @@ case $(uname -s) in
 esac
 
 cd "$BUILD"
+TCI_FLAG=
+if [ "${MSM5XXX_TCG_INTERPRETER:-0}" = 1 ]; then
+    TCI_FLAG=--enable-tcg-interpreter
+    MAP_FLAGS="$MAP_FLAGS -O3"
+fi
 "$SOURCE/configure" \
     --target-list=arm-softmmu \
     --without-default-features \
@@ -57,6 +62,7 @@ cd "$BUILD"
     --disable-guest-agent \
     --disable-werror \
     --disable-debug-info \
+    $TCI_FLAG \
     --extra-cflags="$MAP_FLAGS" \
     --enable-strip
 nice -n 15 ninja -j1 qemu-system-arm
