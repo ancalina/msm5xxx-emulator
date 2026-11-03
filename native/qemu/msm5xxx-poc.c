@@ -18039,6 +18039,9 @@ static void msm5xxx_poc_set_matrix_low5(Object *obj, const char *value,
     int fields = sscanf(value, "%x:%x:%x:%x:%x:%x%c", &descriptor, &presence,
                         &sense, &contact1, &contact2, &init, &trailing);
 
+    if (fields == 4) {
+        contact1 = 0;
+    }
     if (s->matrix_input_enabled ||
         (s->board_status_input_descriptor &&
          s->board_status_input_descriptor != 0x01816618 &&
