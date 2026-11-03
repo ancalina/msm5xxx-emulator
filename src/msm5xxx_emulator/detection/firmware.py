@@ -18,7 +18,8 @@ from .bootstrap_sdram import reset_copy_ram_profile
 from .boot_extent import boot_nor_extent
 from .small_page_nand import small_page_nand_profile
 from .static_middle_nand import find_static_middle_nand_profile
-from .low_port_nand import find_low_port_nand_driver, find_middle_nand_producers
+from .low_port_nand import (find_low_port_nand_driver, find_middle_nand_driver_marker,
+                            find_middle_nand_producers)
 from .input_table7 import find_table7_matrix
 from .guarded_middle_nand import find_guarded_middle_nand_profile
 from .boot import (
@@ -1169,7 +1170,8 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         primary_image, overlays, linker, requested_load_address
     )
     raw_nand_ports = (find_low_port_nand_driver(primary_image)
-                      or find_middle_nand_producers(primary_image))
+                      or find_middle_nand_producers(primary_image)
+                      or find_middle_nand_driver_marker(primary_image))
     native_nand_profile = (small_page_nand_profile(primary_image)
                            if ram_bootstrap_profile is not None else None)
     if ram_bootstrap_profile is not None and native_nand_profile is None:
@@ -1185,7 +1187,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     if raw_nand_ports and all(item is None for item in (
             nand_bad_block_address, nand_read_address, nand_write_address)):
         detection_notes.append(
-            "raw NAND enabled from low-port driver instruction signatures"
+            "raw NAND enabled from driver content and physical port evidence"
         )
     unresolved_msm_revision = (
         MSM5500_REVISION_DIAGNOSTIC.search(primary_image) is not None

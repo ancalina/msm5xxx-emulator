@@ -30,6 +30,13 @@ def find_low_port_nand_driver(image: bytes) -> bool:
         RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE))
 
 
+def find_middle_nand_driver_marker(image: bytes) -> bool:
+    """Recognize the embedded driver marker and its three bus apertures."""
+    return (b"fs_ks_nand.c" in image.lower()
+            and all(struct.pack('<I', port) in image
+                    for port in (0x01800000, 0x01900000, 0x01a00000)))
+
+
 _SINGLE_RESET_READY = tuple(map(bytes.fromhex, (
     '0348406801888909fcd37047',
     '0348406801884909fcd37047',

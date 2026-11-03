@@ -1,10 +1,21 @@
 """Synthetic instruction and aperture evidence for middle NAND producers."""
 import struct
 import unittest
-from msm5xxx_emulator.detection.low_port_nand import find_middle_nand_producers
+from msm5xxx_emulator.detection.low_port_nand import (find_middle_nand_driver_marker,
+                                                     find_middle_nand_producers)
 
 
 class NandProducerTests(unittest.TestCase):
+    def test_embedded_driver_marker_requires_each_bus_aperture(self):
+        image = bytearray(b'FS_KS_NAND.C\0' + b'\0' * 32)
+        for offset, port in zip((16, 20, 24), (0x01800000, 0x01900000, 0x01a00000)):
+            struct.pack_into('<I', image, offset, port)
+        self.assertTrue(find_middle_nand_driver_marker(bytes(image)))
+        for offset in (0, 16, 20, 24):
+            altered = bytearray(image)
+            altered[offset] ^= 1
+            self.assertFalse(find_middle_nand_driver_marker(bytes(altered)))
+
     def test_requires_two_resets_three_operations_and_ports(self):
         image = bytearray(256)
         reset = bytes.fromhex('ff200d21490508707047')
