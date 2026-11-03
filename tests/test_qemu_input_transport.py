@@ -2091,7 +2091,6 @@ class QEMUInputTransportTests(unittest.TestCase):
     def test_raw_nand_main_profile_requires_the_complete_closed_shape(
             self) -> None:
         image = bytearray(b"\xff" * 0x800)
-        image[0x20:0x2B] = b"fs_ks_nand.c"
         for site in (0x100, 0x300):
             image[site:site + len(MODULE.RAW_NAND_STATUS_SIGNATURE)] = (
                 MODULE.RAW_NAND_STATUS_SIGNATURE
@@ -2128,14 +2127,14 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
 
         low_image = bytearray(b"\xff" * 0x1000)
-        low_image[0x20:0x2B] = b"fs_ks_nand.c"
+        from msm5xxx_emulator.detection import low_port_nand
         for position, signature in zip(
                 (0x100, 0x200, 0x300, 0x500, 0x700),
-                (MODULE.RAW_NAND_LOW_PORT_RESET_SIGNATURE,
-                 MODULE.RAW_NAND_LOW_PORT_STATUS_SIGNATURE,
-                 MODULE.RAW_NAND_LOW_PORT_READ_SIGNATURE,
-                 MODULE.RAW_NAND_LOW_PORT_ERASE_SIGNATURE,
-                 MODULE.RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE)):
+                (low_port_nand.RAW_NAND_LOW_PORT_RESET_SIGNATURE,
+                 low_port_nand.RAW_NAND_LOW_PORT_STATUS_SIGNATURE,
+                 low_port_nand.RAW_NAND_LOW_PORT_READ_SIGNATURE,
+                 low_port_nand.RAW_NAND_LOW_PORT_ERASE_SIGNATURE,
+                 low_port_nand.RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE)):
             low_image[position:position + len(signature)] = signature
         self.assertEqual(MODULE.qemu_raw_nand_main_profile(low_image, config), (
             (0x00800000, 0x00900000, 0x00A00000,

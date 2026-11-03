@@ -37,6 +37,7 @@ from msm5xxx_emulator.detection.ready_poll import (
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from msm5xxx_emulator.detection.middle_nand import find_middle_nand_profile
 from msm5xxx_emulator.detection.static_middle_nand import find_static_middle_nand_profile
+from msm5xxx_emulator.detection.low_port_nand import find_low_port_nand_driver
 from msm5xxx_emulator.detection.input_table7 import find_table7_matrix
 from msm5xxx_emulator.detection.guarded_middle_nand import find_guarded_middle_nand_profile
 from . import nand_state as native_nand_state
@@ -230,25 +231,6 @@ RAW_NAND_BLOCK_PREFIX = bytes.fromhex("80b501277801")
 RAW_NAND_BLOCK_SUFFIX = bytes.fromhex("013701239b029f42f7db")
 RAW_NAND_X16_PREFIX = bytes.fromhex("0526f605")
 RAW_NAND_X16_TRANSFER = bytes.fromhex("20883080")
-
-RAW_NAND_LOW_PORT_RESET_SIGNATURE = bytes.fromhex("ff200521490508707047")
-RAW_NAND_LOW_PORT_STATUS_SIGNATURE = bytes.fromhex(
-    "00200121c9050522520580b4702717700b78c02b08d0c12b03d0044b01309842"
-    "f5d3022080bc70470120fbe7"
-)
-RAW_NAND_LOW_PORT_READ_SIGNATURE = bytes.fromhex(
-    "f0b5010a07063f0e00220c06240e50250026fff7e7ff05204005057009210905"
-    "0e70381c104308700c70fff7e0ff0120c0050088064b984203d0"
-)
-RAW_NAND_LOW_PORT_ERASE_SIGNATURE = bytes.fromhex(
-    "80b5010a0f063f0e0206120efff778ff60200521490508700920000502700770"
-    "d0200870fff771fffff752"
-)
-RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE = bytes.fromhex(
-    "05204005ff2301339a4201d2002100e05021017080210170092202991205117015"
-    "7001991170e107c90f0125ed05002907d103e04a00a25a2a800131b142f9d30ce0"
-    "002108e06218167800ab1e7056785e701a882a800231b942f4d310210170"
-)
 
 def qemu_legacy_keypad_source_matches(image: bytes, profile: dict | None) -> bool:
     """Recheck keypad wiring against the actual loaded source bytes."""
@@ -1147,8 +1129,6 @@ def qemu_raw_nand_main_profile(
                 "nand_data_size", "nand_page_size", "nand_pages_per_block", "nand_bus_width")) != (0x1000000, 512, 32, 2):
             return None, "middle-main-geometry-conflict"
         return (0x01800000, 0x01900000, 0x01A00000, 0x1000000, 512, 32, 2), None
-    if b"fs_ks_nand.c" not in image.lower():
-        return None, "marker-missing"
     if getattr(config, "upper_flash_address", None) is not None:
         return None, "upper-nor-conflict"
     geometry = tuple(getattr(config, name, None) for name in (
@@ -1174,13 +1154,15 @@ def qemu_raw_nand_main_profile(
         bool(sites) and image.count(RAW_NAND_RESET_SIGNATURE) >= 2
     )
     page_shape = image.count(RAW_NAND_PAGE_SIGNATURE) >= 2
-    block_shape = any(
-        image[position:position + len(RAW_NAND_BLOCK_PREFIX)] ==
-        RAW_NAND_BLOCK_PREFIX
-        and image[position + 10:position + 10 + len(RAW_NAND_BLOCK_SUFFIX)] ==
-        RAW_NAND_BLOCK_SUFFIX
-        for position in range(0, len(image) - 20, 2)
-    )
+    block_shape = False
+    block_at = 0
+    while (block_at := image.find(RAW_NAND_BLOCK_PREFIX, block_at)) >= 0:
+        if (not block_at & 1 and
+                image[block_at + 10:block_at + 10 + len(RAW_NAND_BLOCK_SUFFIX)]
+                == RAW_NAND_BLOCK_SUFFIX):
+            block_shape = True
+            break
+        block_at += 1
     x16 = image.find(RAW_NAND_X16_PREFIX)
     x16_shape = (
         x16 >= 0
@@ -1192,13 +1174,7 @@ def qemu_raw_nand_main_profile(
 
     low_port_shape = (
         getattr(config, "flash_size", None) == 0x800000
-        and all(signature in image for signature in (
-            RAW_NAND_LOW_PORT_RESET_SIGNATURE,
-            RAW_NAND_LOW_PORT_STATUS_SIGNATURE,
-            RAW_NAND_LOW_PORT_READ_SIGNATURE,
-            RAW_NAND_LOW_PORT_ERASE_SIGNATURE,
-            RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE,
-        ))
+        and find_low_port_nand_driver(image)
     )
     if low_port_shape:
         return (0x00800000, 0x00900000, 0x00A00000,
