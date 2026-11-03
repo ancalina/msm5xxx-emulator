@@ -84,6 +84,8 @@ bool msm5xxx_search2_virtual_result(const MSM5xxxSearch2Parameters *parameters,
 
 /* Explicit decoded sync source; packet includes its length byte and CRC30. */
 #define MSM5XXX_SYNC_MAX_BYTES 147
+/* Advance a 42-bit CDMA long-code state by a number of chips. */
+uint64_t msm5xxx_long_code_advance(uint64_t state, uint64_t chips);
 bool msm5xxx_sync_frame(const uint8_t *message, unsigned length,
                         uint64_t frame, uint16_t words[8]);
 bool msm5xxx_sync_decoder_frame(const uint8_t *message, unsigned length,

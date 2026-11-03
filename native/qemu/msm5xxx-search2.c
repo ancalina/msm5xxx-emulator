@@ -454,6 +454,40 @@ uint64_t msm5xxx_radio_deadline(uint64_t tick)
     return cycles * 80000000 + fraction;
 }
 
+static uint64_t long_code_multiply(uint64_t a, uint64_t b)
+{
+    const uint64_t polynomial = UINT64_C(0x40a8e6f04ef);
+    const uint64_t mask = (UINT64_C(1) << 42) - 1;
+    uint64_t result = 0;
+
+    a &= mask;
+    b &= mask;
+    while (b) {
+        if (b & 1) {
+            result ^= a;
+        }
+        b >>= 1;
+        a = (a << 1) ^ ((a >> 41) ? polynomial : 0);
+        a &= mask;
+    }
+    return result;
+}
+
+uint64_t msm5xxx_long_code_advance(uint64_t state, uint64_t chips)
+{
+    uint64_t factor = 2;
+
+    state &= (UINT64_C(1) << 42) - 1;
+    while (chips) {
+        if (chips & 1) {
+            state = long_code_multiply(state, factor);
+        }
+        chips >>= 1;
+        factor = long_code_multiply(factor, factor);
+    }
+    return state;
+}
+
 static uint32_t paging_crc30(const uint8_t *message, unsigned bits)
 {
     uint32_t crc = 0x3fffffff;
