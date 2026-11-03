@@ -35,6 +35,7 @@ from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_in
 from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
 from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
 from msm5xxx_emulator.detection.input_lg_kp import find_kp_legacy_scanner
+from msm5xxx_emulator.detection.input_lg_kp2600 import find_kp2600_scanner
 from msm5xxx_emulator.detection.input_sv130 import sv130_keypad_source
 from msm5xxx_emulator.detection.input_sd810 import (
     sd810_fold_irq_source, sd810_gpio_board_status_profile,
@@ -252,6 +253,24 @@ def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
                    for value in senses)):
         raise ValueError("invalid detector-resolved matrix senses")
     return senses
+
+
+def qemu_kp2600_matrix_property(image: bytes, config: object,
+                                 profile: dict[str, object] | None) -> str | None:
+    """Enable only the scanner whose matrix and C80 clock are source-closed."""
+    source = find_kp2600_scanner(image, config)
+    if (source is None or profile != source
+            or getattr(config, 'board_status_input', None) is not None):
+        return None
+    return 'matrix-low5=19462c4:6d5e4:6d712:6d574:6d5d2'
+
+
+def qemu_kp2600_irq_compatible(c80: str | None, read_consume: object,
+                               w1c: object, stack_w1c: object,
+                               experimental_ma5_irq: bool) -> bool:
+    return (c80 == '3000c80:3000c94:200:4c4b40:1800000:3824:19fb0ec:a47a8:1b6:1949048:c604'
+            and read_consume is None and w1c is None and stack_w1c is None
+            and not experimental_ma5_irq)
 
 
 def qemu_sd810_sxs_menu_selection(image: bytes, config: object,
@@ -4714,6 +4733,15 @@ class Transport:
                        if matrix_irq_available else None)
         if kp_property is not None:
             machine += f",{kp_property}"
+            self.matrix_input_profile = direct
+        kp2600_property = (qemu_kp2600_matrix_property(
+            detector_image, self.config, direct)
+            if qemu_kp2600_irq_compatible(
+                self.rex_c80_profile, self.rex_read_consume_profile,
+                self.rex_w1c_profile, self.rex_stack_w1c_profile, experimental_ma5_irq)
+            else None)
+        if kp2600_property is not None:
+            machine += f",{kp2600_property}"
             self.matrix_input_profile = direct
         kp2100_property = (qemu_kp2100_low5_property(detector_image, self.config, direct)
                            if matrix_irq_available else None)

@@ -8,6 +8,7 @@ from ..core.constants import HANDSET_KEY_COUNT
 from ..detection.input import detect_input_profile
 from ..detection.input_descriptor import resolve_lg_descriptor_input
 from ..detection.input_lg_kp import find_kp_legacy_scanner
+from ..detection.input_lg_kp2600 import find_kp2600_scanner
 from ..detection.input_matrix import UNCLASSIFIED
 from ..detection.input_matrix import SAMSUNG_DUAL_PLANE_RING32
 from ..detection.input_matrix import SAMSUNG_RING32
@@ -233,6 +234,11 @@ class InputMixin:
             self.direct_input_profile = None
             self.direct_input_detection = "explicit-key-register-override"
             self.direct_input_rejections = []
+        if self.direct_input_profile is None and config.key_register is None:
+            kp2600 = find_kp2600_scanner(self.image, config)
+            if kp2600 is not None:
+                self.direct_input_profile = kp2600
+                self.direct_input_detection = "accepted"
         self.direct_input_positions = self._direct_matrix_positions(
             self.direct_input_profile
         )

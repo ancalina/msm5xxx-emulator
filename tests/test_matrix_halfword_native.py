@@ -409,6 +409,11 @@ int main(void) {
     assert(!err);s.cpu=&cpu_state;descriptor_words[1]=0x3000720;put(0x720,0x600);
     assert(msm5xxx_poc_board_status_halfword_read(&s,0,2)==0x601);
     s = (MSM5xxxPOCMachineState){0}; err = NULL;
+    msm5xxx_poc_set_matrix_low5(&s,"19462c4:6d5e4:6d712:6d574:6d5d2",&err);
+    assert(!err && s.matrix_input_contact_precheck[0] == 0x6d574 &&
+           s.matrix_input_contact_precheck[1] == 0x6d5d2 &&
+           !s.matrix_input_sideband_mask);
+    s = (MSM5xxxPOCMachineState){0}; err = NULL;
     msm5xxx_poc_set_matrix_low5(&s,"1801000:2:4:6:8",&err);
     assert(err && !s.matrix_input_enabled);
 
