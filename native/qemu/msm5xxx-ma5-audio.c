@@ -760,7 +760,7 @@ bool msm5xxx_ma5_device_write(MSM5xxxMA5Device *device, bool index,
         bool delayed_clear = selected == 4u &&
             (value == 0x28u || (!value && device->b[4] == 0x28u));
         bool stop = selected == 38u && value == 0u;
-        bool reset_noop = selected == 4u && !value && !device->b[4];
+        bool reset_noop = selected == 4u && (!value || value == 0x80u);
         if (device->counter_running && !delayed_clear && !stop && !reset_noop) {
             device->reject = MSM5XXX_MA5_REJECT_CLOCK;
             return false;
@@ -854,22 +854,26 @@ bool msm5xxx_ma5_device_write(MSM5xxxMA5Device *device, bool index,
             device->reject = MSM5XXX_MA5_REJECT_RESET_RETENTION;
             return false;
         }
-        /* shortcut: only an unmodified cold pulse is modeled; extend after
-         * independent SRAM/C/latch/parser retention vectors exist. */
-        if ((value & 0x80u) &&
-            (device->count || device->control_dirty || device->memory_dirty ||
-             device->delayed_dirty ||
-             device->b_written[56] ||
-             device->backing.read_valid ||
-             device->backing.immediate.address_bytes ||
-             device->backing.immediate.phase != MA5_CURSOR_ADDRESS ||
-             device->backing.read.address_bytes ||
-             device->backing.read.phase != MA5_CURSOR_ADDRESS)) {
-            device->reject = MSM5XXX_MA5_REJECT_RESET_RETENTION;
-            return false;
-        }
         if (!(value & 0x80u) && (device->b[4] & 0x80u)) {
+            device->head = device->count = 0;
+            device->next_ns = 0;
+            device->delayed_head = device->delayed_count = 0;
+            device->delayed_next_ns = 0;
+            memset(&device->backing.immediate, 0, sizeof(device->backing.immediate));
+            memset(&device->backing.read, 0, sizeof(device->backing.read));
+            memset(&device->delayed, 0, sizeof(device->delayed));
+            device->backing.read_valid = false;
+            device->backing.control_write_valid = false;
+            device->delayed_delta = device->delayed_delta_bytes = 0;
+            device->delayed_delta_ready = false;
+            device->delayed_due = device->delayed_previous_due = 0;
+            device->pending = 0;
+            device->counter_running = false;
+            device->b[38] &= ~1u;
+            device->counter = device->counter_latch = 0;
+            device->counter_total = device->counter_phase = 0;
             device->counter_reset = false;
+            memset(device->backing.control_guest_written + 192u / 8u, 0, 32u / 8u);
             memset(device->backing.control + 192u, 0x60, 16u);
             memset(device->backing.control + 208u, 0x3c, 16u);
             device->resets++;

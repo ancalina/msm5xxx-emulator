@@ -178,8 +178,9 @@ class TestMA5CAudioCore(unittest.TestCase):
             }
             assert(d.backing.control[192] == 0x55 && d.control_dirty);
             assert(msm5xxx_ma5_device_write(&d, true, 4, 60));
-            assert(!msm5xxx_ma5_device_write(&d, false, 0x80, 60));
-            assert(d.reject == MSM5XXX_MA5_REJECT_RESET_RETENTION);
+            assert(msm5xxx_ma5_device_write(&d, false, 0x80, 60));
+            assert(msm5xxx_ma5_device_write(&d, false, 0, 60));
+            assert(d.backing.control[192] == 0x60 && !d.backing.read_valid);
 
             assert(msm5xxx_ma5_device_init(&d, 10));
             assert(msm5xxx_ma5_device_write(&d, true, 2, 0));
@@ -225,14 +226,15 @@ class TestMA5CAudioCore(unittest.TestCase):
                 assert(!msm5xxx_ma5_device_write(&d, false, bit, 0));
                 assert(d.reject == MSM5XXX_MA5_REJECT_RESET_RETENTION);
             }
-            /* A partial packet cannot survive an unmodeled reset silently. */
+            /* Reset discards a partial packet. */
             assert(msm5xxx_ma5_device_init(&d, 10));
             assert(msm5xxx_ma5_device_write(&d, true, 2, 0));
             assert(msm5xxx_ma5_device_write(&d, false, 0x40, 0));
             msm5xxx_ma5_device_advance(&d, 10);
             assert(msm5xxx_ma5_device_write(&d, true, 4, 10));
-            assert(!msm5xxx_ma5_device_write(&d, false, 0x80, 10));
-            assert(d.reject == MSM5XXX_MA5_REJECT_RESET_RETENTION);
+            assert(msm5xxx_ma5_device_write(&d, false, 0x80, 10));
+            assert(msm5xxx_ma5_device_write(&d, false, 0, 10));
+            assert(!d.backing.immediate.address_bytes && !d.count);
             assert(msm5xxx_ma5_device_init(&d, 10));
             assert(msm5xxx_ma5_device_write(&d, true, 38, 0));
             assert(!msm5xxx_ma5_device_write(&d, false, 3, 0));
@@ -330,8 +332,8 @@ class TestMA5CAudioCore(unittest.TestCase):
             assert(wr(&a, 38, 1, 0));
             assert(a.counter_num == UINT64_C(19200000) * 81 &&
                    a.counter_den == UINT64_C(80000000000) * 21 * 922);
-            for (unsigned reg = 0; reg < 5; reg++) {
-                const unsigned regs[] = {30, 31, 35, 36, 4};
+            for (unsigned reg = 0; reg < 4; reg++) {
+                const unsigned regs[] = {30, 31, 35, 36};
                 prepared(&a, 19660800, 1); assert(wr(&a, 38, 1, 0));
                 assert(!wr(&a, regs[reg], regs[reg] == 4 ? 0x80 : 0, 1));
                 assert(a.reject == MSM5XXX_MA5_REJECT_CLOCK);
@@ -759,7 +761,7 @@ class TestMA5CAudioCore(unittest.TestCase):
             run_result = subprocess.run([str(binary)], capture_output=True, text=True)
             self.assertEqual(run_result.returncode, 0, run_result.stderr)
 
-    def test_mode_shadow_readback_keeps_dirty_reset_closed(self):
+    def test_mode_shadow_and_warm_reset(self):
         repo = Path(__file__).resolve().parents[1]
         core = repo / "native" / "qemu" / "msm5xxx-ma5-audio.c"
         harness = r"""
@@ -799,9 +801,11 @@ class TestMA5CAudioCore(unittest.TestCase):
             assert(!memcmp(before.control, d.backing.control, sizeof(before.control)));
             assert(!memcmp(before.sram, d.backing.sram, sizeof(before.sram)));
             assert(d.backing.read_latch == before.read_latch && d.backing.read_valid);
-            d.backing.read_valid = false;
-            assert(!wr(&d, 4, 0x80)); /* Mode retention remains unknown. */
-            assert(d.reject == MSM5XXX_MA5_REJECT_RESET_RETENTION && d.b[56] == 2);
+            assert(wr(&d, 4, 0x80) && wr(&d, 4, 0));
+            assert(d.b[56] == 2 && !d.count && !d.pending && !d.backing.read_valid);
+            assert(d.backing.control[3] == 0x5a && d.backing.sram[7] == 0xa5);
+            for (unsigned i = 192; i < 224; i++)
+                assert(d.backing.control[i] == (i < 208 ? 0x60 : 0x3c));
             for (unsigned i = 0; i < 4; i++) {
                 const unsigned unsupported[] = {0x08, 0x20, 0x40, 0xa8};
                 assert(msm5xxx_ma5_device_init(&d, 10));
@@ -810,8 +814,8 @@ class TestMA5CAudioCore(unittest.TestCase):
             assert(msm5xxx_ma5_device_init(&d, 10));
             assert(wr(&d, 4, 0x80) && !wr(&d, 4, 0x28));
             assert(msm5xxx_ma5_device_init(&d, 10));
-            assert(wr(&d, 56, 0)); /* Explicit zero is still a dirty mode write. */
-            assert(!wr(&d, 4, 0x80));
+            assert(wr(&d, 56, 0));
+            assert(wr(&d, 4, 0x80) && wr(&d, 4, 0));
             assert(msm5xxx_ma5_device_init(&d, 10));
             assert(msm5xxx_ma5_device_write(&d, true, 57, 0));
             assert(!msm5xxx_ma5_device_read(&d, false, &value, 0));
@@ -986,8 +990,8 @@ class TestMA5CAudioCore(unittest.TestCase):
                 assert(a.reject == MSM5XXX_MA5_REJECT_PACKET);
             }
             setup(&a); assert(wr(&a, 1, 0x80, 0));
-            assert(!wr(&a, 4, 0x80, 0));
-            assert(a.reject == MSM5XXX_MA5_REJECT_RESET_RETENTION);
+            assert(wr(&a, 4, 0x80, 0) && wr(&a, 4, 0, 0));
+            assert(!a.delayed_count && !a.delayed_delta_bytes);
             assert(msm5xxx_ma5_device_init(&a, 10));
             assert(!wr(&a, 1, 0x80, 0)); /* No implicit default clock. */
             assert(a.reject == MSM5XXX_MA5_REJECT_DELAYED);
