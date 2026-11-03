@@ -809,6 +809,16 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion legacy_pn_reset;
     MemoryRegion legacy_finger_status;
     uint32_t legacy_search_hits;
+    bool legacy_decoder_enabled;
+    char *legacy_decoder_description;
+    uint8_t legacy_sync[26];
+    uint8_t legacy_paging[MSM5XXX_PAGING_MESSAGES][MSM5XXX_PAGING_MAX_BYTES];
+    uint8_t legacy_paging_lengths[MSM5XXX_PAGING_MESSAGES];
+    uint64_t legacy_epoch, legacy_clock_origin, legacy_roll, legacy_frame;
+    uint16_t legacy_decoder_mode, legacy_decoder_words[14], legacy_combiner;
+    unsigned legacy_decoder_cursor;
+    QEMUTimer *legacy_decoder_timer, *legacy_roll_timer;
+    MemoryRegion legacy_decoder_region, legacy_combiner_region;
     bool rex_irq_copied;
     bool rex_irq_sv130_overlay;
     uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size;
@@ -9252,6 +9262,128 @@ static void msm5xxx_poc_sbi_reject(MSM5xxxPOCMachineState *s)
     s->sbi_read_full = false;
 }
 
+static void msm5xxx_poc_legacy_decoder_tick(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t interval;
+    bool valid;
+    uint16_t words[14] = {0};
+
+    if (s->legacy_decoder_mode == 0x40) {
+        interval = 80000000;
+        valid = msm5xxx_sync_clock_frame(s->legacy_sync, sizeof(s->legacy_sync),
+                                         s->legacy_frame, s->legacy_epoch,
+                                         words);
+    } else if (s->legacy_decoder_mode == 0x20) {
+        interval = 20000000;
+        valid = msm5xxx_paging_decoder_frame(s->legacy_paging,
+                    s->legacy_paging_lengths, 0, s->legacy_frame,
+                    words);
+    } else {
+        return;
+    }
+    /* Ideal decoded receiver: programmed LC and combiner timing are retained,
+     * while decoder latency and the silicon state-load boundary are abstracted. */
+    if (valid && !(s->rex_irq_pending[0] & 0x10)) {
+        memcpy(s->legacy_decoder_words, words, sizeof(words));
+        s->legacy_frame++;
+        s->rex_irq_pending[0] |= 0x10;
+        msm5xxx_poc_rex_irq_update(s);
+    }
+    timer_mod(s->legacy_decoder_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + interval);
+}
+
+static void msm5xxx_poc_legacy_roll_tick(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    s->rex_irq_pending[0] |= 0x100;
+    msm5xxx_poc_rex_irq_update(s);
+    s->legacy_roll++;
+    timer_mod(s->legacy_roll_timer, s->legacy_clock_origin +
+              msm5xxx_combiner_deadline(s->legacy_roll));
+}
+
+static uint64_t msm5xxx_poc_legacy_decoder_read(void *opaque, hwaddr offset,
+                                                 unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset == 0x10 && size == 2) {
+        unsigned cursor = s->legacy_decoder_cursor++;
+        return cursor < G_N_ELEMENTS(s->legacy_decoder_words) ?
+            s->legacy_decoder_words[cursor] : 0;
+    }
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                    0xd00 + offset, size);
+}
+
+static void msm5xxx_poc_legacy_decoder_write(void *opaque, hwaddr offset,
+                                              uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              0xd00 + offset, value, size);
+    if (offset == 8 && size == 2) {
+        unsigned mode = value & 0x60;
+        if (mode != s->legacy_decoder_mode) {
+            s->legacy_decoder_mode = mode;
+            s->legacy_frame = 0;
+            timer_del(s->legacy_decoder_timer);
+            if (mode == 0x40 || mode == 0x20) {
+                timer_mod(s->legacy_decoder_timer,
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                    (mode == 0x40 ? 80000000 : 20000000));
+            }
+        }
+    } else if (offset == 0x58 && size == 2) {
+        s->legacy_decoder_cursor = value;
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_legacy_decoder_ops = {
+    .read = msm5xxx_poc_legacy_decoder_read,
+    .write = msm5xxx_poc_legacy_decoder_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 2,
+    .impl.min_access_size = 1, .impl.max_access_size = 2,
+};
+
+static uint64_t msm5xxx_poc_legacy_combiner_read(void *opaque, hwaddr offset,
+                                                  unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset == 4 && size == 2) {
+        return s->legacy_combiner;
+    }
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                    0xf4 + offset, size);
+}
+
+static void msm5xxx_poc_legacy_combiner_write(void *opaque, hwaddr offset,
+                                               uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              0xf4 + offset, value, size);
+    if (!offset && size == 1 && !value) {
+        s->legacy_combiner = msm5xxx_combiner_position(
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->legacy_clock_origin);
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_legacy_combiner_ops = {
+    .read = msm5xxx_poc_legacy_combiner_read,
+    .write = msm5xxx_poc_legacy_combiner_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 2,
+    .impl.min_access_size = 1, .impl.max_access_size = 2,
+};
+
 static uint64_t msm5xxx_poc_sbi_read(void *opaque, hwaddr offset,
                                      unsigned size)
 {
@@ -12888,6 +13020,18 @@ static void msm5xxx_poc_reset(void *opaque)
     if (s->decoder_init_timer) {
         timer_del(s->decoder_init_timer);
     }
+    if (s->legacy_decoder_timer) {
+        timer_del(s->legacy_decoder_timer);
+        timer_del(s->legacy_roll_timer);
+        s->legacy_clock_origin = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->legacy_roll = 1;
+        s->legacy_frame = 0;
+        s->legacy_decoder_mode = s->legacy_decoder_cursor = 0;
+        s->legacy_combiner = 0;
+        memset(s->legacy_decoder_words, 0, sizeof(s->legacy_decoder_words));
+        timer_mod(s->legacy_roll_timer, s->legacy_clock_origin +
+                  msm5xxx_combiner_deadline(s->legacy_roll));
+    }
     msm5xxx_poc_tx_init_cancel(s);
     s->tx_init_deadline = s->tx_init_fires = s->tx_init_cancels = 0;
     s->tx_frame_fires = s->tx_frame_overruns = 0;
@@ -14792,6 +14936,26 @@ static void msm5xxx_poc_init(MachineState *machine)
                               "msm5xxx-poc.legacy-finger-status", 4);
         memory_region_add_subregion_overlap(get_system_memory(), 0x030000e4,
                                             &s->legacy_finger_status, 1);
+        if (s->legacy_decoder_enabled) {
+            s->legacy_decoder_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                             msm5xxx_poc_legacy_decoder_tick, s);
+            s->legacy_roll_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                               msm5xxx_poc_legacy_roll_tick, s);
+            memory_region_init_io(&s->legacy_decoder_region, OBJECT(machine),
+                                  &msm5xxx_poc_legacy_decoder_ops, s,
+                                  "msm5xxx-poc.legacy-decoder", 0x64);
+            memory_region_add_subregion_overlap(get_system_memory(), 0x03000d00,
+                                                &s->legacy_decoder_region, 1);
+            memory_region_init_io(&s->legacy_combiner_region, OBJECT(machine),
+                                  &msm5xxx_poc_legacy_combiner_ops, s,
+                                  "msm5xxx-poc.legacy-combiner", 6);
+            memory_region_add_subregion_overlap(get_system_memory(), 0x030000f4,
+                                                &s->legacy_combiner_region, 1);
+        }
+    }
+    if (s->legacy_decoder_enabled && !s->legacy_decoder_timer) {
+        error_report("legacy-decoder requires the legacy search receiver");
+        exit(EXIT_FAILURE);
     }
     if (s->search2_probe_description || s->search2_virtual_description) {
         const unsigned code_fields[] = {0, 1, 3, 4, 6, 7};
@@ -18696,6 +18860,72 @@ static void msm5xxx_poc_set_legacy_search(Object *obj, const char *value,
     s->legacy_masks_q = masks_q;
 }
 
+static bool msm5xxx_poc_legacy_packet(const char *hex, uint8_t *out,
+                                       size_t maximum, uint8_t *length)
+{
+    size_t i, n = strlen(hex);
+
+    if ((n & 1) || n < 10 || n / 2 > maximum) {
+        return false;
+    }
+    for (i = 0; i < n / 2; i++) {
+        int hi = g_ascii_xdigit_value(hex[i * 2]);
+        int lo = g_ascii_xdigit_value(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        out[i] = (hi << 4) | lo;
+    }
+    *length = n / 2;
+    return out[0] == *length;
+}
+
+static char *msm5xxx_poc_get_legacy_decoder(Object *obj, Error **errp)
+{
+    return g_strdup(MSM5XXX_POC_MACHINE(obj)->legacy_decoder_description);
+}
+
+static void msm5xxx_poc_set_legacy_decoder(Object *obj, const char *value,
+                                            Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    g_auto(GStrv) fields = g_strsplit(value ? value : "", ":", -1);
+    uint8_t sync[26], sync_length, paging[4][MSM5XXX_PAGING_MAX_BYTES] = {{0}};
+    uint8_t lengths[4];
+    uint16_t sync_words[8], paging_words[14];
+    uint64_t epoch;
+    const char *end;
+    unsigned i;
+
+    if (s->legacy_decoder_enabled || g_strv_length(fields) != 6 ||
+        qemu_strtou64(fields[0], &end, 16, &epoch) || *end ||
+        epoch >= (UINT64_C(1) << 36) ||
+        !msm5xxx_poc_legacy_packet(fields[1], sync, sizeof(sync), &sync_length) ||
+        sync_length != sizeof(sync) || sync[1] != 1 ||
+        !msm5xxx_sync_frame(sync, sync_length, 0, sync_words)) {
+        error_setg(errp, "legacy-decoder requires epoch and a valid Sync packet");
+        return;
+    }
+    for (i = 0; i < 4; i++) {
+        if (!msm5xxx_poc_legacy_packet(fields[i + 2], paging[i],
+                                       sizeof(paging[i]), &lengths[i]) ||
+            paging[i][1] != (i == 2 ? 14 : i + 1)) {
+            error_setg(errp, "legacy-decoder requires four paging packets");
+            return;
+        }
+    }
+    if (!msm5xxx_paging_decoder_frame(paging, lengths, 0, 0, paging_words)) {
+        error_setg(errp, "legacy-decoder paging CRC is invalid");
+        return;
+    }
+    memcpy(s->legacy_sync, sync, sizeof(sync));
+    memcpy(s->legacy_paging, paging, sizeof(paging));
+    memcpy(s->legacy_paging_lengths, lengths, sizeof(lengths));
+    s->legacy_epoch = epoch;
+    s->legacy_decoder_enabled = true;
+    s->legacy_decoder_description = g_strdup(value);
+}
+
 static void msm5xxx_poc_instance_init(Object *obj)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -18764,6 +18994,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "legacy-search",
                                   msm5xxx_poc_get_legacy_search,
                                   msm5xxx_poc_set_legacy_search);
+    object_class_property_add_str(oc, "legacy-decoder",
+                                  msm5xxx_poc_get_legacy_decoder,
+                                  msm5xxx_poc_set_legacy_decoder);
     object_class_property_add_str(oc, "search2-probe",
                                   msm5xxx_poc_get_search2_probe,
                                   msm5xxx_poc_set_search2_probe);
@@ -19371,6 +19604,11 @@ static void msm5xxx_poc_instance_finalize(Object *obj)
     if (s->search2_timer) {
         timer_free(s->search2_timer);
     }
+    if (s->legacy_decoder_timer) {
+        timer_free(s->legacy_decoder_timer);
+        timer_free(s->legacy_roll_timer);
+    }
+    g_free(s->legacy_decoder_description);
     g_free(s->search2_probe_description);
     g_free(s->search2_virtual_description);
     if (s->search1_timer) {

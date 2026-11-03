@@ -501,6 +501,61 @@ static uint32_t paging_crc30(const uint8_t *message, unsigned bits)
     return (~crc) & 0x3fffffff;
 }
 
+static void sync_set_bits(uint8_t *message, unsigned start, unsigned width,
+                          uint64_t value)
+{
+    unsigned i;
+
+    for (i = 0; i < width; i++) {
+        unsigned bit = start + i;
+        uint8_t mask = 1u << (7 - bit % 8);
+        if ((value >> (width - 1 - i)) & 1) {
+            message[bit / 8] |= mask;
+        } else {
+            message[bit / 8] &= ~mask;
+        }
+    }
+}
+
+bool msm5xxx_sync_clock_frame(const uint8_t *message, unsigned length,
+                              uint64_t frame, uint64_t epoch,
+                              uint16_t words[8])
+{
+    uint16_t part[2][8] = {{0}};
+    unsigned side, i;
+
+    if (!message || !words || length != 26 || message[0] != length ||
+        message[1] != 1 || epoch >= (UINT64_C(1) << 36)) {
+        return false;
+    }
+    for (side = 0; side < 2; side++) {
+        uint64_t logical, time, state;
+        uint8_t packet[26];
+
+        if (!side && !frame) {
+            continue;
+        }
+        logical = side ? frame : frame - 1;
+        time = (epoch + 3 * (logical / 3)) & ((UINT64_C(1) << 36) - 1);
+        state = msm5xxx_long_code_advance(1, time * UINT64_C(98304));
+        memcpy(packet, message, sizeof(packet));
+        sync_set_bits(packet, 72, 42, state);
+        sync_set_bits(packet, 114, 36, time);
+        sync_set_bits(packet, 178, 30, paging_crc30(packet, 178));
+        if (!msm5xxx_sync_frame(packet, sizeof(packet), logical % 3, part[side])) {
+            return false;
+        }
+    }
+    memset(words, 0, 8 * sizeof(*words));
+    for (i = 0; i < 12; i++) {
+        unsigned source = i < 9 ? 0 : 1;
+        unsigned at = i < 9 ? i + 3 : i - 9;
+        uint8_t value = part[source][at / 2] >> (8 * (at % 2));
+        words[i / 2] |= (uint16_t)value << (8 * (i % 2));
+    }
+    return true;
+}
+
 static bool paging_message_valid(const uint8_t *message, unsigned length)
 {
     return message && length >= 5 && length <= MSM5XXX_PAGING_MAX_BYTES &&

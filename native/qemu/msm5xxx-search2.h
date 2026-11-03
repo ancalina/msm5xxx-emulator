@@ -90,6 +90,10 @@ bool msm5xxx_sync_frame(const uint8_t *message, unsigned length,
                         uint64_t frame, uint16_t words[8]);
 bool msm5xxx_sync_decoder_frame(const uint8_t *message, unsigned length,
                                 uint64_t frame, uint16_t words[8]);
+/* A 26-byte Sync message, with time and long-code state advanced per message. */
+bool msm5xxx_sync_clock_frame(const uint8_t *message, unsigned length,
+                              uint64_t frame, uint64_t epoch,
+                              uint16_t words[8]);
 uint16_t msm5xxx_combiner_position(uint64_t elapsed_ns);
 uint64_t msm5xxx_combiner_deadline(uint64_t roll);
 
