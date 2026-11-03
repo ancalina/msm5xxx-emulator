@@ -1328,7 +1328,10 @@ def qemu_virtual_cell_property(image: bytes, config: object,
     legacy_profile = find_legacy_cdma_profile(image)
     if legacy_profile.get("accepted"):
         from .virtual_cell import virtual_cell_scenario
-        if scenario == virtual_cell_scenario(True):
+        # The announced time may differ (host clock); the rest must be the stock cell.
+        def without_time(cell):
+            return {key: value for key, value in cell.items() if key != "sync_message_hex"}
+        if without_time(scenario) == without_time(virtual_cell_scenario(True)):
             sid, channel = ((17500, 750) if legacy_profile["pll_bits"] == 22
                             else (4120, 625))
             scenario = {**scenario, "sid": sid, "channel": channel,
@@ -1405,6 +1408,8 @@ def qemu_virtual_cell_property(image: bytes, config: object,
         packets[0] = replace(replace(packets[0], 16, 8, 1), 24, 8, 1)
         packets[3] = replace(packets[3], 8, 8, 14)
         channel = (int.from_bytes(packets[0], "big") >> (26 * 8 - 167 - 11)) & 0x7ff
+        # The legacy decoder clocks SYS_TIME from this epoch; take it from the Sync packet.
+        sys_time = (int.from_bytes(packets[0], "big") >> (26 * 8 - 114 - 36)) & ((1 << 36) - 1)
         if channel > 1199:
             return None, "legacy-pcs-channel-unsupported"
         profile_keys = ("writer", "consumer", "descriptor", "decoder", "fifo_copy",
@@ -1415,7 +1420,8 @@ def qemu_virtual_cell_property(image: bytes, config: object,
             "legacy-profile=" + words(legacy_profile[key] for key in profile_keys),
             "legacy-search=" + words((scenario["pilot_phase"], scenario["raw_energy"],
                                       legacy_profile["mask_i"], legacy_profile["mask_q"], channel)),
-            "legacy-decoder=400000000:" + ":".join(packet.hex() for packet in packets),
+            "legacy-decoder=" + format(sys_time, "x") + ":"
+            + ":".join(packet.hex() for packet in packets),
         ]
         limited = "legacy-receive-only" if tx_delay is not None or access_response or traffic_decoder else None
         return ",".join(properties), limited
