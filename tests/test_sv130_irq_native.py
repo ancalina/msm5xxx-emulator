@@ -114,6 +114,7 @@ typedef struct {
     uint16_t rex_irq_pending[3],rex_irq_mask;
     bool rex_irq_c80,rex_irq_read_consume,rex_irq_route_active;
     bool rex_irq_level,irq_level,ma5_irq_configured,ma5_irq_qualified,ma5_irq_level;
+    bool ma3_gpio_irq_configured,ma3_gpio_irq_qualified;
     bool sd810_fold_irq_enabled; bool *cpu_irq; unsigned rex_irq_assertions,rex_irq_acks;
 } MSM5xxxPOCMachineState;
 static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s) {(void)s;return true;}
@@ -124,6 +125,8 @@ static void msm5xxx_poc_backing_write(uint8_t *p,hwaddr off,uint64_t v,unsigned 
 static void qemu_set_irq(bool *p,bool v) {*p=v;}
 static uint64_t msm5xxx_poc_ma5_irq_read(MSM5xxxPOCMachineState *s,hwaddr o,unsigned n) {(void)s;(void)o;(void)n;return 0;}
 static void msm5xxx_poc_ma5_irq_write(MSM5xxxPOCMachineState *s,hwaddr o,uint64_t v,unsigned n) {(void)s;(void)o;(void)v;(void)n;}
+static uint64_t msm5xxx_poc_ma3_gpio_irq_read(MSM5xxxPOCMachineState *s,hwaddr o,unsigned n) {(void)s;(void)o;(void)n;assert(false);return 0;}
+static void msm5xxx_poc_ma3_gpio_irq_write(MSM5xxxPOCMachineState *s,hwaddr o,uint64_t v,unsigned n) {(void)s;(void)o;(void)v;(void)n;assert(false);}
 static void msm5xxx_poc_ma2_irq_update(MSM5xxxPOCMachineState *s) {(void)s;}
 static void msm5xxx_poc_rex_irq_schedule(MSM5xxxPOCMachineState *s) {(void)s;}
 ''' + source[update_start:update_end] + '\n' + source[start:end] + '\n' + '\n'.join(
