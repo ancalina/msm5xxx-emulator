@@ -94,7 +94,10 @@ final class BackendBridge {
         profile.getJSONArray("detection_notes");
         return sha256.matches("[0-9a-f]{64}")
                 && firmware.getLong("bytes") > 0
-                && !profile.getString("model").isEmpty()
+                && profile.has("model")
+                && (profile.isNull("model")
+                || (profile.get("model") instanceof String
+                && !profile.getString("model").isEmpty()))
                 && !profile.getString("chipset").isEmpty()
                 && !profile.getString("image_kind").isEmpty()
                 && !profile.has("path")

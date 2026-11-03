@@ -121,7 +121,7 @@ def start_session(request_json):
     return _json({
         "height": int(config.height),
         "input_bits": input_bits,
-        "model": str(config.model),
+        "model": config.model,
         "persistent_state": state is not None,
         "process_running": transport.process.poll() is None,
         "schema": 1,

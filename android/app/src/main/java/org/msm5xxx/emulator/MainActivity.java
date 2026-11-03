@@ -1569,8 +1569,20 @@ public final class MainActivity extends Activity {
     private void showProfile(String profileJson) {
         try {
             JSONObject profile = new JSONObject(profileJson);
-            String model = SelectionLabels.displayName(this,
-                    profile.getString("model"));
+            String model;
+            if (!profile.isNull("verified_model")) {
+                model = SelectionLabels.displayName(this, profile.getString("verified_model"));
+            } else if (!profile.isNull("model")) {
+                model = getString(R.string.model_unverified,
+                        SelectionLabels.displayName(this, profile.getString("model")));
+            } else {
+                String filename = getSharedPreferences(PREFS, MODE_PRIVATE)
+                        .getString(KEY_NAME, "");
+                int extension = filename.lastIndexOf('.');
+                String stem = extension > 0 ? filename.substring(0, extension) : filename;
+                model = getString(R.string.model_unknown,
+                        SelectionLabels.displayName(this, stem));
+            }
             String chipset = SelectionLabels.displayName(this,
                     profile.getString("chipset"));
             if (!"auto-default".equals(profile.optString(

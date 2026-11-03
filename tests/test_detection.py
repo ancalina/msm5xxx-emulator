@@ -373,7 +373,7 @@ class DetectionTests(unittest.TestCase):
             config = detect(path)
             override = detect(path, argparse.Namespace(model="SCH-E100"))
 
-        self.assertEqual(config.model, "SCH-E100")
+        self.assertIsNone(config.model)
         self.assertIsNone(config.verified_model)
         self.assertEqual((config.width, config.height), (176, 220))
         self.assertEqual(config.display_geometry_source, "auto-default")
@@ -552,9 +552,7 @@ class DetectionTests(unittest.TestCase):
             "a/SCH-X150.bin", "b/SCH-X350.bin", "c/peer.b16",
         ])
         self.assertEqual(group["merge_basis"], "exact-raw-sha256")
-        self.assertEqual(
-            group["models_observed"], ["SCH-X150", "SCH-X350", "peer"]
-        )
+        self.assertEqual(group["models_observed"], [])
         with self.assertRaisesRegex(ValueError, "source inventory"):
             condition_report.merge_reports([shards[0], wrong_shard])
 
@@ -1019,9 +1017,8 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(detect_chipset(b"MSM5000", "SCH-X430"), "MSM5xxx")
 
     def test_scp_filename_normalizes_identity_without_assigning_hardware_profile(self) -> None:
-        self.assertEqual(
-            detect_model(b"SCP-4700BySANYO\0", Path("SCP4700_Ver_1_108SP.bin")),
-            "SCP-4700",
+        self.assertIsNone(
+            detect_model(b"SCP-4700BySANYO\0", Path("SCP4700_Ver_1_108SP.bin"))
         )
 
     def test_fujitsu_bulk_writer_requires_unique_shape_and_adjacent_bus(self) -> None:

@@ -22,7 +22,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
         spec.loader.exec_module(runtime)
         profile = {'test': 'cadence'}
         config = SimpleNamespace(diagnostic_config=lambda: profile, width=128,
-                                 height=128, model='test', firmware_sha256='test')
+                                 height=128, model=None, firmware_sha256='test')
         transport = SimpleNamespace(can_set_key=lambda bit: False,
                                     process=SimpleNamespace(poll=lambda: None),
                                     replay=lambda stop: stop.wait(),
@@ -36,7 +36,8 @@ class AndroidFrameTransportTests(unittest.TestCase):
                             return_value=config), mock.patch(
                                 'msm5xxx_emulator.qemu.transport.Transport', return_value=transport) as constructor:
                 try:
-                    runtime.start_session(json.dumps(request))
+                    result = json.loads(runtime.start_session(json.dumps(request)))
+                    self.assertIsNone(result['model'])
                     self.assertNotIn('icount_shift', constructor.call_args.kwargs)
                     self.assertTrue(constructor.call_args.kwargs['audio_stream'])
                     self.assertIsNone(constructor.call_args.kwargs['virtual_cell'])

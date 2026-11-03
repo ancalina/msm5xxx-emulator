@@ -154,15 +154,16 @@ class ModelIdentityTests(unittest.TestCase):
     def test_inherited_at_empty_mobiletype_and_heuristic_behavior_preserved(self):
         at_only = b'LG Electronics Inc.\0LG-CD456\0OK\0CONNECT\0RING\0NO CARRIER\0+CIS707'
         self.assertIsNone(verified_embedded_model(at_only))
-        self.assertEqual(detect_model(at_only, Path('SCH-X123.bin')), 'SCH-X123')
+        self.assertIsNone(detect_model(at_only, Path('SCH-X123.bin')))
         empty = b'BRAND\0AB123\0MSM5000\0m_MobileType: \0\0\r\nm_authS2: '
-        self.assertEqual(detect_model(empty, Path('neutral.bin'), chipset='MSM5000'), 'neutral')
+        self.assertIsNone(detect_model(empty, Path('neutral.bin'), chipset='MSM5000'))
         raw = bytes(fixture())
         notes = []
         self.assertEqual(detect_model(raw, Path('SCH-X123.bin'),
-                                      {'SCH-X777': 10}, notes=notes), 'SCH-X123')
+                                      {'SCH-X777': 10}, notes=notes), 'SCH-X777')
         self.assertIn('product-constructor-heuristic-conflict', notes)
-        self.assertEqual(detect_model(b'none', Path('SCH-X123.bin')), 'SCH-X123')
+        self.assertIsNone(detect_model(b'none', Path('SCH-X123.bin')))
+        self.assertEqual(detect_model(raw, Path('other.bin')), detect_model(raw, Path('SCH-X123.bin')))
         self.assertEqual(embedded_model_scores(at_only)['LG-CD456'], 2)
 
 
@@ -209,7 +210,7 @@ class BrowserModelIdentityTests(unittest.TestCase):
             self.assertIsNone(verified_embedded_model(bytes(raw)))
             self.assertIn('provisional-browser-product-constructor',notes)
             notes=[]
-            self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),{'SCH-X777':10},notes=notes),'SCH-X123')
+            self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),{'SCH-X777':10},notes=notes),'SCH-X777')
             self.assertIn('browser-product-strong-identity-conflict',notes)
     def test_existing_constructor_identity_keeps_priority(self):
         raw,_=browser_fixture();strong=fixture(0x3000)
@@ -306,7 +307,7 @@ class ADRBrowserIdentityTests(unittest.TestCase):
                 self.assertEqual(detect_model(bytes(raw),Path(filename)),label.decode())
             self.assertIsNone(verified_embedded_model(bytes(raw)))
             notes=[]
-            self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),{'SCH-X777':10},notes=notes),'SCH-X123')
+            self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),{'SCH-X777':10},notes=notes),'SCH-X777')
             self.assertIn('browser-product-strong-identity-conflict',notes)
     def test_fixed_bodies_calls_getter_record_frame_and_bounds_fail_closed(self):
         from msm5xxx_emulator.detection.model import _BROWSER_ADR_BODIES,_browser_product_model

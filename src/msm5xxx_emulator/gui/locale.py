@@ -51,10 +51,14 @@ UI_TEXT = {
 }
 
 
-def display_model_name(model: str, verified_model: str | None, language: str) -> str:
+def display_model_name(model: str | None, verified_model: str | None, language: str,
+                       filename_stem: str = "") -> str:
     """Show detector candidate while marking unverified identity explicitly."""
     if verified_model:
         return verified_model
+    if model is None:
+        label = "알 수 없음" if language == "ko" else "Unknown"
+        return f"{label} ({filename_stem})"
     suffix = "미확인" if language == "ko" else "unverified"
     return f"{model} ({suffix})"
 

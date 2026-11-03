@@ -38,6 +38,8 @@
     <string name="size_bytes">%1$d바이트</string>
     <string name="copying_firmware">펌웨어 복사 중…</string>
     <string name="detecting_firmware">펌웨어 프로필 탐지 중…</string>
+    <string name="model_unknown">알 수 없음 (%1$s)</string>
+    <string name="model_unverified">%1$s (미확인)</string>
     <string name="profile_header">%1$s · %2$d×%3$d · %4$s</string>
     <string name="profile_header_without_geometry">%1$s · %2$s</string>
     <string name="starting_session">QEMU 시작 중…</string>

@@ -75,6 +75,10 @@ class GuiLocaleTests(unittest.TestCase):
         self.assertEqual(settings_apply_mode({"width"}, True), "overrides")
 
     def test_unverified_filename_is_not_presented_as_model_identity(self) -> None:
+        self.assertEqual(display_model_name(None, None, "en", "sample"),
+                         "Unknown (sample)")
+        self.assertEqual(display_model_name(None, None, "ko", "sample"),
+                         "알 수 없음 (sample)")
         self.assertEqual(display_model_name("SCH-E100", None, "ko"),
                          "SCH-E100 (미확인)")
         self.assertEqual(display_model_name("SCH-E100", None, "en"),

@@ -35,7 +35,7 @@ class FirmwareConfig:
     path: str
     file_size: int
     firmware_sha256: str
-    model: str
+    model: str | None
     chipset: str
     chipset_confidence: str
     image_kind: str

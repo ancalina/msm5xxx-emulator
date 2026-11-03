@@ -413,17 +413,8 @@ def _browser_product_model(image: bytes) -> tuple[str | None, str]:
 def detect_model(image: bytes, path: Path,
                  scores: dict[str, int] | None = None,
                  chipset: str | None = None, *,
-                 notes: list[str] | None = None) -> str:
-    """Prefer a coherent firmware identity record; use filename only as fallback."""
-    stem = path.stem.upper()
-    normalised_stem = re.sub(r"[_ ]+", "-", stem)
-    full_name = re.search(
-        r"(?:(?:SCH|SPH|KTFT)-[A-Z]\d{3,4}|LG-[A-Z]{1,3}\d{3,4}|"
-        r"SCP-?\d{3,4}|IM-\d{4}|(?:PG|PH|PT)-[A-Z]\d{3,4}[A-Z]?|"
-        r"C-\d{3,4}|CX-\d{3,4}[A-Z]?)",
-        normalised_stem,
-    )
-    filename_model = canonical_model(full_name.group(0)) if full_name else None
+                 notes: list[str] | None = None) -> str | None:
+    """Select a model solely from firmware identity records."""
     scores = scores if scores is not None else embedded_model_scores(image)
     verified = verified_embedded_model(image, scores)
     product, reason = _product_constructor_model(image)
@@ -441,10 +432,7 @@ def detect_model(image: bytes, path: Path,
         if notes is not None:
             notes.append("product-constructor-heuristic-conflict")
     if verified is not None:
-        if filename_model in (None, verified):
-            return verified
-        if filename_model:
-            return filename_model
+        return verified
     structured = structured_mobiletype_model(image, chipset)
     if structured is not None:
         if browser is not None and browser != structured and notes is not None:
@@ -452,12 +440,4 @@ def detect_model(image: bytes, path: Path,
         return structured
     if browser is not None:
         return browser
-    if filename_model:
-        return filename_model
-    embedded = list(scores)
-    explicit = re.search(r"(?<![A-Z0-9])(?:SCH[-_ ]?)?([A-Z]\d{3})(?:\b|_)", stem)
-    if explicit and (embedded or stem.startswith(("SCH", "E", "V", "X"))):
-        token = explicit.group(1)
-        if any(item.startswith("SCH-") for item in embedded) or not embedded:
-            return f"SCH-{token}"
-    return path.stem
+    return None

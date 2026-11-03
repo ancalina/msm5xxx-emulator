@@ -224,7 +224,7 @@ def parse_settings_values(values: Mapping[str, str]) -> dict[str, object]:
 def validate_settings_values(
         firmware: Path, effective: FirmwareConfig, overrides: dict[str, object],
         edited: set[str], flash_state_text: str) -> None:
-    if not overrides["model"]:
+    if "model" in edited and not overrides["model"]:
         raise ValueError("모델 이름이 비어 있음")
     if overrides["chipset"] not in (
             "MSM5000", "MSM5100", "MSM5105", "MSM5500", "MSM5xxx"):

@@ -285,7 +285,7 @@ class LiveWindow(Window):
         self._active_virtual_network = self.virtual_network_enabled
         config = transport.config
         self.model.set(display_model_name(
-            config.model, config.verified_model, self.ui_language
+            config.model, config.verified_model, self.ui_language, firmware.stem
         ))
         self.device_details.set(
             f"QEMU TCG · {config.chipset} · {config.width}×{config.height}"

@@ -196,6 +196,7 @@ def _exact_sha256_groups(
             "merge_basis": "exact-raw-sha256",
             "models_observed": sorted({
                 str(member["model"]) for member in members
+                if member["model"] is not None
             }),
             "verified_models_observed": sorted({
                 str(member["verified_model"]) for member in members
@@ -218,7 +219,7 @@ def build_report(
         for item in accepted for requirement in item["requirements"]
     )
     chipsets = Counter(str(item["chipset"]) for item in accepted)
-    signatures: dict[tuple[object, ...], list[str]] = defaultdict(list)
+    signatures: dict[tuple[object, ...], list[str | None]] = defaultdict(list)
     for item in accepted:
         key = (
             item["chipset"], item["flash_size"], item["ram_base"],
@@ -226,7 +227,10 @@ def build_report(
             item["secondary_nor"], item["framebuffer"],
             bool(item["reused_overlay_targets"]),
         )
-        signatures[key].append(str(item["model"]))
+        if item["model"] is not None:
+            signatures[key].append(str(item["model"]))
+        else:
+            signatures[key].append(None)
     groups = [
         {
             "count": len(models),
