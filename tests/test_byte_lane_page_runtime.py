@@ -232,6 +232,27 @@ class DescendingPairedPageRuntimeTests(unittest.TestCase):
         self.assertEqual(after[2], bytes(expected))
         self.assertGreater(display.frame_sequence, sequence)
 
+    def test_control_commands_preserve_the_qualified_source_owner(self):
+        display = self.display()
+        self.full(display)
+        before = snapshot(display)
+        for command in (0x81, 0x23, 0xaf):
+            write(display, command)
+        self.assertFalse(display.odd_page_snapshot()['blocked'])
+        row(display, 15, [0, 0], column=0)
+        after = snapshot(display)
+        self.assertNotEqual(after[2], before[2])
+        self.assertTrue(display._lcd_page_qualified)
+
+    def test_control_commands_cannot_claim_another_profile_owner(self):
+        display = self.display()
+        self.full(display)
+        snapshot(display)
+        write(display, 0x81)
+        display._lcd_page_source_profile = dict(PAIRED_PROFILE)
+        write(display, 0x23)
+        self.assertTrue(display.odd_page_snapshot()['blocked'])
+
     def test_odd_pair_at_command_barrier_withdraws_without_publishing(self):
         display = self.display()
         self.full(display)

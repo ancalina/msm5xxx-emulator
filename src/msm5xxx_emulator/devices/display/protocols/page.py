@@ -107,7 +107,9 @@ class PageProtocolMixin:
             return False
         if (self._lcd_page_qualified
                 and (not state["acquired"] or (self._lcd_page_port != command and not
-                    (profile.get("class_name") == "source-byte-paired-plane-page-v1"
+                    (profile.get("class_name") in (
+                        "source-byte-paired-plane-page-v1",
+                        "descending-paired-byte-page128-v1")
                      and self._lcd_page_source_profile is profile)))):
             state["blocked"], state["reason"] = True, "qualified-foreign-page-owner"
             return False
