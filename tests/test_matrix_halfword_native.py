@@ -982,6 +982,29 @@ int main(void) {
     assert(bitbang_calls==2 && s.eeprom_gpio_backing[16]==0xd2);
     pc=0; assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xd2);
     s.matrix_input_address=0x3000694;
+    /* Seven wires retain physical pin order and reject an eighth row. */
+    MSM5xxxPOCMachineState saved_gpio = s;
+    s = (MSM5xxxPOCMachineState){.primary_nor_size=0x800000,.cpu=&cpu_state}; err=NULL;
+    msm5xxx_poc_set_matrix_gpio(&s,"3000694:801fc:80442:300066c:66:3000668:6:3000664:80",&err);
+    assert(!err && s.matrix_input_rows==7);
+    s.eeprom_gpio_enabled=true; s.eeprom_gpio_base=0x3000660;
+    s.eeprom_data_offset=8; s.eeprom_data_mask=8;
+    s.eeprom_clock_offset=12; s.eeprom_clock_mask=1;
+    s.eeprom_direction_offset=28;
+    const unsigned seven_port[] = {12,12,12,12,8,8,4};
+    const unsigned seven_bit[] = {2,4,0x20,0x40,2,4,0x80};
+    for(unsigned held=0;held<7;held++) {
+        s.matrix_input_pressed=true; s.matrix_input_row=held; s.matrix_input_sense=14;
+        for(unsigned selected=0;selected<7;selected++) {
+            for(unsigned i=0;i<3;i++) s.eeprom_gpio_backing[ports[i]]=0xff;
+            s.eeprom_gpio_backing[seven_port[selected]] &= ~seven_bit[selected];
+            pc=s.matrix_input_sense_site;
+            assert((msm5xxx_poc_matrix_input_read(&s,0,1)&15)==(held==selected?14:15));
+        }
+    }
+    record[0]=0x80; record[1]=1; record[2]=6; record[3]=14;
+    s.matrix_input_pressed=false; assert(!host_rejected(&s,record)); record[2]=7; assert(host_rejected(&s,record));
+    s = saved_gpio;
     /* Optional independent input pin: legacy GPIO rows and EEPROM stay owned. */
     MSM5xxxPOCMachineState legacy_gpio = s;
     const char *sideband_gpio = "3000694:801fc:80442:300066c:62:3000668:6:3000664:80:10";
@@ -1060,7 +1083,7 @@ int main(void) {
         "3000694:2:2:300066c:62:3000668:6:3000664:80",
         "3000694:800000:4:300066c:62:3000668:6:3000664:80",
         "3000694:2:4:3001000:62:3000668:6:3000664:80",
-        "3000694:2:4:300066c:63:3000668:6:3000664:80",
+        "3000694:2:4:300066c:67:3000668:6:3000664:80",
         "3000694:2:4:300066c:62:3000668:6:3000664:-80",
         "3000694:2:4:300066c:62:3000668:6:3000664:+80",
         "3000694:2:4:300066c:62:3000668:6:3000664: 80",

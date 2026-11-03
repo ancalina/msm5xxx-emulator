@@ -4660,7 +4660,8 @@ static uint64_t msm5xxx_poc_matrix_gpio_read(void *opaque, hwaddr offset,
             }
         }
     }
-    if (!msm5xxx_poc_mapped_halfword_sense(backing, output, 0x3f,
+    if (!msm5xxx_poc_mapped_halfword_sense(backing, output,
+            (1U << s->matrix_input_rows) - 1,
             pc == s->matrix_input_presence_site,
             s->matrix_input_pressed &&
                 s->matrix_input_row != MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW,
@@ -16858,7 +16859,7 @@ static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
             goto invalid;
         }
     }
-    if (rows != 6 || (s->board_status_input_enabled &&
+    if ((rows != 6 && rows != 7) || (s->board_status_input_enabled &&
         s->board_status_input_address == fields[0])) {
         goto invalid;
     }
@@ -16870,7 +16871,7 @@ static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
         s->matrix_input_gpio_mask[i] = fields[4 + 2 * i];
     }
     s->matrix_input_gpio = true;
-    s->matrix_input_rows = 6;
+    s->matrix_input_rows = rows;
     s->matrix_input_no_key = 0xf;
     s->matrix_input_sideband_mask = fields[9];
     s->matrix_input_sense_bitmap = (1U << 14) | (1U << 13) |
