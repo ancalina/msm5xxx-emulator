@@ -36,6 +36,8 @@ from msm5xxx_emulator.detection.ready_poll import (
 )
 from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
 from msm5xxx_emulator.detection.middle_nand import find_middle_nand_profile
+from msm5xxx_emulator.detection.static_middle_nand import find_static_middle_nand_profile
+from msm5xxx_emulator.detection.input_table7 import find_table7_matrix
 from msm5xxx_emulator.detection.guarded_middle_nand import find_guarded_middle_nand_profile
 from . import nand_state as native_nand_state
 from msm5xxx_emulator.detection.input_halfword import resolve_indirect_matrix_input
@@ -228,6 +230,7 @@ RAW_NAND_BLOCK_PREFIX = bytes.fromhex("80b501277801")
 RAW_NAND_BLOCK_SUFFIX = bytes.fromhex("013701239b029f42f7db")
 RAW_NAND_X16_PREFIX = bytes.fromhex("0526f605")
 RAW_NAND_X16_TRANSFER = bytes.fromhex("20883080")
+
 RAW_NAND_LOW_PORT_RESET_SIGNATURE = bytes.fromhex("ff200521490508707047")
 RAW_NAND_LOW_PORT_STATUS_SIGNATURE = bytes.fromhex(
     "00200121c9050522520580b4702717700b78c02b08d0c12b03d0044b01309842"
@@ -1113,6 +1116,16 @@ def qemu_raw_nand_main_profile(
                 or getattr(config, "upper_flash_address", None) is not None):
             return None, "guarded-middle-aperture-mapping-conflict"
         return (0x01800000, 0x01900000, 0x01a00000, 0x2000000, 512, 32, 2), None
+    direct_middle = (find_static_middle_nand_profile(image)
+                     if find_table7_matrix(image) is not None else None)
+    if direct_middle is not None:
+        if (getattr(config, "load_address", None) != 0
+                or getattr(config, "flash_size", 0) > 0x01000000
+                or getattr(config, "ram_base", None) != 0x01000000
+                or getattr(config, "ram_size", None) != 0x800000
+                or getattr(config, "upper_flash_address", None) is not None):
+            return None, "direct-middle-aperture-mapping-conflict"
+        return (0x01800000, 0x01900000, 0x01A00000, 0x1000000, 512, 32, 2), None
     middle = find_middle_nand_profile(image)
     if middle is not None:
         if (getattr(config, "chipset", None) != "MSM5500"
@@ -1644,7 +1657,9 @@ def qemu_ma5_readback_property(
         return None, "consumer-state-unmapped"
     base, stride = candidate["base"], candidate["data_offset"]
     timed = candidate.get("structural_evidence", {}).get("transport_class") == "local-counter-direction-timing-v1"
-    shared_lcd = timed and stride == 4 and any(
+    alternate_direct = (candidate.get("structural_evidence", {}).get("transport_class")
+                        == "alternate-direct-reset-readback-v1")
+    shared_lcd = ((timed and stride == 4) or (alternate_direct and stride == 2)) and any(
         lcd <= base and base + stride < lcd + 0x1000
         for lcd in (0x02000000, 0x02800000, 0x02C00000, 0x02200000))
     if (not 0x02001000 <= base <= 0x02FFFF00
@@ -1688,7 +1703,9 @@ def qemu_ma5_temporary_auto_property(
             candidate.get("structural_evidence", {}).get("transport_class") !=
             "local-counter-literal-data-v1" and
             candidate.get("structural_evidence", {}).get("transport_class") !=
-            "local-counter-direction-timing-v1"):
+            "local-counter-direction-timing-v1" and
+            candidate.get("structural_evidence", {}).get("transport_class") !=
+            "alternate-direct-reset-readback-v1"):
         return None, None
     return qemu_ma5_readback_property(
         image, config, 1000, upper_nor_present=upper_nor_present,
@@ -4748,6 +4765,16 @@ class Transport:
         self.rex_c80_profile = c80_rex_irq_profile(
             self.config, experimental_c80 or self.boot_format_nor_profile is not None
         )
+        controller = getattr(self.config, "rex_static_controller_candidate", None)
+        if (self.rex_c80_profile is not None and isinstance(controller, dict)
+                and controller.get("vector_source_chain") is not None
+                and (source_limit is None
+                     or find_rex_static_controller_callback_candidate(
+                         detector_image[:source_limit], ram_base=self.config.ram_base,
+                         ram_size=self.config.ram_size) != controller)):
+            self.rex_c80_profile = None
+            self.config.detection_notes.append(
+                "REX NOR veneer/copy closure differs from source image")
         self.rex_read_consume_profile = read_consume_rex_irq_profile(
             self.config, experimental_c80
         )
@@ -5030,6 +5057,8 @@ class Transport:
             revision_property = qemu_legacy_board_revision_property(
                 detector_image, self.config.flash_size, legacy_keypad)
             if revision_property is not None:
+                self.config.detection_notes.append("source-qualified board revision 0x60")
+        if revision_property is not None:
             machine += f",{revision_property}"
         elif revision_reject is not None:
             self.config.detection_notes.append(
@@ -5327,6 +5356,22 @@ class Transport:
                 self.config.detection_notes.append(
                     f"QEMU distributed matrix rejected: {status}; native fallback retained"
                 )
+        if self.matrix_input_profile is None and direct is None:
+            from msm5xxx_emulator.detection.input_table7 import find_table7_matrix
+            table7 = find_table7_matrix(detector_image)
+            if table7 is not None:
+                if (self.config.load_address == 0
+                        and self.config.ram_base <= table7["descriptor"]
+                        <= self.config.ram_base + self.config.ram_size - 0x38
+                        and all(0 <= a <= min(len(detector_image), self.config.flash_size) - n
+                                for a, n in table7["dependencies"])):
+                    machine += (f",matrix-halfword={table7['descriptor']:x}:"
+                                f"{table7['presence_site']:x}:{table7['sense_site']:x}:"
+                                f"{table7['row_select_mask']:x}")
+                    self.matrix_input_profile = table7
+                    self.config.detection_notes.append(
+                        "Table-driven 7x4 GPIO matrix: released columns and separate "
+                        "active-low scan contact; numeric semantics from same-image table")
         status_property, status_reject = qemu_halfword_status_property(
             detector_image, self.config.load_address, self.matrix_input_profile,
             experimental_status_level, board_status
@@ -5423,6 +5468,12 @@ class Transport:
                         and route.get("installation", {}).get("profile")
                         == "conditional-install-direct-or-task-v1"
                     )
+                if (candidate.get("structural_evidence", {}).get("transport_class")
+                        == "alternate-direct-reset-readback-v1"):
+                    route = find_ma5_gpio_irq_candidate(detector_image, candidate)
+                    ma5_auto_irq = (route.get("status") == "candidate"
+                                    and route.get("installation", {}).get("profile")
+                                    == "direct-install-no-flag-v1")
                 self.config.detection_notes.append(
                     "QEMU temporary MA5 class: matched static readback producer; "
                     "1000 ns byte period and 48 kHz target are provisional; CLKI is "
@@ -5868,6 +5919,18 @@ class Transport:
                 f"QEMU watchdog rejected: {watchdog_reject}")
         if len(primary_seed) != self.config.flash_size:
             raise ValueError("primary seed size does not match flash size")
+        if (self.rex_c80_profile is not None and isinstance(controller, dict)
+                and controller.get("vector_source_chain") is not None
+                and find_rex_static_controller_callback_candidate(
+                    primary_seed[:source_limit], ram_base=self.config.ram_base,
+                    ram_size=self.config.ram_size) != controller):
+            for channel in (lcd_listener, input_listener, gdb_listener,
+                            audio_listener, audio_host_socket, audio_qemu_socket):
+                if channel is not None:
+                    channel.close()
+            self.decoder.close()
+            self.temporary.cleanup()
+            raise ValueError("loaded REX NOR veneer/copy source route changed")
         if sharp_intel is not None and find_sharp_intel_profile(
                 primary_seed[:len(detector_image)], self.config.flash_size,
                 self.config.ram_base, self.config.ram_size) != sharp_intel:
@@ -6543,9 +6606,11 @@ class Transport:
         middle_nand_ready = None
         if raw_nand_profile is not None and raw_nand_profile[0] == 0x01800000:
             source_profile = (find_guarded_middle_nand_profile(detector_image)
-                              or find_middle_nand_profile(detector_image))
+                              or find_middle_nand_profile(detector_image)
+                              or find_static_middle_nand_profile(detector_image))
             loaded_profile = (find_guarded_middle_nand_profile(primary_seed[:len(detector_image)])
-                              or find_middle_nand_profile(primary_seed[:len(detector_image)]))
+                              or find_middle_nand_profile(primary_seed[:len(detector_image)])
+                              or find_static_middle_nand_profile(primary_seed[:len(detector_image)]))
             if source_profile is None or source_profile != loaded_profile:
                 raw_nand_profile, raw_nand_reject = None, "middle-loaded-source-mismatch"
             else:
@@ -7708,6 +7773,18 @@ class Transport:
             cells = [cell for cell in profile["token_cells"] if cell["event"] == event]
             return ((event, cells[0]["row"], cells[0]["column"])
                     if len(cells) == 1 else None)
+        if profile is not None and profile.get("grammar") == "indirect-halfword-table7-v1":
+            physical = {0: 0x5b, 1: 0x63, 2: 0x52, 3: 0x50, 4: 0x65,
+                        5: 0x53, 6: 0x66, 8: 0x55, 9: 0x64, 10: 0x54,
+                        **dict(zip(range(11, 23), b"123456789*0#"))}
+            event = physical.get(bit) if event_code is None else event_code
+            # The host token identifies a physical contact in the ROM event table.
+            # The firmware still scans GPIO and produces its own queue event.
+            events = profile["event_codes"]
+            if type(event) is not int or event not in physical.values() or events.count(event) != 1:
+                return None
+            index = events.index(event)
+            return event, index % 7, index // 7
         if profile is not None and profile.get("grammar") == "descriptor-row734-low5-6x5-v1":
             position = self.decoder.direct_input_positions.get(bit) if type(bit) is int and 11 <= bit <= 22 else None
             if position is None or event_code is not None and event_code != position[0]:

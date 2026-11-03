@@ -17,6 +17,8 @@ from .tone import tone_admission
 from .bootstrap_sdram import reset_copy_ram_profile
 from .boot_extent import boot_nor_extent
 from .small_page_nand import small_page_nand_profile
+from .static_middle_nand import find_static_middle_nand_profile
+from .input_table7 import find_table7_matrix
 from .guarded_middle_nand import find_guarded_middle_nand_profile
 from .boot import (
     AUDIO_PLAY_SIGNATURE, BOARD_ADC_SIGNATURE, BUSY_DELAY_SIGNATURE,
@@ -1180,8 +1182,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             "reset-linked NAND candidate rejected: complete read/program/erase/"
             "transfer ownership is not closed; native fallback retained")
+    direct_middle_nand = (find_static_middle_nand_profile(primary_image)
+                          if find_table7_matrix(primary_image) is not None else None)
     guarded_nand = find_guarded_middle_nand_profile(primary_image)
-    nand_enabled = (guarded_nand is not None or native_nand_profile is not None or raw_nand_ports or any(item is not None for item in (
+    nand_enabled = (guarded_nand is not None or direct_middle_nand is not None or native_nand_profile is not None or raw_nand_ports or any(item is not None for item in (
         nand_bad_block_address, nand_read_address, nand_write_address
     )))
     if raw_nand_ports and all(item is None for item in (
@@ -1319,7 +1323,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         native_nand_profile=native_nand_profile,
         nand_image=None,
         nand_data_size=(0x2000000 if native_nand_profile is not None or guarded_nand is not None else
-                        0x1000000 if nand_bad_block_address is not None else 0x800000),
+                        0x1000000 if nand_bad_block_address is not None or direct_middle_nand is not None else 0x800000),
         nand_page_size=512, nand_spare_size=16, nand_pages_per_block=32,
         nand_bus_width=2,
         rex_idle_address=rex_idle_address,

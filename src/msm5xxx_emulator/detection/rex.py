@@ -6,6 +6,8 @@ import re
 import struct
 
 from .arm import arm_b_word_target, thumb_bl_target, thumb_literal_value
+from .rex_vector_chain import find_nor_veneer_vector_copy
+from .static_middle_nand import find_static_middle_nand_profile
 
 
 REX_TICK_SIGNATURE = bytes.fromhex("00b500f08ffb08bc1847")
@@ -810,6 +812,13 @@ def _find_rex_620_static_controller_callback_candidate(
     }
 
 
+def _nand_backed_veneer_chain(image: bytes, *, ram_base: int, ram_size: int):
+    """Require both the direct NAND producer and the copied vector chain."""
+    if find_static_middle_nand_profile(image) is None:
+        return None
+    return find_nor_veneer_vector_copy(image, ram_base=ram_base, ram_size=ram_size)
+
+
 def find_rex_static_controller_callback_candidate(
         image: bytes, *, ram_base: int, ram_size: int,
 ) -> dict[str, object] | None:
@@ -864,6 +873,15 @@ def find_rex_static_controller_callback_candidate(
     vector_copy = _legacy_620_vector_copy(
         image, ram_base=ram_base, ram_size=ram_size
     )
+    vector_source_chain = (_nand_backed_veneer_chain(
+        image, ram_base=ram_base, ram_size=ram_size
+    ) if not fb0 and vector_copy is None else None)
+    if vector_source_chain is not None:
+        vector_target = vector_source_chain["copy_target"]
+        vector_copy = (
+            vector_source_chain["copy_source"], vector_target,
+            vector_source_chain["copy_size"], vector_source_chain["wrapper"],
+        )
     if (vector_target is None
             or not _ram_contains(vector_target, 4, ram_base, ram_size)):
         return rejected("raw-vector-outside-ram")
@@ -1089,6 +1107,8 @@ def find_rex_static_controller_callback_candidate(
         "vector_target": vector_target,
         "vector_copy_source": vector_copy[0] if vector_copy else None,
         "vector_copy_size": vector_copy[2] if vector_copy else None,
+        **({"vector_source_chain": vector_source_chain}
+           if vector_source_chain is not None else {}),
         "wrapper_file_offset": wrapper,
         "handler_slot": handler_slot,
         "handler_registration_file_offset": setters[0][0],

@@ -37,7 +37,9 @@ class AlternateReadbackTests(unittest.TestCase):
                 self.assertEqual(candidate['data_offset'], 2)
                 self.assertEqual(candidate['structural_evidence']['transport_class'], shape)
                 irq = find_ma5_gpio_irq_candidate(image, candidate)
-                self.assertEqual(irq['reject_reason'], 'audio-class-irq-unverified')
+                expected_rejection = (None if shape == 'alternate-direct-reset-readback-v1'
+                                      else 'audio-class-irq-unverified')
+                self.assertEqual(irq['reject_reason'], expected_rejection)
                 self.assertFalse(irq['runtime_admitted'])
                 for offset in (checker + 0x16, checker + 0x1e,
                                checker + 0x30, reset - 0xc, reset + 0xc, fifo):
@@ -46,10 +48,11 @@ class AlternateReadbackTests(unittest.TestCase):
                         changed[offset] ^= 1
                         self.assertNotEqual(find_ma5_readback_candidate(changed)['static_status'],
                                             'candidate')
-                # This producer is diagnostic until its audio and IRQ behavior
-                # has been witnessed in a guest.
+                # A direct candidate still requires a mapped primary NOR.
+                reason = ('primary-nor-unmapped'
+                          if shape == 'alternate-direct-reset-readback-v1' else None)
                 self.assertEqual(qemu_ma5_temporary_auto_property(
-                    image, object(), audio_pcm=True), (None, None))
+                    image, object(), audio_pcm=True), (None, reason))
 
 
 if __name__ == '__main__':

@@ -791,6 +791,7 @@ def _ma5_alternate_readback(image: bytes) -> list[dict[str, object]]:
                     'entries': {'check': check, 'read': read, 'select': select,
                                 'index': index, 'status': status, 'write': write,
                                 'dataread': dataread, 'reset_check': resets[0]},
+                    'context_pointer': context, 'context_word_offset': 0 if timed else 4,
                     'default_ranges': [[0xc0, 0xd0, 0x60], [0xd0, 0xe0, 0x3c]]},
                 'ram_dependencies': [[context, 4 if timed else 8], [direction, 8]],
                 'nor_dependencies': [[check, 0x46], [read, 0x90],

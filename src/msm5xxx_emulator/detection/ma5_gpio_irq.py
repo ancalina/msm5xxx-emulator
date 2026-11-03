@@ -1,6 +1,7 @@
 """Static MA5 GPIO/parent route discovery; runtime admission stays off."""
 from __future__ import annotations
 
+import hashlib
 import re
 import struct
 
@@ -58,19 +59,38 @@ _SPANS = {
     ),
 }
 
+# Direct MA5 context in holder word1, 12-byte priority rows, inline GPIO install.
+_HASH_SPANS = {
+    'parent_register': (124, '71cd61ee48d207e5de457801189461b1d48837bc58097089aff5b020572269d8',
+                        0, bytes.fromhex('f0b5041c0f1c'),
+                        (6, 34, 114), (14, 32, 40, 50), ()),
+    'soc_dispatch': (394, '8adcb3d8d461ad4f94d665e98678c5afa3513029af352321fecec86233131959',
+                     0, bytes.fromhex('f0b586b0'),
+                     (4, 52, 148, 186, 246, 270, 332, 338, 356),
+                     (8, 18, 22, 56, 76, 112, 116, 160, 168, 204, 210, 240, 288, 346, 366, 378), ()),
+    'chip_isr': (84, 'e5366b0fa510ddf3958c1aa3e0f9238c8ee2133269fb4c10d37906103f6975c0',
+                 4, bytes.fromhex('09266868f60180198178'),
+                 (20, 26, 34, 38, 58, 74), (2,), ()),
+}
+_SPANS['install_inline'] = _SPANS.get('install_inline', ()) + (('012000000000071c00210020004a00000000002f03d0', (2, 14), (12,), (10,)),)
+
 
 class _Reject(Exception):
     pass
 
 
 def _span(image: bytes, entry: int, role: str) -> dict:
-    for encoded, calls, literals, pins in _SPANS[role]:
-        expected = bytes.fromhex(encoded)
-        if entry & 1 or not 0 <= entry <= len(image) - len(expected):
+    variants = [(bytes.fromhex(encoded), None, len(bytes.fromhex(encoded)), calls, literals, pins)
+                for encoded, calls, literals, pins in _SPANS[role]]
+    if role in _HASH_SPANS:
+        size, digest, _, _, calls, literals, pins = _HASH_SPANS[role]
+        variants.append((None, digest, size, calls, literals, pins))
+    for expected, digest, size, calls, literals, pins in variants:
+        if entry & 1 or not 0 <= entry <= len(image) - size:
             continue
-        code = bytearray(image[entry:entry + len(expected)])
+        code = bytearray(image[entry:entry + size])
         targets, values, pin_values = {}, {}, {}
-        dependencies = [[entry, len(expected)]]
+        dependencies = [[entry, size]]
         valid = True
         for offset in calls:
             target = thumb_bl_target(image, entry + offset)
@@ -114,8 +134,9 @@ def _span(image: bytes, entry: int, role: str) -> dict:
         # linked callback/registrar checks remain fixed.
         if valid and role == 'install_conditional':
             code[0x74] |= 1 << 7
-        if valid and code == expected:
-            return {'entry': entry, 'size': len(expected), 'calls': targets,
+        if valid and (code == expected if expected is not None else
+                      hashlib.sha256(code).hexdigest() == digest):
+            return {'entry': entry, 'size': size, 'calls': targets,
                     'literals': values, 'pins': pin_values, 'dependencies': dependencies}
     raise _Reject(role + '-shape-unmatched')
 
@@ -133,6 +154,21 @@ def _scan(image: bytes, role: str) -> list[dict]:
         for match in re.finditer(b'(?=(' + pattern + b'))', image, re.DOTALL):
             if not match.start() & 1:
                 entries.add(match.start())
+            if len(entries) > 64:
+                raise _Reject(role + '-search-limit')
+    if role in _HASH_SPANS:
+        _, _, anchor_offset, anchor, _, _, _ = _HASH_SPANS[role]
+        position = 0
+        while (position := image.find(anchor, position)) >= 0:
+            entry = position - anchor_offset
+            position += 1
+            if entry < 0 or entry & 1:
+                continue
+            try:
+                _span(image, entry, role)
+            except _Reject:
+                continue
+            entries.add(entry)
             if len(entries) > 64:
                 raise _Reject(role + '-search-limit')
     return [_span(image, entry, role) for entry in sorted(entries)]
@@ -333,7 +369,7 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
     parent_reg = _span(image, init['calls'][0x9E], 'parent_register')
     spans.append(parent_reg)
     table_offset, unlock_offset, error_offset = {
-        122: (0x26, 0x70, 0x1C), 128: (0x2C, 0x76, 0x24),
+        122: (0x26, 0x70, 0x1C), 124: (0x28, 0x72, 0x20), 128: (0x2C, 0x76, 0x24),
         134: (0x32, 0x7C, 0x28),
     }[parent_reg['size']]
     parent_table = parent_reg['literals'][table_offset]
@@ -353,6 +389,14 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
                         and literals[0x4C] == parent_table + 31 * 28 + 4
                         and all(soc['calls'][o] == thunk for o in (0xB8, 0xF4, 0x10C))
                         and all(soc['calls'][o] == lock for o in (0x14A, 0x162))
+                        and all(soc['calls'][o] == unlock for o in (0x34, 0x94)))
+        elif soc['size'] == 394:
+            coherent = (all(literals[o] == 0x03000C80 for o in
+                            (0x12, 0x74, 0xA8, 0xCC, 0xD2, 0xF0, 0x120, 0x16E))
+                        and all(literals[o] == parent_state for o in (8, 0x16, 0x70, 0xA0, 0x15A))
+                        and literals[0x4C] == parent_table + 31 * 28 + 4
+                        and all(soc['calls'][o] == thunk for o in (0xBA, 0xF6, 0x10E))
+                        and all(soc['calls'][o] == lock for o in (0x14C, 0x164))
                         and all(soc['calls'][o] == unlock for o in (0x34, 0x94)))
         elif soc['size'] == 438:
             coherent = (all(literals[o] == 0x03000C80 for o in
@@ -415,19 +459,20 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
            and shadow == parent_state + 2 and priority == parent_state + 8
            and initial == parent_reg['literals'][0xE] and not reserved,
            'parent-descriptor-linkage')
-    if soc['size'] == 392:
+    if soc['size'] in (392, 394):
+        stride = 12 if soc['size'] == 394 else 10
         priorities = soc['literals'][0x4C]
-        priority_layout = _mapping(layouts, priorities, 40, data=True)
+        priority_layout = _mapping(layouts, priorities, stride * 4, data=True)
         priority_rom = priority_layout[1] + priorities - priority_layout[2]
         eligible = []
         for row_index in range(1, 4):
             low, high, disable_low, disable_high, first, last = struct.unpack_from(
-                '<4H2B', image, priority_rom + row_index * 10)
+                '<4H2B', image, priority_rom + row_index * stride)
             _check(0 < first <= last < 31, 'parent-priority-range-unmatched')
             if first <= index <= last and (high if enable == 0x03000C98 else low) & mask:
                 eligible.append(row_index)
         _check(len(eligible) == 1, 'parent-priority-owner-unmatched')
-        nor.append([priority_rom, 40])
+        nor.append([priority_rom, stride * 4])
     _pointer(image, initial)
     nor.extend([[desc_layout[0], 12 if any(row[0] == desc_layout[0] for row in boot_layouts) else 20], [desc_rom, 28], [initial - 1, 2]])
     gpio_layout = _mapping(layouts, table, 72, data=True)
@@ -442,7 +487,8 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
                      'trigger': row[3], 'cache_ram': table + bank * 24 + 16,
                      'initial_cache': list(row[4:])})
     nor.extend([[gpio_layout[0], 12 if any(row[0] == gpio_layout[0] for row in boot_layouts) else 20], [gpio_rom, 72], [default, 2]])
-    context = audio['structural_evidence']['context_pointer']
+    context_base = audio['structural_evidence']['context_pointer']
+    context = context_base + audio['structural_evidence'].get('context_word_offset', 0)
     ctx_layout = _mapping(layouts, context, 4, data=True)
     ctx_rom = ctx_layout[1] + context - ctx_layout[2]
     context_initial = struct.unpack_from('<I', image, ctx_rom)[0]
@@ -452,7 +498,7 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
     for isr in scanned['chip_isr']:
         calls = isr['calls']
         shift = 4 if isr['size'] == 88 else 0
-        if (isr['literals'][2 + shift] == context
+        if (isr['literals'][2 + shift] == context_base
                 and all(calls[o + shift] == entries['select'] for o in (0x14, 0x22, 0x4A))
                 and all(calls[o + shift] == entries['dataread'] for o in (0x1A, 0x26))):
             isrs.append(isr)
@@ -532,6 +578,21 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
             'direct_callback': isr['entry'] | 1, 'deferred_callback': None,
             'direct_gate': None, 'deferred_gate': None,
         }, [sense], [[active, 1]]))
+    for install in scanned['install_inline']:
+        if (install['calls'][14] != registrar['entry']
+                or install['literals'][12] != isr['entry'] | 1):
+            continue
+        pin = install['pins'][10]
+        if not 0 <= pin < 48:
+            continue
+        # GPIO initializer writes zero to all trigger/polarity banks before install.
+        installers.append((install, {
+            'profile': 'direct-install-no-flag-v1', 'entry': install['entry'],
+            'pin': pin, 'polarity_argument': 0, 'trigger_argument': 0,
+            'installed_flag': None, 'installed_value': None,
+            'direct_callback': isr['entry'] | 1, 'deferred_callback': None,
+            'direct_gate': None, 'deferred_gate': None,
+        }, [], []))
     _check(len(installers) == 1, 'audio-install-none-or-ambiguous')
     install, installation, extra, gate_ram = installers[0]
     spans.extend([install, *extra])
@@ -550,7 +611,7 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
         'path': 'no-enabled-gpio-pending', 'purpose': 'miss-counter',
     }]
     # These non-route literals have no invented callee-pointee extent.
-    exact_route_addresses = {table, callbacks, context, parent_table, parent_state,
+    exact_route_addresses = {table, callbacks, context, context_base, parent_table, parent_state,
                              shadow, priority, descriptor, context_initial,
                              init_state, init_state + 0x640}
     for span in spans:
@@ -597,7 +658,7 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
     bound_calls[install['entry']] = ({0x2A, 0x46} if installation['deferred_callback']
                                       is not None else {6, 0x14})
     if installation['profile'] == 'direct-install-no-flag-v1':
-        bound_calls[install['entry']] = {2, 0x1E, 0x26, 0x30}
+        bound_calls[install['entry']] = {2, 14} if install['size'] == 22 else {2, 0x1E, 0x26, 0x30}
     for companion in extra:
         bound_calls[companion['entry']] = ({4} if companion['size'] == 22 else
                                            set(companion['calls']))
@@ -606,6 +667,8 @@ def _route(image: bytes, audio: dict, init: dict, scanned: dict, layouts: list[t
                                   ({0x3E, 0x9E, 0xC2, 0xFE, 0x116, 0x178, 0x190}
                                  if soc['size'] == 438 else
                                  {0x34, 0x94, 0xD6, 0x112, 0x12A, 0x168, 0x180}))
+    if soc['size'] == 394:
+        bound_calls[soc['entry']] = {0x34, 0x94, 0xBA, 0xF6, 0x10E, 0x14C, 0x164}
     for span in spans:
         for offset, target in span['calls'].items():
             if offset not in bound_calls.get(span['entry'], set()):
@@ -661,13 +724,12 @@ def find_ma5_gpio_irq_candidate(image: bytes, audio_candidate: object) -> dict:
             or audio_candidate.get('static_status') != 'candidate'
             or find_ma5_readback_candidate(image) != audio_candidate):
         return {**rejected, 'reject_reason': 'audio-same-image-unmatched'}
-    if audio_candidate.get('structural_evidence', {}).get('transport_class') in (
-            'alternate-reset-readback-v1', 'alternate-direct-reset-readback-v1'):
+    if audio_candidate.get('structural_evidence', {}).get('transport_class') == 'alternate-reset-readback-v1':
         return {**rejected, 'reject_reason': 'audio-class-irq-unverified'}
     try:
         scanned = {role: _scan(image, role) for role in
                    ('gpio_init', 'gpio_register', 'soc_dispatch', 'parent_init', 'chip_isr',
-                    'install_conditional', 'install_sense', 'install_direct')}
+                    'install_conditional', 'install_sense', 'install_direct', 'install_inline')}
         layouts = _layouts(image)
         candidates, reasons = [], []
         for init in scanned['gpio_init']:

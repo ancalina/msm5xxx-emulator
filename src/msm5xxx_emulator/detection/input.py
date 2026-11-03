@@ -10,6 +10,7 @@ from .arm import thumb_bl_target, thumb_literal_value, thumb_normalized_source_s
 from .sbi_arm import find_arm_sbi_bootstraps
 from .boot_download import find_boot_download_inputs
 from .cold_power_guard import find_cold_power_guard
+from .input_table7 import find_table7_matrix
 from .input_scanner import scanner_at
 from .input_scanner_arm_clock import arm_clock_scanner_at
 from .input_scanner_indirect import indirect_scanner_at
@@ -588,6 +589,12 @@ def find_board_status_input(image: bytes, notes: list[str] | None = None,
         found.add(guard)
         if notes is not None:
             notes.append("cold-boot power guard GPIO input: boot-allowed high")
+    table7 = find_table7_matrix(image)
+    if table7 is not None:
+        fold = table7["fold_input"]
+        found.add(BoardStatusInput(fold["address"], fold["mask"], fold["default"]))
+        if notes is not None:
+            notes.append("table-driven keypad fold input high")
     sd810 = (sd810_gpio_board_status_profile(image)
              if sd810_profile is _SD810_UNSET else sd810_profile)
     if sd810 is not None:
