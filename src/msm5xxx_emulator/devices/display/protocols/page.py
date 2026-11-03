@@ -235,6 +235,7 @@ class PageProtocolMixin:
                 "owner": owner, "prefix": 0, "eligible": False,
                 "qualified": False, "command_zero": False, "mode": None,
                 "ever_qualified": False,
+                "natural_columns": False,
                 "window_x": (0, 175), "window_y": (0, 219),
                 "partial": None, "partial_done": False, "cursor": (0, 0),
             }
@@ -256,6 +257,15 @@ class PageProtocolMixin:
             state["prefix"] = position
             if position == len(_SHIFTED_ORIENTATION_PREFIX):
                 state["eligible"] = True
+                image = getattr(self, "image", b"")
+                loaded = getattr(self, "_lcd_page_loaded_image", image)
+                if isinstance(image, bytes) and image and isinstance(loaded, bytes):
+                    from ....detection.input_table7 import find_table7_matrix
+                    profile = find_table7_matrix(image)
+                    spans = profile.get("dependencies", ()) if profile else ()
+                    state["natural_columns"] = bool(spans and all(
+                        0 <= a < a + n <= min(len(image), len(loaded))
+                        and image[a:a + n] == loaded[a:a + n] for a, n in spans))
         pending = state["mode"]
         if pending is not None:
             expected, values = pending
@@ -336,7 +346,10 @@ class PageProtocolMixin:
         start = (y - y0) * width + x - x0
         for index, pixel in enumerate(pixels):
             row, column = divmod((start + index) % (width * height), width)
-            self._pixel((y0 + row) * 176 + 175 - (x0 + column), pixel)
+            x = x0 + column
+            if not state["natural_columns"]:
+                x = 175 - x
+            self._pixel((y0 + row) * 176 + x, pixel)
         position = (start + len(pixels)) % (width * height)
         row, column = divmod(position, width)
         state["cursor"] = (x0 + column, y0 + row)
@@ -379,7 +392,7 @@ class PageProtocolMixin:
             state["ever_qualified"] = True
         for index, pixel in enumerate(decoded):
             destination = index
-            if reverse:
+            if reverse and not state["natural_columns"]:
                 y, x = divmod(index, 176)
                 destination = y * 176 + 175 - x
             self._pixel(destination, pixel)

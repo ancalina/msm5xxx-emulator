@@ -1,6 +1,7 @@
 """Temporary ordered scanout admission; unqualified pair streams stay linear."""
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from msm5xxx_emulator.devices.display.protocols.page import (
     PageProtocolMixin, _SHIFTED_ORIENTATION_PREFIX)
 
@@ -83,6 +84,17 @@ class ShiftedOrientationTests(unittest.TestCase):
         self.publish(d)
         self.assertEqual(d.pixels[0], 0)
 
+    def test_source_bound_column_direction_requires_loaded_code(self):
+        for loaded, expected in ((b'AB', 0), (b'AX', 175)):
+            with self.subTest(loaded=loaded):
+                d = Decoder()
+                d.image = b'AB'
+                d._lcd_page_loaded_image = loaded
+                with patch('msm5xxx_emulator.detection.input_table7.find_table7_matrix',
+                           return_value={'dependencies': [(0, 2)]}):
+                    self.feed(d, _SHIFTED_ORIENTATION_PREFIX)
+                self.publish(d)
+                self.assertEqual(d.pixels[0], expected)
     def test_changed_dimensions_and_foreign_pending_transaction(self):
         for command, values in ((0x88, (0x15D, 0)), (0x8A, (0x1B5, 0)),
                                 (0x88, ()), (0x8A, ())):
