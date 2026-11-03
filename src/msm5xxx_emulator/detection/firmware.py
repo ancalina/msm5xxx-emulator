@@ -721,7 +721,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         seven_row_lid = (
             "source-closed seven-row lid GPIO: open/high default" in detection_notes
         )
-        if not boot_release and not seven_row_lid:
+        power_guard = any(note.startswith("cold-boot power guard GPIO input:")
+                          for note in detection_notes)
+        if not boot_release and not seven_row_lid and not power_guard:
             detection_notes.append(
                 "Thumb byte-status mask/branch/debounce shape detected board-status input"
             )

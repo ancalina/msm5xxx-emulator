@@ -28,6 +28,7 @@ from ..detection.segmented import detect_segmented_panel
 from ..detection.firmware import ADDRESS_SPACE
 from ..detection.firmware import MAX_FLASH_SIZE
 from ..detection.firmware_image import load_firmware_image
+from ..detection.cold_power_guard import find_cold_power_guard
 from ..detection.memory_layout import aligned
 from ..detection.memory_layout import restore_sparse_nor_gap
 from ..detection.storage import fujitsu_x16_flash_ids
@@ -430,7 +431,8 @@ class DeviceStateMixin:
                             and (config.board_status_input.mask,
                                  config.board_status_input.default) == (4, 4)):
                         from ..detection.input_seven_row import find_seven_row_board_status
-                        if find_seven_row_board_status(available) == config.board_status_input:
+                        if (find_seven_row_board_status(available) == config.board_status_input
+                                or find_cold_power_guard(available) == config.board_status_input):
                             continue
                     if (label == "board status input"
                             and other_label == "stable MSM MMIO"
