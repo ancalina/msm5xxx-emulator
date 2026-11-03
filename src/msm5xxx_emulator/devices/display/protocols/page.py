@@ -54,6 +54,14 @@ class PageProtocolMixin:
             image = getattr(self, "image", b"")
             profile, reason = find_odd_byte_page_profile(image)
             if profile is None:
+                from ....detection.paired_page128 import find_paired_page128
+                profile = find_paired_page128(image)
+                if profile is not None:
+                    reason = "accepted-interleaved-page-driver"
+                    loaded = getattr(self, "_lcd_page_loaded_image", image)
+                    if not isinstance(loaded, bytes) or find_paired_page128(loaded) != profile:
+                        profile, reason = None, "interleaved-page-loaded-source-mismatch"
+            if profile is None:
                 from ....detection.byte_lane_page import find_byte_lane_page_profile
                 profile, reason = find_byte_lane_page_profile(image)
             if profile and profile.get("class_name") == "descending-paired-byte-page128-v1":
@@ -109,10 +117,16 @@ class PageProtocolMixin:
                 and (not state["acquired"] or (self._lcd_page_port != command and not
                     (profile.get("class_name") in (
                         "source-byte-paired-plane-page-v1",
-                        "descending-paired-byte-page128-v1")
+                        "descending-paired-byte-page128-v1",
+                        "interleaved-page128-v1")
                      and self._lcd_page_source_profile is profile)))):
             state["blocked"], state["reason"] = True, "qualified-foreign-page-owner"
             return False
+        # The same panel also receives low-byte halfword transactions during
+        # its second initializer and clear; they have the same page grammar.
+        if (profile.get("class_name") == "interleaved-page128-v1"
+                and size == 2 and 0 <= value <= 255):
+            size = 1
         if size != profile["access_width"] or not 0 <= value <= 255:
             self._lcd_odd_page_reject(state, "width-value-or-page-owner")
             return False
@@ -204,7 +218,9 @@ class PageProtocolMixin:
                                 if state.get("profile") else None),
                 "optical_polarity": None}
         if (state.get("profile") or {}).get("bits_per_pixel") == 2:
-            result.update(logical_y_reverse=state["profile"].get("logical_y_reverse", True), logical_plane_weights=[2, 1],
+            profile = state["profile"]
+            result.update(logical_y_reverse=profile.get("logical_y_reverse", True),
+                          logical_plane_weights=([1, 2] if profile.get("first_plane_low") else [2, 1]),
                           physical_calibration=None)
         return result
 
@@ -377,7 +393,9 @@ class PageProtocolMixin:
         cache = getattr(self, "_lcd_page_shade_cache", None)
         if cache is None:
             cache = self._lcd_page_shade_cache = {}
-        key = bits_per_pixel << 16 | second << 8 | first
+        profile = getattr(self, "_lcd_page_source_profile", None)
+        first_low = bool(profile and profile.get("first_plane_low"))
+        key = bits_per_pixel << 17 | int(first_low) << 16 | second << 8 | first
         shades = cache.get(key)
         if shades is None:
             if bits_per_pixel == 1:
@@ -386,8 +404,9 @@ class PageProtocolMixin:
                 )
             else:
                 shades = bytes(
-                    ((((first >> bit) & 1) << 1)
-                     | ((second >> bit) & 1)) * 85
+                    ((((second >> bit) & 1) << 1 | ((first >> bit) & 1))
+                     if first_low else
+                     (((first >> bit) & 1) << 1 | ((second >> bit) & 1))) * 85
                     for bit in range(8)
                 )
             # ponytail: bounded glyph cache; raise only if high-entropy page

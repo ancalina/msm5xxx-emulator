@@ -38,6 +38,7 @@ from .boot import (
 )
 from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout, find_page_plane_width
+from .paired_page128 import find_paired_page128
 from .firmware_image import load_firmware_image
 from .input_sd810 import sd810_gpio_board_status_profile
 from .input import (find_board_adc_reader, find_board_status_input,
@@ -996,6 +997,10 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     framebuffer_format = "none"
     framebuffer_flush_address = None
     framebuffer_rect_flush_address = None
+    page_panel = find_paired_page128(primary_image) if framebuffer is None else None
+    if page_panel is not None:
+        width, height = page_panel["width"], page_panel["height"]
+        detection_notes.append("interleaved two-plane page driver establishes 128x128 geometry")
     if framebuffer is not None:
         width, height, framebuffer_address, framebuffer_stride, row, rect = framebuffer
         framebuffer_format = "rgb565le"
@@ -1254,7 +1259,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         dump_status="pending", detection_notes=detection_notes,
         width=width, height=height, board_revision=revision,
         display_geometry_source=("framebuffer-descriptor"
-                                 if framebuffer is not None else "auto-default"),
+                                 if framebuffer is not None else
+                                 "interleaved-page-driver" if page_panel is not None
+                                 else "auto-default"),
         framebuffer_address=framebuffer_address,
         framebuffer_stride=framebuffer_stride,
         framebuffer_format=framebuffer_format,

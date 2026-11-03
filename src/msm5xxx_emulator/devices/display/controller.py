@@ -1557,6 +1557,11 @@ class DisplayControllerMixin:
 
     def _lcd_write_fallback(self, uc: object, access: int, address: int, size: int,
                             value: int, user_data: object) -> None:
+        # This source-proven byte page stream also resembles the generic row
+        # probe; let its two-plane owner see the initialization first.
+        if (getattr(self.config, "display_geometry_source", None) == "interleaved-page-driver"
+                and self._lcd_odd_page_write(address, size, value)):
+            return
         if self._lcd_split_port_write(address, size, value):
             return
         if self._lcd_window_raw8_separate_write(address, size, value):
