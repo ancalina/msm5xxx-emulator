@@ -22,7 +22,7 @@ PRODUCT_TUPLE_RE = re.compile(
     rb"([A-Z]\d{3,4})\x00{1,5}(MSM\d{4})\x00"
 )
 MOBILE_TYPE_RE = re.compile(
-    rb"m_MobileType:\s*([A-Z][A-Z0-9]{1,7})-([A-Z]\d{3,4});"
+    rb"m_MobileType:\s*([A-Z][A-Z0-9]{1,7})-([A-Z]{1,3}\d{3,4});"
     rb"([A-Z0-9]+)"
 )
 
@@ -81,7 +81,8 @@ def verified_embedded_model(
 
 
 def structured_mobiletype_model(
-        image: bytes, chipset: str | None = None) -> str | None:
+        image: bytes, chipset: str | None = None, *,
+        evidence_offsets: list[int] | None = None) -> str | None:
     """Return one product label closed by tuple and labelled MobileType data."""
     tuples = []
     start = 0
@@ -89,11 +90,11 @@ def structured_mobiletype_model(
         for match in PRODUCT_TUPLE_RE.finditer(
                 image, max(0, position - 24), min(len(image), position + 9)):
             if match.start(3) == position:
-                tuples.append((match.group(2), match.group(3)))
+                tuples.append((match.group(2), match.group(3), match.start()))
         start = position + 3
     if len(tuples) != 1:
         return None
-    product, tuple_chipset = tuples[0]
+    product, tuple_chipset, tuple_at = tuples[0]
     if (chipset or detect_chipset(image, "")) != tuple_chipset.decode("ascii"):
         return None
     matches = []
@@ -103,11 +104,13 @@ def structured_mobiletype_model(
             image, position, min(len(image), position + 64)
         )
         if match is not None and match.group(2) == product:
-            matches.append((match.group(1), match.group(2)))
+            matches.append((match.group(1), match.group(2), match.start()))
         start = position + 1
     if len(matches) != 1:
         return None
-    brand, mobile_product = matches[0]
+    brand, mobile_product, mobile_at = matches[0]
+    if evidence_offsets is not None:
+        evidence_offsets.extend((tuple_at, mobile_at))
     return canonical_model(brand + b"-" + mobile_product)
 
 
@@ -136,7 +139,8 @@ def _company_key(value: str) -> tuple[str, ...]:
                  if word not in {"CO", "LTD", "INC", "CORPORATION", "INCORPORATED"})
 
 
-def _product_constructor_model(image: bytes) -> tuple[str | None, str]:
+def _product_constructor_model(image: bytes, *,
+                               evidence_offsets: list[int] | None = None) -> tuple[str | None, str]:
     """Bind a full typed self-description producer to an independent AT record."""
     def text(at: int, limit: int = 64) -> str | None:
         if not 0 <= at < len(image):
@@ -196,12 +200,14 @@ def _product_constructor_model(image: bytes) -> tuple[str | None, str]:
         model = canonical_model(match.group(2))
         if (not constructor <= match.start() < constructor + len(_PRODUCT_CONSTRUCTOR)
                 and _company_key(match.group(1).decode("ascii")) == company):
-            matches.append(model)
+            matches.append((model, match.start()))
     if len(matches) != 1:
         return None, "product-constructor-at-ambiguous" if matches else "product-constructor-at-unclosed"
-    if matches[0] != company[0] + "-" + product:
+    if matches[0][0] != company[0] + "-" + product:
         return None, "product-constructor-at-mismatch"
-    return matches[0], "provisional-product-constructor-at"
+    if evidence_offsets is not None:
+        evidence_offsets.extend((constructor, matches[0][1]))
+    return matches[0][0], "provisional-product-constructor-at"
 
 
 
@@ -410,34 +416,101 @@ def _browser_product_model(image: bytes) -> tuple[str | None, str]:
         return None, 'browser-product-ambiguous'
     return complete[0] if complete else (None, 'browser-product-none')
 
+def _model_evidence(image: bytes, scores: dict[str, int],
+                    chipset: str | None) -> list[tuple[str, str, int, tuple[int, ...]]]:
+    """Collect independent identity observations and their firmware offsets."""
+    observations = []
+    upper = image.upper()
+    offsets: dict[str, list[int]] = {}
+    for match in MODEL_RE.finditer(upper):
+        offsets.setdefault(canonical_model(match.group()), []).append(match.start())
+    for model, score in scores.items():
+        # Context-bound repeated literals are useful, but inherited strings are common.
+        if score >= 5:
+            observations.append((model, "embedded", score, tuple(offsets.get(model, ()))))
+    # Manufacturer-bound CDM labels are corroborated by a distinct version record.
+    cdm_records = list(re.finditer(
+        rb"(?<![A-Z0-9])CDM-?(\d{4})\x00UTSTARCOM INCORPORATED\x00", upper))
+    if len(cdm_records) == 1:
+        record = cdm_records[0]
+        version = upper.find(b"UTSTARCOM INCORPORATED\x00S/W VER:")
+        if version >= 0 and version // 0x1000 != record.start() // 0x1000:
+            observations.append(("CDM-" + record.group(1).decode("ascii"),
+                                 "manufacturer-cdm", 6, (record.start(), version)))
+    appeal_records = list(re.finditer(rb"APPEAL TELELCOM\x00(V[0-9]{3,4})\x00", upper))
+    if len(appeal_records) == 1:
+        record = appeal_records[0]
+        token = record.group(1)
+        browser = upper.find(b"; " + token + b"; CELLPHONE)")
+        version = upper.find(b"1.0\x00" + token + b"\x00")
+        if browser >= 0 and version >= 0 and len({record.start() // 0x1000,
+                                                    browser // 0x1000,
+                                                    version // 0x1000}) == 3:
+            # Three distinct product, handset and version records corroborate the label.
+            observations.append((token.decode("ascii"), "appeal-product", 6,
+                                 (record.start(1), browser + 2, version + 4)))
+    mobile_records = list(MOBILE_TYPE_RE.finditer(image))
+    mobile_models = {canonical_model(match.group(1) + b"-" + match.group(2))
+                     for match in mobile_records}
+    if len(mobile_models) == 1:
+        mobile = next(iter(mobile_models))
+        locations = offsets.get(mobile, [])
+        if len({offset // 0x1000 for offset in locations}) >= 2:
+            # A unique labelled mobile type corroborated elsewhere is a candidate.
+            observations.append((mobile, "mobiletype-repeated", 5,
+                                 tuple(match.start() for match in mobile_records)
+                                 + tuple(locations)))
+    product_offsets: list[int] = []
+    product, reason = _product_constructor_model(image, evidence_offsets=product_offsets)
+    if product:
+        # A typed constructor and an independent AT record identify a product.
+        observations.append((product, reason, 9, tuple(product_offsets)))
+    structured_offsets: list[int] = []
+    structured = structured_mobiletype_model(image, chipset, evidence_offsets=structured_offsets)
+    if structured:
+        # The mobile type is tied to a unique product/chipset tuple.
+        observations.append((structured, "structured-mobiletype", 8, tuple(structured_offsets)))
+    browser, reason = _browser_product_model(image)
+    if browser:
+        # Browser labels can identify software rather than the physical handset.
+        positions = tuple(match.start(1) for match in _BROWSER_RECORD.finditer(image)
+                          if match.group(1).decode("ascii") == browser)
+        observations.append((browser, reason, 4, positions))
+    return observations
+
+
 def detect_model(image: bytes, path: Path,
                  scores: dict[str, int] | None = None,
                  chipset: str | None = None, *,
                  notes: list[str] | None = None) -> str | None:
-    """Select a model solely from firmware identity records."""
+    """Aggregate firmware observations, preserving verified embedded identities."""
     scores = scores if scores is not None else embedded_model_scores(image)
     verified = verified_embedded_model(image, scores)
-    product, reason = _product_constructor_model(image)
-    if notes is not None and reason != "product-constructor-none":
-        notes.append(reason)
-    browser, browser_reason = _browser_product_model(image)
-    if notes is not None and browser_reason != "browser-product-none":
-        notes.append(browser_reason)
-    if browser is not None and (product or verified) not in (None, browser):
-        if notes is not None:
-            notes.append("browser-product-strong-identity-conflict")
-    if product is not None:
-        if verified in (None, product):
-            return product
-        if notes is not None:
-            notes.append("product-constructor-heuristic-conflict")
-    if verified is not None:
-        return verified
-    structured = structured_mobiletype_model(image, chipset)
-    if structured is not None:
-        if browser is not None and browser != structured and notes is not None:
-            notes.append("browser-product-strong-identity-conflict")
-        return structured
-    if browser is not None:
-        return browser
-    return None
+    observations = _model_evidence(image, scores, chipset)
+    families: dict[tuple[str, str], int] = {}
+    for model, kind, weight, _ in observations:
+        # Mobile type and embedded literals overlap; count their family once.
+        family = "strings" if kind in {"embedded", "mobiletype-repeated", "structured-mobiletype"} else kind
+        key = (model, family)
+        families[key] = max(families.get(key, 0), weight)
+    totals: dict[str, int] = {}
+    for (model, _), weight in families.items():
+        totals[model] = totals.get(model, 0) + weight
+    adjusted = {model: total - max((other for candidate, other in totals.items()
+                                    if candidate != model), default=0) // 2
+                for model, total in totals.items()}
+    ranked = sorted(adjusted, key=lambda model: (-adjusted[model], model))
+    # A verified identity cannot be displaced by a provisional observation.
+    winner = verified or (ranked[0] if ranked and adjusted[ranked[0]] >= 4
+                          and (len(ranked) == 1 or
+                               totals[ranked[0]] - totals[ranked[1]] >= 3)
+                          else None)
+    if notes is not None:
+        for model, kind, weight, offsets in observations:
+            locations = ",".join(f"0x{offset:X}" for offset in offsets) or "unavailable"
+            notes.append(f"model-evidence {kind} {model} score={weight} offsets={locations}")
+        if winner:
+            notes.append(f"model-evidence winner={winner} tier={'verified' if verified else 'candidate'}")
+        if len(totals) > 1:
+            notes.append("model-evidence conflict")
+    return winner

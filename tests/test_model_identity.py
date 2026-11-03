@@ -1,4 +1,4 @@
-from corpus import snippet
+from corpus import firmware_path, snippet
 import dataclasses
 import struct
 import tempfile
@@ -52,6 +52,38 @@ def fixture(start=0x100, *, at_product=b'LG-AB123', company=b'LG ELECTRONICS CO.
 
 
 class ModelIdentityTests(unittest.TestCase):
+    def test_manufacturer_record_needs_separate_version_record(self):
+        record = b"CDM9999\0UTStarcom Incorporated\0"
+        version = b"UTStarcom Incorporated\0S/W VER:"
+        raw = record + b"\xff" * 0x2000 + version
+        notes = []
+        self.assertEqual(detect_model(raw, Path("anything.bin"), notes=notes), "CDM-9999")
+        self.assertTrue(any("manufacturer-cdm" in note and "0x0" in note for note in notes))
+        self.assertIsNone(detect_model(record, Path("CDM9999.bin")))
+
+    def test_product_label_survives_renaming(self):
+        image = firmware_path("Motorola-V741.bin").read_bytes()
+        notes = []
+        self.assertEqual(detect_model(image, Path("unrelated.bin"), notes=notes), "V741")
+        self.assertTrue(any("appeal-product" in note for note in notes))
+
+    def test_close_conflicting_evidence_is_unknown(self):
+        notes = []
+        self.assertIsNone(detect_model(b"", Path("unrelated.bin"),
+                                       {"LG-AB123": 8, "LG-CD456": 6}, notes=notes))
+        self.assertIn("model-evidence conflict", notes)
+
+    def test_mobiletype_repeated_identity_and_conflict(self):
+        raw = bytearray(b"\xff" * 0x4000)
+        raw[0x100:0x100 + len(b"m_MobileType: LG-KP2006;FW")] = b"m_MobileType: LG-KP2006;FW"
+        raw[0x1100:0x1109] = b"LG-KP2006"
+        raw[0x2100:0x2109] = b"LG-KP2006"
+        notes = []
+        self.assertEqual(detect_model(bytes(raw), Path("other.bin"), notes=notes), "LG-KP2006")
+        self.assertTrue(any("mobiletype-repeated" in note and "0x100" in note for note in notes))
+        self.assertEqual(detect_model(bytes(raw), Path("LG-KP2006.bin"), {"SCH-X777": 10}), "SCH-X777")
+
+
     def test_full_detection_changes_identity_notes_without_hardware_or_state_layout(self):
         from msm5xxx_emulator.detection import detect
         raw = fixture()
@@ -66,7 +98,7 @@ class ModelIdentityTests(unittest.TestCase):
                 filename_only = detect(path)
         self.assertEqual(actual.model, 'LG-AB123')
         self.assertIsNone(actual.verified_model)
-        self.assertIn('provisional-product-constructor-at', actual.detection_notes)
+        self.assertTrue(any('provisional-product-constructor-at' in note for note in actual.detection_notes))
         before, after = dataclasses.asdict(filename_only), dataclasses.asdict(actual)
         for key in ('model', 'detection_notes'):
             before.pop(key)
@@ -82,7 +114,7 @@ class ModelIdentityTests(unittest.TestCase):
                 for name in ('neutral.bin', 'SCH-X123.bin', 'renamed-copy.bin'):
                     notes = []
                     self.assertEqual(detect_model(raw, Path(name), notes=notes), 'LG-AB123')
-                    self.assertEqual(notes, ['provisional-product-constructor-at'])
+                    self.assertTrue(any('provisional-product-constructor-at' in note for note in notes))
                 self.assertIsNone(verified_embedded_model(raw))
 
     def test_missing_mismatched_or_duplicate_independent_record(self):
@@ -161,7 +193,7 @@ class ModelIdentityTests(unittest.TestCase):
         notes = []
         self.assertEqual(detect_model(raw, Path('SCH-X123.bin'),
                                       {'SCH-X777': 10}, notes=notes), 'SCH-X777')
-        self.assertIn('product-constructor-heuristic-conflict', notes)
+        self.assertIn('model-evidence conflict', notes)
         self.assertIsNone(detect_model(b'none', Path('SCH-X123.bin')))
         self.assertEqual(detect_model(raw, Path('other.bin')), detect_model(raw, Path('SCH-X123.bin')))
         self.assertEqual(embedded_model_scores(at_only)['LG-CD456'], 2)
@@ -208,22 +240,22 @@ class BrowserModelIdentityTests(unittest.TestCase):
             notes=[]
             self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),notes=notes),'CDM-1234/T10')
             self.assertIsNone(verified_embedded_model(bytes(raw)))
-            self.assertIn('provisional-browser-product-constructor',notes)
+            self.assertTrue(any('provisional-browser-product-constructor' in note for note in notes))
             notes=[]
             self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),{'SCH-X777':10},notes=notes),'SCH-X777')
-            self.assertIn('browser-product-strong-identity-conflict',notes)
+            self.assertIn('model-evidence conflict',notes)
     def test_existing_constructor_identity_keeps_priority(self):
         raw,_=browser_fixture();strong=fixture(0x3000)
         raw[0x3000:len(strong)]=strong[0x3000:]
         notes=[]
         self.assertEqual(detect_model(bytes(raw),Path('neutral.bin'),notes=notes),'LG-AB123')
-        self.assertIn('browser-product-strong-identity-conflict',notes)
+        self.assertIn('model-evidence conflict',notes)
         raw,_=browser_fixture()
         record=b'BRAND\0X123\0MSM5000\0m_MobileType: BRAND-X123;FW'
         raw[0x5000:0x5000+len(record)]=record
         notes=[]
         self.assertEqual(detect_model(bytes(raw),Path('neutral.bin'),chipset='MSM5000',notes=notes),'BRAND-X123')
-        self.assertIn('browser-product-strong-identity-conflict',notes)
+        self.assertIn('model-evidence conflict',notes)
     def test_raw_record_missing_or_foreign_callee_and_caller_reject(self):
         from msm5xxx_emulator.detection.model import _browser_product_model
         raw,sites=browser_fixture()
@@ -308,7 +340,7 @@ class ADRBrowserIdentityTests(unittest.TestCase):
             self.assertIsNone(verified_embedded_model(bytes(raw)))
             notes=[]
             self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),{'SCH-X777':10},notes=notes),'SCH-X777')
-            self.assertIn('browser-product-strong-identity-conflict',notes)
+            self.assertIn('model-evidence conflict',notes)
     def test_fixed_bodies_calls_getter_record_frame_and_bounds_fail_closed(self):
         from msm5xxx_emulator.detection.model import _BROWSER_ADR_BODIES,_browser_product_model
         raw,sites=adr_browser_fixture()
