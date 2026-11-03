@@ -152,6 +152,8 @@ public final class MainActivity extends Activity {
             new AtomicReference<>();
     private final AtomicBoolean framePosted = new AtomicBoolean();
     private final InputTiming inputTiming = new InputTiming();
+    // Only the key-edge executor accesses this state.
+    private final KeyPressDuration keyPressDuration = new KeyPressDuration();
     private TextView profileView;
     private TextView sessionView;
     private TextView pcView;
@@ -1311,7 +1313,14 @@ public final class MainActivity extends Activity {
                     + " pressed=" + pressed + " queue_us="
                     + (executorStart - probe.startNanos) / 1000L);
             try {
+                if (!pressed) {
+                    SystemClock.sleep(keyPressDuration.releaseDelayMillis(
+                            target, bit, SystemClock.elapsedRealtimeNanos()));
+                }
                 target.setKey(bit, eventCode, pressed);
+                if (pressed) {
+                    keyPressDuration.pressed(target, bit, SystemClock.elapsedRealtimeNanos());
+                }
                 inputTiming.dispatched(probe,
                         SystemClock.elapsedRealtimeNanos());
             } catch (IOException | RuntimeException error) {
