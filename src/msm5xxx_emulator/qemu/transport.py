@@ -246,6 +246,26 @@ RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE = bytes.fromhex(
     "002108e06218167800ab1e7056785e701a882a800231b942f4d310210170"
 )
 
+def qemu_legacy_board_revision_property(image: bytes, flash_size: int,
+                                        keypad: dict | None) -> str | None:
+    """Qualify the board revision using the flash and DMD reader chain."""
+    if keypad is None:
+        return None
+    from msm5xxx_emulator.detection.sharp_intel import _legacy_sharp_pcr_profile
+    from msm5xxx_emulator.detection.dmd5000 import find_dmd5000_profile
+    if _legacy_sharp_pcr_profile(image, flash_size) is None:
+        return None
+    dmd = find_dmd5000_profile(image)
+    if dmd is None:
+        return None
+    reader = thumb_bl_target(image, dmd["entry"] + 0x1c)
+    if (reader is None or image[reader:reader + 20] != bytes.fromhex(
+            "08b5044800ab007b58700020187000a8008808bd")
+            or thumb_literal_value(image, reader + 2, 0) != 0x03000750):
+        return None
+    return "board-revision=300075c:60"
+
+
 def qemu_sharp_board_status_property(
         image: bytes, loaded: bytes, config: object, *, claimed: bool,
 ) -> tuple[str | None, str | None]:
@@ -4994,7 +5014,12 @@ class Transport:
         revision_property, revision_reject = qemu_board_revision_property(
             self.config
         )
-        if revision_property is not None:
+        from msm5xxx_emulator.detection.legacy_keypad import find_legacy_six_row_keypad
+        legacy_keypad = find_legacy_six_row_keypad(detector_image)
+        if revision_property is None and revision_reject is None:
+            revision_property = qemu_legacy_board_revision_property(
+                detector_image, self.config.flash_size, legacy_keypad)
+            if revision_property is not None:
             machine += f",{revision_property}"
         elif revision_reject is not None:
             self.config.detection_notes.append(
@@ -5010,6 +5035,18 @@ class Transport:
             self.config.detection_notes.append(
                 "source-closed seven-row scanner: default open lid contact")
         board_status = self.config.board_status_input
+        if legacy_keypad is not None and board_status is None:
+            board_status = BoardStatusInput(0x03000664, 0x10, 0x10)
+            machine += ",board-status-input-peer=300066c:20:20"
+            direct = legacy_keypad
+            self.decoder.direct_input_profile = direct
+            self.decoder.direct_input_positions = self.decoder._direct_matrix_positions(direct)
+            machine += (f",matrix-gpio=3000694:{direct['presence_site']:x}:"
+                        f"{direct['sense_site'] + 2:x}:3000660:3f:0:0:0:0:10")
+            self.matrix_input_profile = direct
+            self.config.detection_notes.append("source GPIO keypad and external board inputs")
+        else:
+            legacy_keypad = None
         self._sd840_status_source_closed = bool(
             board_status is None and direct is not None
             and qemu_sd840_status_source(detector_image, self.config, direct)
@@ -5063,6 +5100,7 @@ class Transport:
             machine += (f",sd810-fold-irq={group:x}:{vector:x}:{callback:x}:"
                         f"{slot:x}:{handler:x}")
         if (direct is not None
+                and direct is not legacy_keypad
                 and direct.get("grammar") == "direct-low-nibble-6-row-v1"
                 and int(direct.get("sense_bits", 0)) == 4):
             register = int(direct["register"])
