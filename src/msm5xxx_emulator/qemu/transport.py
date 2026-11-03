@@ -994,7 +994,8 @@ def qemu_audio_irq_property(audio: object, config: FirmwareConfig) -> tuple[str 
     route = audio.get('irq_controller_candidate')
     if (audio.get('family') != 'ma2' or audio.get('grammar') != 'ma2-command-v1'
             or not isinstance(route, dict) or route.get('status') != 'candidate'
-            or route.get('profile') != 'two-bank-callback-descriptor-v1'):
+            or route.get('profile') not in ('two-bank-callback-descriptor-v1',
+                                             'byte-count-halfword-mask-v1')):
         return None, 'descriptor-class-unavailable'
     link = route.get('callback_linkage')
     words = route.get('words')
@@ -1018,10 +1019,14 @@ def qemu_audio_irq_property(audio: object, config: FirmwareConfig) -> tuple[str 
             or fields[1:3] != [0x03000624, 0x0300062c]
             or not 0 < fields[3] <= 0x8000 or fields[3] & (fields[3] - 1)
             or words[6] != 0
-            or config.rex_irq_status_address != 0x03000620
-            or config.rex_irq_enable_address != 0x03000628):
+            or not ((config.rex_irq_status_address == 0x03000620
+                     and config.rex_irq_enable_address == 0x03000628)
+                    or (route.get('profile') == 'byte-count-halfword-mask-v1'
+                        and (w1c_rex_irq_profile(config) or '').startswith(
+                            '3000620:3000628:')))):
         return None, 'audio-route-controller-unverified'
-    return 'audio-irq-route=' + ':'.join(f'{value:x}' for value in fields), None
+    suffix = ':1' if route.get('profile') == 'byte-count-halfword-mask-v1' else ''
+    return 'audio-irq-route=' + ':'.join(f'{value:x}' for value in fields) + suffix, None
 
 
 def qemu_audio_packet_property(image: bytes, config: object,
@@ -1576,7 +1581,7 @@ def qemu_audio_sites(audio: object) -> str | None:
         and type(base) is int and (0x02001000 <= base < 0x02800000
                                    or base == 0x02880000 and audio.get("sites") == {
                                        "read_2": [0x1595c4],
-                                       "write_0": [0x15953c, 0x15957e, 0x1595be],
+                                       "write_0": [0x15953c, 0x15957e, 0x1595be, 0x159f2c],
                                        "write_2": [0x159542, 0x159590],
                                    })
         and type(data_offset) is int and data_offset == 2
@@ -5024,7 +5029,7 @@ class Transport:
                 )
                 self.audio_stream_enabled = True
                 self.audio_stream_status = "pending"
-                if experimental_audio_refill:
+                if experimental_audio_refill or (audio.get("irq_controller_candidate") or {}).get("profile") == "byte-count-halfword-mask-v1":
                     irq_property, irq_reject = qemu_audio_irq_property(audio, self.config)
                     if irq_property is not None:
                         machine += ',' + irq_property

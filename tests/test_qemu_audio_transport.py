@@ -466,7 +466,7 @@ class QEMUAudioTransportTests(unittest.TestCase):
         x4000 = {
             "family": "ma2", "base": 0x02880000, "data_offset": 2,
             "sites": {"read_2": [0x1595c4],
-                      "write_0": [0x15953c, 0x15957e, 0x1595be],
+                      "write_0": [0x15953c, 0x15957e, 0x1595be, 0x159f2c],
                       "write_2": [0x159542, 0x159590]},
         }
         self.assertIsNotNone(qemu_audio_sites(x4000))

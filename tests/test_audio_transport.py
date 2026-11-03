@@ -1,7 +1,7 @@
 """Yamaha transport detector and write-stream checks."""
 from __future__ import annotations
 
-from corpus import snippet
+from corpus import snippet, firmware_path
 
 import struct
 import threading
@@ -179,6 +179,19 @@ def _sequence_clear_image(shift: int = 0) -> tuple[bytearray, dict[str, int]]:
 
 
 class AudioTransportTests(unittest.TestCase):
+    def test_ma2_callback_irq_profile(self):
+        image = firmware_path("x4000.bin").read_bytes()
+        audio = find_audio_transport(image)
+        route = audio["irq_controller_candidate"]
+        self.assertEqual(route["profile"], "byte-count-halfword-mask-v1")
+        self.assertEqual(route["callback_linkage"]["state_address"], 0x01269660)
+        self.assertIn(0x159f2c, audio["sites"]["write_0"])
+        altered = bytearray(image)
+        altered[0x159f18] ^= 1
+        self.assertNotEqual(find_audio_transport(bytes(altered)).get(
+            "irq_controller_candidate", {}).get("profile"),
+            "byte-count-halfword-mask-v1")
+
     def test_optional_clear_contract_relocated_and_byte_dependencies(self):
         for shift in (0, 0x2000):
             image, roles = _sequence_clear_image(shift)

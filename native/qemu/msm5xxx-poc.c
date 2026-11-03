@@ -706,6 +706,7 @@ struct MSM5xxxPOCMachineState {
     uint64_t matrix_input_rejections;
     uint32_t audio_irq_route[10];
     bool audio_irq_configured;
+    bool audio_irq_byte_count;
     bool audio_irq_asserted;
     uint32_t audio_irq_gate_status;
     uint32_t audio_irq_assertions;
@@ -3745,8 +3746,8 @@ static bool msm5xxx_poc_ma2_irq_gate(MSM5xxxPOCMachineState *s)
     }
     s->audio_irq_gate_status = 3;
     state = msm5xxx_poc_guest_u32(r[7] + 4);
-    if (((state >> 8) & 0xff) < 1 || ((state >> 8) & 0xff) > 4 ||
-        (state >> 16) & ~0xfu) {
+    unsigned count = s->audio_irq_byte_count ? state & 0xff : (state >> 8) & 0xff;
+    if (count < 1 || count > 4 || (state >> 16) & ~0xfu) {
         return false;
     }
     for (i = 0; i < 4; i++) {
@@ -5975,6 +5976,22 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
         return false;
     }
     qemu_mutex_lock(&s->audio_core_lock);
+    if (s->audio_base == 0x02880000 &&
+        s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
+        s->ma2_audio.index == MSM5XXX_MA2_STATUS1) {
+        *value = msm5xxx_poc_ma2_fifo_flags(s);
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return true;
+    }
+    if (s->audio_base == 0x02880000 &&
+        s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
+        s->ma2_audio.index == MSM5XXX_MA2_WAVE_STATUS &&
+        !s->ma2_audio.adpcm_irq_ctrl &&
+        !(s->ma2_audio.control & MSM5XXX_MA2_ADPCM_START)) {
+        *value = 0;
+        qemu_mutex_unlock(&s->audio_core_lock);
+        return true;
+    }
     if (s->audio_irq_configured && s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
         s->ma2_audio.index == MSM5XXX_MA2_STATUS1 && msm5xxx_poc_ma2_irq_gate(s)) {
         *value = msm5xxx_poc_ma2_fifo_flags(s);
@@ -16213,6 +16230,9 @@ static char *msm5xxx_poc_get_audio_irq_route(Object *obj, Error **errp)
             g_string_append_printf(text, "%s%x", i ? ":" : "", s->audio_irq_route[i]);
         }
     }
+    if (s->audio_irq_configured && s->audio_irq_byte_count) {
+        g_string_append(text, ":1");
+    }
     return g_string_free(text, false);
 }
 
@@ -16224,8 +16244,10 @@ static void msm5xxx_poc_set_audio_irq_route(Object *obj, const char *value,
     uint32_t r[10];
     unsigned i;
 
-    if (g_strv_length(parts) != 10) {
-        error_setg(errp, "audio-irq-route requires ten hex fields");
+    unsigned count = g_strv_length(parts);
+
+    if (count != 10 && count != 11) {
+        error_setg(errp, "audio-irq-route requires ten fields and optional profile");
         return;
     }
     for (i = 0; i < 10; i++) {
@@ -16247,7 +16269,12 @@ static void msm5xxx_poc_set_audio_irq_route(Object *obj, const char *value,
         error_setg(errp, "audio-irq-route outside supported descriptor class");
         return;
     }
+    if (count == 11 && strcmp(parts[10], "1")) {
+        error_setg(errp, "unsupported audio-irq-route profile");
+        return;
+    }
     memcpy(s->audio_irq_route, r, sizeof(r));
+    s->audio_irq_byte_count = count == 11;
     s->audio_irq_configured = true;
 }
 

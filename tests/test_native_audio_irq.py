@@ -32,10 +32,10 @@ static CPUClass test_class = {.get_pc=get_pc};
 #define MSM5XXX_POC_AUDIO_STATUS_REJECTED 3
 static bool qemu_in_vcpu_thread(void) { return true; }
 typedef struct {
-    uint32_t audio_irq_route[10], ram_base, ram_size;
+    uint32_t audio_irq_route[10], ram_base, ram_size, audio_base;
     uint32_t audio_irq_gate_status, audio_irq_assertions;
     uint32_t rex_irq_status_address, rex_irq_enable_address;
-    bool audio_irq_configured, audio_ma2, audio_enabled, rex_irq_c80;
+    bool audio_irq_configured, audio_irq_byte_count, audio_ma2, audio_enabled, rex_irq_c80;
     bool rex_irq_read_consume, audio_stream_rejected, audio_irq_asserted;
     unsigned rex_irq_bank_count, audio_core_lock;
     uint16_t audio_command_pending_count[4], rex_irq_pending[2];
@@ -89,7 +89,11 @@ int main(void) {
     s.audio_command_pending_count[0]=0; memory[20]=0;
     msm5xxx_poc_ma2_irq_update(&s); assert(s.rex_irq_pending[1]==4);
     assert(s.audio_irq_gate_status==3);
-    memory[20]=0x3001; memory[5]=0;
+    memory[20]=0x3001; s.audio_irq_byte_count=true; memory[17]=0x10001;
+    msm5xxx_poc_ma2_irq_update(&s); assert(s.audio_irq_gate_status==4);
+    memory[17]=0x10100;
+    msm5xxx_poc_ma2_irq_update(&s); assert(s.audio_irq_gate_status==3);
+    s.audio_irq_byte_count=false; memory[5]=0;
     msm5xxx_poc_ma2_irq_update(&s); assert(s.audio_irq_gate_status==2);
     memory[5]=0x2001; s.ma2_audio.fm_irq_ctrl=0x10;
     msm5xxx_poc_ma2_irq_update(&s); assert(s.rex_irq_pending[1]==4);
@@ -116,7 +120,13 @@ int main(void) {
     assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
     memory[20]=0x3001; s.audio_stream_rejected=true;
     assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
-    s.audio_stream_rejected=false; test_pc=0x122;
+    s.audio_stream_rejected=false; s.audio_base=0x02880000;
+    memory[20]=0; value=0xdead;
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==14);
+    s.ma2_audio.index=MSM5XXX_MA2_WAVE_STATUS; value=0xdead;
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0);
+    s.ma2_audio.index=MSM5XXX_MA2_STATUS1;
+    s.audio_base=0; value=0xdead; test_pc=0x122;
     assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
     test_pc=0x120;
     assert(!msm5xxx_poc_audio_read_owned(&s,2,2,&value) && value==0xdead);

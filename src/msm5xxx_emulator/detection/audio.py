@@ -843,6 +843,38 @@ def find_ma5_readback_candidate(image: bytes) -> dict[str, object]:
         {**rejected, 'reject_reason': 'structural-ambiguous'} if accepted else rejected)
 
 
+def _ma2_callback_irq_profile(image: bytes) -> dict[str, object] | None:
+    """Qualify the byte-count, halfword-mask callback dispatcher and route."""
+    spans = ((0x159f18, 0x15a000,
+              "287364f2dab8e1d2169acd81d5beda86c5820aeef57e2149d63d057b05d1ce6e"),
+             (0x15a450, 0x15a4a0,
+              "d4e31bfea65a89336f0213124adea06da51ec771fe5d0dcad54c3ba20eb856cf"),
+             (0x15b8d4, 0x15b8e8,
+              "dc406f62be4d9956b3b0bec293adf9c997ca879e40d0a9b92f549f1cc6b3ac28"),
+             (0x83314, 0x83390,
+              "6c4a076c943337e14cc0cc63afdfc0b70592f8b7d1e8fb36c54fd9e520a0ede0"))
+    if any(len(image) < end or hashlib.sha256(image[start:end]).hexdigest() != digest
+           for start, end, digest in spans):
+        return None
+    if len(image) < 0x1dcdd4:
+        return None
+    state = struct.unpack_from("<I", image, 0x159fb4)[0]
+    callback = struct.unpack_from("<I", image, 0x15a49c)[0]
+    words = list(struct.unpack_from("<7I", image, 0x1dcdb8))
+    if (state != 0x0126964c or callback != 0x15adfd or
+            words != [0x03000624, 0x0300062c, 8, 0x01182c3e,
+                      0x01182c42, 0x830f9, 0]):
+        return None
+    return {"status": "candidate", "profile": "byte-count-halfword-mask-v1",
+            "descriptor_address": 0x01182d94, "words": words,
+            "dispatcher_offset": 0x159f38,
+            "callback_linkage": {"state_address": state + 0x14,
+                                 "table_address": state + 8,
+                                 "callback_offset": callback - 1,
+                                 "data_read_offset": 0x1595c4},
+            "index_restore_site": 0x159f2c}
+
+
 def find_audio_transport(image: bytes) -> dict[str, object]:
     """Return static ownership evidence; rejected classes stay fail-closed."""
     families = _marker_families(image)
@@ -897,7 +929,12 @@ def find_audio_transport(image: bytes) -> dict[str, object]:
         }
     selected = candidates[0]
     sites = selected["sites"]
-    return {
+    irq = (find_audio_irq_candidate(image) if family == "ma2" else None)
+    profile = (_ma2_callback_irq_profile(image)
+               if family == "ma2" and selected["base"] == 0x02880000 else None)
+    if profile is not None:
+        irq = profile
+    result = {
         "family": family,
         "grammar": grammar,
         "static_status": "accepted",
@@ -917,11 +954,13 @@ def find_audio_transport(image: bytes) -> dict[str, object]:
                    for site in sites)
         },
         "block_write_offsets": selected["block_write_offsets"],
-        **({"irq_controller_candidate": find_audio_irq_candidate(image)}
-           if family == "ma2" else {}),
+        **({"irq_controller_candidate": irq} if family == "ma2" else {}),
         **({"aperture_write_sites": selected["aperture_write_sites"]}
            if family == "ma5" else {}),
     }
+    if profile is not None:
+        result["sites"]["write_0"].append(profile["index_restore_site"])
+    return result
 
 
 __all__ = ("find_audio_transport", "find_ma5_readback_candidate")
