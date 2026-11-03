@@ -126,6 +126,9 @@ class SD810StatusTests(unittest.TestCase):
         probe._init_input_state(config)
         profile = probe.direct_input_profile
         self.assertIsNotNone(profile)
+        from msm5xxx_emulator.qemu.transport import qemu_lg_matrix_irq_property
+        config.model = None
+        self.assertIsNone(qemu_lg_matrix_irq_property(config, profile))
         route = profile['timer_bridge']['irq_route']
         sink = profile['raw_enqueue'] - config.load_address
         source = sd810_fold_irq_source(probe.image, sink, route)

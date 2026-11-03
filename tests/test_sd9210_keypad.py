@@ -44,8 +44,9 @@ class SD9210KeypadTest(unittest.TestCase):
             changed = bytearray(image)
             changed[profile["function"] + offset] ^= 1
             self.assertIsNone(qemu_sd9210_low5_contacts(changed, config, profile))
-        altered = dict(profile, row_order=[0, 1, 2, 3, 4, 5])
+        altered = dict(profile, row_order=[3, 0, 1, 2, 4, 5])
         self.assertIsNone(qemu_sd9210_low5_contacts(image, config, altered))
+        self.assertIsNone(qemu_lg_matrix_irq_property(config, altered))
         altered = dict(profile)
         altered['timer_bridge'] = {**profile['timer_bridge'], 'irq_route': {}}
         self.assertIsNone(qemu_sd9210_low5_contacts(image, config, altered))

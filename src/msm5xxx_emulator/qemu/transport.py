@@ -683,6 +683,8 @@ def qemu_lg_matrix_irq_property(config: object,
             ("lg-kp-legacy-low5-6x5-v1", 0x010bd680),
             ("lg-descriptor-low5-6x5-raw-v1", 0x01103684),
             ("lg-descriptor-low5-6x5-raw-v1", 0x01816618)}
+            or (profile.get("descriptor_pointer") == 0x01816618
+                and profile.get("row_order") != [4, 0, 1, 2, 3, 5])
             or getattr(config, "rex_irq_arm_address", None) is not None):
         return None
     bridge = profile.get("timer_bridge")
