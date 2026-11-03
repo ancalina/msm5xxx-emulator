@@ -170,6 +170,53 @@ class ShiftedOrientationTests(unittest.TestCase):
         self.assertTrue(d.shifted_orientation_snapshot()['qualified'])
         self.assertEqual(d.display_frame[:3], b'\0\0\xff')
 
+    def test_partial_window_uses_controller_coordinates(self):
+        import test_lcd_geometry as geometry
+        d = geometry.LCDGeometryTests()._routing_emulator(width=176, height=220)
+        def write(address, value):
+            d._lcd_write(None, 0, address, 2, value, None)
+        def command(value, *arguments):
+            write(0x02000000, 0)
+            write(0x02000000, value)
+            for argument in arguments:
+                write(0x02000002, argument)
+        for address, _, value in _SHIFTED_ORIENTATION_PREFIX:
+            write(address, value)
+        for _ in range(176 * 220):
+            write(0x02000002, 0)
+            write(0x02000002, 0x3e)
+        command(0x88, 10, 4)
+        command(0x8a, 6, 2)
+        command(0x42, 2, 4)
+        command(0x44)
+        for _ in range(4 * 3):
+            pixel = 0xf800
+            write(0x02000002, ((pixel >> 8) & 7) | ((pixel >> 7) & 0x1f0))
+            write(0x02000002, pixel << 1 & 0xffff)
+        self.assertTrue(d.shifted_orientation_snapshot()['qualified'])
+        for y in range(220):
+            for x in (169, 170, 173, 174):
+                offset = (y * 176 + x) * 3
+                expected = b'\xff\0\0' if 1 <= y <= 3 and 170 <= x <= 173 else b'\0\0\xff'
+                self.assertEqual(d.display_frame[offset:offset + 3], expected)
+        command(0x88, 350, 0)
+        command(0x8a, 438, 0)
+        command(0x42, 0, 0)
+        command(0x44)
+        for _ in range(176 * 220):
+            write(0x02000002, 0)
+            write(0x02000002, 0x3e)
+        self.assertEqual(d.display_frame[(176 + 170) * 3:(176 + 171) * 3], b'\0\0\xff')
+        command(0x42, 2, 4)
+        command(0x44)
+        pixel = 0xf800
+        write(0x02000002, ((pixel >> 8) & 7) | ((pixel >> 7) & 0x1f0))
+        write(0x02000002, pixel << 1 & 0xffff)
+        write(0x02000000, 0)
+        offset = (176 + 173) * 3
+        self.assertEqual(d.display_frame[offset:offset + 3], b'\xff\0\0')
+        self.assertEqual(d.display_frame[offset - 3:offset], b'\0\0\xff')
+
 
 if __name__ == '__main__':
     unittest.main()

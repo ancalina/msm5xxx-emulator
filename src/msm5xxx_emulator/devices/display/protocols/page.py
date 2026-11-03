@@ -234,6 +234,9 @@ class PageProtocolMixin:
             state = self._lcd_shifted_orientation = {
                 "owner": owner, "prefix": 0, "eligible": False,
                 "qualified": False, "command_zero": False, "mode": None,
+                "ever_qualified": False,
+                "window_x": (0, 175), "window_y": (0, 219),
+                "partial": None, "partial_done": False, "cursor": (0, 0),
             }
         if (self.config.width, self.config.height) != (176, 220):
             state["eligible"] = state["qualified"] = False
@@ -264,6 +267,18 @@ class PageProtocolMixin:
             values.append(value)
             if len(values) == 2:
                 valid = tuple(values) == expected
+                if state["qualified"] and expected == (None, None):
+                    y, x = values
+                    valid = not ((x | y) & 1) and x // 2 <= 175 and y // 2 <= 219
+                    if valid:
+                        state["cursor"] = (x // 2, y // 2)
+                elif state["qualified"] and expected in ((0x15E, 0), (0x1B6, 0)):
+                    limit = 175 if expected[0] == 0x15E else 219
+                    high, low = values
+                    valid = not ((high | low) & 1) and 0 <= low <= high <= 2 * limit
+                    if valid:
+                        key = "window_x" if limit == 175 else "window_y"
+                        state[key] = (low // 2, high // 2)
                 state["eligible"] = valid
                 state["qualified"] = state["qualified"] and valid
                 state["prefix"] = state["prefix"] if valid else 0
@@ -272,6 +287,9 @@ class PageProtocolMixin:
         if not state["eligible"] and not state["qualified"]:
             return
         if address == 0x02000000:
+            self._lcd_shifted_flush_window(state)
+            state["partial"] = None
+            state["partial_done"] = False
             if size != 2:
                 state["eligible"] = state["qualified"] = False
                 state["prefix"] = 0
@@ -281,14 +299,67 @@ class PageProtocolMixin:
             else:
                 paired = state["command_zero"]
                 state["command_zero"] = False
+                if paired and value == 0x44 and state["qualified"]:
+                    port = (0x02000002, 2)
+                    stream = self._lcd_raw_streams.get(port)
+                    if stream is not None:
+                        stream.clear()
+                    self._lcd_raw_counts[port] = 0
+                    segment = self._lcd_raw_segment_streams.get(port)
+                    if segment is not None:
+                        segment.clear()
+                    self._lcd_raw_segment_counts[port] = 0
+                if paired and value == 0x44 and state["qualified"]:
+                    state["partial"] = []
                 expected = {6: (0x24, 0x60), 0x88: (0x15E, 0),
-                            0x8A: (0x1B6, 0)}.get(value)
+                            0x8A: (0x1B6, 0), 0x42: (None, None)}.get(value)
                 if expected is not None:
                     state["eligible"] = False
                     state["mode"] = (expected, []) if paired else None
                     if not paired:
                         state["qualified"] = False
                         state["prefix"] = 0
+
+    def _lcd_shifted_flush_window(self, state: dict) -> None:
+        words = state.get("partial")
+        if not words or len(words) & 1:
+            return
+        pixels = self._lcd_decode_shifted_pair_rgb565(tuple(words), allow_blank=True)
+        if pixels is None:
+            return
+        x0, x1 = state["window_x"]
+        y0, y1 = state["window_y"]
+        width, height = x1 - x0 + 1, y1 - y0 + 1
+        x, y = state["cursor"]
+        if not (x0 <= x <= x1 and y0 <= y <= y1):
+            return
+        start = (y - y0) * width + x - x0
+        for index, pixel in enumerate(pixels):
+            row, column = divmod((start + index) % (width * height), width)
+            self._pixel((y0 + row) * 176 + 175 - (x0 + column), pixel)
+        position = (start + len(pixels)) % (width * height)
+        row, column = divmod(position, width)
+        state["cursor"] = (x0 + column, y0 + row)
+        self._lcd_protocol = "shifted-pair-fifo-rgb565"
+        self._publish_frame()
+
+    def _lcd_shifted_window_data(self, address: int, size: int, value: int) -> bool:
+        state = getattr(self, "_lcd_shifted_orientation", None)
+        if (not state or address != 0x02000002 or size != 2
+                or getattr(self.config, "display_geometry_source", None) != "runtime:shifted-pair-fifo-rgb565"
+                or self._lcd_raw_port != (address, size)):
+            return False
+        words = state.get("partial")
+        if words is None:
+            return bool(state.get("partial_done"))
+        x0, x1 = state["window_x"]
+        y0, y1 = state["window_y"]
+        width, height = x1 - x0 + 1, y1 - y0 + 1
+        words.append(value & 0xffff)
+        if len(words) == 2 * width * height:
+            self._lcd_shifted_flush_window(state)
+            state["partial"] = []
+        return True
 
     def shifted_orientation_snapshot(self) -> dict[str, object]:
         state = getattr(self, "_lcd_shifted_orientation", {})
@@ -305,6 +376,7 @@ class PageProtocolMixin:
                        and len(decoded) == 176 * 220)
         if reverse:
             state["qualified"] = True
+            state["ever_qualified"] = True
         for index, pixel in enumerate(decoded):
             destination = index
             if reverse:
@@ -770,6 +842,8 @@ class PageProtocolMixin:
         # 0x020000FA is the packed LG stream handled above.  Capturing its
         # halfwords again would desynchronise the already validated decoder.
         if address == 0x020000FA:
+            return
+        if self._lcd_shifted_window_data(address, size, value):
             return
         pixels = self.config.width * self.config.height
         if pixels <= 0:
