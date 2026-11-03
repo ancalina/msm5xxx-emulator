@@ -17,7 +17,13 @@ _LC_STATE, _SYS_TIME, _LP_SEC, _LTM_OFF, _DAYLT = (72, 42), (114, 36), (150, 8),
 _LONG_CODE_POLY = 0x40A8E6F04EF        # x^42 + x^35 + ... + x + 1 (IS-95 long code)
 _CHIPS_PER_SYS_TIME = 98304            # 80 ms at 1.2288 Mcps
 _GPS_EPOCH = calendar.timegm((1980, 1, 6, 0, 0, 0))
-_GPS_LEAP_SECONDS = 18                 # GPS - UTC since 2017-01-01
+# GPS - UTC offset changes (UTC instant, seconds); later leap seconds must be appended here.
+_LEAP_SECONDS = ((calendar.timegm((2006, 1, 1, 0, 0, 0)), 14), (calendar.timegm((2009, 1, 1, 0, 0, 0)), 15),
+                 (calendar.timegm((2012, 7, 1, 0, 0, 0)), 16), (calendar.timegm((2015, 7, 1, 0, 0, 0)), 17),
+                 (calendar.timegm((2017, 1, 1, 0, 0, 0)), 18))
+# Deterministic default network time: 2008-07-31 09:00 local, broadcast with LTM_OFF +9 h.
+DEFAULT_NETWORK_TIME = calendar.timegm((2008, 7, 31, 0, 0, 0))
+DEFAULT_LTM_OFF = 18                   # +9 h in 30-minute units
 
 
 def _crc30(value: int, bits: int) -> int:
@@ -64,18 +70,35 @@ def sync_message_hex(sys_time: int, lp_sec: int = 0, ltm_off: int = 0, daylt: in
     return ((prefix << 30) | _crc30(prefix, _SYNC_BITS - 30)).to_bytes(26, 'big').hex()
 
 
+def _leap_seconds(utc: float) -> int:
+    offset = 13                        # in force from 1999-01-01 until 2006
+    for start, value in _LEAP_SECONDS:
+        if utc >= start:
+            offset = value
+    return offset
+
+
+def network_sync_message_hex(utc: float, ltm_off: int, daylt: int = 0) -> str:
+    """Sync message announcing `utc` (POSIX seconds) as CDMA system time."""
+    leap = _leap_seconds(utc)
+    return sync_message_hex(int((utc - _GPS_EPOCH + leap) / 0.08), leap, ltm_off, daylt)
+
+
 def host_sync_message_hex(now: float | None = None) -> str:
-    """Sync message carrying the host clock as CDMA system time and local offset."""
+    """Sync message carrying the host clock, local offset and daylight flag."""
     now = time.time() if now is None else now
     local = time.localtime(now)
-    gps_seconds = now - _GPS_EPOCH + _GPS_LEAP_SECONDS
     # LTM_OFF is in 30-minute units and already includes daylight saving.
-    return sync_message_hex(int(gps_seconds / 0.08), _GPS_LEAP_SECONDS,
-                            round(local.tm_gmtoff / 1800), 1 if local.tm_isdst > 0 else 0)
+    return network_sync_message_hex(now, round(local.tm_gmtoff / 1800), 1 if local.tm_isdst > 0 else 0)
 
 
-def virtual_cell_scenario(enabled: bool = False, *, now: float | None = None) -> dict | None:
-    """Return fresh parameters; existing firmware signatures decide support."""
+def virtual_cell_scenario(enabled: bool = False, *, host_time: bool = False,
+                          now: float | None = None) -> dict | None:
+    """Return fresh parameters; existing firmware signatures decide support.
+
+    The announced network time is a fixed default so guest behaviour stays deterministic;
+    host_time=True announces the host clock instead (`now` overrides it for tests).
+    """
     if type(enabled) is not bool:
         raise TypeError("enabled must be a bool")
     if not enabled:
@@ -88,7 +111,8 @@ def virtual_cell_scenario(enabled: bool = False, *, now: float | None = None) ->
         'raw_energy': 64000,
         'virtual_delay_ns': 1000000,
         'decoder_init_delay_ns': 80000000,
-        'sync_message_hex': host_sync_message_hex(now),
+        'sync_message_hex': (host_sync_message_hex(now) if host_time else
+                             network_sync_message_hex(DEFAULT_NETWORK_TIME, DEFAULT_LTM_OFF)),
         'paging_messages_hex': list(_PAGING_MESSAGES),
         'sid': 2222,
         'nid': 65535,

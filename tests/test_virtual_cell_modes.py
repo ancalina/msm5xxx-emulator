@@ -6,7 +6,7 @@ import unittest
 import msm5xxx_emulator
 
 from msm5xxx_emulator.qemu.virtual_cell import (
-    _long_code_state, host_sync_message_hex, sync_message_hex, virtual_cell_scenario)
+    _leap_seconds, _long_code_state, host_sync_message_hex, sync_message_hex, virtual_cell_scenario)
 
 
 class VirtualCellModesTests(unittest.TestCase):
@@ -18,8 +18,7 @@ class VirtualCellModesTests(unittest.TestCase):
                 virtual_cell_scenario(value)
 
     def test_explicit_scenario_contract_and_fresh_message_list(self):
-        first, second = (virtual_cell_scenario(True, now=1793600000.0),
-                         virtual_cell_scenario(True, now=1793600000.0))
+        first, second = virtual_cell_scenario(True), virtual_cell_scenario(True)
         self.assertEqual(set(first), {
             'pilot_phase', 'raw_energy', 'virtual_delay_ns', 'decoder_init_delay_ns',
             'sync_message_hex', 'paging_messages_hex', 'sid', 'nid', 'channel',
@@ -45,7 +44,7 @@ class VirtualCellModesTests(unittest.TestCase):
         first['paging_messages_hex'][0] = 'changed'
         first['paging_messages_hex'].append('changed')
         first['sid'] = -1
-        self.assertEqual(virtual_cell_scenario(True, now=1793600000.0), second)
+        self.assertEqual(virtual_cell_scenario(True), second)
 
     def test_receive_only_opt_in_does_not_hide_invalid_requests(self):
         source = Path(msm5xxx_emulator.__file__).resolve().parents[2]
@@ -107,10 +106,21 @@ class SyncMessageTimeTests(unittest.TestCase):
         # The transport accepts only packets with a valid CRC30 residue.
         config = SimpleNamespace(load_address=1, image_offset=0)
         self.assertEqual(qemu_virtual_cell_property(
-            b"", config, virtual_cell_scenario(True, now=now)), (None, "primary-map-unsupported"))
+            b"", config, virtual_cell_scenario(True, host_time=True, now=now)), (None, "primary-map-unsupported"))
 
     def test_local_offset_is_signed_half_hours(self):
         values = self.fields(sync_message_hex(1, 18, -16, 1))
         self.assertEqual((values["ltm_off"], values["daylt"]), (0x30, 1))
         with self.assertRaises(ValueError):
             sync_message_hex(1, ltm_off=32)
+
+    def test_default_time_is_fixed_and_deterministic(self):
+        values = self.fields(virtual_cell_scenario(True)["sync_message_hex"])
+        utc = 1217462400  # 2008-07-31 00:00 UTC = 09:00 at +9 h
+        self.assertEqual(values["sys_time"], int((utc - 315964800 + 14) / 0.08))
+        self.assertEqual((values["lp_sec"], values["ltm_off"], values["daylt"]), (14, 18, 0))
+
+    def test_leap_seconds_follow_announced_date(self):
+        self.assertEqual(_leap_seconds(1217462400), 14)   # 2008
+        self.assertEqual(_leap_seconds(1230768000), 15)   # 2009-01-01
+        self.assertEqual(_leap_seconds(1793600000), 18)   # 2026
