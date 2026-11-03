@@ -30,6 +30,8 @@ class LiveWindow(Window):
         self.experimental_c80 = experimental_c80
         self.virtual_network_enabled = self._load_virtual_network()
         self._active_virtual_network = self.virtual_network_enabled
+        self.network_host_time_enabled = self._load_virtual_network("network_host_time")
+        self._active_network_host_time = self.network_host_time_enabled
         self.transport: Transport | None = None
         self._active_firmware: Path | None = None
         self._active_overrides: dict[str, object] = {}
@@ -58,6 +60,13 @@ class LiveWindow(Window):
             variable=self.virtual_network_var, command=self._set_virtual_network,
         )
         self.virtual_network_button.grid(row=2, column=0, columnspan=2, pady=2)
+        self.network_host_time_var = tk.BooleanVar(
+            master=self.root, value=self.network_host_time_enabled)
+        self.network_host_time_button = ttk.Checkbutton(
+            self.settings_button.master, text=self._text("network_host_time"),
+            variable=self.network_host_time_var, command=self._set_network_host_time,
+        )
+        self.network_host_time_button.grid(row=3, column=0, columnspan=2, pady=2)
         self.secondary_window = tk.Toplevel(self.root)
         self.secondary_window.withdraw()
         self.secondary_window.title("Additional display (experimental)")
@@ -87,22 +96,29 @@ class LiveWindow(Window):
         super()._apply_ui_language()
         if hasattr(self, "virtual_network_button"):
             self.virtual_network_button.configure(text=self._text("virtual_network"))
+            self.network_host_time_button.configure(text=self._text("network_host_time"))
 
-    def _set_virtual_network(self) -> None:
-        requested = self.virtual_network_var.get()
-        if requested == self.virtual_network_enabled:
+    def _set_virtual_network(self, key: str = "virtual_network") -> None:
+        variable = getattr(self, key + "_var")
+        requested = variable.get()
+        if requested == getattr(self, key + "_enabled"):
             return
-        self.virtual_network_enabled = requested
+        setattr(self, key + "_enabled", requested)
         try:
-            self._restart()
+            # The clock source only matters while the virtual network is on.
+            if key == "virtual_network" or self.virtual_network_enabled:
+                self._restart()
         finally:
-            self.virtual_network_var.set(self.virtual_network_enabled)
-        if self.virtual_network_enabled == requested:
+            variable.set(getattr(self, key + "_enabled"))
+        if getattr(self, key + "_enabled") == requested:
             try:
                 self._save_config()
             except (OSError, TimeoutError) as error:
                 messagebox.showerror(
                     self._text("settings_save_error"), str(error), parent=self.root)
+
+    def _set_network_host_time(self) -> None:
+        self._set_virtual_network("network_host_time")
 
     def _virtual_network_notice(self, transport: Transport) -> str:
         if not self.virtual_network_enabled:
@@ -204,6 +220,8 @@ class LiveWindow(Window):
             self.overrides = dict(self._active_overrides)
             self.virtual_network_enabled = self._active_virtual_network
             self.virtual_network_var.set(self.virtual_network_enabled)
+            self.network_host_time_enabled = self._active_network_host_time
+            self.network_host_time_var.set(self.network_host_time_enabled)
             self.status.set(str(error))
             messagebox.showerror(
                 self._text("settings_error"), str(error), parent=self.root
@@ -226,7 +244,8 @@ class LiveWindow(Window):
             transport = Transport(
                 self.qemu, requested_firmware, self.state_dir,
                 self.experimental_c80, config=config,
-                virtual_cell=virtual_cell_scenario(self.virtual_network_enabled),
+                virtual_cell=virtual_cell_scenario(
+                    self.virtual_network_enabled, host_time=self.network_host_time_enabled),
             )
         except Exception as error:
             if self._active_firmware is None:
@@ -235,6 +254,8 @@ class LiveWindow(Window):
             self.overrides = dict(self._active_overrides)
             self.virtual_network_enabled = self._active_virtual_network
             self.virtual_network_var.set(self.virtual_network_enabled)
+            self.network_host_time_enabled = self._active_network_host_time
+            self.network_host_time_var.set(self.network_host_time_enabled)
             save_error = None
             try:
                 self._save_config()
@@ -247,7 +268,8 @@ class LiveWindow(Window):
                 transport = Transport(
                     self.qemu, self.firmware, self.state_dir,
                     self.experimental_c80, config=rollback,
-                    virtual_cell=virtual_cell_scenario(self.virtual_network_enabled),
+                    virtual_cell=virtual_cell_scenario(
+                    self.virtual_network_enabled, host_time=self.network_host_time_enabled),
                 )
             except Exception as rollback_error:
                 detail = f"{error}; restore failed: {rollback_error}"
@@ -283,6 +305,7 @@ class LiveWindow(Window):
         self._active_firmware = firmware
         self._active_overrides = dict(overrides)
         self._active_virtual_network = self.virtual_network_enabled
+        self._active_network_host_time = self.network_host_time_enabled
         config = transport.config
         self.model.set(display_model_name(
             config.model, config.verified_model, self.ui_language, firmware.stem

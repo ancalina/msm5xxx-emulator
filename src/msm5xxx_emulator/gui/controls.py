@@ -726,10 +726,10 @@ class ControlsMixin:
         except (AttributeError, OSError, ValueError):
             return "auto"
 
-    def _load_virtual_network(self) -> bool:
+    def _load_virtual_network(self, key: str = "virtual_network") -> bool:
         try:
             data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
-            return data.get("virtual_network") is True
+            return data.get(key) is True
         except (AttributeError, OSError, ValueError):
             return False
 
@@ -765,9 +765,9 @@ class ControlsMixin:
                 "profiles": profiles,
                 "manual_keymaps": manual_keymaps,
             }
-            if hasattr(self, "virtual_network_enabled") or "virtual_network" in data:
-                settings["virtual_network"] = getattr(
-                    self, "virtual_network_enabled", data.get("virtual_network") is True)
+            for key in ("virtual_network", "network_host_time"):
+                if hasattr(self, key + "_enabled") or key in data:
+                    settings[key] = getattr(self, key + "_enabled", data.get(key) is True)
             atomic_write_text(path, json.dumps(
                 settings, ensure_ascii=False, indent=2) + "\n")
             LOGGER.info("GUI profile saved firmware=%s override_keys=%s",

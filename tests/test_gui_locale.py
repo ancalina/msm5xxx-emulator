@@ -197,6 +197,16 @@ class GuiLocaleTests(unittest.TestCase):
                 for value in ('true', 1, None):
                     path.write_text(json.dumps({'virtual_network': value}))
                     self.assertFalse(window._load_virtual_network())
+                path.write_text(json.dumps({'virtual_network': True}))
+                window.network_host_time_enabled = True
+                window._save_config()
+                self.assertTrue(window._load_virtual_network('network_host_time'))
+                self.assertTrue(window._load_virtual_network())
+                del window.network_host_time_enabled
+                window.virtual_network_enabled = False
+                window._save_config()
+                self.assertTrue(window._load_virtual_network('network_host_time'))
+                self.assertFalse(window._load_virtual_network())
 
     def test_manual_keymap_save_preserves_regular_preferences(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
