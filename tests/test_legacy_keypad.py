@@ -98,3 +98,12 @@ class LegacyKeypadTests(unittest.TestCase):
             self.assertTrue(qemu_legacy_keypad_source_matches(b'original', candidate))
             self.assertFalse(qemu_legacy_keypad_source_matches(b'changed', candidate))
             self.assertTrue(qemu_legacy_keypad_source_matches(b'changed', None))
+
+    def test_matrix_pullups_replace_only_the_matching_release_input(self):
+        from msm5xxx_emulator.core.config import BoardStatusInput
+        from msm5xxx_emulator.qemu.transport import qemu_legacy_keypad_status_available
+        profile = {'signature': 'synthetic'}
+        self.assertTrue(qemu_legacy_keypad_status_available(profile, None))
+        self.assertTrue(qemu_legacy_keypad_status_available(profile, BoardStatusInput(0x3000694, 4, 4)))
+        self.assertFalse(qemu_legacy_keypad_status_available(profile, BoardStatusInput(0x3000694, 8, 8)))
+        self.assertFalse(qemu_legacy_keypad_status_available(None, None))

@@ -232,6 +232,13 @@ RAW_NAND_BLOCK_SUFFIX = bytes.fromhex("013701239b029f42f7db")
 RAW_NAND_X16_PREFIX = bytes.fromhex("0526f605")
 RAW_NAND_X16_TRANSFER = bytes.fromhex("20883080")
 
+def qemu_legacy_keypad_status_available(profile: dict | None,
+                                          status: BoardStatusInput | None) -> bool:
+    """The released scanner input is supplied by the matrix pull-ups."""
+    return profile is not None and (status is None or status ==
+        BoardStatusInput(0x03000694, 4, 4))
+
+
 def qemu_legacy_keypad_source_matches(image: bytes, profile: dict | None) -> bool:
     """Recheck keypad wiring against the actual loaded source bytes."""
     if profile is None:
@@ -5058,7 +5065,7 @@ class Transport:
             self.config.detection_notes.append(
                 "source-closed seven-row scanner: default open lid contact")
         board_status = self.config.board_status_input
-        if legacy_keypad is not None and board_status is None:
+        if qemu_legacy_keypad_status_available(legacy_keypad, board_status):
             board_status = BoardStatusInput(0x03000664, 0x10, 0x10)
             machine += ",board-status-input-peer=300066c:20:20"
             direct = legacy_keypad
