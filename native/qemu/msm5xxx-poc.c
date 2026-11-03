@@ -807,6 +807,7 @@ struct MSM5xxxPOCMachineState {
     bool legacy_cdma;
     uint32_t legacy_masks_i, legacy_masks_q;
     MemoryRegion legacy_pn_reset;
+    MemoryRegion legacy_finger_status;
     uint32_t legacy_search_hits;
     bool rex_irq_copied;
     bool rex_irq_sv130_overlay;
@@ -6629,6 +6630,25 @@ static const MemoryRegionOps msm5xxx_poc_eeprom_gpio_ops = {
 
 static void msm5xxx_poc_legacy_search_start(MSM5xxxPOCMachineState *s);
 
+static void msm5xxx_poc_legacy_finger_latch(MSM5xxxPOCMachineState *s)
+{
+    uint8_t bytes[1024];
+    uint16_t masks_i[512], masks_q[512];
+    unsigned i;
+
+    cpu_physical_memory_read(s->legacy_masks_i, bytes, sizeof(bytes));
+    for (i = 0; i < 512; i++) {
+        masks_i[i] = lduw_le_p(bytes + 2 * i);
+    }
+    cpu_physical_memory_read(s->legacy_masks_q, bytes, sizeof(bytes));
+    for (i = 0; i < 512; i++) {
+        masks_q[i] = lduw_le_p(bytes + 2 * i);
+    }
+    msm5xxx_fingers_latch(&s->fingers, s->search2_pilot_phase,
+                          s->search2_peak_energy, masks_i, masks_q);
+    s->finger_latches++;
+}
+
 static void msm5xxx_poc_legacy_search_complete(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
@@ -6642,6 +6662,7 @@ static void msm5xxx_poc_legacy_search_complete(void *opaque)
     if (s->search2_samples[0]) {
         s->legacy_search_hits++;
     }
+    msm5xxx_poc_legacy_finger_latch(s);
     if (msm5xxx_search2_dump_requested(&s->search2)) {
         s->rex_irq_pending[0] |= 0x80;
         msm5xxx_poc_rex_irq_update(s);
@@ -6752,6 +6773,8 @@ static void msm5xxx_poc_legacy_pn_write(void *opaque, hwaddr offset,
         for (unsigned i = 0; i < MSM5XXX_FINGER_COUNT; i++) {
             s->fingers.bank[i].position = 0;
             s->fingers.bank[i].latched_position = 0;
+            s->fingers.bank[i].rssi = 0;
+            s->fingers.bank[i].latched = false;
         }
     }
 }
@@ -6762,6 +6785,86 @@ static const MemoryRegionOps msm5xxx_poc_legacy_pn_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1, .valid.max_access_size = 1,
     .impl.min_access_size = 1, .impl.max_access_size = 1,
+};
+
+static uint64_t msm5xxx_poc_legacy_finger_read(void *opaque, hwaddr offset,
+                                                unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint16_t value;
+    unsigned reg = offset + 0x60;
+
+    if (msm5xxx_fingers_read(&s->fingers, reg, size, &value)) {
+        s->finger_reads++;
+        return value;
+    }
+    if (reg == 0x8c && size == 2) {
+        return 0;
+    }
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                    reg, size);
+}
+
+static void msm5xxx_poc_legacy_finger_write(void *opaque, hwaddr offset,
+                                             uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    unsigned reg = offset + 0x60;
+
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm), reg,
+                              value, size);
+    if (size == 1) {
+        msm5xxx_fingers_write(&s->fingers, reg, 1, value);
+    } else if (size == 2 && (reg == 0x94 || reg == 0x9c || reg == 0xa4 ||
+                             reg == 0xb0)) {
+        msm5xxx_fingers_write(&s->fingers, reg, 1, value & 0xff);
+        msm5xxx_fingers_write(&s->fingers, reg + 4, 1, (value >> 8) & 0xff);
+    } else if (size == 2 && reg == 0xb8) {
+        msm5xxx_fingers_write(&s->fingers, reg, 1, value & 0xff);
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_legacy_finger_ops = {
+    .read = msm5xxx_poc_legacy_finger_read,
+    .write = msm5xxx_poc_legacy_finger_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 2,
+    .impl.min_access_size = 1, .impl.max_access_size = 2,
+};
+
+static uint64_t msm5xxx_poc_legacy_finger_status_read(void *opaque,
+                                                       hwaddr offset,
+                                                       unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    unsigned i, status = 0;
+
+    if (!offset && size == 1) {
+        for (i = 0; i < MSM5XXX_FINGER_COUNT; i++) {
+            if (s->fingers.bank[i].latched && s->fingers.bank[i].rssi) {
+                status |= 8 << i;
+            }
+        }
+        return status;
+    }
+    return msm5xxx_poc_backing_read(memory_region_get_ram_ptr(&s->msm),
+                                    0xe4 + offset, size);
+}
+
+static void msm5xxx_poc_legacy_finger_status_write(void *opaque, hwaddr offset,
+                                                    uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    msm5xxx_poc_backing_write(memory_region_get_ram_ptr(&s->msm),
+                              0xe4 + offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_legacy_finger_status_ops = {
+    .read = msm5xxx_poc_legacy_finger_status_read,
+    .write = msm5xxx_poc_legacy_finger_status_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1, .valid.max_access_size = 2,
+    .impl.min_access_size = 1, .impl.max_access_size = 2,
 };
 
 static bool msm5xxx_poc_radio_irq_gate(MSM5xxxPOCMachineState *s)
@@ -14679,6 +14782,16 @@ static void msm5xxx_poc_init(MachineState *machine)
                               "msm5xxx-poc.legacy-pn-reset", 1);
         memory_region_add_subregion_overlap(get_system_memory(), 0x03000130,
                                             &s->legacy_pn_reset, 1);
+        memory_region_init_io(&s->finger_region, OBJECT(machine),
+                              &msm5xxx_poc_legacy_finger_ops, s,
+                              "msm5xxx-poc.legacy-fingers", 0x60);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x03000060,
+                                            &s->finger_region, 1);
+        memory_region_init_io(&s->legacy_finger_status, OBJECT(machine),
+                              &msm5xxx_poc_legacy_finger_status_ops, s,
+                              "msm5xxx-poc.legacy-finger-status", 4);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x030000e4,
+                                            &s->legacy_finger_status, 1);
     }
     if (s->search2_probe_description || s->search2_virtual_description) {
         const unsigned code_fields[] = {0, 1, 3, 4, 6, 7};

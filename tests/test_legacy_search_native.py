@@ -27,9 +27,10 @@ typedef struct {
  MSM5xxxSearch2 search2; MSM5xxxFingers fingers; MemoryRegion msm;
  uint32_t search2_position, search2_pending_position, search1_position;
  uint32_t search2_pilot_phase, search2_peak_energy, legacy_masks_i, legacy_masks_q;
- uint32_t legacy_search_hits; uint64_t search2_submits,search2_completions,search2_result_reads;
+ uint32_t legacy_search_hits; uint64_t finger_latches, finger_reads, search2_submits,search2_completions,search2_result_reads;
  uint16_t search2_samples[8], rex_irq_pending[1]; void *search2_timer;
 } MSM5xxxPOCMachineState;
+static uint16_t lduw_le_p(const uint8_t *p) { return p[0] | (p[1] << 8); }
 static uint8_t *memory_region_get_ram_ptr(MemoryRegion *r) { (void)r;return backing; }
 static uint64_t msm5xxx_poc_backing_read(uint8_t *b, hwaddr o, unsigned n) { uint64_t v=0;for(unsigned i=0;i<n;i++)v|=(uint64_t)b[o+i]<<(8*i);return v; }
 static void msm5xxx_poc_backing_write(uint8_t *b, hwaddr o,uint64_t v,unsigned n) {for(unsigned i=0;i<n;i++)b[o+i]=v>>(8*i);}
@@ -41,15 +42,29 @@ static void timer_mod(void *t,int64_t n) {(void)t;assert(n==1000100);}
         harness += code
         harness += r'''
 int main(void) {
- MSM5xxxPOCMachineState s={0}; msm5xxx_search2_init(&s.search2);
+ MSM5xxxPOCMachineState s={0}; msm5xxx_search2_init(&s.search2); msm5xxx_fingers_reset(&s.fingers);
  s.legacy_masks_i=16;s.legacy_masks_q=32;rom[17]=rom[33]=0x40;
  s.search2_pilot_phase=16;s.search2_peak_energy=64000;
+ msm5xxx_poc_legacy_finger_write(&s,0x2c,4,1);
+ assert(msm5xxx_poc_legacy_finger_read(&s,0x2c,2)==0);
+ msm5xxx_poc_legacy_finger_write(&s,0x18,1,1);
+ msm5xxx_poc_legacy_finger_write(&s,0x10,1,1);
+ msm5xxx_poc_legacy_finger_write(&s,0x34,0x7ffe,2);
+ msm5xxx_poc_legacy_finger_write(&s,0x3c,0x4000,2);
+ msm5xxx_poc_legacy_finger_write(&s,0x44,0x4000,2);
+ msm5xxx_poc_legacy_finger_write(&s,0x50,16,2);
+ msm5xxx_poc_legacy_finger_write(&s,0x58,0,2);
  msm5xxx_poc_legacy_search_write(&s,20,3,1);
  uint16_t cmd[6]={0xfffe,0x4000,0x4000,64,0,0};
  for(unsigned i=0;i<6;i++)msm5xxx_poc_legacy_search_write(&s,4,cmd[i],2);
  assert(s.search2.active && s.search2_submits==1);
  msm5xxx_poc_legacy_search_complete(&s);
  assert(s.search2_completions==1 && s.legacy_search_hits==1 && s.rex_irq_pending[0]==0x80);
+ assert(msm5xxx_poc_legacy_finger_read(&s,0x2c,2)==64000);
+ assert(msm5xxx_poc_legacy_finger_status_read(&s,0,1)==8);
+ msm5xxx_poc_legacy_finger_write(&s,0x50,0xfffc,2);
+ msm5xxx_poc_legacy_finger_write(&s,0x58,0xffff,2);
+ assert(s.fingers.bank[0].position==12);
  assert(msm5xxx_poc_legacy_search_read(&s,8,1)==2);
  assert(msm5xxx_poc_legacy_search_read(&s,8,1)==0);
  assert(msm5xxx_poc_legacy_search_read(&s,12,2)==64000);
