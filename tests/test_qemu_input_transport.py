@@ -1860,6 +1860,9 @@ class QEMUInputTransportTests(unittest.TestCase):
         window.virtual_network_enabled = False
         window._active_virtual_network = False
         window.virtual_network_var = mock.Mock()
+        window.network_host_time_enabled = False
+        window._active_network_host_time = False
+        window.network_host_time_var = mock.Mock()
         window.ui_language = "en"
         window.model = mock.Mock()
         window.device_details = mock.Mock()
@@ -1944,6 +1947,9 @@ class QEMUInputTransportTests(unittest.TestCase):
         window.virtual_network_enabled = True
         window._active_virtual_network = False
         window.virtual_network_var = mock.Mock()
+        window.network_host_time_enabled = False
+        window._active_network_host_time = False
+        window.network_host_time_var = mock.Mock()
         window.ui_language = "en"
         window.model = mock.Mock()
         window.device_details = mock.Mock()
