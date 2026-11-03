@@ -195,11 +195,46 @@ def _error_sink(image, p, bound):
     )
 
 
+def _legacy_sharp_pcr_profile(image: bytes, flash_size: int) -> dict | None:
+    """Recognize the x16 address-programmed PCR and block-lock driver."""
+    setup = bytes.fromhex(
+        "f0b570240427602290211501084802800780c00204800688330afcd3"
+        "01808689ae42f3d150210180ff210180f0bd0000000c6000")
+    p = image.find(setup)
+    if p < 0 or image.find(setup, p + 1) >= 0 or flash_size != 0x800000:
+        return None
+    roots = [m.start() for m in re.finditer(b"\xb8\xb5", image[:p])
+             if not m.start() & 1 and thumb_bl_target(image, m.start() + 2) == p]
+    if len(roots) != 1:
+        return None
+    init = roots[0]
+    lock = thumb_bl_target(image, init + 10)
+    if (lock is None or image[lock:lock + 20] != bytes.fromhex(
+            "f8b50124a40570262f2560202080258026802088")
+            or image[lock + 0x40:lock + 0x4e] != bytes.fromhex(
+                "01231b04e418db019c42ded3f8bd")):
+        return None
+    geometry = struct.pack('<I39I5I', 32, *([0x10000] * 32 + [0] * 7),
+                           0x00b100b0, 0, 1, 0x300000, 0x100000)
+    descriptors = [m.start() - 4 for m in re.finditer(re.escape(geometry), image)
+                   if m.start() >= 4 and not m.start() & 3]
+    if len(descriptors) != 1:
+        return None
+    return dict(signature="sharp-address-pcr-block-lock-x16-v1",
+                geometry=(0x400000, 0x400000, 0x10000, 0xb0, 0xb1),
+                nv_geometry=(0x600000, 0x200000), initializer=init,
+                pcr_setup=p, block_lock=lock, descriptor=descriptors[0],
+                pcr_setup_word=0x600)
+
+
 def find_sharp_intel_profile(
     image: bytes, flash_size: int, ram_base: int, ram_size: int
 ) -> dict | None:
     if not 0 < len(image) <= flash_size <= ram_base < ram_base + ram_size <= 0x2000000:
         return None
+    legacy = _legacy_sharp_pcr_profile(image, flash_size)
+    if legacy is not None:
+        return legacy
     ram_end = ram_base + ram_size
 
     def ram(p, n):

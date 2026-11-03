@@ -3439,7 +3439,10 @@ def qemu_dmd5000_property(original: bytes, loaded: bytes, config: object, *,
             or find_dmd5000_profile(loaded) != profile
             or not 0 <= config.ram_base <= profile['completion'] <
                    config.ram_base + config.ram_size <= 0x100000000
-            or layout_claimed or immutable_limit is not None
+            or layout_claimed
+            or (immutable_limit is not None and
+                (type(immutable_limit) is not int or immutable_limit <= 0
+                 or find_dmd5000_profile(loaded[:immutable_limit]) != profile))
             or getattr(config, 'ram_bootstrap_profile', None) is not None
             or getattr(config, 'missing_overlays', None)
             or getattr(config, 'ram_image_size', 0)):
@@ -5746,12 +5749,13 @@ class Transport:
         if dmd5100_property is None:
             dmd5100_property, dual_reject = qemu_dmd5000_property(
                 detector_image, primary_seed, self.config,
-                immutable_limit=primary_profile[0] if primary_profile is not None else None,
+                immutable_limit=(primary_profile[0] if primary_profile is not None else
+                                 sharp_intel["geometry"][0] if sharp_intel is not None else None),
                 input_profile=self.matrix_input_profile,
                 eeprom_window=(eeprom_profile[0], 32) if eeprom_profile is not None else None,
                 layout_claimed=ma2_patch is not None or any(value is not None for value in (
                     ram_reserved, primary_profile, record_profile, mapped_primary_profile,
-                    upper_x16_profile, intel_profile, amd_profile,
+                    upper_x16_profile, intel_profile if sharp_intel is None else None, amd_profile,
                     self.config.upper_flash_address, self.config.secondary_flash_address,
                     self.config.native_nand_profile, self.config.nand_image)),
             )
@@ -6210,6 +6214,8 @@ class Transport:
             if sharp_intel is not None:
                 loader_exclude = base, base + size
                 machine += ",sharp-nv-status-mirror=on"
+                if sharp_intel.get("signature") == "sharp-address-pcr-block-lock-x16-v1":
+                    machine += ",sharp-nv-wp-high=on"
             machine += (
                 f",{selector}={base:x}:{size:x}:{sector_size:x}:"
                 f"{id0:x}:{id1:x}"
