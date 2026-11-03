@@ -78,7 +78,7 @@ typedef struct {
 } MemoryRegionOps;
 struct MSM5xxxPOCMachineState {
  CPUState *cpu;
- bool audio_enabled,audio_ma5,audio_ma2,audio_shared_lcd,audio_sites_enabled;
+ bool audio_enabled,audio_ma5,audio_ma2,audio_ma3,audio_shared_lcd,audio_sites_enabled;
  uint64_t ma5_byte_ns;
  uint32_t audio_base,audio_data_offset;
  unsigned audio_site_count;

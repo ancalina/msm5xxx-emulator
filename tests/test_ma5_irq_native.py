@@ -32,6 +32,12 @@ class MA5NativeIRQTests(unittest.TestCase):
         begin = source.index("enum {\n    MA5R_TABLE")
         end = source.index("static const MemoryRegionOps msm5xxx_poc_ma5_trigger_ops", begin)
         helpers = source[begin:end]
+        # Keep this harness scoped to the MA5 code under test. The MA3 GPIO
+        # implementation now sits in the same source interval, but has its own
+        # device and QEMU dependencies and is exercised separately.
+        ma3_begin = helpers.index("static bool msm5xxx_poc_ma3_gpio_irq_ram")
+        ma5_gate = helpers.index("static unsigned msm5xxx_poc_ma5_irq_gate")
+        helpers = helpers[:ma3_begin] + helpers[ma5_gate:]
         harness = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -49,6 +55,7 @@ typedef struct {
     uint64_t ram_size, ma5_byte_ns, ma5_clki_hz;
     uint32_t ma5_irq_route[18];
     bool ma5_irq_configured, ma5_irq_qualified, ma5_irq_level;
+    bool ma3_gpio_irq_configured, ma3_gpio_irq_qualified;
     uint16_t ma5_gpio_pending[3], ma5_parent_pending;
     uint32_t ma5_irq_gate_status, ma5_irq_assertions, ma5_gpio_acks, ma5_parent_acks;
     bool rex_irq_enabled, rex_irq_c80, rex_irq_read_consume, rex_irq_route_active;

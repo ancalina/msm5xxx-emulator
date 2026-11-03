@@ -174,6 +174,7 @@ typedef struct {
     bool matrix_row734_boot_seen;
     uint32_t matrix_input_contact_precheck[3];
     uint32_t matrix_input_descriptor,matrix_input_presence_site,matrix_input_sense_site;
+    uint32_t matrix_input_sense_site2;
     uint32_t matrix_input_contact_site,matrix_input_kp_contact2,matrix_row734_presence2,matrix_row734_sense2,matrix_row734_boot_site;
     uint32_t matrix_row734_row_tables[2],ram_base;
     uint32_t matrix_input_address,matrix_input_no_key,matrix_input_rows,matrix_input_sideband_mask;

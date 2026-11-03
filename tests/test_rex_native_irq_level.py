@@ -23,6 +23,7 @@ typedef struct {
     bool rex_irq_c80, rex_irq_read_consume, rex_irq_route_active;
     bool rex_irq_level, irq_level;
     bool ma5_irq_configured, ma5_irq_qualified, ma5_irq_level;
+    bool ma3_gpio_irq_configured, ma3_gpio_irq_qualified;
     unsigned rex_irq_assertions;
     bool *cpu_irq;
 } MSM5xxxPOCMachineState;
