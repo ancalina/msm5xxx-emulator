@@ -89,3 +89,12 @@ class LegacyKeypadTests(unittest.TestCase):
                 changed = bytearray(image)
                 changed[offset] ^= 1
                 self.assertIsNone(qemu_legacy_board_revision_property(changed, 0x800000, {}))
+
+    def test_loaded_source_must_still_match_keypad(self):
+        from msm5xxx_emulator.qemu.transport import qemu_legacy_keypad_source_matches
+        candidate = {'signature': 'synthetic'}
+        with patch.object(legacy_keypad, 'find_legacy_six_row_keypad',
+                          side_effect=lambda image: candidate if image == b'original' else None):
+            self.assertTrue(qemu_legacy_keypad_source_matches(b'original', candidate))
+            self.assertFalse(qemu_legacy_keypad_source_matches(b'changed', candidate))
+            self.assertTrue(qemu_legacy_keypad_source_matches(b'changed', None))

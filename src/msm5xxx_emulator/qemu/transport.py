@@ -250,6 +250,14 @@ RAW_NAND_LOW_PORT_PROGRAM_SIGNATURE = bytes.fromhex(
     "002108e06218167800ab1e7056785e701a882a800231b942f4d310210170"
 )
 
+def qemu_legacy_keypad_source_matches(image: bytes, profile: dict | None) -> bool:
+    """Recheck keypad wiring against the actual loaded source bytes."""
+    if profile is None:
+        return True
+    from msm5xxx_emulator.detection.legacy_keypad import find_legacy_six_row_keypad
+    return find_legacy_six_row_keypad(image) == profile
+
+
 def qemu_legacy_board_revision_property(image: bytes, flash_size: int,
                                         keypad: dict | None) -> str | None:
     """Qualify the board revision using the flash and DMD reader chain."""
@@ -5919,6 +5927,15 @@ class Transport:
                 f"QEMU watchdog rejected: {watchdog_reject}")
         if len(primary_seed) != self.config.flash_size:
             raise ValueError("primary seed size does not match flash size")
+        if not qemu_legacy_keypad_source_matches(
+                primary_seed[:len(detector_image)], legacy_keypad):
+            for channel in (lcd_listener, input_listener, gdb_listener,
+                            audio_listener, audio_host_socket, audio_qemu_socket):
+                if channel is not None:
+                    channel.close()
+            self.decoder.close()
+            self.temporary.cleanup()
+            raise ValueError("loaded keypad source changed")
         if (self.rex_c80_profile is not None and isinstance(controller, dict)
                 and controller.get("vector_source_chain") is not None
                 and find_rex_static_controller_callback_candidate(
