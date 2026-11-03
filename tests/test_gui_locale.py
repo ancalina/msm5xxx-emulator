@@ -19,7 +19,7 @@ from msm5xxx_emulator.gui.app import (choose_firmware,
                                       main as package_main)
 from msm5xxx_emulator.detection.firmware import detect
 from msm5xxx_emulator.gui.controls import (ControlsMixin, detect_profile,
-                                           manual_keymap,
+                                           merge_settings_overrides, manual_keymap,
                                            parse_manual_key_event)
 from msm5xxx_emulator.gui.locale import runtime_notice_text
 from msm5xxx_emulator.gui.settings import (parse_settings_values, settings_values,
@@ -410,6 +410,79 @@ class GuiLocaleTests(unittest.TestCase):
             self.assertIs(config, overridden)
             self.assertEqual(overrides, {"width": 176})
             self.assertEqual(detector.call_count, 2)
+
+    def test_saved_model_requires_explicit_user_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "SCH-E100.bin"
+            path = Path(directory) / "last_config.json"
+            window = Window.__new__(Window)
+            window.firmware = firmware
+            window.ui_language_preference = "en"
+            key = str(firmware.resolve())
+            path.write_text(json.dumps({"profiles": {key: {"model": "SCH-E100", "width": 128}}}))
+            with mock.patch("msm5xxx_emulator.gui.controls.LAST_CONFIG", path):
+                self.assertEqual(window._load_config(), {"width": 128})
+                window.overrides = merge_settings_overrides(
+                    window._load_config(), {"model"}, {"model": "CUSTOM"}, False)
+                window._save_config()
+                saved = window._load_config()
+            self.assertEqual(saved, {"width": 128, "model": "CUSTOM", "_model_user_set": True})
+            baseline = SimpleNamespace(model=None, width=128)
+            overridden = SimpleNamespace(model="CUSTOM", width=128)
+            with mock.patch("msm5xxx_emulator.gui.controls.detect",
+                            side_effect=[baseline, overridden]):
+                config, overrides = detect_profile(firmware, saved)
+            self.assertIs(config, overridden)
+            self.assertEqual(overrides["model"], "CUSTOM")
+            with mock.patch("msm5xxx_emulator.gui.controls.detect", return_value=baseline):
+                self.assertEqual(detect_profile(firmware, {"model": "SCH-E100"})[1], {})
+            self.assertEqual(merge_settings_overrides(
+                {"model": "SCH-E100"}, {"width"}, {"width": 176}, False),
+                {"width": 176})
+            with self.assertRaises(ValueError):
+                merge_settings_overrides({}, {"model"}, {"model": "  "}, False)
+            with mock.patch("msm5xxx_emulator.gui.controls.detect", return_value=baseline):
+                self.assertEqual(detect_profile(firmware, {
+                    "model": "", "_model_user_set": True})[1], {})
+
+    def test_state_model_updates_use_three_tier_display(self) -> None:
+        for model, verified, language, expected in (
+                (None, None, "en", "Unknown (phone)"),
+                (None, None, "ko", "알 수 없음 (phone)"),
+                ("candidate", None, "en", "candidate (unverified)"),
+                ("confirmed", "confirmed", "en", "confirmed")):
+            with self.subTest(model=model, language=language):
+                window = Window.__new__(Window)
+                window._show_save_errors = mock.Mock()
+                window.update_results = queue.SimpleQueue()
+                window.states = queue.SimpleQueue()
+                window.generation = 1
+                window.states.put((1, {"model": model, "verified_model": verified}))
+                window.model = mock.Mock()
+                window.root = mock.Mock()
+                window.firmware = Path("phone.bin")
+                window.ui_language = language
+                window.emulator = None
+                window._refresh()
+                window.model.set.assert_called_once_with(expected)
+
+    def test_model_override_is_never_firmware_verified(self) -> None:
+        image = bytearray(b"\xff" * 0x1000)
+        for offset in range(0, 32, 4):
+            struct.pack_into("<I", image, offset, 0xEA000000)
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = Path(directory) / "phone.bin"
+            firmware.write_bytes(image)
+            from argparse import Namespace
+            with (mock.patch("msm5xxx_emulator.detection.firmware.detect_model", return_value="FIRMWARE"),
+                  mock.patch("msm5xxx_emulator.detection.firmware._verified_embedded_model", return_value="FIRMWARE")):
+                baseline = detect(firmware)
+                custom = detect(firmware, Namespace(model="CUSTOM"))
+                self.assertEqual((baseline.model, baseline.verified_model), ("FIRMWARE", "FIRMWARE"))
+                self.assertEqual((custom.model, custom.verified_model), ("CUSTOM", None))
+                for invalid in ("", "  "):
+                    with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                        detect(firmware, Namespace(model=invalid))
 
     def test_settings_waits_for_worker_detection_without_rescanning(self) -> None:
         class Harness(ControlsMixin):

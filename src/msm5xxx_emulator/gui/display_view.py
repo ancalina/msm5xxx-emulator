@@ -10,7 +10,7 @@ from PIL import Image, ImageTk
 from ..update import UpdateError, UpdateInfo
 
 from .controls import METRIC_TEXT
-from .locale import runtime_notice_text
+from .locale import display_model_name, runtime_notice_text
 
 
 DISPLAY_REFRESH_MS = 33
@@ -100,7 +100,15 @@ class DisplayViewMixin:
             if isinstance(profile_overrides, dict):
                 self.overrides = dict(profile_overrides)
             if "model" in latest:
-                self.model.set(str(latest["model"]))
+                model = latest["model"]
+                verified = latest.get("verified_model")
+                if "verified_model" not in latest:
+                    config = getattr(getattr(self, "emulator", None), "config", None)
+                    if config is not None and getattr(config, "model", None) == model:
+                        verified = getattr(config, "verified_model", None)
+                self.model.set(display_model_name(
+                    model, verified, self.ui_language, self.firmware.stem
+                ))
             if "device_details" in latest:
                 self.device_details.set(str(latest["device_details"]))
             if "instructions" in latest:

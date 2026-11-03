@@ -458,7 +458,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     if verified_model != model:
         verified_model = None
     override_model = (getattr(overrides, "model", None) if overrides else None)
-    hardware_model = override_model or verified_model
+    if override_model is not None and (
+            not isinstance(override_model, str) or not override_model.strip()):
+        raise ValueError("model override must not be empty")
     confidence = chipset_confidence(image, chipset)
     vector_score = arm_vector_score(image)
     image_kind = "firmware" if vector_score >= 2 else "data/non-bootable"
@@ -1338,7 +1340,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         flash_state=default_flash_state,
         linker=linker, overlays=overlays, missing_overlays=[], runtime_overlays=[],
         audio_transport=audio_transport,
-        verified_model=hardware_model,
+        verified_model=verified_model if override_model is None else None,
         guest_owned_status_72c=guest_owned_status_72c,
         rex_static_controller_candidate=rex_static_controller_candidate,
         rex_static_c40_controller_observation=rex_static_c40_controller_observation,

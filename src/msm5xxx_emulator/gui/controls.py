@@ -187,11 +187,27 @@ SETTINGS_ENGLISH = {
 }
 
 
+def _clean_saved_model(profile: dict[str, object]) -> dict[str, object]:
+    """Keep a saved model only when the user explicitly set a nonempty value."""
+    result = dict(profile)
+    model = result.get("model")
+    if (result.get("_model_user_set") is not True
+            or not isinstance(model, str) or not model.strip()):
+        result.pop("model", None)
+        result.pop("_model_user_set", None)
+    return result
+
+
 def merge_settings_overrides(current: dict[str, object], edited: set[str],
                              parsed: dict[str, object],
                              firmware_changed: bool) -> dict[str, object]:
     """Keep prior manual values for one firmware; a new dump starts clean."""
-    merged = {} if firmware_changed else dict(current)
+    merged = {} if firmware_changed else _clean_saved_model(current)
+    if "model" in edited:
+        model = parsed["model"]
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("모델 이름이 비어 있음")
+        merged["_model_user_set"] = True
     for name in edited:
         value = parsed[name]
         if value is None and name in GUI_ZERO_DISABLE_FIELDS:
@@ -225,8 +241,14 @@ def detect_profile(firmware: Path, profile: dict[str, object]) -> tuple[object, 
     baseline = detect(firmware)
     overrides = {
         key: value for key, value in profile.items()
-        if hasattr(baseline, key) and value != getattr(baseline, key)
+        if key != "model" and hasattr(baseline, key)
+        and value != getattr(baseline, key)
     }
+    model = profile.get("model")
+    if (profile.get("_model_user_set") is True
+            and isinstance(model, str) and model.strip()):
+        overrides["model"] = model
+        overrides["_model_user_set"] = True
     config = (detect(firmware, argparse.Namespace(**overrides))
               if overrides else baseline)
     return config, overrides
@@ -718,7 +740,7 @@ class ControlsMixin:
             profile = profiles.get(str(self.firmware.resolve()), {})
             if not isinstance(profile, dict):
                 return {}
-            return dict(profile)
+            return _clean_saved_model(profile)
         except (AttributeError, OSError, ValueError):
             return {}
 
@@ -734,7 +756,7 @@ class ControlsMixin:
             profiles = data.get("profiles")
             if not isinstance(profiles, dict):
                 profiles = {}
-            profiles[str(self.firmware.resolve())] = self.overrides
+            profiles[str(self.firmware.resolve())] = _clean_saved_model(self.overrides)
             manual_keymaps = data.get("manual_keymaps")
             if not isinstance(manual_keymaps, dict):
                 manual_keymaps = {}
