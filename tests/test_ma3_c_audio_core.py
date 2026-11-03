@@ -264,6 +264,18 @@ int main(void) {
     assert(msm5xxx_ma3_status_write(&a, 0, 0));
     assert(msm5xxx_ma3_data_write(&a, 0x80, 0));
     assert(a.interrupt_flags == 0);
+
+    /* The delayed stream accepts a full 1024-byte burst and reports full
+     * only at its actual boundary. */
+    msm5xxx_ma3_reset(&a);
+    assert(msm5xxx_ma3_status_write(&a, 1, 0));
+    for (unsigned i = 0; i < 1024; ++i) {
+        assert(msm5xxx_ma3_data_write(&a, 0x80, 0));
+        assert(msm5xxx_ma3_fifo_occupancy(&a) == i + 1);
+        assert(!!(msm5xxx_ma3_status_read(&a) & 8) == (i == 1023));
+    }
+    assert(!msm5xxx_ma3_data_write(&a, 0x80, 0));
+    assert(msm5xxx_ma3_fifo_occupancy(&a) == 1024);
     return 0;
 }
 ''', encoding="utf-8")
