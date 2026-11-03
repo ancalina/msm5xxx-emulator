@@ -404,7 +404,8 @@ class LCDGeometryTests(unittest.TestCase):
         from types import SimpleNamespace
 
         emulator = self._routing_emulator(width=120, height=160)
-        emulator.config.model = "LG-SD810"
+        emulator.config.model = None
+        emulator.config.sd810_gpio_profile = (0x03000720, 1, 1)
         emulator.config.chipset = "MSM5100"
         emulator.config.board_status_input = SimpleNamespace(
             address=0x03000720, mask=1, default=1)

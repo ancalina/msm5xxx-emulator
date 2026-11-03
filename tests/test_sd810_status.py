@@ -1,5 +1,8 @@
 """Tests for the SD810 halfword GPIO reader admission."""
 import struct
+import shutil
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
@@ -21,6 +24,30 @@ def reader(image, start, pointer=0x01816618):
 
 
 class SD810StatusTests(unittest.TestCase):
+    def test_firmware_signature_is_filename_and_model_independent(self):
+        from corpus import firmware_path
+        from msm5xxx_emulator.detection import detect
+        from msm5xxx_emulator.qemu.decoder import QemuDecoder
+
+        names = ("LG-SD810-General.bin", "LG-SD810-AfterSKTVer.bin",
+                 "archive-copies/LG_SXS1V308_NOR_00000000_len_01800000.bin")
+        for name in names:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                path = firmware_path(name)
+                copy = Path(directory) / "unrelated-firmware.bin"
+                shutil.copyfile(path, copy)
+                original = detect(path)
+                renamed = detect(copy)
+                self.assertEqual(original.sd810_gpio_profile, (0x03000720, 1, 1))
+                self.assertEqual(renamed.sd810_gpio_profile, original.sd810_gpio_profile)
+                self.assertEqual(renamed.board_status_input, original.board_status_input)
+                for config in (original, renamed):
+                    config.model = None
+                    decoder = QemuDecoder(config)
+                    self.assertTrue(decoder._lcd_sd810_enabled())
+                    config.sd810_gpio_profile = None
+                    self.assertFalse(decoder._lcd_sd810_enabled())
+
     def test_sxs_menu_selection_requires_matching_source_and_table(self):
         table = 0x25d957
         image = bytearray(table + 30)

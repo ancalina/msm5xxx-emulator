@@ -116,6 +116,7 @@ class FirmwareConfig:
     overlays: list[CopyLayout]
     missing_overlays: list[CopyLayout]
     runtime_overlays: list[CopyLayout]
+    sd810_gpio_profile: tuple[int, int, int] | None = None
     verified_model: str | None = None
     guest_owned_status_72c: bool = False
     display_geometry_source: str = "external-config"

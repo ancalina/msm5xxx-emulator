@@ -4661,12 +4661,10 @@ class Transport:
             board_status = BoardStatusInput(0x03000720, 1, 1)
             self.config.board_status_input = board_status
         sd810_status = (board_status is not None
-                         and self.config.model == "LG-SD810"
+                         and getattr(self.config, "sd810_gpio_profile", None) == (0x03000720, 1, 1)
                          and self.config.chipset == "MSM5100"
                          and (board_status.address, board_status.mask,
-                              board_status.default) == (0x03000720, 1, 1)
-                         and sd810_gpio_board_status_profile(detector_image)
-                             == (0x03000720, 1, 1))
+                              board_status.default) == (0x03000720, 1, 1))
         if board_status is not None:
             machine += (
                 f",board-status-input={board_status.address:x}:"
@@ -7417,7 +7415,7 @@ class Transport:
                 or getattr(self, "_kp2100_status_source_closed", False)):
             # The default is source-proven; its edge IRQ is not modeled yet.
             return False
-        if (getattr(self.config, "model", None) == "LG-SD810" and profile is not None
+        if (getattr(self.config, "sd810_gpio_profile", None) == (0x03000720, 1, 1) and profile is not None
                 and (profile.address, profile.mask) == (0x03000720, 1)):
             # The UI name is inferred: the source proves the logical status
             # produces open/closed events and gates keys, not the sensor type.

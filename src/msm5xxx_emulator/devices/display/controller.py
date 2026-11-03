@@ -883,7 +883,7 @@ class DisplayControllerMixin:
 
     def _lcd_sd810_enabled(self) -> bool:
         status = getattr(self.config, "board_status_input", None)
-        return (getattr(self.config, "model", None) == "LG-SD810"
+        return (getattr(self.config, "sd810_gpio_profile", None) == (0x03000720, 1, 1)
                 and getattr(self.config, "chipset", None) == "MSM5100"
                 and status is not None
                 and (status.address, status.mask, status.default)

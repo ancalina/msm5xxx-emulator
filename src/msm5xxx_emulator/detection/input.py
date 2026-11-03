@@ -567,12 +567,17 @@ def _board_status_and_flags(image: bytes, start: int) -> bool:
                     for pos in range(clear + 10, join, 2)))
 
 
-def find_board_status_input(image: bytes, notes: list[str] | None = None
+_SD810_UNSET = object()
+
+
+def find_board_status_input(image: bytes, notes: list[str] | None = None,
+                            *, sd810_profile: tuple[int, int, int] | None | object = _SD810_UNSET
                             ) -> BoardStatusInput | None:
     """Accept one unique Thumb byte-status mask/branch/debounce control shape."""
     boot_inputs = find_boot_download_inputs(image)
     found: set[BoardStatusInput] = set(boot_inputs)
-    sd810 = sd810_gpio_board_status_profile(image)
+    sd810 = (sd810_gpio_board_status_profile(image)
+             if sd810_profile is _SD810_UNSET else sd810_profile)
     if sd810 is not None:
         found.add(BoardStatusInput(*sd810))
     # This compiler layout loads the GPIO literal before saving registers.

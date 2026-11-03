@@ -427,7 +427,7 @@ class DeviceStateMixin:
                             and other_label == "stable MSM MMIO"
                             and start == other_start == 0x03000720
                             and end == start + 1
-                            and config.model == "LG-SD810"
+                            and getattr(config, "sd810_gpio_profile", None) == (0x03000720, 1, 1)
                             and config.chipset == "MSM5100"
                             and config.board_status_input.mask == 1):
                         continue

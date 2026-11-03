@@ -39,6 +39,7 @@ from .boot import (
 from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout, find_page_plane_width
 from .firmware_image import load_firmware_image
+from .input_sd810 import sd810_gpio_board_status_profile
 from .input import (find_board_adc_reader, find_board_status_input,
                     find_dc0_board_adc_profile, find_sbi_bootstrap_profile)
 from .memory_layout import (
@@ -708,7 +709,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     )
     if status_72c_note is not None:
         detection_notes.append(status_72c_note)
-    board_status_input = find_board_status_input(primary_image, detection_notes)
+    sd810_profile = sd810_gpio_board_status_profile(primary_image)
+    board_status_input = find_board_status_input(
+        primary_image, detection_notes, sd810_profile=sd810_profile)
     if board_status_input is not None:
         boot_release = (
             "closed active-low boot-download GPIO: released key default"
@@ -1260,7 +1263,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                                  if revision_profile else None),
         board_revision_value=(MSM5500_REVISION_F025_RAW
                               if revision_profile else None),
-        board_status_input=board_status_input,
+        board_status_input=board_status_input, sd810_gpio_profile=sd810_profile,
         image_offset=image_offset, load_address=0,
         flash_size=flash_size,
         secondary_flash_address=(

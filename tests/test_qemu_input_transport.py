@@ -3396,7 +3396,7 @@ class RAMBootstrapTransportTests(unittest.TestCase):
 class FoldInputTransportTests(unittest.TestCase):
     def test_sd810_fold_requires_source_closed_event_producer(self) -> None:
         transport = MODULE.Transport.__new__(MODULE.Transport)
-        transport.config = SimpleNamespace(model="LG-SD810", board_status_input=SimpleNamespace(
+        transport.config = SimpleNamespace(model=None, sd810_gpio_profile=(0x03000720, 1, 1), board_status_input=SimpleNamespace(
             address=0x03000720, mask=1, default=1))
         transport.board_status_snapshot = {"level": 1}
         transport.decoder = SimpleNamespace(input_error="")
