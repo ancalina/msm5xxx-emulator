@@ -25,7 +25,7 @@ def reader(image, start, pointer=0x01816618):
 
 class SD810StatusTests(unittest.TestCase):
     def test_firmware_signature_is_filename_and_model_independent(self):
-        from corpus import firmware_path
+        from corpus import FIRMWARE_ROOT, firmware_path
         from msm5xxx_emulator.detection import detect
         from msm5xxx_emulator.qemu.decoder import QemuDecoder
 
@@ -33,7 +33,10 @@ class SD810StatusTests(unittest.TestCase):
                  "archive-copies/LG_SXS1V308_NOR_00000000_len_01800000.bin")
         for name in names:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
-                path = firmware_path(name)
+                path = (FIRMWARE_ROOT.parent / name if name.startswith("archive-copies/")
+                        else firmware_path(name))
+                if not path.is_file():
+                    self.skipTest(f"private firmware unavailable: {name}")
                 copy = Path(directory) / "unrelated-firmware.bin"
                 shutil.copyfile(path, copy)
                 original = detect(path)
