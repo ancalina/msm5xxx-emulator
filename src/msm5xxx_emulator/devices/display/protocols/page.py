@@ -874,7 +874,7 @@ class PageProtocolMixin:
         paired_qualified = (
             source == "runtime:paired-fifo-rgb565"
             and (self.config.width, self.config.height) == (120, 160)
-            and self._lcd_protocol == "paired-fifo-rgb565"
+            and self._lcd_raw_port == port
         )
         if paired_qualified and port == (0x02000080, 2):
             if count < 2 * 120 * 160:

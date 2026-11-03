@@ -1766,6 +1766,13 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator._lcd_frame_protocol, "paired-fifo-rgb565")
         self.assertEqual(emulator.display_frame[:3], b"\0\0\xff")
 
+        # A command that relabels the protocol must not split later pairs into two pixels.
+        emulator._lcd_protocol = "command-relabelled"
+        for _ in range(120 * 160):
+            write_pair(emulator, 0xFFFF)
+        self.assertEqual(emulator.frame_sequence, first_sequence + 2)
+        self.assertEqual(emulator.display_frame[:6], b"\xff" * 6)
+
         near_miss = self._routing_emulator(width=176, height=220)
         near_miss.frame_sequence = 0
         for index in range(120 * 160):
