@@ -26,7 +26,7 @@ typedef struct {
     unsigned rex_irq_gate_attempts, rex_irq_gate_status;
     uint32_t rex_irq_vector_target, rex_irq_wrapper_address, rex_irq_handler_slot;
     uint32_t rex_irq_handler_address, rex_irq_callback_slot, rex_irq_callback_address;
-    uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size, rex_irq_vector_rom;
+    uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size, rex_irq_vector_rom, primary_nor_size;
     uint64_t rex_irq_next, rex_irq_interval;
     bool rex_irq_copied, rex_irq_sv130_overlay, rex_irq_route_active, rex_irq_armed;
 } MSM5xxxPOCMachineState;

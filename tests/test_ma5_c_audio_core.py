@@ -430,6 +430,7 @@ class TestMA5CAudioCore(unittest.TestCase):
             MSM5xxxMA5Device d;
             run(0x14, 0x4b, UINT64_C(19660800));
             run(0x95, 0x51, UINT64_C(19114667));
+            run(0x0c, 0x2d, UINT64_C(19660800));
             assert(msm5xxx_ma5_device_init(&d, 1000));
             assert(msm5xxx_ma5_device_set_target_rate(&d, 48000));
             assert(wr(&d, 30, 0x14));

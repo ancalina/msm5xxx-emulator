@@ -96,6 +96,7 @@ typedef struct {
     CPU *cpu;
     uint8_t msm[0x1000];
     unsigned rex_irq_gate_attempts, rex_irq_gate_status;
+    uint32_t primary_nor_size;
     uint32_t rex_irq_vector_target, rex_irq_wrapper_address;
     uint32_t rex_irq_wrapper_rom, rex_irq_wrapper_size, rex_irq_vector_rom;
     uint32_t rex_irq_handler_slot, rex_irq_handler_address;
@@ -145,7 +146,7 @@ static uint32_t branch(unsigned from, unsigned to) {
             'msm5xxx_poc_rex_copied_arm_write(')) + r'''
 int main(void) {
     CPU cpu = { .env = { .thumb = true, .regs = {2, 0x030007a0} } };
-    MSM5xxxPOCMachineState s = { .cpu=&cpu, .rex_irq_copied=true,
+    MSM5xxxPOCMachineState s = { .cpu=&cpu, .primary_nor_size=sizeof(memory), .rex_irq_copied=true,
         .rex_irq_vector_target=0x100, .rex_irq_vector_rom=0x1000,
         .rex_irq_wrapper_address=0x200, .rex_irq_wrapper_rom=0x1100,
         .rex_irq_wrapper_size=16, .rex_irq_handler_slot=0x300,
@@ -173,6 +174,10 @@ int main(void) {
     assert(!msm5xxx_poc_rex_static_gate(&s)); /* Old class rejects copied veneer. */
     word(0x100,branch(0x100,0x200));
     assert(msm5xxx_poc_rex_static_gate(&s)); /* Old direct branch still works. */
+    word(0x18,branch(0x18,0x180)); word(0x180,branch(0x180,0x100));
+    assert(msm5xxx_poc_rex_static_gate(&s));
+    word(0x180,0); assert(!msm5xxx_poc_rex_static_gate(&s));
+    word(0x18,branch(0x18,0x100));
     s.rex_irq_copied=true;
     word(0x800,0x8008);
     msm5xxx_poc_rex_copied_arm_write(&s,0,2,1); assert(!scheduled && s.msm[0x7a0]==2);

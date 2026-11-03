@@ -175,6 +175,7 @@ typedef struct {
     bool experimental_matrix_status_enabled;
     uint32_t experimental_matrix_status_site;
     uint8_t experimental_matrix_status_level;
+    bool matrix_input_electrical;
     uint16_t matrix_input_row_mask;
     bool matrix_input_host_enabled, matrix_input_pressed;
     uint32_t matrix_input_contact_precheck[3];
@@ -523,6 +524,14 @@ int main(void) {
     }
     pc = 0x78956; put(0x724,~row_bits[0]);
     assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dd2);
+    /* Electrical mode responds to pins independently of instruction PC. */
+    s.matrix_input_electrical = true; s.matrix_input_pressed = true;
+    s.matrix_input_row = 6; s.matrix_input_sense = 14;
+    put(0x724,~row_bits[6]); put(0x72c,0x6dd2); pc = 0;
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6dde);
+    put(0x724,~row_bits[0]);
+    assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == 0x6ddf);
+    s.matrix_input_electrical = false;
     err = NULL; msm5xxx_poc_set_matrix_halfword(&s,"1801000:78956:78a9e:1",&err);
     assert(err && s.matrix_input_row_mask == mask); /* Duplicate config is atomic reject. */
     err = NULL; msm5xxx_poc_set_matrix_low5(&s,"1801000:78956:78a9e",&err); assert(err);
@@ -1018,6 +1027,16 @@ int main(void) {
     s = saved_gpio;
     /* Optional independent input pin: legacy GPIO rows and EEPROM stay owned. */
     MSM5xxxPOCMachineState legacy_gpio = s;
+    s = (MSM5xxxPOCMachineState){.primary_nor_size=0x800000,.cpu=&cpu_state}; err=NULL;
+    msm5xxx_poc_set_matrix_gpio(&s,"3000694:801fc:80442:3000660:3f:0:0:0:0:10",&err);
+    assert(!err && s.matrix_input_gpio);
+    backing[0x694]=0xa0; backing[0x660]=(uint8_t)~4U; pc=0;
+    s.matrix_input_pressed=true; s.matrix_input_row=2; s.matrix_input_sense=14;
+    assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xbe);
+    backing[0x660]=0xff; assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xbf);
+    s.matrix_input_pressed=false; assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xbf);
+    s.matrix_input_pressed=true; s.matrix_input_row=MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW;
+    assert(msm5xxx_poc_matrix_input_read(&s,0,1)==0xaf);
     const char *sideband_gpio = "3000694:801fc:80442:300066c:62:3000668:6:3000664:80:10";
     s = (MSM5xxxPOCMachineState){.primary_nor_size=0x800000,.cpu=&cpu_state}; err=NULL;
     msm5xxx_poc_set_matrix_gpio(&s,sideband_gpio,&err);

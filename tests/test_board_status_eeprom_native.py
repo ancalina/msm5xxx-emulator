@@ -16,8 +16,9 @@ class BoardStatusEEPROMTests(unittest.TestCase):
 #define MSM5XXX_POC_EEPROM_GPIO_SIZE 32
 #define hwaddr uint64_t
 struct State {
-    bool eeprom_gpio_enabled;
-    uint32_t board_status_input_address, eeprom_gpio_base;
+    bool eeprom_gpio_enabled, raw_nand_main_enabled;
+    uint32_t board_status_input_address, eeprom_gpio_base, raw_nand_ready_address;
+    uint32_t raw_nand_ready_mask, raw_nand_status;
     uint8_t board_status_input_backing, board_status_input_mask;
     uint8_t pins[32]; unsigned reads, writes;
 };

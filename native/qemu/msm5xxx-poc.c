@@ -511,6 +511,10 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion dmd_5500_start;
     MemoryRegion dmd_5500_completion;
     MemoryRegion board_status_input;
+    /* Optional second independent byte input; unmasked bits are real GPIO. */
+    MemoryRegion board_status_input_peer;
+    uint32_t board_status_peer_address;
+    uint8_t board_status_peer_mask, board_status_peer_level;
     MemoryRegion sd810_accessory_input;
     MemoryRegion matrix_input;
     MemoryRegion mmio;
@@ -682,6 +686,7 @@ struct MSM5xxxPOCMachineState {
     bool experimental_matrix_status_enabled;
     uint32_t experimental_matrix_status_site;
     uint8_t experimental_matrix_status_level;
+    bool matrix_input_electrical;
     uint16_t matrix_input_row_mask; /* Zero retains the legacy six-row class. */
     uint32_t matrix_input_descriptor;
     uint32_t matrix_input_contact_precheck[3];
@@ -3535,8 +3540,16 @@ static uint64_t msm5xxx_poc_board_status_input_read(void *opaque,
         value = msm5xxx_poc_eeprom_gpio_read(s,
             s->board_status_input_address - s->eeprom_gpio_base, size);
     }
-    return (value & ~(uint64_t)s->board_status_input_mask) |
-           (s->board_status_input_backing & s->board_status_input_mask);
+    value = (value & ~(uint64_t)s->board_status_input_mask) |
+            (s->board_status_input_backing & s->board_status_input_mask);
+    /* An independent R/B input may share this GPIO byte with a board input.
+     * Preserve each owner's bit; GPIO stores do not change NAND readiness. */
+    if (s->raw_nand_main_enabled &&
+        s->raw_nand_ready_address == s->board_status_input_address) {
+        value = (value & ~(uint64_t)s->raw_nand_ready_mask) |
+                ((s->raw_nand_status & 0x40) ? s->raw_nand_ready_mask : 0);
+    }
+    return value;
 }
 
 static void msm5xxx_poc_board_status_input_write(void *opaque, hwaddr offset,
@@ -3563,6 +3576,43 @@ static void msm5xxx_poc_board_status_input_write(void *opaque, hwaddr offset,
 static const MemoryRegionOps msm5xxx_poc_board_status_input_ops = {
     .read = msm5xxx_poc_board_status_input_read,
     .write = msm5xxx_poc_board_status_input_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+};
+
+/* A second source-declared external input may be on a different GPIO byte.
+ * Use the passive MSM backing for output bits, and keep pin levels independent
+ * of guest stores. This is not a RAM initialization or a CPU-state override. */
+static uint64_t msm5xxx_poc_board_status_peer_read(void *opaque, hwaddr offset,
+                                                 unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint8_t value;
+
+    if (offset || size != 1) {
+        return 0;
+    }
+    value = msm[s->board_status_peer_address - MSM5XXX_POC_MSM_BASE];
+    return (value & ~s->board_status_peer_mask) |
+           (s->board_status_peer_level & s->board_status_peer_mask);
+}
+
+static void msm5xxx_poc_board_status_peer_write(void *opaque, hwaddr offset,
+                                               uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+
+    if (!offset && size == 1) {
+        msm[s->board_status_peer_address - MSM5XXX_POC_MSM_BASE] = value;
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_board_status_peer_ops = {
+    .read = msm5xxx_poc_board_status_peer_read,
+    .write = msm5xxx_poc_board_status_peer_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 1,
@@ -4731,6 +4781,27 @@ static uint64_t msm5xxx_poc_matrix_halfword_read(void *opaque, hwaddr offset,
     CPUState *cpu = current_cpu;
     uint32_t pc;
 
+    if (!offset && (size == 1 || size == 2) &&
+        s->matrix_input_electrical && s->matrix_input_row_mask == 0x3b03) {
+        /* Seven source-declared row pins at GPIO724, four sense pins at
+         * GPIO72c. Each column has a pull-up; a closed contact conducts only
+         * when its actual row output is low. This also covers all-row scans
+         * and arbitrary row combinations, without consulting the CPU. */
+        unsigned bits = s->matrix_input_row_mask;
+        unsigned row_bit;
+        backing |= 0x1f; /* Sense pull-ups and released active-low bit4 contact. */
+        if (s->matrix_input_pressed && s->matrix_input_row < 7) {
+            for (unsigned i = 0; i < s->matrix_input_row; i++) {
+                bits &= bits - 1;
+            }
+            row_bit = bits & -bits;
+            if (!(msm5xxx_poc_halfword_backing_read(s, 0x724, 2) & row_bit)) {
+                backing = (backing & ~(uint64_t)0xf) | s->matrix_input_sense;
+                s->matrix_input_active_reads++;
+            }
+        }
+        return backing;
+    }
     if (offset || size != 2 || !qemu_in_vcpu_thread() ||
         cpu != CPU(s->cpu) || !cpu->running || !cpu->neg.can_do_io) {
         return backing;
@@ -4962,6 +5033,9 @@ static bool msm5xxx_poc_matrix_gpio_conflict(MSM5xxxPOCMachineState *s)
         unsigned mask = i == 3 ? (0xf | s->matrix_input_sideband_mask) :
                                 s->matrix_input_gpio_mask[i];
 
+        if (i < 3 && !mask) {
+            continue; /* An omitted GPIO bank owns no pins. */
+        }
         if (s->board_status_input_enabled &&
             s->board_status_input_address == address) {
             return true;
@@ -4999,6 +5073,33 @@ static uint64_t msm5xxx_poc_matrix_gpio_read(void *opaque, hwaddr offset,
     }
     backing = msm5xxx_poc_halfword_backing_read(s,
         s->matrix_input_address - MSM5XXX_POC_MSM_BASE + offset, size);
+    if (!offset && size == 1 && !s->matrix_input_gpio_mask[1] &&
+        !s->matrix_input_gpio_mask[2]) {
+        /* One GPIO bank: the actual output latch selects the physical row.
+         * Presence scans, individual rows, and idle reads share the circuit;
+         * no CPU register, PC, debounce state, or task signal is inspected. */
+        unsigned bits = s->matrix_input_gpio_mask[0];
+        unsigned row_bit;
+        unsigned level = msm5xxx_poc_halfword_backing_read(s,
+            s->matrix_input_gpio_port[0] - MSM5XXX_POC_MSM_BASE, 1);
+        unsigned low = 0xf;
+        backing |= s->matrix_input_sideband_mask;
+        if (s->matrix_input_pressed &&
+            s->matrix_input_row == MSM5XXX_POC_HOST_INPUT_SIDEBAND_ROW) {
+            backing &= ~s->matrix_input_sideband_mask;
+            s->matrix_input_active_reads++;
+        } else if (s->matrix_input_pressed && s->matrix_input_row < 6) {
+            for (unsigned i = 0; i < s->matrix_input_row && bits; i++) {
+                bits &= bits - 1;
+            }
+            row_bit = bits & -bits;
+            if (row_bit && !(level & row_bit)) {
+                low = s->matrix_input_sense;
+                s->matrix_input_active_reads++;
+            }
+        }
+        return (backing & ~(uint64_t)0xf) | low;
+    }
     if (offset || size != 1 || !qemu_in_vcpu_thread() || cpu != CPU(s->cpu) ||
         !cpu->running || !cpu->neg.can_do_io) {
         return backing;
@@ -6776,10 +6877,24 @@ static bool msm5xxx_poc_rex_static_gate(MSM5xxxPOCMachineState *s)
 
     s->rex_irq_gate_attempts++;
     if (!msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(0x18), 0x18,
-                                  &target) ||
-        target != s->rex_irq_vector_target) {
+                                  &target)) {
         s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
         return false;
+    }
+    if (target != s->rex_irq_vector_target) {
+        /* One ROM B veneer before the copied RAM vector.  Detection proves
+         * the actual reset/copy instruction chain and rechecks loaded bytes;
+         * this gate still waits for the live RAM branch and registered slots.
+         * The separate copied LDR-pc class retains its original direct route.
+         */
+        if (s->rex_irq_copied || s->primary_nor_size < 4 || (target & 3) ||
+            target > s->primary_nor_size - 4 ||
+            !msm5xxx_poc_arm_b_target(msm5xxx_poc_guest_u32(target), target,
+                                      &target) ||
+            target != s->rex_irq_vector_target) {
+            s->rex_irq_gate_status = MSM5XXX_POC_REX_GATE_VECTOR_WAIT;
+            return false;
+        }
     }
     if (s->rex_irq_copied) {
         uint8_t loaded[512], original[512];
@@ -10430,6 +10545,8 @@ static void msm5xxx_poc_dc0_write(void *opaque, hwaddr offset,
                                   uint64_t value, unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    uint16_t old_start = msm5xxx_poc_backing_read(
+        s->dc0_backing, MSM5XXX_POC_DC0_START_OFFSET, 2);
 
     if (offset + size > MSM5XXX_POC_DC0_SIZE) {
         return;
@@ -10444,6 +10561,11 @@ static void msm5xxx_poc_dc0_write(void *opaque, hwaddr offset,
         s->dc0_board_adc_phase =
             s->dc0_board_adc_phase == 1 && value == 0xb200 ? 2 : 0;
     } else if (offset == MSM5XXX_POC_DC0_START_OFFSET) {
+        if (old_start == 0 && value == 1 && s->rex_irq_enabled &&
+            s->rex_irq_status_address == 0x03000c80) {
+            s->rex_irq_pending[1] |= 1;
+            msm5xxx_poc_rex_irq_update(s);
+        }
         if (s->dc0_board_adc_phase == 2 && value == 0) {
             s->dc0_board_adc_phase = 3;
         } else if (s->dc0_board_adc_phase == 3 && value == 1) {
@@ -10545,7 +10667,8 @@ static bool msm5xxx_poc_raw_nand_latch_cursor(
         return false;
     }
     if (s->raw_nand_spare_selected) {
-        if (s->raw_nand_address_bytes[0] != 0) {
+        /* Valid word offsets; READ_SPARE returns fixed erased OOB. */
+        if (s->raw_nand_address_bytes[0] >= 16 / s->raw_nand_bus_width) {
             return false;
         }
         s->raw_nand_page_base = page * s->raw_nand_page_size;
@@ -14249,6 +14372,12 @@ static void msm5xxx_poc_init(MachineState *machine)
                                   s->amd_x16_nor_enabled;
     unsigned i;
 
+    if (s->matrix_input_electrical &&
+        (!s->matrix_input_enabled || !s->matrix_input_halfword ||
+         s->matrix_input_row_mask != 0x3b03)) {
+        error_report("matrix-halfword-electrical requires a seven-row matrix");
+        exit(EXIT_FAILURE);
+    }
     if (s->direct_lcd_enabled && (upper_nor_enabled ||
         (direct_x16_nor_enabled && !s->amd_adjacent_nv && !s->intel_adjacent_nv && !s->sharp_primary_nv) ||
         s->raw_nand_main_enabled || s->small_nand_enabled ||
@@ -16187,23 +16316,46 @@ static void msm5xxx_poc_init(MachineState *machine)
         s->raw_nand_data_address == MSM5XXX_POC_RAW_NAND_MIDDLE_DATA_BASE) {
         MemoryRegionSection section;
         bool conflict;
+        bool shared_board_input = s->board_status_input_enabled &&
+            !s->board_status_input_descriptor &&
+            ((s->board_status_input_address == 0x03000720 &&
+              s->board_status_input_mask == 4 &&
+              s->raw_nand_ready_address == 0x03000720 &&
+              s->raw_nand_ready_mask == 2) ||
+             (s->board_status_input_address == 0x03000728 &&
+              s->board_status_input_mask == 2 &&
+              s->raw_nand_ready_address == 0x03000728 &&
+              s->raw_nand_ready_mask == 1));
 
+        /* Mapped keypad sense and NAND R/B may occupy separate bytes.
+         * The final map check below, not a global keypad flag, proves that
+         * this ready aperture is free (or shares only an independent pin). */
         if (!s->raw_nand_ready_address || s->matrix_input_loop ||
-            s->matrix_input_row_mask ||
             (s->board_status_input_enabled &&
              s->board_status_input_address < s->raw_nand_ready_address + 2 &&
-             s->raw_nand_ready_address < s->board_status_input_address + 2)) {
+             s->raw_nand_ready_address < s->board_status_input_address + 2 &&
+             !shared_board_input)) {
             error_report("middle raw NAND requires an exclusive source-declared ready input");
             exit(EXIT_FAILURE);
         }
         /* Inspect the final map: never shadow another GPIO device, even partly. */
         section = memory_region_find(get_system_memory(),
                                      s->raw_nand_ready_address, 2);
-        conflict = section.mr != &s->msm ||
-                   !int128_eq(section.size, int128_make64(2));
+        conflict = shared_board_input ?
+            (section.mr != &s->board_status_input ||
+             !int128_eq(section.size, int128_make64(1))) :
+            (section.mr != &s->msm ||
+             !int128_eq(section.size, int128_make64(2)));
         memory_region_unref(section.mr);
+        if (!conflict && shared_board_input) {
+            section = memory_region_find(get_system_memory(),
+                                         s->raw_nand_ready_address + 1, 1);
+            conflict = section.mr != &s->msm ||
+                       !int128_eq(section.size, int128_make64(1));
+            memory_region_unref(section.mr);
+        }
         if (conflict) {
-            error_report("middle raw NAND ready input requires the whole passive MSM RAM aperture");
+            error_report("middle raw NAND ready input conflicts with another GPIO owner");
             exit(EXIT_FAILURE);
         }
         memory_region_init_io(&s->raw_nand_ready, OBJECT(machine),
@@ -16211,6 +16363,24 @@ static void msm5xxx_poc_init(MachineState *machine)
                               "msm5xxx-poc.raw-nand-ready", 2);
         memory_region_add_subregion_overlap(get_system_memory(),
             s->raw_nand_ready_address, &s->raw_nand_ready, 1);
+    }
+    if (s->board_status_peer_address) {
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), s->board_status_peer_address, 1);
+        bool conflict = !s->board_status_input_enabled ||
+            section.mr != &s->msm ||
+            !int128_eq(section.size, int128_make64(1));
+
+        memory_region_unref(section.mr);
+        if (conflict) {
+            error_report("board-status-input-peer requires a separate passive MSM byte");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_io(&s->board_status_input_peer, OBJECT(machine),
+            &msm5xxx_poc_board_status_peer_ops, s,
+            "msm5xxx-poc.board-status-input-peer", 1);
+        memory_region_add_subregion_overlap(get_system_memory(),
+            s->board_status_peer_address, &s->board_status_input_peer, 2);
     }
     if (s->memory_profile_enabled) {
         qemu_register_reset(msm5xxx_poc_reset, s);
@@ -17469,6 +17639,36 @@ static char *msm5xxx_poc_get_board_status_input(Object *obj, Error **errp)
                            s->board_status_input_default);
 }
 
+static char *msm5xxx_poc_get_board_status_peer(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+
+    return s->board_status_peer_address ?
+        g_strdup_printf("%x:%x:%x", s->board_status_peer_address,
+                        s->board_status_peer_mask, s->board_status_peer_level) :
+        g_strdup("");
+}
+
+static void msm5xxx_poc_set_board_status_peer(Object *obj, const char *value,
+                                             Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    unsigned address, mask, level;
+    char trailing;
+
+    if (s->msm.name || s->board_status_peer_address ||
+        sscanf(value, "%x:%x:%x%c", &address, &mask, &level, &trailing) != 3 ||
+        address < MSM5XXX_POC_MSM_BASE ||
+        address >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
+        !mask || mask > UINT8_MAX || level > UINT8_MAX || level & ~mask) {
+        error_setg(errp, "board-status-input-peer must be ADDRESS:MASK:LEVEL before realization");
+        return;
+    }
+    s->board_status_peer_address = address;
+    s->board_status_peer_mask = mask;
+    s->board_status_peer_level = level;
+}
+
 static char *msm5xxx_poc_get_board_revision(Object *obj, Error **errp)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
@@ -18280,6 +18480,13 @@ static void msm5xxx_poc_set_matrix_gpio(Object *obj, const char *value,
     for (unsigned i = 0; i < 3; i++) {
         uint64_t address = fields[3 + 2 * i], mask = fields[4 + 2 * i];
 
+        /* Six rows may all be on PORT0. Only trailing banks may be omitted. */
+        if (i && !address && !mask) {
+            continue;
+        }
+        if (i && !fields[4 + 2 * (i - 1)]) {
+            goto invalid;
+        }
         if (address < MSM5XXX_POC_MSM_BASE ||
             address >= MSM5XXX_POC_MSM_BASE + MSM5XXX_POC_MSM_SIZE ||
             address == fields[0] || !mask || mask > UINT8_MAX) {
@@ -18571,6 +18778,21 @@ static void msm5xxx_poc_set_intel_adjacent_nv16(Object *obj, const char *value, 
     if (!was_enabled && s->intel_x16_nor_enabled && s->intel_adjacent_nv) {
         s->intel_adjacent_x16 = true;
     }
+}
+
+static bool msm5xxx_poc_get_matrix_electrical(Object *obj, Error **errp)
+{
+    return MSM5XXX_POC_MACHINE(obj)->matrix_input_electrical;
+}
+
+static void msm5xxx_poc_set_matrix_electrical(Object *obj, bool value, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "matrix-halfword-electrical must be set before realization");
+        return;
+    }
+    s->matrix_input_electrical = value;
 }
 
 static bool msm5xxx_poc_get_sharp_nv_wp_high(Object *obj, Error **errp)
@@ -19027,7 +19249,8 @@ static void msm5xxx_poc_set_raw_nand_main(Object *obj, const char *value,
          (data != MSM5XXX_POC_RAW_NAND_LOW_PORT_DATA_BASE ||
           address != MSM5XXX_POC_RAW_NAND_LOW_PORT_ADDRESS_BASE ||
           command != MSM5XXX_POC_RAW_NAND_LOW_PORT_COMMAND_BASE)) ||
-        data_size != (middle ? 16 * MiB : MSM5XXX_POC_RAW_NAND_DATA_SIZE) ||
+        (middle ? (data_size != 16 * MiB && data_size != 32 * MiB) :
+                  data_size != MSM5XXX_POC_RAW_NAND_DATA_SIZE) ||
         page_size != MSM5XXX_POC_RAW_NAND_PAGE_SIZE ||
         pages_per_block != MSM5XXX_POC_RAW_NAND_PAGES_PER_BLOCK ||
         bus_width != MSM5XXX_POC_RAW_NAND_BUS_WIDTH) {
@@ -19066,7 +19289,7 @@ static void msm5xxx_poc_set_raw_nand_ready(Object *obj, const char *value,
     if (s->msm.name || s->raw_nand_ready_address ||
         sscanf(value, "%x:%x%c", &address, &mask, &trailing) != 2 ||
         !((address == 0x03000728 && mask == 1) ||
-          (address == 0x03000720 && mask == 0x10))) {
+          (address == 0x03000720 && (mask == 0x10 || mask == 2)))) {
         error_setg(errp, "raw-nand-ready requires a closed middle NAND GPIO ADDRESS:MASK");
         return;
     }
@@ -20297,6 +20520,11 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(
         oc, "board-status-input",
         "Detector-provided persistent board-status bits");
+    object_class_property_add_str(oc, "board-status-input-peer",
+                                  msm5xxx_poc_get_board_status_peer,
+                                  msm5xxx_poc_set_board_status_peer);
+    object_class_property_set_description(oc, "board-status-input-peer",
+        "Optional second source-declared GPIO input ADDRESS:MASK:LEVEL");
     object_class_property_add_str(oc, "board-status-descriptor",
                                   msm5xxx_poc_get_board_status_descriptor,
                                   msm5xxx_poc_set_board_status_descriptor);
@@ -20313,6 +20541,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_matrix_input);
     object_class_property_set_description(
         oc, "matrix-input", "Detector-provided direct matrix input state");
+    object_class_property_add_bool(oc, "matrix-halfword-electrical",
+                                   msm5xxx_poc_get_matrix_electrical,
+                                   msm5xxx_poc_set_matrix_electrical);
     object_class_property_add_str(oc, "matrix-halfword",
                                   msm5xxx_poc_get_matrix_halfword,
                                   msm5xxx_poc_set_matrix_halfword);

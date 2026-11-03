@@ -90,6 +90,21 @@ int main(void) {
     s.raw_nand_status = 0x80;
     assert(msm5xxx_poc_raw_nand_ready_read(&s, 0, 2) == 0x1224);
 
+    s = (MSM5xxxPOCMachineState){0}; error = NULL;
+    msm5xxx_poc_set_raw_nand_main(&s, "1800000:1900000:1a00000:2000000:200:20:2", &error);
+    assert(!error && s.raw_nand_data_size == 32 * MiB);
+    msm5xxx_poc_set_raw_nand_ready(&s, "3000720:2", &error);
+    assert(!error && s.raw_nand_ready_mask == 2);
+    s.msm.bytes[0x720] = 0x84; s.raw_nand_status = 0xC0;
+    assert(msm5xxx_poc_raw_nand_ready_read(&s, 0, 1) == 0x86);
+    s.raw_nand_status = 0x80;
+    assert(msm5xxx_poc_raw_nand_ready_read(&s, 0, 1) == 0x84);
+    s.raw_nand_spare_selected = true; s.raw_nand_address_count = 3;
+    s.raw_nand_address_bytes[0] = 2;
+    assert(msm5xxx_poc_raw_nand_latch_cursor(&s));
+    s.raw_nand_address_bytes[0] = 8;
+    assert(!msm5xxx_poc_raw_nand_latch_cursor(&s));
+
     const char *accepted[] = {
         "2800000:2900000:2a00000:800000:200:20:2",
         "800000:900000:a00000:800000:200:20:2"

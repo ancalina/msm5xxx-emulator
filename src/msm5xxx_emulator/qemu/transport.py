@@ -5351,7 +5351,7 @@ class Transport:
                                 for a, n in table7["dependencies"])):
                     machine += (f",matrix-halfword={table7['descriptor']:x}:"
                                 f"{table7['presence_site']:x}:{table7['sense_site']:x}:"
-                                f"{table7['row_select_mask']:x}")
+                                f"{table7['row_select_mask']:x},matrix-halfword-electrical=on")
                     self.matrix_input_profile = table7
                     self.config.detection_notes.append(
                         "Table-driven 7x4 GPIO matrix: released columns and separate "

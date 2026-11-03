@@ -169,7 +169,7 @@ static uint32_t msm5xxx_poc_guest_u32(hwaddr address) {
 }
 typedef struct {
     CPUState *cpu; int msm;
-    bool matrix_input_enabled,matrix_input_host_enabled,matrix_input_pressed;
+    bool matrix_input_enabled,matrix_input_host_enabled,matrix_input_pressed,matrix_input_electrical;
     bool matrix_input_halfword,matrix_input_low5,matrix_input_kp_low5,matrix_input_sv130_low5,matrix_input_loop,matrix_input_row734;
     bool matrix_row734_boot_seen;
     uint32_t matrix_input_contact_precheck[3];

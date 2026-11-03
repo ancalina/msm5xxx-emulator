@@ -407,7 +407,8 @@ static bool ma5_infer_clki(MSM5xxxMA5Device *device)
         return true;
     }
     if (!((device->b[30] == 0x14u && device->b[31] == 0x4bu) ||
-          (device->b[30] == 0x95u && device->b[31] == 0x51u))) {
+          (device->b[30] == 0x95u && device->b[31] == 0x51u) ||
+          (device->b[30] == 0x0cu && device->b[31] == 0x2du))) {
         device->reject = MSM5XXX_MA5_REJECT_CLOCK;
         return false;
     }
@@ -765,8 +766,8 @@ bool msm5xxx_ma5_device_write(MSM5xxxMA5Device *device, bool index,
             device->reject = MSM5XXX_MA5_REJECT_CLOCK;
             return false;
         }
-        if ((selected == 30u && value != 0x14u && value != 0x95u) ||
-            (selected == 31u && value != 0x4bu && value != 0x51u) ||
+        if ((selected == 30u && value != 0x14u && value != 0x95u && value != 0x0cu) ||
+            (selected == 31u && value != 0x4bu && value != 0x51u && value != 0x2du) ||
             (selected == 36u && ((value & 3u) || !device->b_written[35]))) {
             device->reject = MSM5XXX_MA5_REJECT_CLOCK;
             return false;
@@ -812,7 +813,8 @@ bool msm5xxx_ma5_device_write(MSM5xxxMA5Device *device, bool index,
         }
         if (device->clki_hz && (value & 1u)) {
             bool pll = (device->b[30] == 0x14u && device->b[31] == 0x4bu) ||
-                       (device->b[30] == 0x95u && device->b[31] == 0x51u);
+                       (device->b[30] == 0x95u && device->b[31] == 0x51u) ||
+                       (device->b[30] == 0x0cu && device->b[31] == 0x2du);
             uint64_t num = device->clki_hz * (device->b[31] & 0x7fu);
             uint64_t den = UINT64_C(80000000000) *
                 (device->b[30] & 0x1fu) * (device->ms_s ? device->ms_s : 16384u);
