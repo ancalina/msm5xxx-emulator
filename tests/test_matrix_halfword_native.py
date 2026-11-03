@@ -221,8 +221,19 @@ static char *g_strdup_printf(const char *format, ...) {
 #define BITBANG_I2C_SCL 1
 static unsigned bitbang_calls;
 static bool external_sda = true;
+static bool track_edges, bus_scl, bus_sda;
+static unsigned starts, stops;
 static bool bitbang_i2c_set(void *bus, unsigned pin, bool value) {
-    (void)bus; (void)pin; (void)value; bitbang_calls++; return external_sda;
+    (void)bus; bitbang_calls++;
+    if (track_edges) {
+        if (pin == BITBANG_I2C_SDA) {
+            if (bus_scl && value != bus_sda) {
+                if (value) stops++; else starts++;
+            }
+            bus_sda = value;
+        } else bus_scl = value;
+    }
+    return external_sda;
 }
 """ + old_helper + mapped + helper + eeprom + owner + read + gpio + low5 + half + direct + direct_get + status + board + status_read + r"""
 #define error_report(...) ((void)0)
@@ -601,6 +612,18 @@ int main(void) {
     bitbang_calls = 0;
     msm5xxx_poc_matrix_halfword_write(&s,0,0xbeef,2);
     assert(bitbang_calls == 2); /* Actual update invokes SDA and SCL once each. */
+    /* One GPIO write may change SDA and SCL together: SDA must not move
+     * while the old clock is still high, or the bus sees extra START/STOP. */
+    {
+        __typeof__(s) bus = s;
+        static const uint16_t frame[] = {0x60,0x40,0x20,0x60,0x00,0x40,0x00,0x40,0x60};
+        msm5xxx_poc_eeprom_gpio_write(&bus,0xc,0x20,2);
+        track_edges = true; bus_scl = false; bus_sda = true; starts = stops = 0;
+        for (unsigned i = 0; i < sizeof(frame) / sizeof(frame[0]); i++)
+            msm5xxx_poc_eeprom_gpio_write(&bus,0,frame[i],2);
+        assert(starts == 1 && stops == 1);
+        track_edges = false; bitbang_calls = 0;
+    }
     assert(msm5xxx_poc_backing_read(s.eeprom_gpio_backing,0xc,2) == 0xbeef);
     assert(msm5xxx_poc_backing_read(backing,0x72c,2) == 0x1232);
     bitbang_calls = 0; msm5xxx_poc_matrix_halfword_write(&s,1,0x66,1);

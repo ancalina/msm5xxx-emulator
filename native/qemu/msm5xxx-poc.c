@@ -6506,12 +6506,19 @@ static void msm5xxx_poc_eeprom_gpio_update(MSM5xxxPOCMachineState *s)
     bool clock = s->eeprom_gpio_backing[s->eeprom_clock_offset] &
                  s->eeprom_clock_mask;
 
+    /* A port write can change both pins. Lower SCL before changing SDA,
+     * and establish SDA before a rising SCL edge, so data transitions do
+     * not manufacture START/STOP conditions while the old clock is high. */
+    if (!clock) {
+        s->eeprom_sda = bitbang_i2c_set(
+            &s->eeprom_i2c, BITBANG_I2C_SCL, 0);
+    }
     s->eeprom_sda = bitbang_i2c_set(
-        &s->eeprom_i2c, BITBANG_I2C_SDA, data
-    );
-    s->eeprom_sda = bitbang_i2c_set(
-        &s->eeprom_i2c, BITBANG_I2C_SCL, clock
-    );
+        &s->eeprom_i2c, BITBANG_I2C_SDA, data);
+    if (clock) {
+        s->eeprom_sda = bitbang_i2c_set(
+            &s->eeprom_i2c, BITBANG_I2C_SCL, 1);
+    }
 }
 
 static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
