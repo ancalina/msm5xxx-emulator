@@ -56,6 +56,9 @@ class Packed2Panel:
         self.observation = 'awaiting-initialization'
         self._packet = []
         self._init = set()
+        self._sleeping = None
+        self._display_enabled = None
+        self._write_mask = 0
         self._preamble = 0
         self._next_page = 1
         self._page = self._x = None
@@ -92,24 +95,35 @@ class Packed2Panel:
             self._command(command, high * 256 + low)
 
     def _command(self, command: int, word: int) -> None:
+        if command != 0x12:
+            self._finish()
         if command == 3:
-            self.reset()
-            if word == 0x0504:
+            # The connected main driver toggles 0x0504/0x0506 for the
+            # lid-open/lid-closed paths.  This is sleep, not a GRAM reset.
+            if word in (0x0504, 0x0506):
                 self._init.add(3)
+                self._sleeping = bool(word & 2)
             else:
                 self._reject('unsupported-initialization')
             return
-        if command != 0x12:
-            self._finish()
         if command in (0x0d, 0x0e):
             if word != (0x7f00 if command == 0x0d else 0) or 3 not in self._init:
                 self.reset()
                 self._reject('unsupported-initialization')
                 return
             self._init.add(command)
+        elif command == 7:
+            # Main/sub display-enable wrapper selects 0x0009 or 0x0000.
+            if word not in (0, 9):
+                self._reject('unsupported-display-control')
+                return
+            self._display_enabled = bool(word)
         elif command == 5:
             self._preamble = 1 if word == 0x14 else 0
         elif command == 0x10:
+            # Partial rectangles mask pixels above/below their first/last
+            # scanline; a set bit preserves that GRAM bit.
+            self._write_mask = word
             self._preamble = 2 if self._preamble == 1 and word == 0 else 0
         elif command == 0x11:
             page, x = word & 31, word >> 5
@@ -121,7 +135,8 @@ class Packed2Panel:
                 self._reject('unqualified-page-sequence')
                 return
             self._page, self._x = page, x
-            self._preamble = 0
+            # Registers 5 and 0x10 persist across address writes.  The main
+            # full-frame writer sets them once, then addresses all 20 pages.
         elif command == 0x12:
             if self._page is None:
                 self._reject('data-without-address')
@@ -150,8 +165,13 @@ class Packed2Panel:
         for offset in range(self._committed, len(self._words)):
             word = self._words[offset]
             for bit in range(8):
-                shade = 255 - ((word >> (2 * bit)) & 3) * 85
                 index = (((page - 1) * 8 + bit) * 128 + x + offset) * 3
+                level = (word >> (2 * bit)) & 3
+                mask = (self._write_mask >> (2 * bit)) & 3
+                if mask:
+                    old = (255 - self._base[index]) // 85
+                    level = (level & ~mask) | (old & mask)
+                shade = 255 - level * 85
                 self._base[index:index + 3] = bytes([shade]) * 3
         self._committed = len(self._words)
         if not self.qualified:
@@ -166,7 +186,10 @@ class Packed2Panel:
         self.observation = 'complete-packed2-update'
 
     def snapshot(self) -> dict:
-        return dict(width=self.width, height=self.height, frame=self.frame,
-                    qualified=self.qualified, enabled=None, port=self.port,
+        enabled = (None if self._sleeping is None or self._display_enabled is None
+                   else not self._sleeping and self._display_enabled)
+        frame = bytes(len(self.frame)) if enabled is False else self.frame
+        return dict(width=self.width, height=self.height, frame=frame,
+                    qualified=self.qualified, enabled=enabled, port=self.port,
                     rejection=self.rejection, observation=self.observation,
                     sequence=self.sequence)

@@ -86,9 +86,9 @@ class Packed2Tests(unittest.TestCase):
         packet(panel, 17, 1)
         packet(panel, 18, 0)
         packet(panel, 3, 0x504)
-        self.assertFalse(panel.qualified)
+        self.assertTrue(panel.qualified)
         self.assertEqual(panel._words, [])
-        self.assertEqual(panel.sequence, 1)
+        self.assertEqual(panel.sequence, 2)
 
     def test_telemetry_flush_can_split_every_byte_and_continue_partial_run(self):
         class TickPanel(Packed2Panel):
@@ -117,6 +117,25 @@ class Packed2Tests(unittest.TestCase):
         for x in range(9, 17):
             self.assertEqual(panel.frame[(16 * 128 + x) * 3],
                              255 if 10 <= x < 16 else 0)
+
+    def test_sleep_enable_and_mask_preserve_gram(self):
+        panel = Packed2Panel(0x2000000)
+        full(panel)
+        packet(panel, 7, 9)
+        packet(panel, 16, 0xfffc)
+        packet(panel, 17, 1)
+        packet(panel, 18, 0)
+        panel.flush()
+        self.assertEqual(panel.frame[0], 255)
+        self.assertEqual(panel.frame[128 * 3], 0)
+        saved = panel.frame
+        packet(panel, 3, 0x506)
+        self.assertFalse(panel.snapshot()['enabled'])
+        self.assertEqual(panel.snapshot()['frame'], bytes(len(saved)))
+        packet(panel, 3, 0x504)
+        self.assertEqual(panel.snapshot()['frame'], saved)
+        packet(panel, 7, 0)
+        self.assertFalse(panel.snapshot()['enabled'])
 
     def test_boundaries_malformed_and_foreign(self):
         panel = Packed2Panel(0x2000000)

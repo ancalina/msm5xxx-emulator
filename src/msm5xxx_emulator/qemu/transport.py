@@ -18,6 +18,8 @@ from dataclasses import asdict
 
 from .gdb_remote import Remote
 from msm5xxx_emulator.core import FirmwareConfig
+from msm5xxx_emulator.core.config import BoardStatusInput
+from msm5xxx_emulator.detection.input_distributed7 import find_seven_row_input_profile
 from .decoder import QemuDecoder
 from ..core.initial_state import REGISTER_NAMES, initial_register_state
 from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO
@@ -1952,6 +1954,21 @@ def qemu_distributed_matrix_property(image: bytes, config: object,
     return "matrix-gpio=" + ":".join(f"{value:x}" for value in fields), reject
 
 
+def qemu_seven_row_matrix_property(image: bytes, config: object,
+                                    profile: dict) -> str:
+    """Seven physical drive wires; native pin order is independent of scan order.
+
+    """
+    verified, reason = find_seven_row_input_profile(image, config.load_address)
+    if verified != profile or reason != "accepted":
+        raise ValueError("seven-row GPIO profile no longer matches source")
+    fields = [profile["register"], profile["presence_site"], profile["sense_site"]]
+    for port in profile["gpio_ports"]:
+        fields.extend((port["address"], port["mask"]))
+    fields.append(profile["sideband_input"]["mask"])
+    return "matrix-gpio=" + ":".join(f"{value:x}" for value in fields)
+
+
 def qemu_halfword_status_property(image: bytes, load_address: int,
                                   matrix: dict | None, level: int | None,
                                   existing_status: object = None
@@ -3182,6 +3199,16 @@ def matrix_input_command(profile: dict[str, object],
     if (not 0 <= row < rows or not 0 <= column < len(senses)
             or int(senses[column]) == no_key):
         raise ValueError("invalid detector-resolved matrix position")
+    if profile.get("grammar") == "distributed-seven-byte-v1":
+        # Native GPIO rows use port order, then ascending pin number. Firmware
+        # scans the 0x04 pin last; derive its physical position from the switch.
+        pins = [(port, 1 << bit) for port, entry in enumerate(profile["gpio_ports"])
+                for bit in range(8) if entry["mask"] & (1 << bit)]
+        selected = [index for index, (port, pin) in enumerate(pins)
+                    if not profile["row_values"][row][port] & pin]
+        if len(selected) != 1:
+            raise ValueError("seven-row selector does not select one wire")
+        row = selected[0]
     return bytes((HOST_INPUT, 1, row, int(senses[column])))
 
 
@@ -4653,6 +4680,13 @@ class Transport:
                 "native fallback retained"
             )
         direct = self.decoder.direct_input_profile
+        seven_row, _ = find_seven_row_input_profile(detector_image, self.config.load_address)
+        if seven_row is not None and self.config.board_status_input is None:
+            lid = seven_row["lid_input"]
+            self.config.board_status_input = BoardStatusInput(
+                lid["address"], lid["mask"], lid["open_value"])
+            self.config.detection_notes.append(
+                "source-closed seven-row scanner: default open lid contact")
         board_status = self.config.board_status_input
         self._sd840_status_source_closed = bool(
             board_status is None and direct is not None
@@ -4852,7 +4886,18 @@ class Transport:
                 self.config.detection_notes.append(
                     f"QEMU halfword matrix rejected: {status}; native fallback retained"
                 )
-        if experimental_distributed:
+        if experimental_distributed and seven_row is not None and direct is None and self.matrix_input_profile is None:
+            machine += "," + qemu_seven_row_matrix_property(detector_image, self.config, seven_row)
+            self.matrix_input_profile = seven_row
+            contact = seven_row["sideband_input"]
+            self.matrix_input_sideband_producer = {
+                "register": contact["address"], "register_width": 1,
+                "mask": contact["mask"], "polarity": "active-low",
+                "semantic_key": 7, "event": contact["press_event"],
+            }
+            self.config.detection_notes.append(
+                "seven-row distributed GPIO keypad enabled; native seven-row support required")
+        elif experimental_distributed:
             distributed, status, _ = resolve_distributed_matrix_input(
                 detector_image, self.config.load_address
             )
@@ -7155,6 +7200,15 @@ class Transport:
             self, bit: int, event_code: int | None,
     ) -> tuple[int, int, int] | None:
         profile = self.matrix_input_profile
+        if profile is not None and profile.get("grammar") == "distributed-seven-byte-v1":
+            mapping = profile["provisional_mappings"].get(bit)
+            if mapping is None or (event_code is not None and event_code != mapping["event"]):
+                return None
+            event = mapping["event"]
+            if profile["event_codes"].count(event) != 1:
+                return None
+            index = profile["event_codes"].index(event)
+            return event, index % profile["rows"], index // profile["rows"]
         if profile is not None and profile.get("grammar") == "descriptor-row734-low5-6x5-v1":
             position = self.decoder.direct_input_positions.get(bit) if type(bit) is int and 11 <= bit <= 22 else None
             if position is None or event_code is not None and event_code != position[0]:
@@ -7405,6 +7459,10 @@ class Transport:
                 and self.matrix_input_profile.get("sd810_end_contact") is True
                 and bit == 7 and event_code in (None, 0x51)):
             return {"register_width": 1, "polarity": "active-low", "mask": 0x10}
+        if (self.matrix_input_profile is not None
+                and self.matrix_input_profile.get("grammar") == "distributed-seven-byte-v1"):
+            contact = self.matrix_input_sideband_producer
+            return contact if bit == 7 and (event_code is None or event_code == contact["event"]) else None
         if (self.matrix_input_profile is not None
                 and self.matrix_input_profile.get("grammar") == "distributed-six-byte-numeric-v1"):
             if getattr(self, "matrix_input_sideband_producer", None) is None:
