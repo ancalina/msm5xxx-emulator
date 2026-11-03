@@ -6008,6 +6008,32 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
     return true;
 }
 
+static MemTxResult msm5xxx_poc_ma2_window_read(void *opaque, hwaddr offset,
+                                               uint64_t *value, unsigned size,
+                                               MemTxAttrs attrs)
+{
+    (void)attrs;
+    return msm5xxx_poc_audio_read_owned(opaque, offset, size, value) ?
+        MEMTX_OK : MEMTX_ERROR;
+}
+
+static MemTxResult msm5xxx_poc_ma2_window_write(void *opaque, hwaddr offset,
+                                                uint64_t value, unsigned size,
+                                                MemTxAttrs attrs)
+{
+    (void)attrs;
+    return msm5xxx_poc_audio_write_owned(opaque, offset, value, size) ?
+        MEMTX_OK : MEMTX_ERROR;
+}
+
+static const MemoryRegionOps msm5xxx_poc_ma2_window_ops = {
+    .read_with_attrs = msm5xxx_poc_ma2_window_read,
+    .write_with_attrs = msm5xxx_poc_ma2_window_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+};
+
 static bool msm5xxx_poc_arm_b_target(uint32_t word, uint32_t address,
                                     uint32_t *target)
 {
@@ -14393,6 +14419,24 @@ static void msm5xxx_poc_init(MachineState *machine)
                                                   msm5xxx_poc_ma2_audio_tick, s);
             }
         }
+        if (s->audio_ma2 && s->audio_base == 0x02880000) {
+            MemoryRegionSection section = memory_region_find(
+                get_system_memory(), s->audio_base, s->audio_data_offset + 1);
+            bool conflict = section.mr != NULL;
+            if (section.mr) {
+                memory_region_unref(section.mr);
+            }
+            if (conflict) {
+                error_report("MA2 audio-aperture overlaps an existing region");
+                exit(EXIT_FAILURE);
+            }
+            memory_region_init_io(&s->audio_opaque, OBJECT(machine),
+                                  &msm5xxx_poc_ma2_window_ops, s,
+                                  "msm5xxx-poc.ma2-window",
+                                  s->audio_data_offset + 1);
+            memory_region_add_subregion(get_system_memory(), s->audio_base,
+                                        &s->audio_opaque);
+        }
         if (!s->audio_ma2 && !s->audio_shared_lcd) {
             if (upper_nor_enabled &&
                 s->audio_base < MSM5XXX_POC_UPPER_NOR_BASE +
@@ -16134,12 +16178,13 @@ static void msm5xxx_poc_set_audio_aperture(Object *obj, const char *value,
     ma2 = legacy || (tagged && !strcmp(family, "ma2"));
     ma5 = tagged && !strcmp(family, "ma5");
     opaque = tagged && !strcmp(family, "opaque");
-    ma2_valid = ma2 && base >= 0x02001000 &&
+    ma2_valid = ma2 && ((base == 0x02880000 && data_offset == 2) ||
+                (base >= 0x02001000 &&
                 base <= MSM5XXX_POC_LCD_APERTURE_BASE +
                         MSM5XXX_POC_LCD_APERTURE_SIZE - 3 &&
                 data_offset == 2 &&
                 (base + data_offset < msm5xxx_poc_lcd_bases[3] ||
-                 base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE);
+                 base >= msm5xxx_poc_lcd_bases[3] + MSM5XXX_POC_LCD_SIZE)));
     /* New apertures require the explicit experimental device at realize. */
     ma5_valid = ma5 && base >= 0x02001000 && base <= 0x02ffff00 &&
                 (data_offset == 2 || data_offset == 4 || data_offset == 128);

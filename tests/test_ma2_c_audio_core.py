@@ -63,7 +63,8 @@ class TestMA2CAudioCore(unittest.TestCase):
         owned = aperture.index("msm5xxx_poc_audio_write_owned")
         self.assertLess(owned, aperture.index("s->lcd_aperture_writes++"))
         self.assertIn("return;", aperture[owned:])
-        self.assertNotIn("memory_region_init_io(&s->audio", source)
+        self.assertIn("s->audio_ma2 && s->audio_base == 0x02880000", source)
+        self.assertIn("MA2 audio-aperture overlaps an existing region", source)
         tick_start = source.index("static void msm5xxx_poc_ma2_audio_tick")
         tick_end = source.index("\nstatic ", tick_start + 1)
         tick = source[tick_start:tick_end]

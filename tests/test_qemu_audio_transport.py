@@ -463,6 +463,14 @@ class QEMUAudioTransportTests(unittest.TestCase):
         self.assertEqual(
             qemu_audio_sites(metadata), "r2/14;w0/12;w2/100;w2/102"
         )
+        x4000 = {
+            "family": "ma2", "base": 0x02880000, "data_offset": 2,
+            "sites": {"read_2": [0x1595c4],
+                      "write_0": [0x15953c, 0x15957e, 0x1595be],
+                      "write_2": [0x159542, 0x159590]},
+        }
+        self.assertIsNotNone(qemu_audio_sites(x4000))
+        self.assertIsNone(qemu_audio_sites({**x4000, "sites": metadata["sites"]}))
         ma5 = {
             "family": "ma5", "base": 0x02840000,
             "data_offset": 2,

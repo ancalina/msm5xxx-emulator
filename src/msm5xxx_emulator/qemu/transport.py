@@ -1573,9 +1573,14 @@ def qemu_audio_sites(audio: object) -> str | None:
     data_offset = audio.get("data_offset")
     ma2 = (
         family == "ma2"
-        and type(base) is int and 0x02001000 <= base < 0x02800000
+        and type(base) is int and (0x02001000 <= base < 0x02800000
+                                   or base == 0x02880000 and audio.get("sites") == {
+                                       "read_2": [0x1595c4],
+                                       "write_0": [0x15953c, 0x15957e, 0x1595be],
+                                       "write_2": [0x159542, 0x159590],
+                                   })
         and type(data_offset) is int and data_offset == 2
-        and base + data_offset < 0x02800000
+        and (base + data_offset < 0x02800000 or base == 0x02880000)
         and (base + data_offset < 0x02200000 or base >= 0x02201000)
     )
     ma5_signature = {
@@ -5008,7 +5013,8 @@ class Transport:
                 and audio.get("static_status") == "accepted"
                 and audio_family == "ma2"
                 and audio_grammar == "ma2-command-v1"
-                and self.config.ma2_silent_boot_address is not None):
+                and (self.config.ma2_silent_boot_address is not None
+                     or audio.get("base") == 0x02880000)):
             audio_sites = qemu_audio_sites(audio)
             if audio_sites is not None:
                 machine += (
