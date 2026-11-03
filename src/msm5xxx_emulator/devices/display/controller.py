@@ -1147,8 +1147,9 @@ class DisplayControllerMixin:
         if (source == "runtime:shifted-pair-fifo-rgb565"
                 and self._lcd_raw_port == (address, size)
                 and self._lcd_command in LCD_MEMORY_WRITE_COMMANDS
-                and self.shifted_orientation_snapshot()["qualified"]):
-            # This doubled-command dialect's control words are not GRAM pixels.
+                and getattr(self, "_lcd_shifted_orientation", {}).get("ever_qualified", False)):
+            # The pair encoding remains valid when the orientation is being
+            # reprogrammed; only the pixel direction depends on that mode.
             self._capture_raw_lcd_stream(address, size, value)
             return
         if (self._lcd_protocol == "parallel-2" and self._lcd_command == 0x22

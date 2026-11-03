@@ -140,6 +140,36 @@ class ShiftedOrientationTests(unittest.TestCase):
         d._lcd_write(None, 0, 0x02000002, 2, 0, None)
         self.assertEqual(d.display_snapshot(), before)
 
+    def test_pair_stream_survives_orientation_mode_change(self):
+        import test_lcd_geometry as geometry
+        d = geometry.LCDGeometryTests()._routing_emulator(width=176, height=220)
+        def write(address, value):
+            d._lcd_write(None, 0, address, 2, value, None)
+        def frame():
+            for index in range(176 * 220):
+                pixel = 0xF800 if index % 176 == 0 else 0x001F
+                write(0x02000002, ((pixel >> 8) & 7) | ((pixel >> 7) & 0x1F0))
+                write(0x02000002, pixel << 1 & 0xFFFF)
+            write(0x02000000, 0)
+        for address, _, value in _SHIFTED_ORIENTATION_PREFIX:
+            write(address, value)
+        frame()
+        self.assertTrue(d.shifted_orientation_snapshot()['qualified'])
+        write(0x02000000, 6)
+        write(0x02000002, 0x24)
+        write(0x02000002, 0x61)
+        self.assertFalse(d.shifted_orientation_snapshot()['qualified'])
+        write(0x02000000, 0x44)
+        previous = d.frame_sequence
+        frame()
+        self.assertGreater(d.frame_sequence, previous)
+        self.assertEqual(d.display_frame[:3], b'\xff\0\0')
+        for address, _, value in _SHIFTED_ORIENTATION_PREFIX:
+            write(address, value)
+        frame()
+        self.assertTrue(d.shifted_orientation_snapshot()['qualified'])
+        self.assertEqual(d.display_frame[:3], b'\0\0\xff')
+
 
 if __name__ == '__main__':
     unittest.main()
