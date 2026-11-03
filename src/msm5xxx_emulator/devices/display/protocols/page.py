@@ -9,6 +9,7 @@ _WINDOW_RAW8_SEPARATE_DATA_PORT = 0x02200002
 _WINDOW_RAW8_SEPARATE_WIDTH = 64
 _WINDOW_RAW8_SEPARATE_HEIGHT = 96
 _RAW_LCD_STREAM_PORT_LIMIT = 32
+_PAIRED_PAGE_CLASSES = ("source-byte-paired-plane-page-v1", "source-byte-pair128-page-v1")
 _SHIFTED_ORIENTATION_PREFIX = tuple(
     (address, 2, value)
     for command, values in ((6, (0x24, 0x60)), (0x88, (0x15E, 0)),
@@ -80,7 +81,7 @@ class PageProtocolMixin:
             if (profile and profile.get("class_name") == "source-byte-paired-plane-page-v1"
                     and getattr(self.config, "chipset", None) not in ("MSM5100", "MSM5105")):
                 profile, reason = None, "paired-plane-chipset-scope-unclosed"
-            if profile and profile.get("class_name") == "source-byte-paired-plane-page-v1":
+            if profile and profile.get("class_name") in _PAIRED_PAGE_CLASSES:
                 loaded = getattr(self, "_lcd_page_loaded_image", image)
                 base, length = getattr(self.config, "ram_base", None), getattr(self.config, "ram_size", None)
                 spans = profile["code_intervals"] + profile["literal_intervals"] + profile["data_intervals"]
@@ -115,8 +116,7 @@ class PageProtocolMixin:
             return False
         if (self._lcd_page_qualified
                 and (not state["acquired"] or (self._lcd_page_port != command and not
-                    (profile.get("class_name") in (
-                        "source-byte-paired-plane-page-v1",
+                    (profile.get("class_name") in (*_PAIRED_PAGE_CLASSES,
                         "descending-paired-byte-page128-v1",
                         "interleaved-page128-v1")
                      and self._lcd_page_source_profile is profile)))):
@@ -139,7 +139,7 @@ class PageProtocolMixin:
             state.update(acquired=False, init_position=0, icon=False,
                          high=None, column=None, argument=None)
             position = 0
-        elif (profile.get("bits_per_pixel") == 2 and address == command
+        elif (profile.get("bits_per_pixel") == 2 and not profile.get("whole_rows_only") and address == command
               and self._lcd_page_data_count & 1):
             self._lcd_odd_page_reject(state, "incomplete-page-plane-pair")
             return False
@@ -467,6 +467,8 @@ class PageProtocolMixin:
         if not self._lcd_page_dirty:
             return
         profile = getattr(self, "_lcd_page_source_profile", None)
+        if profile and profile.get("whole_rows_only") and self._lcd_page_data_count != profile["init_row_bytes"]:
+            return
         if profile and profile.get("bits_per_pixel") == 2 and self._lcd_page_data_count & 1:
             return
         changed = self._lcd_page_render_current()
@@ -484,6 +486,10 @@ class PageProtocolMixin:
             self._lcd_page_dirty = False
             return
         profile = getattr(self, "_lcd_page_source_profile", None)
+        if profile and profile.get("whole_rows_only") and count != profile["init_row_bytes"]:
+            self._lcd_page_data_count = 0
+            self._lcd_page_dirty = False
+            return
         whole_row = (self._lcd_page_start_column == 0 and (count in (128, 256) or
             (profile and profile.get("class_name") == "source-byte-paired-plane-page-v1"
              and count == profile.get("init_row_bytes") == 240)))
@@ -624,6 +630,20 @@ class PageProtocolMixin:
                 or not self._lcd_page_column_ready):
             return False
         column = self._lcd_page_column
+        if profile and profile.get("whole_rows_only"):
+            # Main driver always sends 128 paired columns. The shared-port
+            # secondary controller sends 84-byte rows. Commit only a proved
+            # complete main row; unrelated sub-panel bytes cannot change it.
+            if not self._lcd_page_data_count:
+                self._lcd_page_pending_row = bytearray()
+            self._lcd_page_pending_row.append(value & 0xff)
+            self._lcd_page_column += 1
+            self._lcd_page_data_count += 1
+            if self._lcd_page_start_column == 0 and self._lcd_page_data_count == profile["init_row_bytes"]:
+                start = self._lcd_page_current * 256
+                self._lcd_page_ram[start:start+256] = self._lcd_page_pending_row
+                self._lcd_page_dirty = True
+            return True
         if 0 <= column < (profile.get("column_capacity", profile["width"]) if profile else 256):
             self._lcd_page_ram[self._lcd_page_current * 256 + column] = value & 0xFF
             self._lcd_page_dirty = True

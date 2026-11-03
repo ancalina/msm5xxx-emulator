@@ -63,6 +63,10 @@ def find_odd_byte_page_profile(image: bytes) -> tuple[dict | None, str]:
     """Find one complete init/consumer/helper group, never a lone port literal."""
     rasters = list(_hits(image,_RASTER,_RASTER_CALLS,_RASTER_LITERALS))
     if not rasters:
+        from .byte_pair128 import find_byte_pair128_profile
+        paired, paired_reason = find_byte_pair128_profile(image)
+        if paired is not None:
+            return paired, paired_reason
         from .ks0741 import find_ks0741_page_profile
         return find_ks0741_page_profile(image, require_boot_family=True)
     inits = list(_hits(image,_INIT,_INIT_CALLS,_INIT_LITERALS))
