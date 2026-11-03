@@ -71,6 +71,10 @@ final class PythonRuntime {
                                 ? JSONObject.NULL : stateDirectory.getPath())
                         .put("experimental_rex", experimentalRex)
                         .put("virtual_network", virtualNetwork);
+                File external = context.getExternalFilesDir(null);
+                if (external != null && new File(external, "autorun").isFile()) {
+                    request.put("session_log", new File(external, "session.log").getPath());
+                }
                 return nativeStart(request.toString());
             } catch (JSONException error) {
                 throw new IOException("session request is invalid", error);

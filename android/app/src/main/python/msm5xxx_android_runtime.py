@@ -1,6 +1,8 @@
 """Thin JSON boundary around the canonical firmware detector."""
 
 import json
+import os
+import time
 import platform
 import struct
 import sys
@@ -12,6 +14,10 @@ _session = None
 _session_stop = None
 _session_thread = None
 _session_error = None
+_session_log = None
+_original_stderr = None
+_log_offset = 0
+_log_next = 0
 _scanout_sent = {}
 _PCM_PACKET = struct.Struct("<4sIQQQ")
 def _json(value):
@@ -68,7 +74,7 @@ def _replay(transport, stop):
 
 def start_session(request_json):
     global _session, _session_stop, _session_thread, _session_error
-    global _scanout_sent
+    global _scanout_sent, _session_log, _original_stderr, _log_offset, _log_next
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
     from msm5xxx_emulator.detection.firmware import detect
     from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
@@ -79,7 +85,7 @@ def start_session(request_json):
     request = json.loads(request_json)
     required = {"experimental_rex", "firmware", "profile", "qemu", "state"}
     if (not isinstance(request, dict) or not required <= request.keys()
-            or request.keys() - required - {"virtual_network"}):
+            or request.keys() - required - {"virtual_network", "session_log"}):
         raise ValueError("invalid session request")
     virtual_network = request.get("virtual_network", False)
     if type(virtual_network) is not bool:
@@ -99,6 +105,12 @@ def start_session(request_json):
         raise ValueError("selected profile no longer matches firmware")
     if state is not None:
         state.mkdir(parents=True, exist_ok=True)
+    _session_log = request.get("session_log")
+    _log_offset = 0
+    _log_next = 0
+    if _session_log and _original_stderr is None:
+        _original_stderr = sys.stderr
+        sys.stderr = open(_session_log, "a", buffering=1)
     transport = Transport(
         qemu, firmware, state, experimental_rex, config=config,
         audio_stream=True, virtual_cell=virtual_cell_scenario(virtual_network),
@@ -198,8 +210,16 @@ def session_fold(request_json):
 
 
 def session_status():
+    global _log_offset, _log_next
     if _session is None:
         raise RuntimeError("session is not running")
+    if _session_log and time.monotonic() >= _log_next:
+        _log_next = time.monotonic() + 2
+        data = os.pread(_session.stderr.fileno(), 1048576, _log_offset)
+        if data:
+            with open(_session_log, "ab") as log:
+                log.write(data)
+            _log_offset += len(data)
     audio_underflow, audio_overflow, audio_epoch = \
         _session.audio_pcm_snapshot()
     secondary = _session.decoder.secondary_display_snapshot()
@@ -307,7 +327,7 @@ def set_session_key(request_json):
 
 def stop_session():
     global _session, _session_stop, _session_thread, _session_error
-    global _scanout_sent, _session_socket
+    global _scanout_sent, _session_socket, _session_log, _original_stderr
     transport = _session
     stop = _session_stop
     thread = _session_thread
@@ -327,4 +347,9 @@ def stop_session():
         _session_error = None
         _scanout_sent.clear()
         _session_socket = None
+        if _original_stderr is not None:
+            sys.stderr.close()
+            sys.stderr = _original_stderr
+            _original_stderr = None
+        _session_log = None
     return _json({"schema": 1, "stopped": True})

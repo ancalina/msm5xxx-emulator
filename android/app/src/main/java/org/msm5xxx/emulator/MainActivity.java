@@ -50,6 +50,8 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileInputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -203,6 +205,8 @@ public final class MainActivity extends Activity {
     private int heldKeyBit = -1;
     private Integer heldEventCode;
     private int mappingTapBit = -1;
+    private File autorunDirectory;
+    private long nextEvidenceNanos;
     private String autoStartToken;
     private String lastErrorMessage;
     private volatile BackendBridge.Session session;
@@ -226,9 +230,18 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         displayManager = getSystemService(DisplayManager.class);
         setContentView(buildContent());
+        File external = getExternalFilesDir(null);
+        if (external != null && new File(external, "autorun").isFile()) {
+            autorunDirectory = external;
+            File[] files = new File(external, "firmware").listFiles(File::isFile);
+            if (files != null && files.length > 0) {
+                java.util.Arrays.sort(files);
+                preparePrivateCopy(new Selection(Uri.fromFile(files[0]), files[0].getName(), files[0].length()));
+            }
+        }
         refreshSelection();
         probeBackend();
-        if (savedInstanceState == null) {
+        if (savedInstanceState == null && autorunDirectory == null) {
             frameView.post(this::chooseFirmware);
         }
     }
@@ -733,8 +746,10 @@ public final class MainActivity extends Activity {
         refreshSelection();
 
         Context application = getApplicationContext();
-        new Thread(() -> copyFirmware(application, selection.uri, token,
-                previousCopy), "firmware-copy").start();
+        new Thread(() -> {
+            copyFirmware(application, selection.uri, token, previousCopy);
+            handler.post(this::refreshSelection);
+        }, "firmware-copy").start();
     }
 
     private static void copyFirmware(Context context, Uri uri, String token,
@@ -748,7 +763,9 @@ public final class MainActivity extends Activity {
             if (!directory.mkdirs()) {
                 throw new IOException("private session directory was not created");
             }
-            try (InputStream input = context.getContentResolver().openInputStream(uri);
+            try (InputStream input = "file".equals(uri.getScheme())
+                    ? new FileInputStream(new File(uri.getPath()))
+                    : context.getContentResolver().openInputStream(uri);
                  FileOutputStream output = new FileOutputStream(partial)) {
                 if (input == null) {
                     throw new IOException("document cannot be opened");
@@ -847,7 +864,8 @@ public final class MainActivity extends Activity {
                 && STATE_READY.equals(state) && path != null
                 && privateCopyIsReadable(path);
         updateSessionControls(canStart);
-        if (canStart && activityResumed && token.equals(autoStartToken)) {
+        if (canStart && (activityResumed || autorunDirectory != null)
+                && token.equals(autoStartToken)) {
             autoStartToken = null;
             handler.post(this::startSession);
         }
@@ -1171,6 +1189,23 @@ public final class MainActivity extends Activity {
             updateSecondaryPresentation();
         }
         frameView.setFrame(frame, generation);
+        if (autorunDirectory != null && SystemClock.elapsedRealtimeNanos() >= nextEvidenceNanos) {
+            nextEvidenceNanos = SystemClock.elapsedRealtimeNanos() + 2_000_000_000L;
+            try {
+                if (frameView.bitmap != null) {
+                    try (FileOutputStream output = new FileOutputStream(new File(autorunDirectory, "frame.png"))) {
+                        frameView.bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+                    }
+                }
+                try (FileWriter log = new FileWriter(new File(autorunDirectory, "session.log"), true)) {
+                    log.write("app elapsed_ms=" + SystemClock.elapsedRealtime() + " frames="
+                            + status.frameSequence + " instructions=" + status.instructions
+                            + " input=" + status.inputHostEvents + " network=" + status.virtualCellStatus + "\n");
+                }
+            } catch (IOException error) {
+                android.util.Log.e("MSM5xxxSession", "Evidence write failed", error);
+            }
+        }
         if (status.secondaryAvailable) {
             if (secondaryHidden) {
                 secondaryFrameView.setFrame(secondary, generation);
