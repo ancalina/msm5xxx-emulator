@@ -116,4 +116,53 @@
     <string name="network_host_time">Use device clock for network time</string>
     <string name="network_start_time">Network start time (YYYY-MM-DD HH:MM; blank = off)</string>
     <string name="network_time_error">Enter a valid network start time</string>
+    <string name="more_settings">More…</string>
+    <string name="capture">Capture</string>
+    <string name="capture_saved">Saved: %1$s</string>
+    <string name="ui_language">UI language</string>
+    <string name="language_auto">Auto (system)</string>
+    <string name="automatic_value">Automatic</string>
+    <string-array name="detail_labels">
+        <item>Model</item>
+        <item>Chipset</item>
+        <item>Screen Width</item>
+        <item>Screen Height</item>
+        <item>Board Revision Name</item>
+        <item>Image Offset</item>
+        <item>Load Address</item>
+        <item>Flash Size</item>
+        <item>RAM Base</item>
+        <item>RAM Size</item>
+        <item>RAM Image Offset</item>
+        <item>RAM Image Size (0=off)</item>
+        <item>Entry Offset</item>
+        <item>Framebuffer Address (empty=off)</item>
+        <item>Framebuffer stride bytes</item>
+        <item>Framebuffer pixel format</item>
+        <item>Board Revision Register</item>
+        <item>Board Revision Value</item>
+        <item>Key Register</item>
+        <item>Key Active-Low</item>
+        <item>REX Idle Function</item>
+        <item>REX Tick Function</item>
+        <item>REX Tick Milliseconds</item>
+        <item>Board ADC Value</item>
+        <item>Flash ID Function</item>
+        <item>Flash ID Value</item>
+        <item>DMD Download Function</item>
+        <item>NOR Probe Function</item>
+        <item>Secondary NOR Address (0=off)</item>
+        <item>Secondary NOR Size</item>
+        <item>Secondary NOR Image</item>
+        <item>Secondary NOR State</item>
+        <item>Secondary NOR Write Function</item>
+        <item>Flash state</item>
+        <item>Enable NAND</item>
+        <item>NAND raw image</item>
+        <item>NAND Data Size</item>
+        <item>NAND Page Size</item>
+        <item>NAND Spare Size</item>
+        <item>NAND Pages per Block</item>
+        <item>NAND bus bytes</item>
+    </string-array>
 </resources>

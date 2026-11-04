@@ -15,7 +15,14 @@ final class QEMUEngine: ObservableObject {
     private(set) var entry: Entry?
     @Published private(set) var status = "Loading runtime"
     @Published private(set) var frame: CGImage?
+    @Published private(set) var secondaryFrame: CGImage?
+    @Published private(set) var secondaryAvailable = false
+    @Published private(set) var secondaryPreview = false
+    @Published private(set) var foldSupported = false
+    @Published private(set) var foldOpen = false
+    @Published private(set) var metrics = "Run —  PC —\nLCD —  Frame —"
     @Published private(set) var inputBits = Set<Int>()
+    @Published private(set) var identity = ""
     @Published private(set) var running = false
     @Published private(set) var used = false
     private let queue = DispatchQueue(label: "me.ancal.msm5xemu.python")
@@ -98,6 +105,9 @@ final class QEMUEngine: ObservableObject {
                     throw NSError(domain: "MSM5xEmu", code: 1,
                                   userInfo: [NSLocalizedDescriptionKey: "Detector rejected firmware: \(detected)"])
                 }
+                let firmwareInfo = (profile as? [String: Any])?["firmware"] as? [String: Any]
+                let identity = firmwareInfo?["sha256"] as? String ?? ""
+                DispatchQueue.main.async { self.identity = identity }
                 let support = try FileManager.default.url(for: .applicationSupportDirectory,
                     in: .userDomainMask, appropriateFor: nil, create: true)
                 // iOS drops stderr; keep QEMU/Python diagnostics next to the state for inspection.
@@ -106,6 +116,7 @@ final class QEMUEngine: ObservableObject {
                 let request: [String: Any] = ["firmware": firmware.path, "profile": profile,
                     "qemu": "qemu-system-arm",
                     "state": persistentState ? support.appendingPathComponent("state").path : NSNull(),
+                    "settings": UserDefaults.standard.dictionary(forKey: "details.\(identity)") as? [String: String] ?? [:],
                     "experimental_rex": experimentalRex, "virtual_network": virtualNetwork,
                     "network_host_time": networkHostTime, "network_start_time": networkStartTime as Any? ?? NSNull()]
                 let json = try JSONSerialization.data(withJSONObject: request)
@@ -136,12 +147,50 @@ final class QEMUEngine: ObservableObject {
     }
 
     func key(_ bit: Int, pressed: Bool) {
-        guard running, inputBits.contains(bit) else { return }
+        let mapped = UserDefaults.standard.object(forKey: "keymap.\(identity).\(bit)") != nil
+        guard running, inputBits.contains(bit) || mapped else { return }
         queue.async {
             do {
+                let key = "keymap.\(self.identity).\(bit)"
+                let eventCode = UserDefaults.standard.object(forKey: key) as? Int
                 let json = try JSONSerialization.data(withJSONObject:
-                    ["bit": bit, "event_code": NSNull(), "pressed": pressed])
+                    ["bit": bit, "event_code": eventCode as Any? ?? NSNull(), "pressed": pressed])
                 _ = try PythonBridge.call("set_session_key", argument: String(decoding: json, as: UTF8.self))
+            } catch { self.report(error) }
+        }
+    }
+
+    func setMapping(_ bit: Int, value: Int?, completion: @escaping (Bool) -> Void) {
+        guard running, !identity.isEmpty else { completion(false); return }
+        let identity = self.identity
+        guard let value = value else {
+            UserDefaults.standard.removeObject(forKey: "keymap.\(identity).\(bit)")
+            completion(true)
+            return
+        }
+        queue.async {
+            do {
+                let json = try JSONSerialization.data(withJSONObject: ["bit": bit, "event_code": value])
+                let result = try PythonBridge.call("can_session_key", argument: String(decoding: json, as: UTF8.self))
+                let data = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any]
+                let accepted = data?["accepted"] as? Bool == true
+                DispatchQueue.main.async {
+                    if accepted && self.identity == identity && self.running {
+                        UserDefaults.standard.set(value, forKey: "keymap.\(identity).\(bit)")
+                        completion(true)
+                    } else { completion(false) }
+                }
+            } catch { DispatchQueue.main.async { completion(false) } }
+        }
+    }
+
+    func toggleFold() {
+        guard running && foldSupported else { return }
+        let open = !foldOpen
+        queue.async {
+            do {
+                let json = try JSONSerialization.data(withJSONObject: ["open": open])
+                _ = try PythonBridge.call("session_fold", argument: String(decoding: json, as: UTF8.self))
             } catch { self.report(error) }
         }
     }
@@ -181,8 +230,37 @@ final class QEMUEngine: ObservableObject {
                     else { return }
                     DispatchQueue.main.async { self.frame = image }
                 }
+                let secondary = try PythonBridge.bytes("session_secondary_frame")
+                if secondary.count > 16 {
+                    func word(_ offset: Int) -> Int {
+                        (0..<4).reduce(0) { $0 | Int(secondary[offset + $1]) << ($1 * 8) }
+                    }
+                    let width = word(4), height = word(8)
+                    if word(0) == 1, (1...2048).contains(width), (1...2048).contains(height),
+                       secondary.count == 16 + width * height * 3,
+                       let provider = CGDataProvider(data: secondary.subdata(in: 16..<secondary.count) as CFData),
+                       let image = CGImage(width: width, height: height, bitsPerComponent: 8,
+                           bitsPerPixel: 24, bytesPerRow: width * 3, space: CGColorSpaceCreateDeviceRGB(),
+                           bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                           provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) {
+                        DispatchQueue.main.async { self.secondaryFrame = image }
+                    }
+                }
                 let status = try PythonBridge.call("session_status", argument: nil)
                 let value = try JSONSerialization.jsonObject(with: Data(status.utf8)) as? [String: Any]
+                let supported = value?["fold_supported"] as? Bool ?? false
+                let open = value?["fold_open"] as? Bool ?? false
+                let run = value?["instructions"] as? Int ?? 0
+                let pc = value?["pc"] as? Int ?? 0
+                let lcd = value?["lcd_writes"] as? Int ?? 0
+                let frame = value?["frame_sequence"] as? Int ?? 0
+                DispatchQueue.main.async {
+                    self.secondaryAvailable = value?["secondary_available"] as? Bool ?? false
+                    self.secondaryPreview = value?["secondary_preview"] as? Bool ?? false
+                    self.foldSupported = supported
+                    self.foldOpen = open
+                    self.metrics = "Run \(run)  PC \(String(pc, radix: 16))\nLCD \(lcd)  Frame \(frame)"
+                }
                 if self.audioDiagnostics && self.audioPolling && Date().timeIntervalSince(self.lastAudioLog) >= 10 {
                     self.lastAudioLog = Date()
                     NSLog("MSM5xEmu audio packets=%d nonzero=%d malformed=%d consumed_frames=%llu underflows=%@ overflows=%@",

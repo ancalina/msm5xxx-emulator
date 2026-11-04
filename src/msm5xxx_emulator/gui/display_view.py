@@ -149,17 +149,19 @@ class DisplayViewMixin:
                 scale = min(width / image.width, height / image.height)
                 size = (max(1, int(image.width * scale)),
                         max(1, int(image.height * scale)))
-                photo = ImageTk.PhotoImage(
-                    image.resize(size, Image.Resampling.NEAREST)
-                )
-                if self._screen_item is None:
-                    self._screen_item = self.screen.create_image(
-                        width // 2, height // 2, image=photo
-                    )
+                image = image.resize(size, Image.Resampling.NEAREST)
+                if self.photo is not None and (self.photo.width(), self.photo.height()) == size:
+                    self.photo.paste(image)
                 else:
+                    self.photo = ImageTk.PhotoImage(image)
+                    if self._screen_item is None:
+                        self._screen_item = self.screen.create_image(
+                            width // 2, height // 2, image=self.photo
+                        )
+                    else:
+                        self.screen.itemconfigure(self._screen_item, image=self.photo)
+                if self._render_cache is None or self._render_cache[4:] != (width, height):
                     self.screen.coords(self._screen_item, width // 2, height // 2)
-                    self.screen.itemconfigure(self._screen_item, image=photo)
-                self.photo = photo
                 self._render_cache = (
                     emulator, frame, frame_width, frame_height, width, height
                 )

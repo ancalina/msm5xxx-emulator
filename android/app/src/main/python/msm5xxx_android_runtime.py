@@ -64,6 +64,32 @@ def detect_profile(firmware_path):
     })
 
 
+def _apply_settings(firmware, baseline, edits):
+    """Apply sparse user edits through the desktop parser and validator."""
+    import argparse
+    from msm5xxx_emulator.gui.settings import (SETTINGS_SECTIONS, settings_values,
+        parse_settings_values, validate_settings_values)
+    from msm5xxx_emulator.detection.firmware import detect, DISABLEABLE_ADDRESS_FIELDS
+    if not isinstance(edits, dict):
+        raise ValueError("invalid settings")
+    names = {name for _, fields in SETTINGS_SECTIONS for name, _ in fields} - {"firmware"}
+    if set(edits) - names or any(not isinstance(value, str) for value in edits.values()):
+        raise ValueError("invalid settings fields")
+    if not edits:
+        return baseline
+    values = settings_values(firmware, baseline, {})
+    values.update(edits)
+    parsed = parse_settings_values(values)
+    overrides = {name: (0 if parsed[name] is None and name in DISABLEABLE_ADDRESS_FIELDS else parsed[name])
+                 for name in edits if parsed[name] is not None or name in DISABLEABLE_ADDRESS_FIELDS}
+    if "model" in overrides:
+        overrides["_model_user_set"] = True
+    effective = detect(firmware, argparse.Namespace(**overrides))
+    effective_values = {name: getattr(effective, name) for name in parsed}
+    validate_settings_values(firmware, effective, effective_values, set(edits), values["flash_state"])
+    return effective
+
+
 def _replay(transport, stop):
     global _session_error
     try:
@@ -85,7 +111,7 @@ def start_session(request_json):
     request = json.loads(request_json)
     required = {"experimental_rex", "firmware", "profile", "qemu", "state"}
     if (not isinstance(request, dict) or not required <= request.keys()
-            or request.keys() - required - {"virtual_network", "network_host_time", "network_start_time", "session_log"}):
+            or request.keys() - required - {"virtual_network", "network_host_time", "network_start_time", "session_log", "settings"}):
         raise ValueError("invalid session request")
     virtual_network = request.get("virtual_network", False)
     if type(virtual_network) is not bool:
@@ -105,6 +131,7 @@ def start_session(request_json):
     config = detect(firmware)
     if config.diagnostic_config() != expected:
         raise ValueError("selected profile no longer matches firmware")
+    config = _apply_settings(firmware, config, request.get("settings", {}))
     if state is not None:
         state.mkdir(parents=True, exist_ok=True)
     _session_log = request.get("session_log")

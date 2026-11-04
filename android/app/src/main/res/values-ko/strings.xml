@@ -116,4 +116,53 @@
     <string name="network_host_time">통신망 시간에 기기 시계 사용</string>
     <string name="network_start_time">통신망 시작 시간 (YYYY-MM-DD HH:MM; 비우면 사용 안 함)</string>
     <string name="network_time_error">올바른 통신망 시작 시간을 입력하세요</string>
+    <string name="more_settings">더보기…</string>
+    <string name="capture">화면 캡처</string>
+    <string name="capture_saved">저장됨: %1$s</string>
+    <string name="ui_language">화면 언어</string>
+    <string name="language_auto">자동 (시스템)</string>
+    <string name="automatic_value">자동</string>
+    <string-array name="detail_labels">
+        <item>모델</item>
+        <item>칩셋</item>
+        <item>화면 너비</item>
+        <item>화면 높이</item>
+        <item>Board revision 이름</item>
+        <item>이미지 오프셋</item>
+        <item>로드 주소</item>
+        <item>Flash 크기</item>
+        <item>RAM 시작 주소</item>
+        <item>RAM 크기</item>
+        <item>RAM image 오프셋</item>
+        <item>RAM image 크기 (0=끔)</item>
+        <item>진입점 오프셋</item>
+        <item>Framebuffer 주소 (빈 값=끔)</item>
+        <item>Framebuffer stride bytes</item>
+        <item>Framebuffer pixel format</item>
+        <item>Board revision 레지스터</item>
+        <item>Board revision 값</item>
+        <item>키 레지스터</item>
+        <item>키 active-low</item>
+        <item>REX idle 함수</item>
+        <item>REX tick 함수</item>
+        <item>REX tick 밀리초</item>
+        <item>Board ADC 값</item>
+        <item>Flash ID 함수</item>
+        <item>Flash ID 값</item>
+        <item>DMD download 함수</item>
+        <item>NOR probe 함수</item>
+        <item>보조 NOR 주소 (0=끔)</item>
+        <item>보조 NOR 크기</item>
+        <item>보조 NOR image</item>
+        <item>보조 NOR state</item>
+        <item>보조 NOR write 함수</item>
+        <item>Flash state</item>
+        <item>NAND 사용</item>
+        <item>NAND raw image</item>
+        <item>NAND data 크기</item>
+        <item>NAND page 크기</item>
+        <item>NAND spare 크기</item>
+        <item>NAND block당 pages</item>
+        <item>NAND bus bytes</item>
+    </string-array>
 </resources>

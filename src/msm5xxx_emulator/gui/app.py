@@ -121,6 +121,7 @@ class Window(ControlsMixin, DisplayViewMixin):
 
         controls = ttk.Frame(outer, style="Phone.TFrame")
         controls.pack()
+        self.controls = controls
         self.key_buttons: dict[str, ttk.Button] = {}
         for label, row, column in LAYOUT:
             button = ttk.Button(controls, text=self._key_text(label),

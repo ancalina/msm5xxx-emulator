@@ -55,7 +55,7 @@ def start_session(request_json):
         raise RuntimeError("session already running")
     request = json.loads(request_json)
     if (not isinstance(request, dict)
-            or set(request) - {"virtual_network", "network_host_time", "network_start_time"} != {"firmware", "profile", "qemu", "state", "experimental_rex"}
+            or set(request) - {"virtual_network", "network_host_time", "network_start_time", "settings"} != {"firmware", "profile", "qemu", "state", "experimental_rex"}
             or type(request["experimental_rex"]) is not bool
             or type(request.get("virtual_network", False)) is not bool):
         raise ValueError("invalid session request")
@@ -69,6 +69,7 @@ def start_session(request_json):
         raise ValueError(admission["reject_reason"])
     if config.diagnostic_config() != request["profile"]:
         raise ValueError("selected profile no longer matches firmware")
+    config = shared._apply_settings(firmware, config, request.get("settings", {}))
     state = None if request["state"] is None else Path(request["state"])
     if state is not None:
         state.mkdir(parents=True, exist_ok=True)

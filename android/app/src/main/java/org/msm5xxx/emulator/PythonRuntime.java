@@ -74,6 +74,10 @@ final class PythonRuntime {
                         .put("virtual_network", virtualNetwork)
                         .put("network_host_time", networkHostTime)
                         .put("network_start_time", networkStartTime == null ? JSONObject.NULL : networkStartTime);
+                String identity = new JSONObject(profileJson).getJSONObject("firmware").getString("sha256");
+                String edits = context.getSharedPreferences("detailed-settings", Context.MODE_PRIVATE)
+                        .getString(identity, "{}");
+                request.put("settings", new JSONObject(edits));
                 File external = context.getExternalFilesDir(null);
                 if (external != null && new File(external, "autorun").isFile()) {
                     request.put("session_log", new File(external, "session.log").getPath());

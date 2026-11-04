@@ -41,6 +41,7 @@ class LiveWindow(Window):
                  experimental_c80: bool = False) -> None:
         self.qemu = qemu
         self.state_dir = state_dir
+        self.persistent_state_enabled = self._load_persistent_state()
         self.experimental_c80 = experimental_c80
         self.virtual_network_enabled = self._load_virtual_network()
         self._active_virtual_network = self.virtual_network_enabled
@@ -61,35 +62,16 @@ class LiveWindow(Window):
     def _build(self) -> None:
         super()._build()
         self.fold_button = ttk.Button(
-            self.settings_button.master, text="Fold: unavailable",
+            self.controls, text="Fold: unavailable",
             command=self._toggle_fold, state="disabled",
         )
-        self.fold_button.grid(row=1, column=0, pady=2)
-        self.reboot_button = ttk.Button(
-            self.settings_button.master, text="ROM 재부팅", command=self._restart,
-        )
-        self.reboot_button.grid(row=1, column=1, pady=2)
+        self.fold_button.grid(row=3, column=0, padx=2, pady=1)
+        self.persistent_state_var = tk.BooleanVar(master=self.root, value=self.persistent_state_enabled)
         self.virtual_network_var = tk.BooleanVar(
             master=self.root, value=self.virtual_network_enabled)
-        self.virtual_network_button = ttk.Checkbutton(
-            self.settings_button.master, text=self._text("virtual_network"),
-            variable=self.virtual_network_var, command=self._set_virtual_network,
-        )
-        self.virtual_network_button.grid(row=2, column=0, columnspan=2, pady=2)
         self.network_host_time_var = tk.BooleanVar(
             master=self.root, value=self.network_host_time_enabled)
-        self.network_host_time_button = ttk.Checkbutton(
-            self.settings_button.master, text=self._text("network_host_time"),
-            variable=self.network_host_time_var, command=self._set_network_host_time,
-        )
-        self.network_host_time_button.grid(row=3, column=0, columnspan=2, pady=2)
-        self.network_start_time_label = ttk.Label(self.settings_button.master, text=self._text("network_start_time"))
-        self.network_start_time_label.grid(row=4, column=0, columnspan=2)
         self.network_start_time_var = tk.StringVar(master=self.root, value=self.network_start_time)
-        entry = ttk.Entry(self.settings_button.master, textvariable=self.network_start_time_var)
-        entry.grid(row=5, column=0, columnspan=2, pady=2)
-        entry.bind("<Return>", self._set_network_start_time)
-        entry.bind("<FocusOut>", self._set_network_start_time)
         self.secondary_window = tk.Toplevel(self.root)
         self.secondary_window.withdraw()
         self.secondary_window.title("Additional display (experimental)")
@@ -115,12 +97,34 @@ class LiveWindow(Window):
                                       state="disabled")
         self.screen.bind("<Button-3>", self._display_popup)
 
-    def _apply_ui_language(self) -> None:
-        super()._apply_ui_language()
-        if hasattr(self, "virtual_network_button"):
-            self.virtual_network_button.configure(text=self._text("virtual_network"))
-            self.network_host_time_button.configure(text=self._text("network_host_time"))
-            self.network_start_time_label.configure(text=self._text("network_start_time"))
+    def _settings_main_controls(self, page) -> None:
+        ttk.Checkbutton(page, text=self._text("persistent_state"),
+                        variable=self.persistent_state_var,
+                        command=self._set_persistent_state).pack(anchor="w")
+        ttk.Checkbutton(page, text=self._text("virtual_network"),
+                        variable=self.virtual_network_var,
+                        command=self._set_virtual_network).pack(anchor="w")
+        ttk.Checkbutton(page, text=self._text("network_host_time"),
+                        variable=self.network_host_time_var,
+                        command=self._set_network_host_time).pack(anchor="w")
+        ttk.Label(page, text=self._text("network_start_time")).pack(anchor="w")
+        entry = ttk.Entry(page, textvariable=self.network_start_time_var)
+        entry.pack(fill="x")
+        entry.bind("<Return>", self._set_network_start_time)
+        entry.bind("<FocusOut>", self._set_network_start_time)
+
+    def _set_persistent_state(self) -> None:
+        old = self.persistent_state_enabled
+        self.persistent_state_enabled = self.persistent_state_var.get()
+        try:
+            self._save_config()
+        except OSError as error:
+            self.persistent_state_enabled = old
+            self.persistent_state_var.set(old)
+            messagebox.showerror(self._text("settings_save_error"), str(error), parent=self.root)
+            return
+        if old != self.persistent_state_enabled:
+            self._restart()
 
     def _set_virtual_network(self, key: str = "virtual_network") -> None:
         variable = getattr(self, key + "_var")
@@ -287,7 +291,7 @@ class LiveWindow(Window):
         self._render_cache = None
         try:
             transport = Transport(
-                self.qemu, requested_firmware, self.state_dir,
+                self.qemu, requested_firmware, self.state_dir if self.persistent_state_enabled else None,
                 self.experimental_c80, config=config,
                 virtual_cell=virtual_cell_scenario(
                     self.virtual_network_enabled, host_time=self.network_host_time_enabled,
@@ -315,7 +319,7 @@ class LiveWindow(Window):
                     self.firmware, self.overrides
                 )
                 transport = Transport(
-                    self.qemu, self.firmware, self.state_dir,
+                    self.qemu, self.firmware, self.state_dir if self.persistent_state_enabled else None,
                     self.experimental_c80, config=rollback,
                     virtual_cell=virtual_cell_scenario(
                         self.virtual_network_enabled, host_time=self.network_host_time_enabled,

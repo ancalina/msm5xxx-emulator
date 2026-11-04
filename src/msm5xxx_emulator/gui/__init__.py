@@ -1,16 +1,22 @@
-"""Shared Tk interface for the QEMU desktop application."""
+"""Desktop interface and platform-independent settings helpers.
 
-from .app import Window, main
-from .controls import (METRIC_TEXT, can_apply_live_framebuffer_format,
-                       settings_apply_mode)
-from .display_view import frame_repaint_needed
-from .locale import (display_model_name, normalize_ui_language,
-                     resolve_ui_language, runtime_status_text,
-                     system_ui_language)
+The public desktop objects are loaded on demand so settings parsing is also
+available on platforms without Tk.
+"""
+from importlib import import_module
 
-__all__ = (
-    "METRIC_TEXT", "Window", "can_apply_live_framebuffer_format",
-    "display_model_name", "frame_repaint_needed", "main",
-    "normalize_ui_language", "resolve_ui_language", "runtime_status_text",
-    "settings_apply_mode", "system_ui_language",
-)
+_EXPORTS = {
+    "Window": "app", "main": "app",
+    "METRIC_TEXT": "controls", "can_apply_live_framebuffer_format": "controls",
+    "settings_apply_mode": "controls", "frame_repaint_needed": "display_view",
+    "display_model_name": "locale", "normalize_ui_language": "locale",
+    "resolve_ui_language": "locale", "runtime_status_text": "locale",
+    "system_ui_language": "locale",
+}
+__all__ = tuple(_EXPORTS)
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    return getattr(import_module(f"{__name__}.{_EXPORTS[name]}"), name)

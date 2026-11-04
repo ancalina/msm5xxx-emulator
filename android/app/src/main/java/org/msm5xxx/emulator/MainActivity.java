@@ -162,6 +162,7 @@ public final class MainActivity extends Activity {
     private TextView runView;
     private TextView lcdView;
     private TextView frameMetricView;
+    private Button foldButton;
     private TextView inputView;
     private TextView rejectView;
     private TextView jniView;
@@ -228,6 +229,17 @@ public final class MainActivity extends Activity {
             }
         }
     };
+
+    @Override
+    protected void attachBaseContext(Context base) {
+        String language = base.getSharedPreferences(PREFS, MODE_PRIVATE).getString("ui_language", "auto");
+        if (!"auto".equals(language)) {
+            android.content.res.Configuration config = new android.content.res.Configuration(base.getResources().getConfiguration());
+            config.setLocale(java.util.Locale.forLanguageTag(language));
+            base = base.createConfigurationContext(config);
+        }
+        super.attachBaseContext(base);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -346,6 +358,11 @@ public final class MainActivity extends Activity {
             keyTargets[key.bit] = target;
         }
 
+        foldButton = compactButton(R.string.fold_open, view -> toggleFold());
+        foldButton.setEnabled(false);
+        side.addView(foldButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
+
         LinearLayout telemetry = new LinearLayout(this);
         telemetry.setOrientation(LinearLayout.VERTICAL);
         profileView = statusLine("");
@@ -360,8 +377,8 @@ public final class MainActivity extends Activity {
         sessionView = statusLine("");
         sessionView.setTextColor(Color.rgb(176, 176, 176));
         for (TextView line : new TextView[]{
-                profileView, pcView, runView, lcdView, frameMetricView,
-                inputView, rejectView, jniView, ackView, sessionView,
+                runView, pcView, lcdView, frameMetricView,
+                sessionView,
         }) {
             telemetry.addView(line, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
@@ -988,6 +1005,7 @@ public final class MainActivity extends Activity {
         int generation = ++sessionGeneration;
         sessionStarting = true;
         latestStatus = null;
+        if (foldButton != null) foldButton.setEnabled(false);
         secondaryHidden = false;
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
@@ -1187,6 +1205,8 @@ public final class MainActivity extends Activity {
         boolean secondaryAvailabilityChanged = latestStatus == null
                 || latestStatus.secondaryAvailable != status.secondaryAvailable;
         latestStatus = status;
+        foldButton.setEnabled(status.foldSupported);
+        foldButton.setText(status.foldOpen ? R.string.fold_close : R.string.fold_open);
         secondaryPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
         if (presentationPreviewNotice != null) {
             presentationPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
@@ -1518,6 +1538,7 @@ public final class MainActivity extends Activity {
         session = null;
         sessionStarting = false;
         latestStatus = null;
+        if (foldButton != null) foldButton.setEnabled(false);
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
         secondaryFrameView.clear();
@@ -1657,8 +1678,8 @@ public final class MainActivity extends Activity {
         PopupMenu popup = new PopupMenu(this, moreButton);
         popup.getMenu().add(0, MORE_CHOOSE, 0, R.string.choose)
                 .setEnabled(!busy);
-        popup.getMenu().add(0, MORE_SETTINGS, 1, R.string.settings)
-                .setEnabled(!busy);
+        popup.getMenu().add(0, 1001, 1, R.string.capture).setEnabled(frameView.bitmap != null);
+        popup.getMenu().add(0, MORE_SETTINGS, 1, R.string.settings);
         popup.getMenu().add(0, MORE_EDIT_MAPPING, 2,
                 R.string.edit_input_mapping).setEnabled(
                         session != null && !sessionStarting);
@@ -1677,6 +1698,10 @@ public final class MainActivity extends Activity {
         popup.getMenu().add(0, MORE_SECONDARY_DESTINATION, 7,
                 R.string.display_destination);
         popup.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == 1001) {
+                saveCapture();
+                return true;
+            }
             if (item.getItemId() == MORE_REBOOT) {
                 stopSession(false);
                 startSession();
@@ -1692,22 +1717,7 @@ public final class MainActivity extends Activity {
                 return true;
             }
             if (item.getItemId() == MORE_FOLD) {
-                BackendBridge.Session target = session;
-                boolean opened = latestStatus != null && !latestStatus.foldOpen;
-                controlExecutor.execute(() -> {
-                    try {
-                        if (target != null) {
-                            target.setFold(opened);
-                        }
-                    } catch (IOException error) {
-                        android.util.Log.e("MSM5xxxSession", "Fold failed", error);
-                        handler.post(() -> {
-                            if (session == target) {
-                                showError(getString(R.string.error_input_failed));
-                            }
-                        });
-                    }
-                });
+                toggleFold();
                 return true;
             }
             if (item.getItemId() == MORE_CHOOSE) {
@@ -1749,6 +1759,34 @@ public final class MainActivity extends Activity {
         updateKeypad(session);
     }
 
+    private void saveCapture() {
+        Bitmap bitmap = frameView.bitmap;
+        File directory = getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES);
+        if (bitmap == null || directory == null) return;
+        File file = new File(directory, "MSM5xEmu-" + System.currentTimeMillis() + ".png");
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new IOException("PNG encoding failed");
+            android.widget.Toast.makeText(this, getString(R.string.capture_saved, file.getAbsolutePath()), android.widget.Toast.LENGTH_LONG).show();
+        } catch (IOException error) {
+            showError(error.getMessage());
+        }
+    }
+
+    private void toggleFold() {
+        BackendBridge.Session target = session;
+        boolean opened = latestStatus != null && !latestStatus.foldOpen;
+        controlExecutor.execute(() -> {
+            try {
+                if (target != null) target.setFold(opened);
+            } catch (IOException error) {
+                android.util.Log.e("MSM5xxxSession", "Fold failed", error);
+                handler.post(() -> {
+                    if (session == target) showError(getString(R.string.error_input_failed));
+                });
+            }
+        });
+    }
+
     private static Double parseNetworkStartTime(String value) {
         if (value.trim().isEmpty()) return null;
         java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US);
@@ -1761,10 +1799,51 @@ public final class MainActivity extends Activity {
         return date.getTime() / 1000.0;
     }
 
-    private void showSettings() {
-        if (session != null || sessionStarting) {
-            return;
+    private static final String[] DETAIL_FIELDS = {"model", "chipset", "width", "height", "board_revision", "image_offset", "load_address", "flash_size", "ram_base", "ram_size", "ram_image_offset", "ram_image_size", "entry", "framebuffer_address", "framebuffer_stride", "framebuffer_format", "board_revision_register", "board_revision_value", "key_register", "key_active_low", "rex_idle_address", "rex_tick_address", "rex_tick_ms", "board_adc_value", "flash_id_address", "flash_id_value", "dmd_download_address", "primary_flash_probe_address", "secondary_flash_address", "secondary_flash_size", "secondary_flash_image", "secondary_flash_state", "secondary_flash_write_address", "flash_state", "nand_enabled", "nand_image", "nand_data_size", "nand_page_size", "nand_spare_size", "nand_pages_per_block", "nand_bus_width"};
+
+    private void showDetailedSettings(String identity, Switch experimental) {
+        if (identity == null) return;
+        SharedPreferences prefs = getSharedPreferences("detailed-settings", MODE_PRIVATE);
+        JSONObject saved;
+        try { saved = new JSONObject(prefs.getString(identity, "{}")); }
+        catch (JSONException error) { saved = new JSONObject(); }
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        int padding = dp(16);
+        fields.setPadding(padding, padding, padding, padding);
+        if (experimental.getParent() instanceof android.view.ViewGroup)
+            ((android.view.ViewGroup) experimental.getParent()).removeView(experimental);
+        fields.addView(experimental, matchWidth());
+        ArrayList<EditText> inputs = new ArrayList<>();
+        String[] labels = getResources().getStringArray(R.array.detail_labels);
+        for (int field = 0; field < DETAIL_FIELDS.length; field++) {
+            String name = DETAIL_FIELDS[field];
+            TextView title = text(labels[field], 14);
+            fields.addView(title, matchWidth());
+            EditText input = new EditText(this);
+            input.setSingleLine(true);
+            input.setText(saved.optString(name, ""));
+            input.setHint(R.string.automatic_value);
+            fields.addView(input, matchWidth());
+            inputs.add(input);
         }
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(fields);
+        new AlertDialog.Builder(this).setTitle(R.string.more_settings).setView(scroll)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.save, (dialog, which) -> {
+                    JSONObject edits = new JSONObject();
+                    try {
+                        for (int i = 0; i < DETAIL_FIELDS.length; i++) {
+                            String value = inputs.get(i).getText().toString().trim();
+                            if (!value.isEmpty()) edits.put(DETAIL_FIELDS[i], value);
+                        }
+                        prefs.edit().putString(identity, edits.toString()).apply();
+                    } catch (JSONException error) { showError(error.getMessage()); }
+                }).show();
+    }
+
+    private void showSettings() {
         SharedPreferences preferences = preferences();
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -1789,17 +1868,44 @@ public final class MainActivity extends Activity {
         networkStartTime.setSingleLine(true);
         networkStartTime.setHint(R.string.network_start_time);
         networkStartTime.setText(preferences.getString(KEY_NETWORK_START_TIME, ""));
+        Button choose = compactButton(R.string.choose, view -> chooseFirmware());
+        choose.setEnabled(session == null && !sessionStarting);
+        body.addView(choose, matchWidth());
         body.addView(persistent, matchWidth());
-        body.addView(experimental, matchWidth());
         body.addView(virtualNetwork, matchWidth());
         body.addView(networkHostTime, matchWidth());
         body.addView(networkStartTime, matchWidth());
+        TextView languageTitle = text(getString(R.string.ui_language), 14);
+        body.addView(languageTitle, matchWidth());
+        android.widget.Spinner language = new android.widget.Spinner(this);
+        String[] languageValues = {"auto", "ko", "en"};
+        String[] languageLabels = {getString(R.string.language_auto), "한국어", "English"};
+        language.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, languageLabels));
+        String selectedLanguage = preferences.getString("ui_language", "auto");
+        language.setSelection("ko".equals(selectedLanguage) ? 1 : "en".equals(selectedLanguage) ? 2 : 0);
+        body.addView(language, matchWidth());
+        Button reboot = compactButton(R.string.reboot, view -> {});
+        reboot.setEnabled(session != null && !sessionStarting);
+        body.addView(reboot, matchWidth());
+        String identity = null;
+        try { identity = new JSONObject(preferences.getString(KEY_PROFILE, "{}"))
+                    .getJSONObject("firmware").getString("sha256"); }
+        catch (JSONException ignored) { }
+        final String settingsIdentity = identity;
+        Button moreSettings = compactButton(R.string.more_settings,
+                view -> showDetailedSettings(settingsIdentity, experimental));
+        moreSettings.setEnabled(settingsIdentity != null);
+        body.addView(moreSettings, matchWidth());
+        android.widget.ScrollView settingsScroll = new android.widget.ScrollView(this);
+        settingsScroll.addView(body);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_title)
-                .setView(body)
+                .setView(settingsScroll)
                 .setNegativeButton(R.string.cancel, null)
                 .setPositiveButton(R.string.save, null)
                 .create();
+        choose.setOnClickListener(view -> { dialog.dismiss(); chooseFirmware(); });
+        reboot.setOnClickListener(view -> { dialog.dismiss(); stopSession(false); startSession(); });
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             String value = networkStartTime.getText().toString();
             try {
@@ -1808,12 +1914,14 @@ public final class MainActivity extends Activity {
                 networkStartTime.setError(getString(R.string.network_time_error));
                 return;
             }
-            preferences.edit().putBoolean(KEY_PERSISTENT_STATE, persistent.isChecked())
+            String newLanguage = languageValues[language.getSelectedItemPosition()];
+            preferences.edit().putString("ui_language", newLanguage).putBoolean(KEY_PERSISTENT_STATE, persistent.isChecked())
                     .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked())
                     .putBoolean(KEY_VIRTUAL_NETWORK, virtualNetwork.isChecked())
                     .putBoolean(KEY_NETWORK_HOST_TIME, networkHostTime.isChecked())
                     .putString(KEY_NETWORK_START_TIME, value).apply();
             dialog.dismiss();
+            if (!newLanguage.equals(selectedLanguage)) recreate();
         }));
         dialog.show();
     }

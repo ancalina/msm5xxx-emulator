@@ -516,7 +516,7 @@ class ControlsMixin:
             return
         self._settings_requested = False
         dialog = tk.Toplevel(self.root)
-        dialog.title(self._text("boot_settings"))
+        dialog.title(self._text("settings"))
         dialog.transient(self.root)
         detected = self.emulator.config
 
@@ -529,14 +529,14 @@ class ControlsMixin:
         language_choice = tk.StringVar(
             value=language_labels[self.ui_language_preference]
         )
-        language_frame = ttk.Frame(dialog, padding=(10, 10, 10, 0))
-        language_frame.pack(fill="x")
-        ttk.Label(language_frame, text=self._text("ui_language")).pack(side="left")
-        ttk.Combobox(language_frame, textvariable=language_choice,
-                     values=tuple(language_labels.values()), state="readonly",
-                     width=20).pack(side="right")
         notebook = ttk.Notebook(dialog)
         notebook.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        main_page = ttk.Frame(notebook, padding=10)
+        notebook.add(main_page, text=self._text("settings"))
+        firmware_frame = ttk.Frame(main_page)
+        firmware_frame.pack(fill="x")
+        details = ttk.Notebook(notebook)
+        notebook.add(details, text=self._text("more"))
         entries: dict[str, ttk.Entry | ttk.Combobox] = {}
 
         def choose_firmware() -> None:
@@ -560,10 +560,12 @@ class ControlsMixin:
             entry.insert(0, chosen)
 
         for title, fields in SETTINGS_SECTIONS:
-            page = ttk.Frame(notebook, padding=10)
+            page = ttk.Frame(details, padding=10)
             page.columnconfigure(1, weight=1)
-            notebook.add(page, text=self._settings_text(title))
+            details.add(page, text=self._settings_text(title))
             for row, (name, label) in enumerate(fields):
+                if name == "firmware":
+                    continue
                 ttk.Label(page, text=self._settings_text(label)).grid(
                     row=row, column=0, sticky="w", pady=2
                 )
@@ -593,6 +595,24 @@ class ControlsMixin:
                     ttk.Button(page, text=self._text("choose_file"),
                                command=choose_firmware).grid(
                         row=row, column=2, sticky="e", padx=(8, 0), pady=2)
+
+        ttk.Label(firmware_frame, text=self._text("choose_firmware")).pack(side="left")
+        firmware_entry = ttk.Entry(firmware_frame, width=35)
+        firmware_entry.insert(0, values["firmware"])
+        firmware_entry.pack(side="left", fill="x", expand=True, padx=8)
+        entries["firmware"] = firmware_entry
+        ttk.Button(firmware_frame, text=self._text("choose_file"),
+                   command=choose_firmware).pack(side="left")
+        if hasattr(self, "_settings_main_controls"):
+            self._settings_main_controls(main_page)
+        language_frame = ttk.Frame(main_page, padding=(0, 10, 0, 0))
+        language_frame.pack(fill="x")
+        ttk.Label(language_frame, text=self._text("ui_language")).pack(side="left")
+        ttk.Combobox(language_frame, textvariable=language_choice,
+                     values=tuple(language_labels.values()), state="readonly",
+                     width=20).pack(side="right")
+        if hasattr(self, "_settings_main_controls"):
+            ttk.Button(main_page, text=self._text("reboot"), command=self._restart).pack(anchor="w", pady=4)
 
         def apply() -> None:
             try:
@@ -726,6 +746,13 @@ class ControlsMixin:
         except (AttributeError, OSError, ValueError):
             return "auto"
 
+    def _load_persistent_state(self) -> bool:
+        try:
+            data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
+            return data.get("persistent_state", True) is True
+        except (AttributeError, OSError, ValueError):
+            return True
+
     def _load_virtual_network(self, key: str = "virtual_network") -> bool:
         try:
             data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
@@ -772,7 +799,7 @@ class ControlsMixin:
                 "profiles": profiles,
                 "manual_keymaps": manual_keymaps,
             }
-            for key in ("virtual_network", "network_host_time"):
+            for key in ("virtual_network", "network_host_time", "persistent_state"):
                 if hasattr(self, key + "_enabled") or key in data:
                     settings[key] = getattr(self, key + "_enabled", data.get(key) is True)
             if hasattr(self, "network_start_time") or "network_start_time" in data:
