@@ -20,6 +20,24 @@ from msm5xxx_android_runtime import (  # noqa: F401: exported native bridge API
 _PCM_PACKET = struct.Struct("<4sIQQQ")
 
 
+def _audio_admitted(transport, *, require_native_ma5=False):
+    """Match Android's static admission; MA5 may still be pending at startup."""
+    metadata = getattr(transport.config, "audio_transport", None)
+    tone = getattr(transport.config, "tone_generator", None)
+    decoder = getattr(transport.decoder, "audio_transport", None)
+    ma2 = (isinstance(metadata, dict) and metadata.get("family") == "ma2"
+           and metadata.get("static_status") == "accepted"
+           and getattr(decoder, "family", None) == "ma2"
+           and getattr(decoder, "static_status", None) == "accepted")
+    ma5 = (getattr(transport, "audio_native", False) is True
+           and getattr(transport, "audio_native_ma5_pcm", False) is True
+           and (not require_native_ma5 or transport.audio_stream_status == "native"))
+    tone = isinstance(tone, dict) and tone.get("static_status") == "accepted"
+    return bool((ma2 or ma5 or tone) and transport.audio_stream_enabled
+                and transport.audio_stream_status != "rejected"
+                and callable(getattr(transport, "take_native_audio", None)))
+
+
 def probe():
     from msm5xxx_emulator.qemu.transport import Transport
     from msm5xxx_emulator.qemu.decoder import QemuDecoder
@@ -49,15 +67,12 @@ def start_session(request_json):
         raise ValueError(admission["reject_reason"])
     if config.diagnostic_config() != request["profile"]:
         raise ValueError("selected profile no longer matches firmware")
-    tone = config.tone_generator
-    tone_audio = (isinstance(tone, dict)
-                  and tone.get("static_status") == "accepted")
     state = None if request["state"] is None else Path(request["state"])
     if state is not None:
         state.mkdir(parents=True, exist_ok=True)
     transport = Transport(
         Path(request["qemu"]), firmware, state, request["experimental_rex"],
-        config=config, audio_stream=tone_audio, audio_pcm=tone_audio,
+        config=config, audio_stream=True, audio_pcm=True,
         virtual_cell=virtual_cell_scenario(request.get("virtual_network", False)),
         launcher=IOSLauncher(),
     )
@@ -75,21 +90,17 @@ def start_session(request_json):
                          "height": int(config.height),
                          "input_bits": [bit for bit in range(HANDSET_KEY_COUNT)
                                         if transport.can_set_key(bit)],
-                         "process_running": transport.process.poll() is None})
+                         "process_running": transport.process.poll() is None,
+                         "audio_admitted": _audio_admitted(transport)})
 
 
 def session_audio():
-    """Return one native M5P2 packet for an admitted iOS tone device."""
+    """Return one admitted native M5P2 packet without blocking the UI queue."""
     transport = shared._session
     if transport is None:
         raise RuntimeError("session is not running")
-    tone = getattr(transport.config, "tone_generator", None)
-    if (not isinstance(tone, dict)
-            or tone.get("static_status") != "accepted"
-            or not transport.audio_stream_enabled
-            or transport.audio_stream_status == "rejected"
-            or not callable(getattr(transport, "take_native_audio", None))):
-        return shared.session_audio()
+    if not _audio_admitted(transport, require_native_ma5=True):
+        return b""
     if shared._session_error is not None or transport.process.poll() is not None:
         return b""
     raw = transport.take_native_audio(0.0)

@@ -25,6 +25,12 @@ final class QEMUEngine: ObservableObject {
     // short intervals without tying guest audio cadence to screen refresh.
     private var audioPolling = false
     private var audioSink: MSM5xxxAudioSink?
+    private var audioDiagnostics = false
+    private var audioPackets = 0
+    private var audioNonzeroPackets = 0
+    private var audioMalformedPackets = 0
+    private var lastAudioLog = Date.distantPast
+    private var lastAudioError = Date.distantPast
 
     /// True when this process may turn freshly written memory executable, as QEMU's split-wx TCG
     /// does: an attached debugger (TrollStore "Open with JIT", Dopamine, StikJIT, Jitterbug) or the
@@ -104,9 +110,8 @@ final class QEMUEngine: ObservableObject {
                 let result = try PythonBridge.call("start_session", argument: String(decoding: json, as: UTF8.self))
                 let started = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any]
                 let bits = Set(started?["input_bits"] as? [Int] ?? [])
-                let audioTransport = (profile as? [String: Any])?["audio_transport"] as? [String: Any]
-                let tone = audioTransport?["tone_generator"] as? [String: Any]
-                if tone?["static_status"] as? String == "accepted" {
+                self.audioDiagnostics = FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path)
+                if started?["audio_admitted"] as? Bool == true {
                     let sink = MSM5xxxAudioSink()
                     if sink.start() {
                         self.audioSink = sink
@@ -176,6 +181,14 @@ final class QEMUEngine: ObservableObject {
                 }
                 let status = try PythonBridge.call("session_status", argument: nil)
                 let value = try JSONSerialization.jsonObject(with: Data(status.utf8)) as? [String: Any]
+                if self.audioDiagnostics && self.audioPolling && Date().timeIntervalSince(self.lastAudioLog) >= 10 {
+                    self.lastAudioLog = Date()
+                    NSLog("MSM5xEmu audio packets=%d nonzero=%d malformed=%d consumed_frames=%llu underflows=%@ overflows=%@",
+                          self.audioPackets, self.audioNonzeroPackets, self.audioMalformedPackets,
+                          self.audioSink?.consumedFrames ?? 0,
+                          String(describing: value?["audio_underflow_frames"] ?? 0),
+                          String(describing: value?["audio_overflow_frames"] ?? 0))
+                }
                 if value?["process_running"] as? Bool == false {
                     self.stopAudio()
                     DispatchQueue.main.async {
@@ -193,18 +206,25 @@ final class QEMUEngine: ObservableObject {
     private func pollAudio() {
         guard audioPolling else { return }
         do {
-            let packet = try PythonBridge.bytes("session_audio")
-            if !packet.isEmpty, let sink = audioSink, !sink.offer(packet) {
-                NSLog("MSM5xEmu rejected malformed or discontinuous M5P2 audio")
-                stopAudio()
-                return
+            // Bound each drain to avoid starving display and input work.
+            for _ in 0..<4 {
+                let packet = try PythonBridge.bytes("session_audio")
+                if packet.isEmpty { break }
+                if audioDiagnostics {
+                    audioPackets += 1
+                    if packet.dropFirst(32).contains(where: { $0 != 0 }) { audioNonzeroPackets += 1 }
+                }
+                if let sink = audioSink, !sink.offer(packet) {
+                    audioMalformedPackets += 1
+                }
             }
         } catch {
-            NSLog("MSM5xEmu iOS audio stopped: %@", String(describing: error))
-            stopAudio()
-            return
+            if Date().timeIntervalSince(lastAudioError) >= 10 {
+                lastAudioError = Date()
+                NSLog("MSM5xEmu iOS audio poll failed: %@", String(describing: error))
+            }
         }
-        queue.asyncAfter(deadline: .now() + .milliseconds(3)) { self.pollAudio() }
+        queue.asyncAfter(deadline: .now() + .milliseconds(10)) { self.pollAudio() }
     }
 
     private func stopAudio() {
@@ -242,6 +262,13 @@ private final class MSM5xxxAudioSink {
     private var sequence: UInt64 = 0
     private var nextFrame: UInt64 = 0
     private var closed = false
+    private var completedFrames: UInt64 = 0
+
+    var consumedFrames: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return completedFrames
+    }
 
     func start() -> Bool {
         do {
@@ -274,13 +301,17 @@ private final class MSM5xxxAudioSink {
               startFrame <= UInt64(Int64.max) - UInt64(frames) else { return false }
 
         if packetEpoch != epoch {
-            guard packetSequence == 1 else { return false }
             resetTimeline()
             epoch = packetEpoch
             sequence = 0
             nextFrame = startFrame
+        } else {
+            guard packetSequence > sequence else { return false }
+            if packetSequence != sequence + 1 || startFrame != nextFrame {
+            // Overflow or a dropped packet starts a fresh bounded playback timeline.
+                resetTimeline()
+            }
         }
-        guard packetSequence == sequence + 1, startFrame == nextFrame else { return false }
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
               let channels = buffer.floatChannelData else { return false }
@@ -320,6 +351,7 @@ private final class MSM5xxxAudioSink {
             if self.generation == scheduledGeneration {
                 self.pendingFrames = self.pendingFrames >= frames
                     ? self.pendingFrames - frames : 0
+                self.completedFrames &+= UInt64(frames)
             }
             self.lock.unlock()
         }

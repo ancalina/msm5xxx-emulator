@@ -1,7 +1,10 @@
 """Host-independent iOS protocol lifecycle tests; never starts QEMU."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import struct
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -30,6 +33,94 @@ class IOSRuntimeTests(unittest.TestCase):
                         {k: v for k, v in base.items() if k != "state"}):
             with self.subTest(request=request), self.assertRaisesRegex(ValueError, "invalid session request"):
                 self.runtime.start_session(__import__("json").dumps(request))
+
+    def test_audio_admission_matches_supported_transports(self):
+        def transport(metadata=None, decoder=None, tone=None, *, native=False,
+                      ma5=False, status="pending", enabled=True):
+            return SimpleNamespace(
+                config=SimpleNamespace(audio_transport=metadata, tone_generator=tone),
+                decoder=SimpleNamespace(audio_transport=decoder),
+                audio_native=native, audio_native_ma5_pcm=ma5,
+                audio_stream_status=status, audio_stream_enabled=enabled,
+                take_native_audio=lambda timeout: b"")
+
+        ma2 = {"family": "ma2", "static_status": "accepted"}
+        decoder = SimpleNamespace(family="ma2", static_status="accepted")
+        cases = [
+            (transport(ma2, decoder), True),
+            (transport(ma2, SimpleNamespace(family="ma2", static_status="rejected")), False),
+            (transport({**ma2, "static_status": "rejected"}, decoder), False),
+            (transport(tone={"static_status": "accepted"}), True),
+            (transport(tone={"static_status": "rejected"}), False),
+            (transport(native=True, ma5=True), True),
+            (transport(native=True, ma5=False), False),
+            (transport(ma2, decoder, enabled=False), False),
+            (transport(ma2, decoder, status="rejected"), False),
+            (transport(), False),
+        ]
+        for session, expected in cases:
+            with self.subTest(session=session):
+                self.assertEqual(self.runtime._audio_admitted(session), expected)
+        pending = transport(native=True, ma5=True)
+        self.assertFalse(self.runtime._audio_admitted(pending, require_native_ma5=True))
+        pending.audio_stream_status = "native"
+        self.assertTrue(self.runtime._audio_admitted(pending, require_native_ma5=True))
+
+    def test_admitted_audio_is_nonblocking_and_validated(self):
+        packet = struct.pack("<4sIQQQ", b"M5P2", 2, 3, 4, 5) + bytes(1764)
+        take = Mock(return_value=packet)
+        self.shared._session = SimpleNamespace(
+            config=SimpleNamespace(audio_transport=None, tone_generator={"static_status": "accepted"}),
+            decoder=SimpleNamespace(audio_transport=None), audio_native=False,
+            audio_native_ma5_pcm=False, audio_stream_status="native",
+            audio_stream_enabled=True, take_native_audio=take,
+            process=SimpleNamespace(poll=lambda: None))
+        self.assertEqual(self.runtime.session_audio(), packet)
+        take.assert_called_once_with(0.0)
+        take.return_value = b"invalid"
+        self.assertEqual(self.runtime.session_audio(), b"")
+
+    def test_ma2_and_native_ma5_deliver_pcm(self):
+        packet = struct.pack("<4sIQQQ", b"M5P2", 2, 1, 1, 0) + b"\x01\x00\x02\x00" * 441
+        ma2 = {"family": "ma2", "static_status": "accepted"}
+        for family in ("ma2", "ma5"):
+            take = Mock(return_value=packet)
+            self.shared._session = SimpleNamespace(
+                config=SimpleNamespace(audio_transport=ma2 if family == "ma2" else None,
+                                       tone_generator=None),
+                decoder=SimpleNamespace(audio_transport=SimpleNamespace(
+                    family="ma2", static_status="accepted") if family == "ma2" else None),
+                audio_native=family == "ma5", audio_native_ma5_pcm=family == "ma5",
+                audio_stream_status="native", audio_stream_enabled=True,
+                take_native_audio=take, process=SimpleNamespace(poll=lambda: None))
+            with self.subTest(family=family):
+                self.assertEqual(self.runtime.session_audio(), packet)
+                take.assert_called_once_with(0.0)
+
+    def test_start_enables_stream_and_reports_admitted_ma2(self):
+        metadata = {"family": "ma2", "static_status": "accepted"}
+        profile = {"audio_transport": metadata}
+        config = SimpleNamespace(width=176, height=220, tone_generator=None,
+                                 diagnostic_config=lambda: profile)
+        transport = SimpleNamespace(
+            config=SimpleNamespace(audio_transport=metadata, tone_generator=None),
+            decoder=SimpleNamespace(audio_transport=SimpleNamespace(
+                family="ma2", static_status="accepted")),
+            audio_native=False, audio_native_ma5_pcm=False,
+            audio_stream_status="pending", audio_stream_enabled=True,
+            take_native_audio=lambda timeout: b"", can_set_key=lambda bit: False,
+            process=SimpleNamespace(poll=lambda: None))
+        request = {"firmware": "synthetic", "profile": profile, "qemu": "q",
+                   "state": None, "experimental_rex": False}
+        self.runtime.detect_profile = lambda _: json.dumps({"accepted": True})
+        with patch("msm5xxx_emulator.detection.firmware.detect", return_value=config), \
+             patch("msm5xxx_emulator.qemu.transport.Transport", return_value=transport) as factory, \
+             patch("msm5xxx_emulator.qemu.transport.IOSLauncher"), \
+             patch.object(self.runtime.threading, "Thread"):
+            result = json.loads(self.runtime.start_session(json.dumps(request)))
+        self.assertTrue(result["audio_admitted"])
+        self.assertTrue(factory.call_args.kwargs["audio_stream"])
+        self.assertTrue(factory.call_args.kwargs["audio_pcm"])
 
     def test_stop_retains_resources_when_replay_still_alive(self):
         transport = self.shared._session = Mock()
