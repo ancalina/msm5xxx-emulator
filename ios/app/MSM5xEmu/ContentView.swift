@@ -484,7 +484,7 @@ private struct HandsetKeyStyle: ButtonStyle {
             .lineLimit(1).minimumScaleFactor(0.7)
             .foregroundColor(enabled && !dimmed ? .white : .gray)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(white: !enabled || dimmed ? 0.18 : configuration.isPressed ? 0.44 : 0.33))
+            .background(Color(white: configuration.isPressed && enabled && !dimmed ? 0.44 : 0.18))
             .contentShape(Rectangle())
     }
 }
@@ -501,7 +501,7 @@ private struct PhoneKey: View {
             .lineLimit(1).minimumScaleFactor(0.7)
             .foregroundColor(enabled ? .white : .gray)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(white: !enabled ? 0.18 : pressed ? 0.44 : 0.33))
+            .background(Color(white: pressed ? 0.44 : 0.18))
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { _ in

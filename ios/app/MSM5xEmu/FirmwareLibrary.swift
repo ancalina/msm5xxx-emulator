@@ -453,9 +453,9 @@ struct FirmwareLibraryView: View {
     var body: some View {
         Group {
             if #available(iOS 16.0, *) {
-                NavigationStack { libraryContent }
+                NavigationStack { libraryContent }.accentColor(.white)
             } else {
-                NavigationView { libraryContent }
+                NavigationView { libraryContent }.accentColor(.white)
             }
         }
     }
@@ -522,7 +522,20 @@ struct FirmwareLibraryView: View {
                     if canClose { Button(text("Done")) { close() } }
                 }
             }
-            .onAppear { store.refresh(engine: engine) }
+            .onAppear {
+                // Firmware opened before the library existed lives in Application Support/firmware.
+                let defaults = UserDefaults.standard
+                if !defaults.bool(forKey: "library_migrated"),
+                   let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+                   let names = try? FileManager.default.contentsOfDirectory(atPath: support.appendingPathComponent("firmware").path),
+                   let name = names.sorted().first(where: { !$0.hasPrefix(".") }) {
+                    defaults.set(true, forKey: "library_migrated")
+                    store.importFile(support.appendingPathComponent("firmware").appendingPathComponent(name), engine: engine)
+                } else {
+                    defaults.set(true, forKey: "library_migrated")
+                    store.refresh(engine: engine)
+                }
+            }
             .sheet(isPresented: $showingSettings) { librarySettings }
             .sheet(isPresented: $folderPicker) {
                 LibraryFolderPicker { url in store.addFolder(url, engine: engine) }

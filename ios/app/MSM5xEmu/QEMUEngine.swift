@@ -87,6 +87,11 @@ final class QEMUEngine: ObservableObject {
         entry = unsafeBitCast(symbol, to: Entry.self)
         status = "Ready"
         NSLog("MSM5xEmu engine: %@; JIT %@; cs flags 0x%08x", name, QEMUEngine.jitAvailable ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
+        // Readable over SSH for device checks: which engine this process loaded.
+        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            try? "\(name) jit=\(QEMUEngine.jitAvailable) cs=0x\(String(QEMUEngine.codeSigningFlags, radix: 16))\n"
+                .write(to: support.appendingPathComponent("engine.txt"), atomically: true, encoding: .utf8)
+        }
     }
 
     // Called from the library's background queue, never from the Python queue.
@@ -294,7 +299,7 @@ final class QEMUEngine: ObservableObject {
                     self.secondaryPreview = value?["secondary_preview"] as? Bool ?? false
                     self.foldSupported = supported
                     self.foldOpen = open
-                    self.metrics = "Run \(run)  PC \(String(pc, radix: 16))\nLCD \(lcd)  Frame \(frame)"
+                    self.metrics = "Run \(run)  PC 0x\(String(format: "%08X", pc))\nLCD \(lcd)  Frame \(frame)"
                 }
                 if self.audioDiagnostics && self.audioPolling && Date().timeIntervalSince(self.lastAudioLog) >= 10 {
                     self.lastAudioLog = Date()
