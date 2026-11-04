@@ -18,7 +18,7 @@
 "End" = "종료";
 "Event code" = "키 코드";
 "Event code (blank restores automatic mapping)" = "키 코드 (비우면 자동 설정)";
-"Experimental static REX controller" = "실험적 REX 제어";
+"Experimental static REX controller" = "실험적 타이머 처리 (부팅이 멈출 때)";
 "Finish mapping" = "키 설정 완료";
 "Host time" = "기기 시계 따르기";
 "Input mapping" = "키 설정";

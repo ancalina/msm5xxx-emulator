@@ -83,7 +83,7 @@
 
     <string name="settings_title">Settings</string>
     <string name="persistent_state">Save device state</string>
-    <string name="experimental_rex">Experimental REX control</string>
+    <string name="experimental_rex">Experimental timer handling (if boot stalls)</string>
     <string name="virtual_network">Virtual network (calls unavailable)</string>
     <string name="virtual_network_active">Virtual network</string>
     <string name="virtual_network_unavailable">Virtual network unavailable for this firmware</string>

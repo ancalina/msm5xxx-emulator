@@ -18,7 +18,7 @@
 "End" = "End";
 "Event code" = "Key code";
 "Event code (blank restores automatic mapping)" = "Key code (blank restores automatic assignment)";
-"Experimental static REX controller" = "Experimental REX control";
+"Experimental static REX controller" = "Experimental timer handling (if boot stalls)";
 "Finish mapping" = "Done";
 "Host time" = "Use device clock";
 "Input mapping" = "Key assignment";

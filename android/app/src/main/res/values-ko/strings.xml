@@ -83,7 +83,7 @@
 
     <string name="settings_title">설정</string>
     <string name="persistent_state">기기 상태 저장</string>
-    <string name="experimental_rex">실험적 REX 제어</string>
+    <string name="experimental_rex">실험적 타이머 처리 (부팅이 멈출 때)</string>
     <string name="virtual_network">가상 통신망 (통화 미지원)</string>
     <string name="virtual_network_active">가상 통신망</string>
     <string name="virtual_network_unavailable">이 펌웨어는 가상 통신망 미지원</string>
