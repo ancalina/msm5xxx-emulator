@@ -421,9 +421,6 @@ struct FirmwareLibraryView: View {
                         if let path = entry.thumbnail, let image = UIImage(contentsOfFile: path) {
                             Image(uiImage: image).resizable().interpolation(.none)
                                 .scaledToFit().frame(width: 48, height: 48)
-                        } else {
-                            Image(systemName: "rectangle").frame(width: 48, height: 48)
-                                .accessibilityHidden(true)
                         }
                         VStack(alignment: .leading) {
                             Text(entry.displayName)

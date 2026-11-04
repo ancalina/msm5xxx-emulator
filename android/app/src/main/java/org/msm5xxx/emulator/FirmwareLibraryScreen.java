@@ -160,7 +160,7 @@ final class FirmwareLibraryScreen {
         title.setTextColor(android.graphics.Color.WHITE);
         titleBar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         int square = Math.round(48 * activity.getResources().getDisplayMetrics().density);
-        Button add = flatButton("+", R.string.library_add);
+        android.widget.ImageButton add = iconButton(R.drawable.ic_library_add, R.string.library_add);
         add.setOnClickListener(v -> {
             android.widget.PopupMenu menu = new android.widget.PopupMenu(activity, v);
             menu.getMenu().add(0, 1, 0, R.string.library_add_folder);
@@ -171,8 +171,7 @@ final class FirmwareLibraryScreen {
             });
             menu.show();
         });
-        Button reload = flatButton("\u27F3", R.string.library_refresh);
-        reload.setTextSize(24);
+        android.widget.ImageButton reload = iconButton(R.drawable.ic_library_refresh, R.string.library_refresh);
         reload.setOnClickListener(v -> refresh());
         LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(square, square);
         iconParams.leftMargin = pad / 2;
@@ -191,8 +190,12 @@ final class FirmwareLibraryScreen {
                 JSONObject entry = getItem(position);
                 ImageView image = new ImageView(activity);
                 Bitmap thumbnail = BitmapFactory.decodeFile(entry.optString("thumbnail", ""));
-                if (thumbnail != null) image.setImageBitmap(thumbnail);
-                row.addView(image, new LinearLayout.LayoutParams(pad * 4, pad * 4));
+                if (thumbnail != null) {
+                    image.setImageBitmap(thumbnail);
+                    LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(pad * 4, pad * 4);
+                    imageParams.rightMargin = pad;
+                    row.addView(image, imageParams);
+                }
                 TextView label = new TextView(activity);
                 String name = entry.optString("display", entry.optString("name"));
                 String chipset = entry.optString("chipset", "—");
@@ -274,6 +277,17 @@ final class FirmwareLibraryScreen {
         body.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
         activity.setContentView(body);
         refresh();
+    }
+
+    private android.widget.ImageButton iconButton(int icon, int description) {
+        android.widget.ImageButton button = new android.widget.ImageButton(activity);
+        button.setImageResource(icon);
+        button.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        button.setStateListAnimator(null);
+        button.setElevation(0);
+        button.setBackground(flatButton("", description).getBackground());
+        button.setContentDescription(activity.getString(description));
+        return button;
     }
 
     private Button flatButton(String text, int description) {
