@@ -68,10 +68,14 @@ class LiveWindow(Window):
         self.editing_input_mapping = False
         self.settings_button.configure(text=self._text("more"), command=self._show_more)
         self.fold_button = ttk.Button(
-            self.controls, text=self._text("fold_unavailable"),
-            command=self._toggle_fold, state="disabled",
+            self.controls, text=self._text("fold_short_open"),
+            command=self._toggle_fold, state="disabled", style="Phone.TButton",
         )
         self.fold_button.grid(row=3, column=0, padx=2, pady=1)
+        self._fold_is_open = False
+        self._bind_text_tooltip(self.fold_button, lambda: self._text(
+            "fold_access_close" if self._fold_is_open else "fold_access_open"))
+        self._bind_text_tooltip(self.settings_button, lambda: self._text("menu_access"))
         self.persistent_state_var = tk.BooleanVar(master=self.root, value=self.persistent_state_enabled)
         self.virtual_network_var = tk.BooleanVar(
             master=self.root, value=self.virtual_network_enabled)
@@ -552,9 +556,11 @@ class LiveWindow(Window):
         if supported:
             opened = (transport.board_status_snapshot["level"]
                       == transport.config.board_status_input.default)
-            self.fold_button.configure(text=self._text("fold_open" if opened else "fold_closed"))
+            self._fold_is_open = opened
+            self.fold_button.configure(text=self._text("fold_short_close" if opened else "fold_short_open"))
         else:
-            self.fold_button.configure(text=self._text("fold_unavailable"))
+            self._fold_is_open = False
+            self.fold_button.configure(text=self._text("fold_short_open"))
         width, height, _frame = emulator.display_snapshot()
         self.device_details.set(
             f"QEMU TCG · {emulator.config.chipset} · {width}×{height}"

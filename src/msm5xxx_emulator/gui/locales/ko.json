@@ -4,7 +4,7 @@
   "detecting": "자동 탐지 중",
   "unknown_model": "모델 미확인",
   "settings": "설정",
-  "more": "메뉴",
+  "more": "•••",
   "done_editing": "편집 완료",
   "virtual_network_menu": "가상 통신망",
   "start": "부팅",
@@ -22,7 +22,7 @@
   "display_right": "오른쪽",
   "persistent_state": "기기 상태 저장",
   "reboot": "재부팅",
-  "capture": "스크린샷 저장",
+  "capture": "캡처",
   "virtual_network": "가상 통신망 (통화 미지원)",
   "virtual_network_active": "가상 통신망",
   "virtual_network_unavailable": "가상 통신망 미지원",
@@ -581,5 +581,10 @@
   "library_path": "경로",
   "library_last": "마지막 부팅",
   "library_model": "모델",
-  "library_chipset": "칩셋"
+  "library_chipset": "칩셋",
+  "fold_short_open": "열기",
+  "fold_short_close": "닫기",
+  "fold_access_open": "폴더 열기",
+  "fold_access_close": "폴더 닫기",
+  "menu_access": "메뉴"
 }

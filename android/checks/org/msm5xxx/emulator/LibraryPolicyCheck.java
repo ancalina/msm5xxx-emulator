@@ -23,6 +23,15 @@ public final class LibraryPolicyCheck {
         if (!LibraryPolicy.sameEntry("a", null, "a", null)) throw new AssertionError();
         String escaped = LibraryPolicy.asciiJson("{\"name\":\"\uD83D\uDCF1\"}");
         if (!escaped.equals("{\"name\":\"\\ud83d\\udcf1\"}")) throw new AssertionError();
+        File existing = new File(root, "old.bin");
+        Files.write(existing.toPath(), new byte[]{1});
+        File hidden = new File(root, ".hidden");
+        Files.write(hidden.toPath(), new byte[]{1});
+        File subdirectory = new File(root, "nested");
+        subdirectory.mkdir();
+        if (!LibraryPolicy.migrationFiles(new File[]{root, null}).equals(java.util.Collections.singletonList(existing)))
+            throw new AssertionError("migration should only include readable direct files");
+        existing.delete(); hidden.delete(); subdirectory.delete();
         root.delete();
     }
 }

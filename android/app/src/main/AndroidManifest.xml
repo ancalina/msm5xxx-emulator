@@ -11,10 +11,14 @@
         android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
-            android:exported="true"
+            android:exported="false"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
+            android:screenOrientation="portrait" />
+        <activity
+            android:name=".LibraryActivity"
+            android:exported="true"
             android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

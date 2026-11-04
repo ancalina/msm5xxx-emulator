@@ -388,11 +388,10 @@ struct FirmwareLibraryView: View {
     @State private var folderPicker = false
     @State private var filePicker = false
     @State private var infoEntry: LibraryEntry?
-    @State private var confirmEntry: LibraryEntry?
 
     private func select(_ entry: LibraryEntry) {
         guard entry.available && !engine.starting else { return }
-        if engine.running { confirmEntry = entry } else { boot(entry) }
+        boot(entry)
     }
 
     private func lastBoot(_ entry: LibraryEntry) -> String {
@@ -401,7 +400,16 @@ struct FirmwareLibraryView: View {
     }
 
     var body: some View {
-        NavigationView {
+        Group {
+            if #available(iOS 16.0, *) {
+                NavigationStack { libraryContent }
+            } else {
+                NavigationView { libraryContent }
+            }
+        }
+    }
+
+    private var libraryContent: some View {
             VStack {
                 if store.scanning { ProgressView(text("Library loading")) }
                 if store.entries.isEmpty && !store.scanning { Text(text("Library empty")) }
@@ -461,13 +469,6 @@ struct FirmwareLibraryView: View {
                                            entry.chipset ?? "—", entry.sha256 ?? "—", store.sourceDescription(entry))),
                       dismissButton: .default(Text(text("Done"))))
             }
-            .confirmationDialog(text("Confirm firmware"), isPresented: Binding(
-                get: { confirmEntry != nil }, set: { if !$0 { confirmEntry = nil } }), titleVisibility: .visible) {
-                    if let entry = confirmEntry {
-                        Button(text("Choose firmware…")) { confirmEntry = nil; boot(entry) }
-                    }
-                    Button(text("Cancel"), role: .cancel) { confirmEntry = nil }
-                }
-        }
+
     }
 }

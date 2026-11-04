@@ -58,7 +58,7 @@ class MoreMenuTest(unittest.TestCase):
         with patch.object(tk.Menu, 'tk_popup') as popup:
             self.view._show_more()
         popup.assert_not_called()
-        self.assertEqual(self.view.settings_button.cget('text'), 'Menu')
+        self.assertEqual(self.view.settings_button.cget('text'), '•••')
         self.assertEqual(self.view._text('key_prompt'), 'Key value for this button (blank = default)')
 
     def test_edit_mode_opens_short_popup_without_guest_press(self):

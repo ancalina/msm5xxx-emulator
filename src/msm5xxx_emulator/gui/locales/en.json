@@ -4,7 +4,7 @@
   "detecting": "Detecting automatically",
   "unknown_model": "Unknown model",
   "settings": "Settings",
-  "more": "Menu",
+  "more": "•••",
   "done_editing": "Done",
   "virtual_network_menu": "Virtual network",
   "start": "Boot",
@@ -22,7 +22,7 @@
   "display_right": "Right",
   "persistent_state": "Persistent device state",
   "reboot": "Reboot",
-  "capture": "Save screenshot",
+  "capture": "Capture",
   "virtual_network": "Virtual network (calls unavailable)",
   "virtual_network_active": "Virtual network",
   "virtual_network_unavailable": "Virtual network unavailable",
@@ -581,5 +581,10 @@
   "library_path": "Path",
   "library_last": "Last booted",
   "library_model": "Model",
-  "library_chipset": "Chipset"
+  "library_chipset": "Chipset",
+  "fold_short_open": "Open",
+  "fold_short_close": "Close",
+  "fold_access_open": "Open fold",
+  "fold_access_close": "Close fold",
+  "menu_access": "Menu"
 }

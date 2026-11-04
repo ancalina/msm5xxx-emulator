@@ -68,8 +68,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class MainActivity extends Activity {
-    private static final int PICK_FIRMWARE = 1;
-    private static final int PICK_LIBRARY_FOLDER = 2;
     private static final String PREFS = "launcher";
     private static final String KEY_URI = "uri";
     private static final String KEY_NAME = "name";
@@ -242,27 +240,7 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         displayManager = getSystemService(DisplayManager.class);
         setContentView(buildContent());
-        libraryScreen = new FirmwareLibraryScreen(this, new FirmwareLibraryScreen.Listener() {
-            @Override public void chooseFolder() {
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                try { startActivityForResult(intent, PICK_LIBRARY_FOLDER); }
-                catch (ActivityNotFoundException error) { showError(getString(R.string.error_no_picker)); }
-            }
-            @Override public void importFile() { chooseFirmware(); }
-            @Override public void boot(Uri uri, String name, long size) {
-                Runnable boot = () -> {
-                    libraryScreen.ensureEntry(uri, name, size);
-                    libraryScreen.dismiss();
-                    preparePrivateCopy(new Selection(uri, name, size));
-                };
-                if (session != null || sessionStarting) {
-                    new AlertDialog.Builder(MainActivity.this).setMessage(R.string.confirm_firmware)
-                            .setNegativeButton(R.string.cancel, null)
-                            .setPositiveButton(android.R.string.ok, (dialog, which) -> boot.run()).show();
-                } else boot.run();
-            }
-        });
+        libraryScreen = new FirmwareLibraryScreen(this, null);
         File external = getExternalFilesDir(null);
         if (external != null && new File(external, "autorun").isFile()) {
             autorunDirectory = external;
@@ -274,9 +252,30 @@ public final class MainActivity extends Activity {
         }
         refreshSelection();
         probeBackend();
-        if (autorunDirectory == null) {
-            frameView.post(() -> libraryScreen.show());
+        if (autorunDirectory == null && getIntent().getData() != null) {
+            Intent intent = getIntent();
+            preparePrivateCopy(new Selection(intent.getData(), intent.getStringExtra("name"),
+                    intent.getLongExtra("size", -1)));
         }
+    }
+
+    private void returnToLibrary() {
+        Runnable navigate = () -> {
+            Intent intent = new Intent(this, LibraryActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra("returning", true);
+            startActivity(intent);
+            finish();
+        };
+        if (session != null || sessionStarting) {
+            stopSession(false, navigate);
+        } else navigate.run();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (session == null && !sessionStarting) returnToLibrary();
+        else super.onBackPressed();
     }
 
     @Override
@@ -389,8 +388,8 @@ public final class MainActivity extends Activity {
         foldButton.setPadding(0, 0, 0, 0);
         foldButton.setBackground(handsetButtonBackground());
         foldButton.setOnClickListener(view -> toggleFold());
-        foldButton.setEnabled(false);
-        foldButton.setAlpha(0.72f);
+        foldButton.setEnabled(true);
+        foldButton.setAlpha(1f);
         side.addView(foldButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
@@ -713,81 +712,6 @@ public final class MainActivity extends Activity {
         }, "qemu-probe").start();
     }
 
-    @SuppressWarnings("deprecation")
-    private void chooseFirmware() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT)
-                .addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("*/*")
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        try {
-            startActivityForResult(intent, PICK_FIRMWARE);
-        } catch (ActivityNotFoundException error) {
-            showError(getString(R.string.error_no_picker));
-        }
-    }
-
-    @Override
-    @SuppressWarnings("deprecation")
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if ((requestCode != PICK_FIRMWARE && requestCode != PICK_LIBRARY_FOLDER) || resultCode != RESULT_OK
-                || data == null || data.getData() == null) {
-            return;
-        }
-        Uri uri = data.getData();
-        try {
-            int grantFlags = data.getFlags()
-                    & (Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            getContentResolver().takePersistableUriPermission(uri, grantFlags);
-        } catch (SecurityException ignored) {
-            // The private copy remains usable when a provider declines persistence.
-        }
-        if (requestCode == PICK_LIBRARY_FOLDER) {
-            libraryScreen.addFolder(uri);
-            libraryScreen.show();
-            return;
-        }
-        try {
-            Selection selection = inspect(uri);
-            libraryScreen.importFile(uri, selection.name);
-            libraryScreen.show();
-        } catch (IOException | SecurityException error) {
-            showError(getString(R.string.error_unreadable_document));
-        }
-    }
-
-    private Selection inspect(Uri uri) throws IOException {
-        if (!"content".equals(uri.getScheme())
-                || DocumentsContract.Document.MIME_TYPE_DIR.equals(
-                getContentResolver().getType(uri))) {
-            throw new IOException("unsupported document");
-        }
-        String name = null;
-        long size = -1;
-        try (Cursor cursor = getContentResolver().query(uri,
-                new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE},
-                null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                int sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (nameColumn >= 0 && !cursor.isNull(nameColumn)) {
-                    name = cursor.getString(nameColumn);
-                }
-                if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
-                    size = cursor.getLong(sizeColumn);
-                }
-            }
-        }
-        try (InputStream ignored = getContentResolver().openInputStream(uri)) {
-            if (ignored == null) {
-                throw new IOException("document cannot be opened");
-            }
-        }
-        return new Selection(uri, SelectionLabels.displayName(this, name), size);
-    }
-
     private void preparePrivateCopy(Selection selection) {
         if (session != null || sessionStarting) {
             stopSession(true);
@@ -1051,7 +975,7 @@ public final class MainActivity extends Activity {
         int generation = ++sessionGeneration;
         sessionStarting = true;
         latestStatus = null;
-        if (foldButton != null) { foldButton.setEnabled(false); foldButton.setAlpha(0.72f); }
+        if (foldButton != null) { foldButton.setEnabled(true); foldButton.setAlpha(1f); }
         secondaryHidden = false;
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
@@ -1264,8 +1188,8 @@ public final class MainActivity extends Activity {
         boolean secondaryAvailabilityChanged = latestStatus == null
                 || latestStatus.secondaryAvailable != status.secondaryAvailable;
         latestStatus = status;
-        foldButton.setEnabled(status.foldSupported);
-        foldButton.setAlpha(status.foldSupported ? 1f : 0.72f);
+        foldButton.setEnabled(true);
+        foldButton.setAlpha(1f);
         foldButton.setText(status.foldOpen ? R.string.fold_close : R.string.fold_open);
         secondaryPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
         if (presentationPreviewNotice != null) {
@@ -1586,6 +1510,10 @@ public final class MainActivity extends Activity {
     }
 
     private void stopSession(boolean visible) {
+        stopSession(visible, null);
+    }
+
+    private void stopSession(boolean visible, Runnable afterStop) {
         int generation;
         BackendBridge.Session current;
         synchronized (sessionLifecycleLock) {
@@ -1605,7 +1533,7 @@ public final class MainActivity extends Activity {
             staleFrame.recycle();
         }
         latestStatus = null;
-        if (foldButton != null) { foldButton.setEnabled(false); foldButton.setAlpha(0.72f); }
+        if (foldButton != null) { foldButton.setEnabled(true); foldButton.setAlpha(1f); }
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
         secondaryFrameView.clear();
@@ -1616,6 +1544,7 @@ public final class MainActivity extends Activity {
                     ? "" : getString(R.string.stopping_session));
         }
         if (current == null) {
+            if (afterStop != null) afterStop.run();
             if (visible) {
                 refreshSelection();
             }
@@ -1631,6 +1560,7 @@ public final class MainActivity extends Activity {
                 clean = false;
             }
             boolean stoppedCleanly = clean;
+            if (afterStop != null) handler.post(afterStop);
             if (visible) {
                 handler.post(() -> {
                     if (generation == sessionGeneration && session == null) {
@@ -1770,7 +1700,13 @@ public final class MainActivity extends Activity {
                 case 102: startSession(); return true;
                 case 103: stopSession(true); return true;
                 case 104: stopSession(false); startSession(); return true;
-                case 105: libraryScreen.show(); return true;
+                case 105:
+                    if (session != null || sessionStarting) {
+                        new AlertDialog.Builder(this).setMessage(R.string.confirm_firmware)
+                                .setNegativeButton(R.string.cancel, null)
+                                .setPositiveButton(android.R.string.ok, (dialog, which) -> returnToLibrary()).show();
+                    } else returnToLibrary();
+                    return true;
                 case 106: saveCapture(); return true;
                 case 107: setInputMappingEditing(true); return true;
                 case 109:
@@ -1848,7 +1784,8 @@ public final class MainActivity extends Activity {
 
     private void toggleFold() {
         BackendBridge.Session target = session;
-        boolean opened = latestStatus != null && !latestStatus.foldOpen;
+        if (target == null || latestStatus == null || !latestStatus.foldSupported) return;
+        boolean opened = !latestStatus.foldOpen;
         controlExecutor.execute(() -> {
             try {
                 if (target != null) target.setFold(opened);

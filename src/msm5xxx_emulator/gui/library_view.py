@@ -13,6 +13,14 @@ from .firmware_library import FirmwareLibrary
 from .locale import UI_TEXT
 
 
+def format_size(size: int) -> str:
+    value = max(0, size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{value} B"
+        value /= 1024
+
+
 class LibraryDialog:
     def __init__(self, root: tk.Tk, library: FirmwareLibrary, language: str):
         self.root, self.library, self.text = root, library, UI_TEXT[language]
@@ -22,16 +30,22 @@ class LibraryDialog:
         self.closed = False
         self.scanning = False
         self.window = tk.Toplevel(root)
-        self.window.title(self.text['library_title'])
+        self.window.title(self.text['library_title'] + ' — MSM5XXX Emulator')
         self.window.geometry('680x420')
         self.window.protocol('WM_DELETE_WINDOW', self.close)
         body = ttk.Frame(self.window, padding=10)
         body.pack(fill='both', expand=True)
         self.notice = ttk.Label(body, text=self.text['library_loading'])
         self.notice.pack(anchor='w')
-        self.list = ttk.Treeview(body, columns=('details',), show='tree headings', selectmode='browse')
+        self.list = ttk.Treeview(body, columns=('chipset', 'size', 'last'), show='tree headings', selectmode='browse')
         self.list.heading('#0', text=self.text['library_model'])
-        self.list.heading('details', text=self.text['library_chipset'])
+        self.list.heading('chipset', text=self.text['library_chipset'])
+        self.list.heading('size', text=self.text['library_size'])
+        self.list.heading('last', text=self.text['library_last'])
+        self.list.column('#0', width=210)
+        self.list.column('chipset', width=120)
+        self.list.column('size', width=90)
+        self.list.column('last', width=150)
         self.list.pack(fill='both', expand=True)
         self.images: list[ImageTk.PhotoImage] = []
         self.list.bind('<Double-Button-1>', lambda event: self.boot())
@@ -42,8 +56,7 @@ class LibraryDialog:
         self.buttons = []
         for label, callback in (('library_add_folder', self.add_folder),
                                 ('library_import', self.add_file),
-                                ('library_refresh', self.refresh),
-                                ('library_boot', self.boot)):
+                                ('library_refresh', self.refresh)):
             button = ttk.Button(buttons, text=self.text[label], command=callback)
             button.pack(side='left', padx=2)
             self.buttons.append(button)
@@ -94,8 +107,8 @@ class LibraryDialog:
                         thumbnail = self.images[-1]
                     except (OSError, ValueError):
                         pass
-                details = f"{item.get('chipset') or '—'} · {item.get('size', 0):,} B · {timestamp}{status}"
-                self.list.insert('', tk.END, iid=str(index), text=item['name'], image=thumbnail, values=(details,))
+                self.list.insert('', tk.END, iid=str(index), text=item['name'] + status, image=thumbnail,
+                                 values=(item.get('chipset') or '—', format_size(item.get('size', 0)), timestamp))
             self.notice.configure(text=error or ('' if self.rows else self.text['library_empty']))
         self.window.after(100, self.poll)
 

@@ -2,7 +2,6 @@ package org.msm5xxx.emulator;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.Dialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -16,6 +15,7 @@ import android.system.Os;
 import android.system.OsConstants;
 import android.provider.DocumentsContract;
 import android.view.View;
+import android.view.Gravity;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ArrayAdapter;
@@ -59,11 +59,19 @@ final class FirmwareLibraryScreen {
     private final Object stateLock = new Object();
     private final ExecutorService scanner = Executors.newSingleThreadExecutor();
     private final ArrayList<JSONObject> visible = new ArrayList<>();
-    private Dialog dialog;
+    private boolean showing;
     private ListView list;
     private TextView empty;
+    private LinearLayout emptyArea;
     private ArrayAdapter<JSONObject> adapter;
     private final AtomicLong revision = new AtomicLong();
+    private String previousCopy;
+    private String previousName;
+
+    void setPreviousCopy(String path, String name) {
+        previousCopy = path;
+        previousName = name;
+    }
 
     FirmwareLibraryScreen(Activity activity, Listener listener) {
         this.activity = activity;
@@ -137,10 +145,8 @@ final class FirmwareLibraryScreen {
     }
 
     void show() {
-        if (dialog != null && dialog.isShowing()) { refresh(); return; }
-        dialog = new Dialog(activity);
-        dialog.setOnDismissListener(ignored -> revision.incrementAndGet());
-        dialog.setTitle(R.string.library_title);
+        if (showing) { refresh(); return; }
+        showing = true;
         LinearLayout body = new LinearLayout(activity);
         body.setOrientation(LinearLayout.VERTICAL);
         int pad = Math.round(12 * activity.getResources().getDisplayMetrics().density);
@@ -151,7 +157,7 @@ final class FirmwareLibraryScreen {
         body.addView(title);
         empty = new TextView(activity);
         empty.setText(R.string.library_empty);
-        body.addView(empty);
+        empty.setGravity(Gravity.CENTER);
         list = new ListView(activity);
         adapter = new ArrayAdapter<JSONObject>(activity, android.R.layout.simple_list_item_1, visible) {
             @Override public View getView(int position, View convert, ViewGroup parent) {
@@ -170,7 +176,8 @@ final class FirmwareLibraryScreen {
                 String booted = last == 0 ? activity.getString(R.string.library_never)
                         : DateFormat.getDateTimeInstance().format(new Date(last));
                 String spoken = activity.getString(R.string.library_row, name, chipset, booted);
-                label.setText(spoken + "\n" + SelectionLabels.size(activity, entry.optLong("size", -1))
+                label.setText(name + "\n" + chipset + " · " + (entry.optLong("size", -1) < 0 ? activity.getString(R.string.size_unavailable) :
+                        android.text.format.Formatter.formatShortFileSize(activity, entry.optLong("size"))) + "\n" + booted
                         + (entry.optBoolean("available", false) ? "" : " · " + activity.getString(R.string.library_unavailable))
                         + (entry.optBoolean("preview_deferred", false) ? " · " + activity.getString(R.string.library_preview_after_boot) : ""));
                 label.setTextSize(16);
@@ -224,7 +231,23 @@ final class FirmwareLibraryScreen {
                     (which, item) -> { if (item == 0) info(entry); else remove(entry); }).show();
             return true;
         });
-        body.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        android.widget.FrameLayout listArea = new android.widget.FrameLayout(activity);
+        listArea.addView(list, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        emptyArea = new LinearLayout(activity);
+        emptyArea.setOrientation(LinearLayout.VERTICAL);
+        emptyArea.setGravity(Gravity.CENTER);
+        emptyArea.addView(empty);
+        for (int id : new int[]{R.string.library_add_folder, R.string.library_import}) {
+            Button action = new Button(activity);
+            action.setText(id);
+            action.setOnClickListener(v -> {
+                if (id == R.string.library_add_folder) listener.chooseFolder();
+                else listener.importFile();
+            });
+            emptyArea.addView(action);
+        }
+        listArea.addView(emptyArea, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        body.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout buttons = new LinearLayout(activity);
         for (int id : new int[]{R.string.library_add_folder, R.string.library_import, R.string.library_refresh}) {
             Button button = new Button(activity);
@@ -236,14 +259,20 @@ final class FirmwareLibraryScreen {
             });
             buttons.addView(button, new LinearLayout.LayoutParams(0, -2, 1));
         }
-        body.addView(buttons);
-        dialog.setContentView(body);
-        dialog.show();
-        if (dialog.getWindow() != null) dialog.getWindow().setLayout(-1, -1);
+        body.addView(buttons, 1);
+        activity.setContentView(body);
         refresh();
     }
 
-    void dismiss() { revision.incrementAndGet(); if (dialog != null) dialog.dismiss(); }
+    boolean isShowing() { return showing; }
+
+    void dismiss() {
+        revision.incrementAndGet();
+        if (showing) {
+            showing = false;
+
+        }
+    }
 
     void close() { dismiss(); scanner.shutdown(); }
 
@@ -253,7 +282,7 @@ final class FirmwareLibraryScreen {
         String name = entry.optString("name");
         long size = entry.optLong("size", -1);
         boolean imported = entry.optBoolean("imported");
-        Dialog selectedDialog = dialog;
+        long selectedRevision = revision.get();
         new Thread(() -> {
             boolean readable;
             Uri uri = Uri.parse(value);
@@ -269,7 +298,7 @@ final class FirmwareLibraryScreen {
             } catch (IOException | RuntimeException error) { readable = false; }
             boolean available = readable;
             activity.runOnUiThread(() -> {
-                if (dialog != selectedDialog || dialog == null || !dialog.isShowing()) return;
+                if (!showing || revision.get() != selectedRevision) return;
                 boolean stillPresent = false;
                 for (JSONObject row : visible) if (value.equals(row.optString("uri"))) { stillPresent = true; break; }
                 if (!stillPresent) return;
@@ -311,8 +340,7 @@ final class FirmwareLibraryScreen {
                 try {
                     File root = new File(activity.getFilesDir(), "firmware-library").getCanonicalFile();
                     File file = new File(Uri.parse(candidate).getPath()).getCanonicalFile();
-                    if (!LibraryPolicy.canDelete(root, file, true)) return;
-                    if (file.exists() && !file.delete()) return;
+                    if (LibraryPolicy.canDelete(root, file, true) && file.exists() && !file.delete()) return;
                 } catch (IOException | NullPointerException error) { return; }
             }
             excluded.put(candidate);
@@ -431,13 +459,51 @@ final class FirmwareLibraryScreen {
         }
     }
 
-    private void refresh() {
-        if (dialog == null || !dialog.isShowing()) return;
+    void refresh() {
+        if (!showing) return;
         final long token = revision.incrementAndGet();
-        empty.setVisibility(View.VISIBLE);
+        emptyArea.setVisibility(View.VISIBLE);
         empty.setText(R.string.library_loading);
         scanner.execute(() -> {
             JSONArray entries = read("entries"), folders = read("folders"), excluded = read("excluded");
+            if (!preferences.getBoolean("private_migrated", false)) {
+                if (previousCopy != null && previousName != null) {
+                    File old = new File(previousCopy);
+                    File sessions = new File(activity.getNoBackupFilesDir(), "session");
+                    File target = new File(new File(activity.getFilesDir(), "firmware-library"), "migrated.bin");
+                    try {
+                        if (old.getCanonicalPath().startsWith(sessions.getCanonicalPath() + File.separator)
+                                && old.isFile() && old.canRead()
+                                && old.length() <= PythonRuntime.librarySizeLimit(activity, previousName)) {
+                            if (!target.getParentFile().isDirectory() && !target.getParentFile().mkdirs()) throw new IOException("directory");
+                            try (InputStream input = new FileInputStream(old); FileOutputStream output = new FileOutputStream(target)) {
+                                byte[] buffer = new byte[65536]; int count;
+                                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                            }
+                            entries.put(new JSONObject().put("uri", Uri.fromFile(target).toString())
+                                    .put("name", previousName).put("size", target.length())
+                                    .put("imported", true).put("available", true));
+                        }
+                    } catch (IOException | JSONException ignored) { target.delete(); }
+                }
+                File external = activity.getExternalFilesDir(null);
+                File[] roots = {new File(activity.getFilesDir(), "firmware"),
+                        external == null ? null : new File(external, "firmware")};
+                for (File file : LibraryPolicy.migrationFiles(roots)) {
+                    if (token != revision.get()) return;
+                    String uri = Uri.fromFile(file).toString();
+                    boolean exists = false;
+                    for (int n = 0; n < entries.length(); n++) {
+                        JSONObject old = entries.optJSONObject(n);
+                        if (old != null && uri.equals(old.optString("uri"))) { exists = true; break; }
+                    }
+                    if (!exists) try {
+                        if (file.length() <= PythonRuntime.librarySizeLimit(activity, file.getName()))
+                            entries.put(new JSONObject().put("uri", uri).put("name", file.getName())
+                                    .put("size", file.length()).put("imported", true).put("available", true));
+                    } catch (IOException | JSONException ignored) { }
+                }
+            }
             HashSet<String> seenUris = new HashSet<>(), excludedUris = new HashSet<>(), oversizedUris = new HashSet<>();
             for (int i = 0; i < excluded.length(); i++) excludedUris.add(excluded.optString(i));
             for (int i = 0; i < entries.length(); i++) {
@@ -494,7 +560,7 @@ final class FirmwareLibraryScreen {
                 } catch (JSONException ignored) { }
             }
             activity.runOnUiThread(() -> {
-                if (token != revision.get() || dialog == null || !dialog.isShowing()) return;
+                if (token != revision.get() || !showing) return;
                 visible.clear(); visible.addAll(pending); adapter.notifyDataSetChanged();
             });
             ArrayList<JSONObject> rows = new ArrayList<>();
@@ -537,13 +603,13 @@ final class FirmwareLibraryScreen {
                     && availableHashes.contains(row.optString("sha256", "")));
             synchronized (stateLock) {
                 if (token != revision.get()) return;
-                preferences.edit().putString("entries", entries.toString()).apply();
+                preferences.edit().putString("entries", entries.toString()).putBoolean("private_migrated", true).apply();
             }
             activity.runOnUiThread(() -> {
-                if (token != revision.get() || dialog == null || !dialog.isShowing()) return;
+                if (token != revision.get() || !showing) return;
                 visible.clear(); visible.addAll(rows); adapter.notifyDataSetChanged();
                 empty.setText(R.string.library_empty);
-                empty.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
+                emptyArea.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
             });
         });
     }

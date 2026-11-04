@@ -7,6 +7,19 @@ import java.io.IOException;
 final class LibraryPolicy {
     private LibraryPolicy() {}
 
+    static java.util.List<File> migrationFiles(File[] roots) {
+        java.util.List<File> result = new java.util.ArrayList<>();
+        for (File root : roots) {
+            File[] files = root == null ? null : root.listFiles();
+            if (files == null) continue;
+            java.util.Arrays.sort(files);
+            for (File file : files) {
+                if (!file.getName().startsWith(".") && file.isFile() && file.canRead()) result.add(file);
+            }
+        }
+        return result;
+    }
+
     static String asciiJson(String value) {
         StringBuilder result = new StringBuilder(value.length());
         final char[] hex = "0123456789abcdef".toCharArray();

@@ -27,6 +27,23 @@ def frame_repaint_needed(
 
 
 class DisplayViewMixin:
+    def _bind_text_tooltip(self, widget: tk.Widget, text) -> None:
+        def show(_event):
+            self._hide_metric_tooltip()
+            def display():
+                self._tooltip_after = None
+                window = tk.Toplevel(self.root)
+                window.overrideredirect(True)
+                tk.Label(window, text=text(), padx=6, pady=3, background="#fffbd6",
+                         foreground="#202020", relief="solid", borderwidth=1).pack()
+                window.geometry(f"+{widget.winfo_rootx()}+{widget.winfo_rooty() + widget.winfo_height()}")
+                self._tooltip_window = window
+            self._tooltip_after = self.root.after(350, display)
+        widget.bind("<Enter>", show, add="+")
+        widget.bind("<Leave>", lambda _event: self._hide_metric_tooltip(), add="+")
+        widget.bind("<FocusIn>", show, add="+")
+        widget.bind("<FocusOut>", lambda _event: self._hide_metric_tooltip(), add="+")
+
     def _bind_metric_tooltip(self, widget: tk.Widget, key: str) -> None:
         widget.bind("<Enter>", lambda _event: self._queue_metric_tooltip(widget, key))
         widget.bind("<Leave>", lambda _event: self._hide_metric_tooltip())

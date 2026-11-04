@@ -5,7 +5,7 @@ import CryptoKit
 struct ContentView: View {
     @StateObject private var engine = QEMUEngine()
     @StateObject private var library = FirmwareLibraryStore()
-    @State private var showingLibrary = false
+    @State private var showingLibrary = !ContentView.bypassLibraryOnLaunch()
     @State private var runningLibraryID = ""
     @AppStorage("active_library_id") private var activeLibraryID = ""
     @State private var firmware: URL?
@@ -42,6 +42,12 @@ struct ContentView: View {
         [("*", 20), ("0", 21), ("#", 22)],
     ]
 
+    private static func bypassLibraryOnLaunch() -> Bool {
+        if UserDefaults.standard.bool(forKey: "pending_boot") { return true }
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return false }
+        return FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path)
+    }
+
     private var hasProfile: Bool {
         !firmwareIdentity.isEmpty && engine.identity == firmwareIdentity
     }
@@ -57,6 +63,49 @@ struct ContentView: View {
     private func detailLabel(_ key: String) -> String { text("detail." + key) }
 
     var body: some View {
+        Group {
+            if showingLibrary {
+                FirmwareLibraryView(store: library, engine: engine, text: text,
+                    canClose: engine.running || engine.used || firmware != nil,
+                    close: { showingLibrary = false },
+                    boot: { entry in
+                        library.ensureEntry(entry)
+                        library.pauseScanning()
+                        let found = library.withSource(entry) { url in
+                            if importFirmware(url) {
+                                activeLibraryID = entry.id
+                                showingLibrary = false
+                            } else { library.error = "Library error" }
+                        }
+                        if !found { library.error = "Library unavailable" }
+                    })
+            } else {
+                emulatorView
+            }
+        }
+        .onAppear(perform: pickStoredFirmware)
+        .onChange(of: engine.running) { running in
+            if running {
+                runningLibraryID = activeLibraryID
+                library.recordBoot(runningLibraryID.isEmpty ? nil : runningLibraryID, sha: engine.identity)
+            } else {
+                library.recordFrame(runningLibraryID.isEmpty ? nil : runningLibraryID, image: engine.frame)
+                runningLibraryID = ""
+            }
+            UIAccessibility.post(notification: .announcement, argument: text(running ? "Booted" : "Powered off"))
+        }
+        .onChange(of: engine.status) { value in
+            UIAccessibility.post(notification: .announcement, argument: text(value))
+        }
+        .onChange(of: message) { value in
+            if !value.isEmpty { UIAccessibility.post(notification: .announcement, argument: value) }
+        }
+        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
+            engine.refresh()
+        }
+    }
+
+    private var emulatorView: some View {
         VStack(spacing: 2) {
             if secondaryAbove { secondaryDisplay }
             ZStack {
@@ -79,7 +128,6 @@ struct ContentView: View {
                         key(text("Vol+"), 10).frame(height: 44)
                         key(text("Vol-"), 8).frame(height: 44)
                         Button(text(engine.foldOpen ? "Close fold" : "Open fold")) { engine.toggleFold() }
-                            .disabled(!engine.running || !engine.foldSupported)
                             .buttonStyle(HandsetKeyStyle())
                             .frame(height: 44)
                         VStack(alignment: .leading, spacing: 2) {
@@ -155,26 +203,6 @@ struct ContentView: View {
         .padding(2)
         .environment(\.locale, Locale(identifier: uiLanguage == "auto" ? Locale.current.identifier : uiLanguage))
         .background(Color(white: 0.07).ignoresSafeArea())
-        .onAppear(perform: pickStoredFirmware)
-        .onChange(of: engine.running) { running in
-            if running {
-                runningLibraryID = activeLibraryID
-                library.recordBoot(runningLibraryID.isEmpty ? nil : runningLibraryID, sha: engine.identity)
-            } else {
-                library.recordFrame(runningLibraryID.isEmpty ? nil : runningLibraryID, image: engine.frame)
-                runningLibraryID = ""
-            }
-            UIAccessibility.post(notification: .announcement, argument: text(running ? "Booted" : "Powered off"))
-        }
-        .onChange(of: engine.status) { value in
-            UIAccessibility.post(notification: .announcement, argument: text(value))
-        }
-        .onChange(of: message) { value in
-            if !value.isEmpty { UIAccessibility.post(notification: .announcement, argument: value) }
-        }
-        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
-            engine.refresh()
-        }
         // JIT can be granted while running (TrollStore "Open with JIT", Dopamine); poll cheaply.
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
             // Headless test runs (autorun marker) leave the latest LCD frame as frame.png.
@@ -269,24 +297,7 @@ struct ContentView: View {
                 .toolbar { Button(text("Done")) { showingSettings = false } }
             }
         }
-        .fullScreenCover(isPresented: $showingLibrary) {
-            FirmwareLibraryView(store: library, engine: engine, text: text,
-                canClose: engine.running || engine.used || firmware != nil,
-                close: { showingLibrary = false },
-                boot: { entry in
-                    library.ensureEntry(entry)
-                    library.pauseScanning()
-                    let found = library.withSource(entry) { url in
-                        if importFirmware(url) {
-                            activeLibraryID = entry.id
-                            showingLibrary = false
-                        } else {
-                            library.error = "Library error"
-                        }
-                    }
-                    if !found { library.error = "Library unavailable" }
-                })
-        }
+
 
     }
 
@@ -385,6 +396,7 @@ struct ContentView: View {
             showingLibrary = true
             return
         }
+        showingLibrary = false
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: support.appendingPathComponent("firmware").path),
               let name = names.filter({ !$0.hasPrefix(".") }).sorted().first else { return }
         firmware = support.appendingPathComponent("firmware").appendingPathComponent(name)

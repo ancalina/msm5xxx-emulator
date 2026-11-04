@@ -85,6 +85,11 @@ class FirmwareLibraryTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 source_hash(path, 3)
 
+    def test_size_formatting(self):
+        from msm5xxx_emulator.gui.library_view import format_size
+        self.assertEqual(format_size(4259824), "4.1 MB")
+        self.assertEqual(format_size(42), "42 B")
+
     def test_fallback_name(self):
         self.assertEqual(display_name(None, 'filename.bin'), 'filename.bin')
         self.assertEqual(display_name('  detected  ', 'filename.bin'), 'detected')
@@ -103,6 +108,9 @@ class LibraryViewTest(unittest.TestCase):
         dialog = LibraryDialog(root, library, 'en')
         dialog.window.update()
         dialog.poll()
+        self.assertEqual(dialog.window.title(), 'Firmware library — MSM5XXX Emulator')
+        self.assertEqual(dialog.list['columns'], ('chipset', 'size', 'last'))
+        self.assertEqual(len(dialog.buttons), 3)
         self.assertEqual(len(dialog.list.get_children()), 1)
         dialog.list.selection_set('0')
         dialog.boot()
@@ -176,3 +184,29 @@ class MobileLibraryBridgeTest(unittest.TestCase):
                 ios = importlib.util.module_from_spec(ios_spec)
                 ios_spec.loader.exec_module(ios)
                 self.assertEqual(json.loads(ios.library_describe(request)), first)
+
+@unittest.skipUnless(__import__('os').environ.get('DISPLAY'), 'Tk display unavailable')
+class LibraryControlsTest(unittest.TestCase):
+    def test_key_geometry_and_tool_labels(self):
+        import tkinter as tk
+        from msm5xxx_emulator.qemu.live_display import LiveWindow
+        root = tk.Tk()
+        self.addCleanup(root.destroy)
+        with patch.object(LiveWindow, '_restart'), \
+             patch.object(LiveWindow, '_load_persistent_state', return_value=True), \
+             patch.object(LiveWindow, '_load_virtual_network', return_value=False), \
+             patch.object(LiveWindow, '_load_network_start_time', return_value=''), \
+             patch.object(LiveWindow, '_load_config', return_value={}), \
+             patch.object(LiveWindow, '_load_ui_language', return_value='en'):
+            view = LiveWindow(root, Path('/tmp/unused'), Path('/tmp/unused'))
+        root.update_idletasks()
+        volume = view.key_buttons['볼륨-']
+        self.assertEqual(view.fold_button.cget('style'), volume.cget('style'))
+        self.assertEqual(view.fold_button.winfo_width(), volume.winfo_width())
+        self.assertEqual(view.fold_button.winfo_height(), volume.winfo_height())
+        self.assertEqual(view.fold_button.grid_info()['row'], volume.grid_info()['row'] + 1)
+        self.assertEqual(view.fold_button.cget('text'), 'Open')
+        self.assertEqual(view.settings_button.cget('text'), '•••')
+        self.assertEqual(view.capture_button.cget('text'), 'Capture')
+        for timer in root.tk.splitlist(root.tk.call('after', 'info')):
+            root.after_cancel(timer)
