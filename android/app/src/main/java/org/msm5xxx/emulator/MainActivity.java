@@ -1732,8 +1732,6 @@ public final class MainActivity extends Activity {
         time.add(1, 110, 1, R.string.set_time).setCheckable(true)
                 .setChecked(!prefs.getBoolean(KEY_NETWORK_HOST_TIME, true));
         time.setGroupCheckable(1, true, true);
-        menu.add(0, 112, 8, R.string.refresh_network_time)
-                .setEnabled(session != null && !sessionStarting && prefs.getBoolean(KEY_VIRTUAL_NETWORK, false));
         menu.add(0, 111, 9, R.string.settings_menu);
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {

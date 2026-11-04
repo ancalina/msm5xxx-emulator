@@ -204,8 +204,6 @@ struct ContentView: View {
                     engine.powerOff { success in if success { showingLibrary = true } }
                 }.disabled(!engine.running)
                 Button(text("Reboot emulator")) { engine.reboot() }.disabled(!engine.running)
-                Button(text("Refresh network time")) { engine.refreshNetworkTime() }
-                    .disabled(!engine.running || !virtualNetwork)
                 Button(text("Choose firmware…")) { showingLibrary = true }
                 Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
                 Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)

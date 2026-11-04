@@ -143,8 +143,6 @@ class LiveWindow(Window):
         menu.add_command(label=self._text("start"), command=self._restart, state="disabled" if running else "normal")
         menu.add_command(label=self._text("stop_emulator"), command=self._stop_transport, state="normal" if running else "disabled")
         menu.add_command(label=self._text("reboot_emulator"), command=self._restart, state="normal" if running else "disabled")
-        menu.add_command(label=self._text("refresh_network_time"), command=self._refresh_network_time,
-                         state="normal" if running and self._active_virtual_network else "disabled")
         menu.add_command(label=self._text("choose_firmware_menu"), command=self._choose_firmware_from_menu)
         menu.add_command(label=self._text("edit_input"), command=lambda: self._set_editing_input(True),
                          state="normal" if running else "disabled")

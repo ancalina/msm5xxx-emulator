@@ -44,24 +44,14 @@ class MoreMenuTest(unittest.TestCase):
             with patch.object(tk.Menu, 'tk_popup'):
                 self.view._show_more()
             menu = self.view._more_menu
-            self.assertEqual([menu.entrycget(i, 'label') for i in range(9)],
-                ['Virtual network', 'Boot', 'Power off', 'Reboot', 'Refresh network time',
+            self.assertEqual([menu.entrycget(i, 'label') for i in range(8)],
+                ['Virtual network', 'Boot', 'Power off', 'Reboot',
                  'Open firmware…', 'Edit key layout', 'Network time', 'Settings…'])
             self.assertEqual(menu.entrycget(1, 'state'), 'disabled' if running else 'normal')
             self.assertEqual(menu.entrycget(2, 'state'), 'normal' if running else 'disabled')
             self.assertEqual(menu.entrycget(3, 'state'), 'normal' if running else 'disabled')
-            self.assertEqual(menu.entrycget(4, 'state'), 'disabled')
-            sub = self.root.nametowidget(menu.entrycget(7, 'menu'))
+            sub = self.root.nametowidget(menu.entrycget(6, 'menu'))
             self.assertEqual([sub.entrycget(i, 'label') for i in range(2)], ['Use device clock', 'Set manually…'])
-
-    def test_refresh_enabled_only_for_running_network(self):
-        for running, network in ((False, False), (True, False), (True, True)):
-            self.view.transport = object() if running else None
-            self.view._active_virtual_network = network
-            with patch.object(tk.Menu, 'tk_popup'):
-                self.view._show_more()
-            self.assertEqual(self.view._more_menu.entrycget(4, 'state'),
-                             'normal' if running and network else 'disabled')
 
     def test_edit_mode_and_prompt(self):
         self.view._set_editing_input(True)
