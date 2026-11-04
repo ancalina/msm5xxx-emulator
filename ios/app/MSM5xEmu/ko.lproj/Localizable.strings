@@ -182,3 +182,7 @@
 "Error" = "오류";
 
 "Reopen the app to switch firmware" = "다른 펌웨어는 앱을 다시 열어야 합니다";
+"Network time" = "통신망 시간";
+"Device clock" = "기기 시계";
+"Set manually" = "직접 지정";
+"Start time" = "시작 시간";

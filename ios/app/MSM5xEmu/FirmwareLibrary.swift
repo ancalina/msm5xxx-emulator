@@ -428,10 +428,16 @@ struct FirmwareLibraryView: View {
                 }
                 Section(header: Text(text("Library session settings"))) {
                     Toggle(text("Virtual network"), isOn: $virtualNetwork)
-                    Toggle(text("Use device clock for network time"), isOn: $networkHostTime)
-                    Toggle(text("Network start time"), isOn: $networkStartTimeEnabled)
-                    if networkStartTimeEnabled {
-                        DatePicker(text("Network start time"), selection: Binding(
+                    // One choice: device clock or a manual start time; only relevant with the virtual network.
+                    Picker(text("Network time"), selection: Binding(
+                        get: { networkStartTimeEnabled },
+                        set: { manual in networkStartTimeEnabled = manual; networkHostTime = !manual })) {
+                        Text(text("Device clock")).tag(false)
+                        Text(text("Set manually")).tag(true)
+                    }
+                    .disabled(!virtualNetwork)
+                    if virtualNetwork && networkStartTimeEnabled {
+                        DatePicker(text("Start time"), selection: Binding(
                             get: { Date(timeIntervalSince1970: networkStartTime) },
                             set: { networkStartTime = $0.timeIntervalSince1970 }),
                             in: Date(timeIntervalSince1970: 315964800)...Date(timeIntervalSince1970: 5813520000),

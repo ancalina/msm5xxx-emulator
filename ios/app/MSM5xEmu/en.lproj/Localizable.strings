@@ -182,3 +182,7 @@
 "Error" = "Error";
 
 "Reopen the app to switch firmware" = "Reopen the app to switch firmware";
+"Network time" = "Network time";
+"Device clock" = "Device clock";
+"Set manually" = "Set manually";
+"Start time" = "Start time";
