@@ -174,13 +174,9 @@
 "Emulation stopped. Force-close and reopen the app to try again." = "에뮬레이션이 중지되었습니다. 앱을 완전히 종료하고 다시 열어 주세요.";
 "Stopped. Force-close and reopen the app to run again." = "중지되었습니다. 다시 실행하려면 앱을 완전히 종료하고 다시 열어 주세요.";
 "Force-close and reopen the app to start the selected firmware." = "선택한 펌웨어를 실행하려면 앱을 완전히 종료하고 다시 열어 주세요.";
-
 "Starting…" = "시작 중…";
-
 "Paused" = "일시정지";
-
 "Error" = "오류";
-
 "Reopen the app to switch firmware" = "다른 펌웨어는 앱을 다시 열어야 합니다";
 "Network time" = "통신망 시간";
 "Device clock" = "기기 시계";

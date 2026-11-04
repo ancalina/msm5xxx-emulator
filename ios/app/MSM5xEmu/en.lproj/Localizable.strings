@@ -174,13 +174,9 @@
 "Emulation stopped. Force-close and reopen the app to try again." = "Emulation stopped. Force-close and reopen the app to try again.";
 "Stopped. Force-close and reopen the app to run again." = "Stopped. Force-close and reopen the app to run again.";
 "Force-close and reopen the app to start the selected firmware." = "Force-close and reopen the app to start the selected firmware.";
-
 "Starting…" = "Starting…";
-
 "Paused" = "Paused";
-
 "Error" = "Error";
-
 "Reopen the app to switch firmware" = "Reopen the app to switch firmware";
 "Network time" = "Network time";
 "Device clock" = "Device clock";
