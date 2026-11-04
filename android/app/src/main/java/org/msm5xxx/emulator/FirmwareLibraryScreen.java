@@ -176,6 +176,7 @@ final class FirmwareLibraryScreen {
         body.setBackgroundColor(android.graphics.Color.rgb(18, 18, 18));
         LinearLayout titleBar = new LinearLayout(activity);
         titleBar.setGravity(Gravity.CENTER_VERTICAL);
+        titleBar.setPadding(Math.round(16 * activity.getResources().getDisplayMetrics().density), 0, 0, 0);
         TextView title = new TextView(activity);
         title.setText(R.string.library_title);
         title.setTextSize(20);
@@ -300,7 +301,7 @@ final class FirmwareLibraryScreen {
 
     private String size(long value) {
         return value < 0 ? activity.getString(R.string.size_unavailable)
-                : android.text.format.Formatter.formatShortFileSize(activity, value);
+                : String.format(java.util.Locale.US, "%.1f MiB", value / 1048576.0);
     }
     private String bootTime(long value) {
         return value == 0 ? activity.getString(R.string.library_never)
