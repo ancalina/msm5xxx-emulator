@@ -85,7 +85,7 @@ class DisplayViewMixin:
                 self._launch_update(value[0], value[1], bool(value[2]))
                 return
             elif kind == "error" and isinstance(value, (OSError, UpdateError)):
-                self.status.set(f"업데이트 실패: {value}")
+                self.status.set(f"{self._text('update_failed')}: {value}")
                 self.update_download_active = False
         latest: dict[str, object] = {}
         while True:
@@ -123,11 +123,11 @@ class DisplayViewMixin:
                 self.status.set(runtime_notice_text(latest, self.ui_language))
             if latest.get("fault"):
                 self.status.set(
-                    f"{'Stopped' if self.ui_language == 'en' else '중지'}: {latest['fault']}"
+                    f"{self._text('stopped')}: {latest['fault']}"
                 )
             if latest.get("host_backend_fault"):
                 self.status.set(
-                    f"{'Host backend stopped' if self.ui_language == 'en' else '호스트 backend 중지'}: "
+                    f"{self._text('backend_stopped')}: "
                     f"{latest['host_backend_fault']}"
                 )
         if (getattr(self, "_settings_requested", False)

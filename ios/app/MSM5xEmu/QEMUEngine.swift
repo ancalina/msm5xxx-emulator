@@ -66,11 +66,12 @@ final class QEMUEngine: ObservableObject {
         let name = QEMUEngine.jitAvailable ? "QEMU" : "QEMUTCI"
         guard let dir = Bundle.main.privateFrameworksPath,
               let handle = dlopen("\(dir)/\(name).framework/\(name)", RTLD_NOW) else {
-            status = "\(name).framework not loaded" + (dlerror().map { ": " + String(cString: $0) } ?? "")
+            NSLog("QEMU framework unavailable: %@", dlerror().map { String(cString: $0) } ?? "")
+            status = "QEMU unavailable"
             return
         }
         guard let symbol = dlsym(handle, "qemu_entry") else {
-            status = "qemu_entry missing in \(name)"
+            status = "QEMU entry unavailable"
             return
         }
         typealias ABIVersion = @convention(c) () -> Int32

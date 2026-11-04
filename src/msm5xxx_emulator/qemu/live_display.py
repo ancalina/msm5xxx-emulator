@@ -64,7 +64,7 @@ class LiveWindow(Window):
         self.editing_input_mapping = False
         self.settings_button.configure(text=self._text("more"), command=self._show_more)
         self.fold_button = ttk.Button(
-            self.controls, text="Fold: unavailable",
+            self.controls, text=self._text("fold_unavailable"),
             command=self._toggle_fold, state="disabled",
         )
         self.fold_button.grid(row=3, column=0, padx=2, pady=1)
@@ -76,7 +76,7 @@ class LiveWindow(Window):
         self.network_start_time_var = tk.StringVar(master=self.root, value=self.network_start_time)
         self.secondary_window = tk.Toplevel(self.root)
         self.secondary_window.withdraw()
-        self.secondary_window.title("Additional display (experimental)")
+        self.secondary_window.title(self._text("secondary_title"))
         self.secondary_window.resizable(True, True)
         self.secondary_window.minsize(112, 104)
         self.secondary_window.protocol("WM_DELETE_WINDOW", self.secondary_window.withdraw)
@@ -94,7 +94,7 @@ class LiveWindow(Window):
         self._secondary_owner = None
         self._secondary_auto_open = True
         self.display_menu = tk.Menu(self.root, tearoff=False)
-        self.display_menu.add_command(label="Additional display",
+        self.display_menu.add_command(label=self._text("additional_display"),
                                       command=self._show_secondary_display,
                                       state="disabled")
         self.screen.bind("<Button-3>", self._display_popup)
@@ -103,6 +103,8 @@ class LiveWindow(Window):
         ttk.Checkbutton(page, text=self._text("persistent_state"),
                         variable=self.persistent_state_var,
                         command=self._set_persistent_state).pack(anchor="w")
+
+    def _settings_display_controls(self, page) -> None:
         ttk.Button(page, text=self._text("additional_display"),
                    command=self._show_secondary_display).pack(anchor="w", pady=4)
         position = ttk.Frame(page)
@@ -153,8 +155,11 @@ class LiveWindow(Window):
             menu.grab_release()
 
     def _choose_firmware_from_menu(self) -> None:
+        if self.transport is not None and not messagebox.askokcancel(
+                self._text("choose_firmware_menu"), self._text("confirm_firmware"), parent=self.root):
+            return
         chosen = filedialog.askopenfilename(parent=self.root, title=self._text("choose_firmware_menu"),
-                                            filetypes=(("Firmware", "*.bin *.dump *.img *.mbn *.hex *.hxb"), ("All", "*")))
+                                            filetypes=((self._text("firmware_file_type"), "*.bin *.dump *.img *.mbn *.hex *.hxb"), (self._text("all_file_types"), "*")))
         if chosen:
             self.firmware = Path(chosen)
             self.overrides = self._load_config()
@@ -165,7 +170,7 @@ class LiveWindow(Window):
             self.network_start_time = ""
             self.network_start_time_var.set("")
         else:
-            value = simpledialog.askstring(self._text("set_time"), "YYYY-MM-DD HH:MM",
+            value = simpledialog.askstring(self._text("set_time"), self._text("time_format"),
                                            parent=self.root, initialvalue=self.network_start_time)
             if value is None:
                 return
@@ -292,10 +297,9 @@ class LiveWindow(Window):
         self.secondary_image.create_image(
             available[0] // 2, available[1] // 2, image=self.secondary_photo,
         )
-        power = {True: "On", False: "Off", None: "Power unknown"}[snapshot["enabled"]]
-        note = ("Last byte preview · colors/orientation unverified"
-                if snapshot.get("encoding") == "unverified-byte-preview"
-                else "panel role unverified")
+        power = self._text({True: "power_on", False: "power_off", None: "power_unknown"}[snapshot["enabled"]])
+        note = self._text("secondary_preview" if snapshot.get("encoding") == "unverified-byte-preview"
+                          else "secondary_unknown")
         self.secondary_status.configure(
             text=f"{power} · {width}×{height} · {note}")
         self._secondary_cache = snapshot
@@ -406,9 +410,9 @@ class LiveWindow(Window):
                         start_time=parse_network_start_time(getattr(self, "network_start_time", ""))),
                 )
             except Exception as rollback_error:
-                detail = f"{error}; restore failed: {rollback_error}"
+                detail = f"{error}; {self._text('restore_failed')}: {rollback_error}"
                 if save_error is not None:
-                    detail += f"; settings restore not saved: {save_error}"
+                    detail += f"; {self._text('restore_save_failed')}: {save_error}"
                 self.status.set(detail)
                 messagebox.showerror(
                     self._text("settings_error"), detail, parent=self.root
@@ -417,9 +421,9 @@ class LiveWindow(Window):
             self._activate_transport(
                 transport, self.firmware, self.overrides
             )
-            detail = f"Settings failed; previous firmware restored: {error}"
+            detail = f"{self._text('settings_restored')}: {error}"
             if save_error is not None:
-                detail += f"; settings restore not saved: {save_error}"
+                detail += f"; {self._text('restore_save_failed')}: {save_error}"
             self.status.set(detail)
             messagebox.showerror(
                 self._text("settings_error"), detail, parent=self.root
@@ -450,7 +454,7 @@ class LiveWindow(Window):
             f"QEMU TCG · {config.chipset} · {config.width}×{config.height}"
             + self._virtual_network_notice(transport)
         )
-        self.status.set("QEMU TCG real-time LCD transport")
+        self.status.set(self._text("transport_status"))
         self.worker = threading.Thread(
             target=transport.replay, args=(self.stop,), daemon=False
         )
@@ -519,10 +523,9 @@ class LiveWindow(Window):
         if supported:
             opened = (transport.board_status_snapshot["level"]
                       == transport.config.board_status_input.default)
-            state = "Open" if opened else "Closed"
-            self.fold_button.configure(text=f"Fold: {state} (experimental)")
+            self.fold_button.configure(text=self._text("fold_open" if opened else "fold_closed"))
         else:
-            self.fold_button.configure(text="Fold: unavailable")
+            self.fold_button.configure(text=self._text("fold_unavailable"))
         width, height, _frame = emulator.display_snapshot()
         self.device_details.set(
             f"QEMU TCG · {emulator.config.chipset} · {width}×{height}"

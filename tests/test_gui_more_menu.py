@@ -43,21 +43,21 @@ class MoreMenuTest(unittest.TestCase):
                 self.view._show_more()
             menu = self.view._more_menu
             self.assertEqual([menu.entrycget(i, 'label') for i in range(8)],
-                ['Virtual network', 'Start', 'Stop emulator', 'Reboot emulator',
-                 'Choose firmware…', 'Edit key input', 'Time', 'Settings…'])
+                ['Virtual network', 'Boot', 'Power off', 'Reboot',
+                 'Open firmware…', 'Edit key layout', 'Network time', 'Settings…'])
             self.assertEqual(menu.entrycget(1, 'state'), 'disabled' if running else 'normal')
             self.assertEqual(menu.entrycget(2, 'state'), 'normal' if running else 'disabled')
             self.assertEqual(menu.entrycget(3, 'state'), 'normal' if running else 'disabled')
             sub = self.root.nametowidget(menu.entrycget(6, 'menu'))
-            self.assertEqual([sub.entrycget(i, 'label') for i in range(2)], ['Host time', 'Set time…'])
+            self.assertEqual([sub.entrycget(i, 'label') for i in range(2)], ['Use device clock', 'Set manually…'])
 
     def test_edit_mode_and_prompt(self):
         self.view._set_editing_input(True)
-        self.assertEqual(self.view.settings_button.cget('text'), 'Done editing')
+        self.assertEqual(self.view.settings_button.cget('text'), 'Done')
         with patch.object(tk.Menu, 'tk_popup') as popup:
             self.view._show_more()
         popup.assert_not_called()
-        self.assertEqual(self.view.settings_button.cget('text'), 'More')
+        self.assertEqual(self.view.settings_button.cget('text'), 'Menu')
         self.assertEqual(self.view._text('key_prompt'), 'Key value for this button (blank = default)')
 
     def test_edit_mode_opens_short_popup_without_guest_press(self):
@@ -91,6 +91,15 @@ class MoreMenuTest(unittest.TestCase):
         self.assertEqual(v.network_start_time, '')
         v._restart.assert_called_once()
 
+    def test_running_firmware_switch_can_be_cancelled(self):
+        v = self.view
+        v.transport = object()
+        with patch('msm5xxx_emulator.qemu.live_display.messagebox.askokcancel', return_value=False), \
+             patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename') as picker:
+            v._choose_firmware_from_menu()
+        picker.assert_not_called()
+        v._restart.assert_not_called()
+
     def test_firmware_change_stops_before_start(self):
         v = self.view
         events = []
@@ -114,7 +123,8 @@ class MoreMenuTest(unittest.TestCase):
         v._stop_transport = Mock(side_effect=lambda: events.append('stop'))
         v._activate_transport = Mock(side_effect=lambda *args: events.append('start'))
         v._restart = LiveWindow._restart.__get__(v)
-        with patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename', return_value='/tmp/new.bin'), \
+        with patch('msm5xxx_emulator.qemu.live_display.messagebox.askokcancel', return_value=True), \
+             patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename', return_value='/tmp/new.bin'), \
              patch('msm5xxx_emulator.qemu.live_display.detect_profile', return_value=(object(), {})), \
              patch('msm5xxx_emulator.qemu.live_display.Transport', side_effect=lambda *args, **kwargs: object()), \
              patch('msm5xxx_emulator.qemu.live_display.virtual_cell_scenario', return_value=None):
@@ -126,7 +136,8 @@ class MoreMenuTest(unittest.TestCase):
         v = self.view
         v.transport = object()
         v._load_config = Mock(return_value={})
-        with patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename', return_value='/tmp/new.bin'):
+        with patch('msm5xxx_emulator.qemu.live_display.messagebox.askokcancel', return_value=True), \
+             patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename', return_value='/tmp/new.bin'):
             v._choose_firmware_from_menu()
         self.assertEqual(v.firmware, Path('/tmp/new.bin'))
         v._restart.assert_called_once()

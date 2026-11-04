@@ -1,0 +1,569 @@
+{
+  "window_title": "MSM5XXX Emulator",
+  "ready": "준비",
+  "detecting": "자동 탐지 중",
+  "unknown_model": "모델 미확인",
+  "settings": "설정",
+  "more": "메뉴",
+  "done_editing": "편집 완료",
+  "virtual_network_menu": "가상 통신망",
+  "start": "부팅",
+  "stop_emulator": "전원 끄기",
+  "reboot_emulator": "재부팅",
+  "choose_firmware_menu": "펌웨어 열기…",
+  "edit_input": "키 배치 편집",
+  "time": "통신망 시간",
+  "host_time": "기기 시계 따르기",
+  "set_time": "직접 지정…",
+  "key_prompt": "이 버튼에 보낼 키 값을 입력하세요 (비우면 기본값)",
+  "additional_display": "보조 화면",
+  "display_position": "보조 화면 위치",
+  "display_left": "왼쪽",
+  "display_right": "오른쪽",
+  "persistent_state": "기기 상태 저장",
+  "reboot": "재부팅",
+  "capture": "스크린샷 저장",
+  "virtual_network": "가상 통신망 (통화 미지원)",
+  "virtual_network_active": "가상 통신망",
+  "virtual_network_unavailable": "가상 통신망 미지원",
+  "network_host_time": "통신망 시간에 PC 시계 사용",
+  "network_start_time": "통신망 시작 시간 (비우면 사용 안 함)",
+  "network_time_error": "시간을 YYYY-MM-DD HH:MM 형식으로 입력하세요",
+  "restarting": "재부팅 중",
+  "boot_settings": "부팅 설정",
+  "ui_language": "UI 언어",
+  "choose_file": "파일 선택…",
+  "choose_firmware": "펌웨어 파일 선택",
+  "apply": "적용 (필요 시 재부팅)",
+  "save_failed": "저장 실패",
+  "settings_error": "설정 오류",
+  "settings_save_error": "설정 저장 오류",
+  "confirm_firmware": "현재 실행을 끄고 새 펌웨어로 부팅합니다",
+  "profile_required": "설정을 편집하려면 펌웨어를 선택하세요",
+  "_keys": {
+    "메뉴": 0,
+    "▲": 1,
+    "취소": 2,
+    "통화": 3,
+    "◀": 4,
+    "OK": 5,
+    "▶": 6,
+    "종료": 7,
+    "볼륨-": 8,
+    "▼": 9,
+    "볼륨+": 10,
+    "1": 11,
+    "2": 12,
+    "3": 13,
+    "4": 14,
+    "5": 15,
+    "6": 16,
+    "7": 17,
+    "8": 18,
+    "9": 19,
+    "*": 20,
+    "0": 21,
+    "#": 22
+  },
+  "_layout": [
+    [
+      "메뉴",
+      0,
+      1
+    ],
+    [
+      "취소",
+      0,
+      3
+    ],
+    [
+      "볼륨+",
+      1,
+      0
+    ],
+    [
+      "▲",
+      1,
+      2
+    ],
+    [
+      "볼륨-",
+      2,
+      0
+    ],
+    [
+      "◀",
+      2,
+      1
+    ],
+    [
+      "OK",
+      2,
+      2
+    ],
+    [
+      "▶",
+      2,
+      3
+    ],
+    [
+      "▼",
+      3,
+      2
+    ],
+    [
+      "통화",
+      4,
+      1
+    ],
+    [
+      "종료",
+      4,
+      3
+    ],
+    [
+      "1",
+      5,
+      1
+    ],
+    [
+      "2",
+      5,
+      2
+    ],
+    [
+      "3",
+      5,
+      3
+    ],
+    [
+      "4",
+      6,
+      1
+    ],
+    [
+      "5",
+      6,
+      2
+    ],
+    [
+      "6",
+      6,
+      3
+    ],
+    [
+      "7",
+      7,
+      1
+    ],
+    [
+      "8",
+      7,
+      2
+    ],
+    [
+      "9",
+      7,
+      3
+    ],
+    [
+      "*",
+      8,
+      1
+    ],
+    [
+      "0",
+      8,
+      2
+    ],
+    [
+      "#",
+      8,
+      3
+    ]
+  ],
+  "_metric_text": {
+    "ko": {
+      "run": [
+        "실행",
+        "지금까지 실행한 guest CPU 명령어 수"
+      ],
+      "pc": [
+        "PC",
+        "Program Counter: 다음에 실행할 guest 코드 주소"
+      ],
+      "lcd": [
+        "LCD",
+        "firmware가 LCD port에 기록한 누적 횟수"
+      ],
+      "frame": [
+        "프레임",
+        "완성된 화면으로 게시한 누적 횟수"
+      ]
+    },
+    "en": {
+      "run": [
+        "Run",
+        "Guest CPU instructions executed so far"
+      ],
+      "pc": [
+        "PC",
+        "Program Counter: guest code address to execute next"
+      ],
+      "lcd": [
+        "LCD",
+        "Firmware writes observed on LCD ports"
+      ],
+      "frame": [
+        "Frame",
+        "Completed display frames published"
+      ]
+    }
+  },
+  "_key_text": {
+    "ko": {},
+    "en": {
+      "메뉴": "Menu",
+      "취소": "Cancel",
+      "통화": "Call",
+      "종료": "End",
+      "볼륨-": "Vol-",
+      "볼륨+": "Vol+"
+    }
+  },
+  "_settings_english": {
+    "기본": "Basic",
+    "메모리": "Memory",
+    "화면 버퍼": "Display Buffer",
+    "하드웨어": "Hardware",
+    "장치 전송": "Device Transport",
+    "저장": "Storage",
+    "펌웨어": "Firmware",
+    "모델": "Model",
+    "칩셋": "Chipset",
+    "화면 너비": "Screen Width",
+    "화면 높이": "Screen Height",
+    "Board revision 이름": "Board Revision Name",
+    "이미지 오프셋": "Image Offset",
+    "로드 주소": "Load Address",
+    "Flash 크기": "Flash Size",
+    "RAM 시작 주소": "RAM Base",
+    "RAM 크기": "RAM Size",
+    "RAM image 오프셋": "RAM Image Offset",
+    "RAM image 크기 (0=끔)": "RAM Image Size (0=off)",
+    "진입점 오프셋": "Entry Offset",
+    "Framebuffer 주소 (빈 값=끔)": "Framebuffer Address (empty=off)",
+    "Board revision 레지스터": "Board Revision Register",
+    "Board revision 값": "Board Revision Value",
+    "키 레지스터": "Key Register",
+    "키 active-low": "Key Active-Low",
+    "REX idle 함수": "REX Idle Function",
+    "REX tick 함수": "REX Tick Function",
+    "REX tick 밀리초": "REX Tick Milliseconds",
+    "Board ADC 값": "Board ADC Value",
+    "Flash ID 함수": "Flash ID Function",
+    "Flash ID 값": "Flash ID Value",
+    "DMD download 함수": "DMD Download Function",
+    "NOR probe 함수": "NOR Probe Function",
+    "보조 NOR 주소 (0=끔)": "Secondary NOR Address (0=off)",
+    "보조 NOR 크기": "Secondary NOR Size",
+    "보조 NOR image": "Secondary NOR Image",
+    "보조 NOR state": "Secondary NOR State",
+    "보조 NOR write 함수": "Secondary NOR Write Function",
+    "NAND 사용": "Enable NAND",
+    "NAND data 크기": "NAND Data Size",
+    "NAND page 크기": "NAND Page Size",
+    "NAND spare 크기": "NAND Spare Size",
+    "NAND block당 pages": "NAND Pages per Block",
+    "프레임 버퍼 행 크기 (바이트)": "Framebuffer stride bytes",
+    "프레임 버퍼 픽셀 형식": "Framebuffer pixel format",
+    "플래시 상태 파일": "Flash state",
+    "NAND 원본 이미지": "NAND raw image",
+    "NAND 버스 폭 (바이트)": "NAND bus bytes"
+  },
+  "_sections": [
+    [
+      "기본",
+      [
+        [
+          "firmware",
+          "펌웨어"
+        ],
+        [
+          "model",
+          "모델"
+        ],
+        [
+          "chipset",
+          "칩셋"
+        ],
+        [
+          "width",
+          "화면 너비"
+        ],
+        [
+          "height",
+          "화면 높이"
+        ],
+        [
+          "board_revision",
+          "Board revision 이름"
+        ]
+      ]
+    ],
+    [
+      "메모리",
+      [
+        [
+          "image_offset",
+          "이미지 오프셋"
+        ],
+        [
+          "load_address",
+          "로드 주소"
+        ],
+        [
+          "flash_size",
+          "Flash 크기"
+        ],
+        [
+          "ram_base",
+          "RAM 시작 주소"
+        ],
+        [
+          "ram_size",
+          "RAM 크기"
+        ],
+        [
+          "ram_image_offset",
+          "RAM image 오프셋"
+        ],
+        [
+          "ram_image_size",
+          "RAM image 크기 (0=끔)"
+        ],
+        [
+          "entry",
+          "진입점 오프셋"
+        ]
+      ]
+    ],
+    [
+      "화면 버퍼",
+      [
+        [
+          "framebuffer_address",
+          "Framebuffer 주소 (빈 값=끔)"
+        ],
+        [
+          "framebuffer_stride",
+          "프레임 버퍼 행 크기 (바이트)"
+        ],
+        [
+          "framebuffer_format",
+          "프레임 버퍼 픽셀 형식"
+        ]
+      ]
+    ],
+    [
+      "하드웨어",
+      [
+        [
+          "board_revision_register",
+          "Board revision 레지스터"
+        ],
+        [
+          "board_revision_value",
+          "Board revision 값"
+        ],
+        [
+          "key_register",
+          "키 레지스터"
+        ],
+        [
+          "key_active_low",
+          "키 active-low"
+        ]
+      ]
+    ],
+    [
+      "장치 전송",
+      [
+        [
+          "rex_idle_address",
+          "REX idle 함수"
+        ],
+        [
+          "rex_tick_address",
+          "REX tick 함수"
+        ],
+        [
+          "rex_tick_ms",
+          "REX tick 밀리초"
+        ],
+        [
+          "board_adc_value",
+          "Board ADC 값"
+        ],
+        [
+          "flash_id_address",
+          "Flash ID 함수"
+        ],
+        [
+          "flash_id_value",
+          "Flash ID 값"
+        ],
+        [
+          "dmd_download_address",
+          "DMD download 함수"
+        ],
+        [
+          "primary_flash_probe_address",
+          "NOR probe 함수"
+        ]
+      ]
+    ],
+    [
+      "EFS NOR",
+      [
+        [
+          "secondary_flash_address",
+          "보조 NOR 주소 (0=끔)"
+        ],
+        [
+          "secondary_flash_size",
+          "보조 NOR 크기"
+        ],
+        [
+          "secondary_flash_image",
+          "보조 NOR image"
+        ],
+        [
+          "secondary_flash_state",
+          "보조 NOR state"
+        ],
+        [
+          "secondary_flash_write_address",
+          "보조 NOR write 함수"
+        ]
+      ]
+    ],
+    [
+      "저장",
+      [
+        [
+          "flash_state",
+          "플래시 상태 파일"
+        ],
+        [
+          "nand_enabled",
+          "NAND 사용"
+        ],
+        [
+          "nand_image",
+          "NAND 원본 이미지"
+        ],
+        [
+          "nand_data_size",
+          "NAND data 크기"
+        ],
+        [
+          "nand_page_size",
+          "NAND page 크기"
+        ],
+        [
+          "nand_spare_size",
+          "NAND spare 크기"
+        ],
+        [
+          "nand_pages_per_block",
+          "NAND block당 pages"
+        ],
+        [
+          "nand_bus_width",
+          "NAND 버스 폭 (바이트)"
+        ]
+      ]
+    ]
+  ],
+  "validation_36": "NAND raw image 파일 없음",
+  "validation_35": "NAND raw backing 상한: 256 MiB",
+  "validation_34": "NAND bus bytes는 1 또는 2여야 함",
+  "validation_33": "NAND data 크기는 page 크기의 배수여야 함",
+  "validation_32": "NAND block당 pages 범위: 1..4096",
+  "validation_31": "NAND spare 크기 범위: 1..4096",
+  "validation_30": "NAND page 크기 범위: 256..16384",
+  "validation_29": "NAND data 크기 상한: 128 MiB",
+  "validation_28": "NAND 크기와 block geometry는 양수여야 함",
+  "validation_27": "보조 NOR image가 설정 크기보다 큼",
+  "validation_26": "보조 NOR image 파일 없음",
+  "validation_25": "보조 NOR state 경로가 비어 있음",
+  "validation_24": "보조 NOR가 RAM과 겹침",
+  "validation_23": "보조 NOR가 주 Flash와 겹침",
+  "validation_22": "보조 NOR 주소 또는 크기 범위 오류",
+  "validation_21": "보조 NOR 크기는 음수일 수 없음",
+  "validation_20": "Flash state 경로가 비어 있음",
+  "validation_19": "REX tick 밀리초 범위: 0..60000",
+  "validation_18": "주소와 레지스터 값 범위: 0..0xFFFFFFFF",
+  "validation_17": "RAM image 크기가 RAM 크기를 초과함",
+  "validation_16": "RAM image 범위가 펌웨어를 벗어남",
+  "validation_15": "RAM image 오프셋과 크기는 음수일 수 없음",
+  "validation_14": "Framebuffer 범위가 RAM을 벗어남",
+  "validation_13": "주 Flash가 RAM과 겹침",
+  "validation_12": "RAM 범위가 32-bit 주소 공간을 벗어남",
+  "validation_11": "RAM 크기 상한: 128 MiB",
+  "validation_10": "RAM 시작 주소와 크기는 양수여야 함",
+  "validation_09": "진입점 오프셋이 Flash 범위를 벗어남",
+  "validation_08": "Flash 매핑이 32-bit 주소 공간을 벗어남",
+  "validation_07": "Flash 크기가 펌웨어 범위를 벗어남",
+  "validation_06": "이미지 오프셋이 펌웨어 범위를 벗어남",
+  "validation_05": "Framebuffer stride가 한 줄보다 작음",
+  "validation_04": "Framebuffer pixel format을 선택해야 함",
+  "validation_03": "Framebuffer를 끌 때 pixel format은 none이어야 함",
+  "validation_02": "화면 크기 범위: 32..1024",
+  "validation_01": "지원하지 않는 칩셋",
+  "validation_00": "모델 이름이 비어 있음",
+  "validation_boolean": "true 또는 false만 허용",
+  "unknown_label": "알 수 없음",
+  "unverified": "미확인",
+  "run_label": "실행",
+  "audio_label": "오디오",
+  "audio_unavailable": "오디오 재생기 없음",
+  "audio_error": "오디오 오류",
+  "update_title": "업데이트",
+  "update_downloading": "업데이트 내려받는 중",
+  "update_prepare_failed": "업데이트 준비 실패",
+  "update_failed": "업데이트 실패",
+  "stopped": "중지",
+  "backend_stopped": "호스트 backend 중지",
+  "auto_system": "자동 (시스템)",
+  "korean": "한국어",
+  "missing_firmware": "펌웨어 파일 없음",
+  "framebuffer_applying": "Framebuffer 색상맵 적용 중",
+  "update_modified": "GitHub 최신 commit {revision}를 찾았습니다.\n\n로컬 source 수정이 있습니다. 로컬 편집을 폐기하고 업데이트할까요?\nfirmware, logs, EEPROM/NOR state는 보존됩니다.",
+  "update_clean": "GitHub 최신 commit {revision}를 찾았습니다.\n\n현재 설치 파일을 최신 버전으로 업데이트할까요?",
+  "fold_unavailable": "폴더 사용 불가",
+  "fold_open": "폴더 열림 (실험적)",
+  "fold_closed": "폴더 닫힘 (실험적)",
+  "secondary_title": "보조 화면 (실험적)",
+  "secondary_preview": "미리보기: 색상과 방향이 확인되지 않음",
+  "secondary_unknown": "화면 역할 미확인",
+  "power_on": "켜짐",
+  "power_off": "꺼짐",
+  "power_unknown": "전원 상태 미확인",
+  "transport_status": "QEMU 화면 전송 실행 중",
+  "time_format": "YYYY-MM-DD HH:MM",
+  "firmware_file_type": "펌웨어 이미지",
+  "all_file_types": "모든 파일",
+  "mapping_invalid": "유효한 키 값을 입력하세요",
+  "mapping_rejected": "이 키 값은 사용할 수 없습니다",
+  "detection_not_ready": "펌웨어 탐지가 완료되지 않았습니다",
+  "language_invalid": "화면 언어 선택이 올바르지 않습니다",
+  "settings_restored": "설정 실패; 이전 펌웨어를 복원했습니다",
+  "restore_failed": "복원 실패",
+  "restore_save_failed": "복원된 설정을 저장하지 못했습니다",
+  "metric_pc_label": "PC",
+  "metric_lcd_label": "LCD",
+  "metric_frame_label": "프레임",
+  "english_language": "영어"
+}

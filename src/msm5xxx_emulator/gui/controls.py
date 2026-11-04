@@ -25,12 +25,7 @@ GUI_ZERO_DISABLE_FIELDS = DISABLEABLE_ADDRESS_FIELDS | {
 }
 
 
-KEYS = {
-    "메뉴": 0, "▲": 1, "취소": 2, "통화": 3, "◀": 4,
-    "OK": 5, "▶": 6, "종료": 7, "볼륨-": 8, "▼": 9,
-    "볼륨+": 10, "1": 11, "2": 12, "3": 13, "4": 14, "5": 15,
-    "6": 16, "7": 17, "8": 18, "9": 19, "*": 20, "0": 21, "#": 22,
-}
+KEYS = UI_TEXT["ko"]["_keys"]
 
 
 def parse_manual_key_event(text: str) -> int:
@@ -103,88 +98,16 @@ def manual_keymap(data: object, firmware_sha256: str) -> dict[int, int]:
     return result
 
 
-LAYOUT = (
-    ("메뉴", 0, 1), ("취소", 0, 3),
-    ("볼륨+", 1, 0), ("▲", 1, 2),
-    ("볼륨-", 2, 0), ("◀", 2, 1), ("OK", 2, 2), ("▶", 2, 3),
-    ("▼", 3, 2), ("통화", 4, 1), ("종료", 4, 3),
-    ("1", 5, 1), ("2", 5, 2), ("3", 5, 3),
-    ("4", 6, 1), ("5", 6, 2), ("6", 6, 3),
-    ("7", 7, 1), ("8", 7, 2), ("9", 7, 3),
-    ("*", 8, 1), ("0", 8, 2), ("#", 8, 3),
-)
+LAYOUT = tuple(tuple(item) for item in UI_TEXT["ko"]["_layout"])
 
 
-METRIC_TEXT = {
-    "ko": {
-        "run": ("실행", "지금까지 실행한 guest CPU 명령어 수"),
-        "pc": ("PC", "Program Counter: 다음에 실행할 guest 코드 주소"),
-        "lcd": ("LCD", "firmware가 LCD port에 기록한 누적 횟수"),
-        "frame": ("프레임", "완성된 화면으로 게시한 누적 횟수"),
-    },
-    "en": {
-        "run": ("Run", "Guest CPU instructions executed so far"),
-        "pc": ("PC", "Program Counter: guest code address to execute next"),
-        "lcd": ("LCD", "Firmware writes observed on LCD ports"),
-        "frame": ("Frame", "Completed display frames published"),
-    },
-}
+METRIC_TEXT = UI_TEXT["ko"]["_metric_text"]
 
 
-KEY_TEXT = {
-    "ko": {},
-    "en": {
-        "메뉴": "Menu", "취소": "Cancel", "통화": "Call", "종료": "End",
-        "볼륨-": "Vol-", "볼륨+": "Vol+",
-    },
-}
+KEY_TEXT = UI_TEXT["ko"]["_key_text"]
 
 
-SETTINGS_ENGLISH = {
-    '기본': 'Basic',
-    '메모리': 'Memory',
-    '화면 버퍼': 'Display Buffer',
-    '하드웨어': 'Hardware',
-    '장치 전송': 'Device Transport',
-    '저장': 'Storage',
-    '펌웨어': 'Firmware',
-    '모델': 'Model',
-    '칩셋': 'Chipset',
-    '화면 너비': 'Screen Width',
-    '화면 높이': 'Screen Height',
-    'Board revision 이름': 'Board Revision Name',
-    '이미지 오프셋': 'Image Offset',
-    '로드 주소': 'Load Address',
-    'Flash 크기': 'Flash Size',
-    'RAM 시작 주소': 'RAM Base',
-    'RAM 크기': 'RAM Size',
-    'RAM image 오프셋': 'RAM Image Offset',
-    'RAM image 크기 (0=끔)': 'RAM Image Size (0=off)',
-    '진입점 오프셋': 'Entry Offset',
-    'Framebuffer 주소 (빈 값=끔)': 'Framebuffer Address (empty=off)',
-    'Board revision 레지스터': 'Board Revision Register',
-    'Board revision 값': 'Board Revision Value',
-    '키 레지스터': 'Key Register',
-    '키 active-low': 'Key Active-Low',
-    'REX idle 함수': 'REX Idle Function',
-    'REX tick 함수': 'REX Tick Function',
-    'REX tick 밀리초': 'REX Tick Milliseconds',
-    'Board ADC 값': 'Board ADC Value',
-    'Flash ID 함수': 'Flash ID Function',
-    'Flash ID 값': 'Flash ID Value',
-    'DMD download 함수': 'DMD Download Function',
-    'NOR probe 함수': 'NOR Probe Function',
-    '보조 NOR 주소 (0=끔)': 'Secondary NOR Address (0=off)',
-    '보조 NOR 크기': 'Secondary NOR Size',
-    '보조 NOR image': 'Secondary NOR Image',
-    '보조 NOR state': 'Secondary NOR State',
-    '보조 NOR write 함수': 'Secondary NOR Write Function',
-    'NAND 사용': 'Enable NAND',
-    'NAND data 크기': 'NAND Data Size',
-    'NAND page 크기': 'NAND Page Size',
-    'NAND spare 크기': 'NAND Spare Size',
-    'NAND block당 pages': 'NAND Pages per Block',
-}
+SETTINGS_ENGLISH = UI_TEXT["ko"]["_settings_english"]
 
 
 def _clean_saved_model(profile: dict[str, object]) -> dict[str, object]:
@@ -206,7 +129,7 @@ def merge_settings_overrides(current: dict[str, object], edited: set[str],
     if "model" in edited:
         model = parsed["model"]
         if not isinstance(model, str) or not model.strip():
-            raise ValueError("모델 이름이 비어 있음")
+            raise ValueError(UI_TEXT[resolve_ui_language("auto")]["validation_00"])
         merged["_model_user_set"] = True
     for name in edited:
         value = parsed[name]
@@ -274,11 +197,12 @@ class ControlsMixin:
             label.configure(text=METRIC_TEXT[self.ui_language][key][0])
 
     def _bind_keyboard(self) -> None:
+        by_bit = {bit: label for label, bit in KEYS.items()}
         self.keyboard_mapping = {
             "Up": "▲", "Down": "▼", "Left": "◀", "Right": "▶",
-            "Return": "OK", "Escape": "종료",
-            "plus": "볼륨+", "KP_Add": "볼륨+",
-            "minus": "볼륨-", "KP_Subtract": "볼륨-",
+            "Return": "OK", "Escape": by_bit[7],
+            "plus": by_bit[10], "KP_Add": by_bit[10],
+            "minus": by_bit[8], "KP_Subtract": by_bit[8],
             **{str(number): str(number) for number in range(10)},
             **{f"KP_{number}": str(number) for number in range(10)},
         }
@@ -412,7 +336,7 @@ class ControlsMixin:
                                event_code: int | None) -> None:
         firmware_sha256 = self._firmware_sha256()
         if firmware_sha256 is None:
-            raise ValueError("firmware detection is not ready")
+            raise ValueError(self._text("detection_not_ready"))
         path = LAST_CONFIG
         with exclusive_path_lock(path):
             try:
@@ -476,10 +400,7 @@ class ControlsMixin:
             event_code = parse_manual_key_event(value) if value.strip() else None
             if (event_code is not None
                     and not self._key_supported(bit, event_code)):
-                raise ValueError(
-                    f"event 0x{event_code:02X} has no unique detected "
-                    "physical input producer"
-                )
+                raise ValueError(self._text("mapping_rejected"))
             self._save_manual_key_event(bit, event_code)
         except (OSError, ValueError) as error:
             reason = (
@@ -501,28 +422,25 @@ class ControlsMixin:
                 ),
             )
             messagebox.showerror(
-                self._text("settings_error"), str(error), parent=self.root
+                self._text("settings_error"),
+                self._text("mapping_invalid") if isinstance(error, ValueError) else str(error),
+                parent=self.root
             )
         return "break"
 
     def _settings(self) -> None:
-        if self.emulator is None and not hasattr(self, "_last_detected_config"):
-            # Detection already runs in the worker.  Running it here freezes Tk
-            # for multi-second firmware scans before the dialog can appear.
-            self._settings_requested = True
-            self.status.set(self._text("detecting"))
-            return
         self._settings_requested = False
         dialog = tk.Toplevel(self.root)
         dialog.title(self._text("settings"))
         dialog.transient(self.root)
-        detected = self.emulator.config if self.emulator is not None else self._last_detected_config
-
-        values = settings_values(self.firmware, detected, self.overrides)
+        detected = self.emulator.config if self.emulator is not None else getattr(self, "_last_detected_config", None)
+        values = (settings_values(self.firmware, detected, self.overrides) if detected is not None
+                  else {name: str(self.firmware) if name == "firmware" else ""
+                        for _, fields in SETTINGS_SECTIONS for name, _ in fields})
         language_labels = {
-            "auto": "자동 (시스템)" if self.ui_language == "ko" else "Auto (System)",
-            "ko": "한국어",
-            "en": "English",
+            "auto": self._text("auto_system"),
+            "ko": self._text("korean"),
+            "en": self._text("english_language"),
         }
         language_choice = tk.StringVar(
             value=language_labels[self.ui_language_preference]
@@ -532,8 +450,9 @@ class ControlsMixin:
         main_page = ttk.Frame(notebook, padding=10)
         notebook.add(main_page, text=self._text("settings"))
         firmware_frame = ttk.Frame(main_page)
-        details = ttk.Notebook(notebook)
-        notebook.add(details, text=self._text("more"))
+        details = notebook
+        if detected is None:
+            ttk.Label(main_page, text=self._text("profile_required")).pack(anchor="w")
         entries: dict[str, ttk.Entry | ttk.Combobox] = {}
 
         def choose_firmware() -> None:
@@ -546,8 +465,8 @@ class ControlsMixin:
                 title=self._text("choose_firmware"),
                 initialdir=str(initial_dir),
                 filetypes=(
-                    ("Firmware images", "*.bin *.dump *.img *.mbn *.hex *.hxb"),
-                    ("All files", "*"),
+                    (self._text("firmware_file_type"), "*.bin *.dump *.img *.mbn *.hex *.hxb"),
+                    (self._text("all_file_types"), "*"),
                 ),
             )
             if not chosen:
@@ -587,6 +506,8 @@ class ControlsMixin:
                     widget = ttk.Entry(page, width=42)
                     widget.insert(0, values[name])
                 widget.grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=2)
+                if detected is None:
+                    widget.configure(state="disabled")
                 entries[name] = widget
                 if name == "firmware":
                     ttk.Button(page, text=self._text("choose_file"),
@@ -604,6 +525,8 @@ class ControlsMixin:
         ttk.Combobox(language_frame, textvariable=language_choice,
                      values=tuple(language_labels.values()), state="readonly",
                      width=20).pack(side="right")
+        if hasattr(self, "_settings_display_controls"):
+            self._settings_display_controls(main_page)
 
         def apply() -> None:
             try:
@@ -613,11 +536,20 @@ class ControlsMixin:
                     None,
                 )
                 if ui_language is None:
-                    raise ValueError("UI language selection is invalid")
+                    raise ValueError(self._text("language_invalid"))
+                if detected is None:
+                    old_language = self.ui_language
+                    self.ui_language_preference = ui_language
+                    self.ui_language = resolve_ui_language(ui_language)
+                    self._save_config()
+                    dialog.destroy()
+                    if self.ui_language != old_language:
+                        self._apply_ui_language()
+                    return
                 raw = {name: widget.get().strip() for name, widget in entries.items()}
                 firmware = Path(raw["firmware"]).expanduser().resolve()
                 if not firmware.is_file():
-                    raise ValueError("펌웨어 파일 없음")
+                    raise ValueError(self._text("missing_firmware"))
                 edited = {
                     name for name in entries
                     if name != "firmware" and raw[name] != values[name].strip()
@@ -670,14 +602,14 @@ class ControlsMixin:
                     self._prepared_profile = (config, dict(self.overrides))
                     self._restart()
                     return
-                overrides = parse_settings_values(raw)
+                overrides = parse_settings_values(raw, self.ui_language)
                 minimal = merge_settings_overrides(
                     self.overrides, edited, overrides, firmware_changed
                 )
                 effective = detect(firmware, argparse.Namespace(**minimal))
                 overrides = {name: getattr(effective, name) for name in overrides}
                 validate_settings_values(
-                    firmware, effective, overrides, edited, raw["flash_state"]
+                    firmware, effective, overrides, edited, raw["flash_state"], self.ui_language
                 )
                 framebuffer_address = overrides["framebuffer_address"]
             except (OSError, ValueError) as error:
@@ -719,9 +651,7 @@ class ControlsMixin:
                 return
             if live_framebuffer_format:
                 self.commands.put(("framebuffer-format", overrides["framebuffer_format"]))
-                self.status.set("Applying framebuffer colour map"
-                                if self.ui_language == "en"
-                                else "Framebuffer 색상맵 적용 중")
+                self.status.set(self._text("framebuffer_applying"))
             else:
                 self._prepared_profile = (effective, dict(minimal))
                 self._restart()

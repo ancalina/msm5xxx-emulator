@@ -3,12 +3,12 @@
     <string name="app_name">MSM5xxx Emulator</string>
     <string name="choose">Choose</string>
     <string name="settings">Settings</string>
-    <string name="start">Start</string>
+    <string name="start">Boot</string>
     <string name="stop">Stop</string>
     <string name="more">•••</string>
-    <string name="more_actions">More actions</string>
+    <string name="more_actions">Menu</string>
     <string name="edit_input_mapping">Edit input mapping</string>
-    <string name="done_editing">Done editing</string>
+    <string name="done_editing">Done</string>
 
     <string name="key_menu">Menu</string>
     <string name="key_up">▲</string>
@@ -81,8 +81,8 @@
     <string name="error_input_failed">The input could not be sent.</string>
     <string name="error_stop_failed">The QEMU session did not stop cleanly.</string>
 
-    <string name="settings_title">Session settings</string>
-    <string name="persistent_state">Persistent device state (firmware SHA-isolated)</string>
+    <string name="settings_title">Settings</string>
+    <string name="persistent_state">Persistent device state</string>
     <string name="experimental_rex">Experimental static REX controller</string>
     <string name="virtual_network">Virtual network (calls unavailable)</string>
     <string name="virtual_network_active">Virtual network</string>
@@ -117,7 +117,7 @@
     <string name="network_start_time">Network start time (YYYY-MM-DD HH:MM; blank = off)</string>
     <string name="network_time_error">Enter a valid network start time</string>
     <string name="more_settings">More…</string>
-    <string name="capture">Capture</string>
+    <string name="capture">Save screenshot</string>
     <string name="capture_saved">Saved: %1$s</string>
     <string name="ui_language">UI language</string>
     <string name="language_auto">Auto (system)</string>
@@ -166,12 +166,41 @@
         <item>NAND bus bytes</item>
     </string-array>
     <string name="virtual_network_menu">Virtual network</string>
-    <string name="stop_emulator">Stop emulator</string>
-    <string name="reboot_emulator">Reboot emulator</string>
-    <string name="choose_firmware_menu">Choose firmware…</string>
-    <string name="edit_key_input">Edit key input</string>
-    <string name="time_menu">Time</string>
-    <string name="host_time">Host time</string>
-    <string name="set_time">Set time…</string>
+    <string name="stop_emulator">Power off</string>
+    <string name="reboot_emulator">Reboot</string>
+    <string name="choose_firmware_menu">Open firmware…</string>
+    <string name="edit_key_input">Edit key layout</string>
+    <string name="time_menu">Network time</string>
+    <string name="host_time">Use device clock</string>
+    <string name="set_time">Set manually…</string>
     <string name="settings_menu">Settings…</string>
+    <string name="confirm_firmware">This powers off the current session and boots the new firmware</string>
+    <string name="profile_required">Select firmware to edit these settings</string>
+    <string name="detailed_settings">Boot and device settings</string>
+    <string name="language_korean">한국어</string>
+    <string name="language_english">English</string>
+    <string name="menu_hint">Opens emulator menu</string>
+    <string name="phone_screen">Phone screen</string>
+    <string name="volume_up_spoken">Volume up</string>
+    <string name="volume_down_spoken">Volume down</string>
+    <string name="key_up_spoken">Up</string>
+    <string name="key_down_spoken">Down</string>
+    <string name="key_left_spoken">Left</string>
+    <string name="key_right_spoken">Right</string>
+    <string name="reassign_hint">Double tap to reassign this key</string>
+    <string name="booted_announcement">Booted</string>
+    <string name="powered_off_announcement">Powered off</string>
+    <string-array name="detail_sections">
+        <item>Basic</item>
+        <item>Memory</item>
+        <item>Display buffer</item>
+        <item>Hardware</item>
+        <item>Device transport</item>
+        <item>Secondary flash</item>
+        <item>Storage</item>
+    </string-array>
+    <string name="reassign_description">%1$s, double tap to reassign</string>
+    <string name="error_capture">Could not save screenshot</string>
+    <string name="resize_symbol">↘</string>
+    <string name="time_format_hint">YYYY-MM-DD HH:MM</string>
 </resources>

@@ -62,7 +62,7 @@ class GuiLocaleTests(unittest.TestCase):
             effective["ram_size"] = 0x08000001
             with self.assertRaisesRegex(ValueError, "RAM 크기 상한"):
                 validate_settings_values(
-                    firmware, config, effective, set(), raw["flash_state"]
+                    firmware, config, effective, set(), raw["flash_state"], "ko"
                 )
 
     def test_korean_metric_labels_and_pc_expansion(self) -> None:
@@ -494,20 +494,6 @@ class GuiLocaleTests(unittest.TestCase):
                     with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                         detect(firmware, Namespace(model=invalid))
 
-    def test_settings_waits_for_worker_detection_without_rescanning(self) -> None:
-        class Harness(ControlsMixin):
-            def _text(self, key: str) -> str:
-                return key
-
-        harness = Harness()
-        harness.emulator = None
-        harness._settings_requested = False
-        harness.status = mock.Mock()
-        with mock.patch("msm5xxx_emulator.gui.controls.detect_profile") as detector:
-            harness._settings()
-        detector.assert_not_called()
-        self.assertTrue(harness._settings_requested)
-        harness.status.set.assert_called_once_with("detecting")
 
 
 if __name__ == "__main__":

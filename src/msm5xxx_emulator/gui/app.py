@@ -18,7 +18,7 @@ from ..update import (UpdateError, UpdateInfo, application_root, check_for_updat
                       remember_update)
 from .controls import ControlsMixin, LAYOUT, METRIC_TEXT
 from .display_view import DisplayViewMixin
-from .locale import resolve_ui_language
+from .locale import UI_TEXT, resolve_ui_language, system_ui_language
 
 
 LOGGER = logging.getLogger("gui")
@@ -33,7 +33,8 @@ def choose_firmware() -> Path | None:
     root.withdraw()
     try:
         chosen = filedialog.askopenfilename(
-            filetypes=(("Firmware", "*.bin *.hex *.hxb"), ("All", "*"))
+            filetypes=((UI_TEXT[system_ui_language()]["firmware_file_type"], "*.bin *.hex *.hxb"),
+                       (UI_TEXT[system_ui_language()]["all_file_types"], "*"))
         )
     finally:
         root.destroy()
@@ -218,21 +219,12 @@ class Window(ControlsMixin, DisplayViewMixin):
             modified = not installation_status(application_root()).clean
         except UpdateError:
             modified = True
-        if modified:
-            prompt = (
-                f"GitHub 최신 commit {update.revision[:12]}를 찾았습니다.\n\n"
-                "로컬 source 수정이 있습니다. 로컬 편집을 폐기하고 업데이트할까요?\n"
-                "firmware, logs, EEPROM/NOR state는 보존됩니다."
-            )
-        else:
-            prompt = (
-                f"GitHub 최신 commit {update.revision[:12]}를 찾았습니다.\n\n"
-                "현재 설치 파일을 최신 버전으로 업데이트할까요?"
-            )
-        if not messagebox.askyesno("업데이트", prompt, parent=self.root):
+        prompt = self._text("update_modified" if modified else "update_clean").format(
+            revision=update.revision[:12])
+        if not messagebox.askyesno(self._text("update_title"), prompt, parent=self.root):
             return
         self.update_download_active = True
-        self.status.set("업데이트 내려받는 중")
+        self.status.set(self._text("update_downloading"))
 
         def download() -> None:
             try:
@@ -260,7 +252,7 @@ class Window(ControlsMixin, DisplayViewMixin):
                 launch_args=self._update_launch_args(),
             )
         except UpdateError as error:
-            self.status.set(f"업데이트 준비 실패: {error}")
+            self.status.set(f"{self._text('update_prepare_failed')}: {error}")
             self.update_download_active = False
             return
         self._close()

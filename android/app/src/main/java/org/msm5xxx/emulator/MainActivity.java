@@ -150,6 +150,7 @@ public final class MainActivity extends Activity {
     private final KeyPressDuration keyPressDuration = new KeyPressDuration();
     private TextView profileView;
     private TextView sessionView;
+    private LinearLayout metricsGroup;
     private TextView pcView;
     private TextView runView;
     private TextView lcdView;
@@ -307,6 +308,8 @@ public final class MainActivity extends Activity {
 
         frameView = new FrameView(this);
         frameView.setBackgroundColor(Color.BLACK);
+        frameView.setContentDescription(getString(R.string.phone_screen));
+        frameView.setFocusable(true);
         displayHost = new FrameLayout(this);
         displayHost.addView(frameView, new FrameLayout.LayoutParams(-1, -1));
         content.addView(displayHost, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -339,7 +342,7 @@ public final class MainActivity extends Activity {
             if (volume) {
                 LinearLayout.LayoutParams volumeParams =
                         new LinearLayout.LayoutParams(
-                                LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
+                                LinearLayout.LayoutParams.MATCH_PARENT, dp(48));
                 side.addView(target, volumeParams);
             } else {
                 GridLayout.LayoutParams keyParams = gridItem(
@@ -353,7 +356,7 @@ public final class MainActivity extends Activity {
         foldButton = compactButton(R.string.fold_open, view -> toggleFold());
         foldButton.setEnabled(false);
         side.addView(foldButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
         LinearLayout telemetry = new LinearLayout(this);
         telemetry.setOrientation(LinearLayout.VERTICAL);
@@ -368,21 +371,29 @@ public final class MainActivity extends Activity {
         ackView = metricCell(R.string.metric_ack_empty);
         sessionView = statusLine("");
         sessionView.setTextColor(Color.rgb(176, 176, 176));
-        for (TextView line : new TextView[]{
-                runView, pcView, lcdView, frameMetricView,
-                sessionView,
-        }) {
-            telemetry.addView(line, new LinearLayout.LayoutParams(
+        metricsGroup = new LinearLayout(this);
+        metricsGroup.setOrientation(LinearLayout.VERTICAL);
+        metricsGroup.setFocusable(true);
+        metricsGroup.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+        for (TextView line : new TextView[]{runView, pcView, lcdView, frameMetricView}) {
+            line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            metricsGroup.addView(line, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         }
+        updateMetricsDescription();
+        telemetry.addView(metricsGroup, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 4));
+        sessionView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        telemetry.addView(sessionView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         side.addView(telemetry, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
         moreButton = compactButton(R.string.more, view -> showMoreMenu());
         moreButton.setTextSize(20);
-        moreButton.setContentDescription(getString(R.string.more_actions));
+        moreButton.setContentDescription(getString(R.string.more_actions) + ". " + getString(R.string.menu_hint));
         side.addView(moreButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.HORIZONTAL);
@@ -391,7 +402,7 @@ public final class MainActivity extends Activity {
         controls.addView(keypad, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.MATCH_PARENT, 3));
         LinearLayout.LayoutParams controlsLayout = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(280));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(336));
         content.addView(controls, controlsLayout);
         content.setOnApplyWindowInsetsListener((view, insets) -> {
             int bottom = Build.VERSION.SDK_INT >= 30
@@ -441,7 +452,7 @@ public final class MainActivity extends Activity {
             size.height = Math.min(displayHost.getHeight(), size.height + dp(16));
             clampSecondary(size);
         });
-        resize.setText("↘");
+        resize.setText(R.string.resize_symbol);
         resize.setContentDescription(getString(R.string.resize_display));
         FrameLayout.LayoutParams handle = new FrameLayout.LayoutParams(dp(32), dp(32));
         handle.gravity = Gravity.BOTTOM | Gravity.RIGHT;
@@ -1039,6 +1050,7 @@ public final class MainActivity extends Activity {
             handler.post(() -> {
                 if (generation == sessionGeneration && session != null) {
                     sessionView.setText("");
+                    moreButton.announceForAccessibility(getString(R.string.booted_announcement));
                     updateKeypad(active);
                     updateSessionControls(false);
                 }
@@ -1259,6 +1271,7 @@ public final class MainActivity extends Activity {
                 R.string.metric_lcd, status.lcdWrites));
         setTextIfChanged(frameMetricView, getString(
                 R.string.metric_frame, status.frameSequence));
+        updateMetricsDescription();
         setTextIfChanged(inputView, getString(
                 R.string.metric_input, status.inputHostEvents));
         setTextIfChanged(rejectView, getString(
@@ -1559,6 +1572,7 @@ public final class MainActivity extends Activity {
             if (visible) {
                 handler.post(() -> {
                     if (generation == sessionGeneration && session == null) {
+                        moreButton.announceForAccessibility(getString(R.string.powered_off_announcement));
                         sessionView.setText(stoppedCleanly
                                 ? "" : getString(R.string.session_failed));
                         if (!stoppedCleanly) {
@@ -1694,7 +1708,13 @@ public final class MainActivity extends Activity {
                 case 102: startSession(); return true;
                 case 103: stopSession(true); return true;
                 case 104: stopSession(false); startSession(); return true;
-                case 105: chooseFirmware(); return true;
+                case 105:
+                    if (session != null || sessionStarting) {
+                        new AlertDialog.Builder(this).setMessage(R.string.confirm_firmware)
+                                .setNegativeButton(R.string.cancel, null)
+                                .setPositiveButton(android.R.string.ok, (dialog, which) -> chooseFirmware()).show();
+                    } else chooseFirmware();
+                    return true;
                 case 106: saveCapture(); return true;
                 case 107: setInputMappingEditing(true); return true;
                 case 109:
@@ -1720,7 +1740,7 @@ public final class MainActivity extends Activity {
         SharedPreferences prefs = preferences();
         EditText entry = new EditText(this);
         entry.setSingleLine(true);
-        entry.setHint("YYYY-MM-DD HH:MM");
+        entry.setHint(R.string.time_format_hint);
         entry.setText(prefs.getString(KEY_NETWORK_START_TIME, ""));
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.set_time)
                 .setView(entry).setNegativeButton(R.string.cancel, null)
@@ -1750,8 +1770,8 @@ public final class MainActivity extends Activity {
         editingInputMapping = editing;
         moreButton.setText(editing ? R.string.done_editing : R.string.more);
         moreButton.setTextSize(editing ? 11 : 20);
-        moreButton.setContentDescription(getString(
-                editing ? R.string.done_editing : R.string.more_actions));
+        moreButton.setContentDescription(editing ? getString(R.string.done_editing)
+                : getString(R.string.more_actions) + ". " + getString(R.string.menu_hint));
         updateKeypad(session);
     }
 
@@ -1762,9 +1782,11 @@ public final class MainActivity extends Activity {
         File file = new File(directory, "MSM5xEmu-" + System.currentTimeMillis() + ".png");
         try (FileOutputStream output = new FileOutputStream(file)) {
             if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new IOException("PNG encoding failed");
-            android.widget.Toast.makeText(this, getString(R.string.capture_saved, file.getAbsolutePath()), android.widget.Toast.LENGTH_LONG).show();
+            String savedMessage = getString(R.string.capture_saved, file.getAbsolutePath());
+            android.widget.Toast.makeText(this, savedMessage, android.widget.Toast.LENGTH_LONG).show();
+            moreButton.announceForAccessibility(savedMessage);
         } catch (IOException error) {
-            showError(error.getMessage());
+            showError(getString(R.string.error_capture));
         }
     }
 
@@ -1797,48 +1819,6 @@ public final class MainActivity extends Activity {
 
     private static final String[] DETAIL_FIELDS = {"model", "chipset", "width", "height", "board_revision", "image_offset", "load_address", "flash_size", "ram_base", "ram_size", "ram_image_offset", "ram_image_size", "entry", "framebuffer_address", "framebuffer_stride", "framebuffer_format", "board_revision_register", "board_revision_value", "key_register", "key_active_low", "rex_idle_address", "rex_tick_address", "rex_tick_ms", "board_adc_value", "flash_id_address", "flash_id_value", "dmd_download_address", "primary_flash_probe_address", "secondary_flash_address", "secondary_flash_size", "secondary_flash_image", "secondary_flash_state", "secondary_flash_write_address", "flash_state", "nand_enabled", "nand_image", "nand_data_size", "nand_page_size", "nand_spare_size", "nand_pages_per_block", "nand_bus_width"};
 
-    private void showDetailedSettings(String identity, Switch experimental) {
-        if (identity == null) return;
-        SharedPreferences prefs = getSharedPreferences("detailed-settings", MODE_PRIVATE);
-        JSONObject saved;
-        try { saved = new JSONObject(prefs.getString(identity, "{}")); }
-        catch (JSONException error) { saved = new JSONObject(); }
-        LinearLayout fields = new LinearLayout(this);
-        fields.setOrientation(LinearLayout.VERTICAL);
-        int padding = dp(16);
-        fields.setPadding(padding, padding, padding, padding);
-        if (experimental.getParent() instanceof android.view.ViewGroup)
-            ((android.view.ViewGroup) experimental.getParent()).removeView(experimental);
-        fields.addView(experimental, matchWidth());
-        ArrayList<EditText> inputs = new ArrayList<>();
-        String[] labels = getResources().getStringArray(R.array.detail_labels);
-        for (int field = 0; field < DETAIL_FIELDS.length; field++) {
-            String name = DETAIL_FIELDS[field];
-            TextView title = text(labels[field], 14);
-            fields.addView(title, matchWidth());
-            EditText input = new EditText(this);
-            input.setSingleLine(true);
-            input.setText(saved.optString(name, ""));
-            input.setHint(R.string.automatic_value);
-            fields.addView(input, matchWidth());
-            inputs.add(input);
-        }
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-        scroll.addView(fields);
-        new AlertDialog.Builder(this).setTitle(R.string.more_settings).setView(scroll)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.save, (dialog, which) -> {
-                    JSONObject edits = new JSONObject();
-                    try {
-                        for (int i = 0; i < DETAIL_FIELDS.length; i++) {
-                            String value = inputs.get(i).getText().toString().trim();
-                            if (!value.isEmpty()) edits.put(DETAIL_FIELDS[i], value);
-                        }
-                        prefs.edit().putString(identity, edits.toString()).apply();
-                    } catch (JSONException error) { showError(error.getMessage()); }
-                }).show();
-    }
-
     private void showSettings() {
         SharedPreferences preferences = preferences();
         LinearLayout body = new LinearLayout(this);
@@ -1858,7 +1838,7 @@ public final class MainActivity extends Activity {
         body.addView(languageTitle, matchWidth());
         android.widget.Spinner language = new android.widget.Spinner(this);
         String[] languageValues = {"auto", "ko", "en"};
-        String[] languageLabels = {getString(R.string.language_auto), "한국어", "English"};
+        String[] languageLabels = {getString(R.string.language_auto), getString(R.string.language_korean), getString(R.string.language_english)};
         language.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, languageLabels));
         String selectedLanguage = preferences.getString("ui_language", "auto");
         language.setSelection("ko".equals(selectedLanguage) ? 1 : "en".equals(selectedLanguage) ? 2 : 0);
@@ -1882,12 +1862,33 @@ public final class MainActivity extends Activity {
                     .getJSONObject("firmware").getString("sha256"); }
         catch (JSONException ignored) { }
         final String settingsIdentity = identity;
-        Button moreSettings = new Button(this);
-        moreSettings.setText(R.string.more_settings);
-        moreSettings.setMinHeight(dp(48));
-        moreSettings.setOnClickListener(view -> showDetailedSettings(settingsIdentity, experimental));
-        moreSettings.setEnabled(settingsIdentity != null);
-        body.addView(moreSettings, matchWidth());
+        body.addView(text(getString(R.string.detailed_settings), 16), matchWidth());
+        if (settingsIdentity == null) body.addView(text(getString(R.string.profile_required), 14), matchWidth());
+        experimental.setEnabled(settingsIdentity != null);
+        body.addView(experimental, matchWidth());
+        SharedPreferences detailPrefs = getSharedPreferences("detailed-settings", MODE_PRIVATE);
+        JSONObject saved;
+        try { saved = new JSONObject(settingsIdentity == null ? "{}" : detailPrefs.getString(settingsIdentity, "{}")); }
+        catch (JSONException error) { saved = new JSONObject(); }
+        ArrayList<EditText> detailInputs = new ArrayList<>();
+        String[] labels = getResources().getStringArray(R.array.detail_labels);
+        String[] sections = getResources().getStringArray(R.array.detail_sections);
+        int[] sectionStarts = {0, 5, 13, 16, 20, 28, 33};
+        int section = 0;
+        for (int index = 0; index < DETAIL_FIELDS.length; index++) {
+            if (section < sectionStarts.length && index == sectionStarts[section]) {
+                body.addView(text(sections[section++], 16), matchWidth());
+            }
+            TextView label = text(labels[index], 14);
+            body.addView(label, matchWidth());
+            EditText input = new EditText(this);
+            input.setSingleLine(true);
+            input.setText(saved.optString(DETAIL_FIELDS[index], ""));
+            input.setHint(R.string.automatic_value);
+            input.setEnabled(settingsIdentity != null);
+            body.addView(input, matchWidth());
+            detailInputs.add(input);
+        }
         android.widget.ScrollView settingsScroll = new android.widget.ScrollView(this);
         settingsScroll.addView(body);
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -1897,6 +1898,16 @@ public final class MainActivity extends Activity {
                 .setPositiveButton(R.string.save, null)
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            if (settingsIdentity != null) {
+                JSONObject edits = new JSONObject();
+                try {
+                    for (int i = 0; i < DETAIL_FIELDS.length; i++) {
+                        String value = detailInputs.get(i).getText().toString().trim();
+                        if (!value.isEmpty()) edits.put(DETAIL_FIELDS[i], value);
+                    }
+                    detailPrefs.edit().putString(settingsIdentity, edits.toString()).apply();
+                } catch (JSONException error) { showError(error.getMessage()); return; }
+            }
             String newLanguage = languageValues[language.getSelectedItemPosition()];
             preferences.edit().putString("ui_language", newLanguage).putBoolean(KEY_PERSISTENT_STATE, persistent.isChecked())
                     .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked()).apply();
@@ -1923,8 +1934,8 @@ public final class MainActivity extends Activity {
             button.setEnabled(running);
             target.setEnabled(running);
             if (!running) {
-                button.setAlpha(0.45f);
-                target.setContentDescription(getString(key.labelResource));
+                button.setAlpha(0.72f);
+                target.setContentDescription(spokenKeyLabel(key));
                 continue;
             }
             boolean mapped = manualKeyEvent(active.identity(), key.bit) != null;
@@ -1932,8 +1943,8 @@ public final class MainActivity extends Activity {
             if (editingInputMapping) {
                 button.setAlpha(1f);
                 target.setContentDescription(getString(
-                        R.string.key_mapping_description,
-                        getString(key.labelResource)));
+                        R.string.reassign_description,
+                        spokenKeyLabel(key)));
                 continue;
             }
             button.setAlpha(detected || mapped ? 1f : 0.72f);
@@ -1941,7 +1952,19 @@ public final class MainActivity extends Activity {
                     mapped ? R.string.key_mapped_description
                             : detected ? R.string.key_detected_description
                             : R.string.key_mapping_description,
-                    getString(key.labelResource)));
+                    spokenKeyLabel(key)));
+        }
+    }
+
+    private String spokenKeyLabel(KeySpec key) {
+        switch (key.bit) {
+            case 10: return getString(R.string.volume_up_spoken);
+            case 8: return getString(R.string.volume_down_spoken);
+            case 1: return getString(R.string.key_up_spoken);
+            case 9: return getString(R.string.key_down_spoken);
+            case 4: return getString(R.string.key_left_spoken);
+            case 6: return getString(R.string.key_right_spoken);
+            default: return getString(key.labelResource);
         }
     }
 
@@ -1979,6 +2002,7 @@ public final class MainActivity extends Activity {
         }
         lastErrorMessage = message;
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        moreButton.announceForAccessibility(message);
     }
 
     private void clearError() {
@@ -2001,11 +2025,17 @@ public final class MainActivity extends Activity {
         return getSharedPreferences(PREFS, MODE_PRIVATE);
     }
 
+    private void updateMetricsDescription() {
+        metricsGroup.setContentDescription(runView.getText() + ". " + pcView.getText() + ". "
+                + lcdView.getText() + ". " + frameMetricView.getText());
+    }
+
     private void resetMetrics() {
         pcView.setText(R.string.metric_pc_empty);
         runView.setText(R.string.metric_run_empty);
         lcdView.setText(R.string.metric_lcd_empty);
         frameMetricView.setText(R.string.metric_frame_empty);
+        updateMetricsDescription();
         inputView.setText(R.string.metric_input_empty);
         rejectView.setText(R.string.metric_reject_empty);
         jniView.setText(R.string.metric_jni_empty);
@@ -2014,11 +2044,28 @@ public final class MainActivity extends Activity {
 
     private FrameLayout handsetTarget(Button button, int bit) {
         FrameLayout target = new FrameLayout(this);
-        target.setMinimumHeight(dp(40));
+        target.setMinimumHeight(dp(48));
         target.setEnabled(false);
         target.setClickable(true);
         target.setFocusable(true);
         target.setOnTouchListener((view, event) -> onKeyTouch(bit, event));
+        target.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override public void onInitializeAccessibilityNodeInfo(View view, android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(view, info);
+                info.setClassName(Button.class.getName());
+            }
+        });
+        target.setOnClickListener(view -> {
+            BackendBridge.Session current = session;
+            if (current == null) return;
+            Integer mapped = manualKeyEvent(current.identity(), bit);
+            if (editingInputMapping || (mapped == null && !current.supportsKey(bit))) {
+                showKeyMapping(bit);
+                return;
+            }
+            sendSessionKey(current, bit, mapped, true, true);
+            sendSessionKey(current, bit, mapped, false, true);
+        });
         FrameLayout.LayoutParams visual = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER);
@@ -2053,7 +2100,7 @@ public final class MainActivity extends Activity {
     }
 
     private TextView statusLine(String value) {
-        TextView view = text(value, 7);
+        TextView view = text(value, 10);
         view.setGravity(Gravity.CENTER_VERTICAL);
         view.setSingleLine(true);
         view.setEllipsize(TextUtils.TruncateAt.END);
@@ -2187,8 +2234,7 @@ public final class MainActivity extends Activity {
             }
             Bitmap previous = bitmap;
             bitmap = frame.bitmap;
-            setContentDescription(getContext().getString(frame.nonBlank
-                    ? R.string.lcd_visible : R.string.lcd_waiting));
+            setContentDescription(getContext().getString(R.string.phone_screen));
             if (previous != null) {
                 previous.recycle();
             }
