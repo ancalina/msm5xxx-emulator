@@ -54,7 +54,8 @@ final class PythonRuntime {
 
     static synchronized String start(Context context, File firmware, File qemu,
                                      File stateDirectory, String profileJson,
-                                     boolean experimentalRex, boolean virtualNetwork)
+                                     boolean experimentalRex, boolean virtualNetwork,
+                        boolean networkHostTime, Double networkStartTime)
             throws IOException {
         KEY_GATE.lock();
         AUDIO_GATE.lock();
@@ -70,7 +71,9 @@ final class PythonRuntime {
                         .put("state", stateDirectory == null
                                 ? JSONObject.NULL : stateDirectory.getPath())
                         .put("experimental_rex", experimentalRex)
-                        .put("virtual_network", virtualNetwork);
+                        .put("virtual_network", virtualNetwork)
+                        .put("network_host_time", networkHostTime)
+                        .put("network_start_time", networkStartTime == null ? JSONObject.NULL : networkStartTime);
                 File external = context.getExternalFilesDir(null);
                 if (external != null && new File(external, "autorun").isFile()) {
                     request.put("session_log", new File(external, "session.log").getPath());

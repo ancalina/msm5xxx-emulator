@@ -1,5 +1,7 @@
 """Software scenario for an explicit ideal decoded network; default is off."""
 import calendar
+import math
+import numbers
 import time
 
 _PAGING_MESSAGES = (
@@ -18,11 +20,13 @@ _LONG_CODE_POLY = 0x40A8E6F04EF        # x^42 + x^35 + ... + x + 1 (IS-95 long c
 _CHIPS_PER_SYS_TIME = 98304            # 80 ms at 1.2288 Mcps
 _GPS_EPOCH = calendar.timegm((1980, 1, 6, 0, 0, 0))
 # GPS - UTC offset changes (UTC instant, seconds); later leap seconds must be appended here.
-_LEAP_SECONDS = ((calendar.timegm((2006, 1, 1, 0, 0, 0)), 14), (calendar.timegm((2009, 1, 1, 0, 0, 0)), 15),
-                 (calendar.timegm((2012, 7, 1, 0, 0, 0)), 16), (calendar.timegm((2015, 7, 1, 0, 0, 0)), 17),
-                 (calendar.timegm((2017, 1, 1, 0, 0, 0)), 18))
-# Deterministic default network time: 2008-07-31 09:00 local, broadcast with LTM_OFF +9 h.
-DEFAULT_NETWORK_TIME = calendar.timegm((2008, 7, 31, 0, 0, 0))
+_LEAP_SECONDS = tuple((calendar.timegm((year, month, 1, 0, 0, 0)), offset) for year, month, offset in (
+    (1981, 7, 1), (1982, 7, 2), (1983, 7, 3), (1985, 7, 4), (1988, 1, 5), (1990, 1, 6),
+    (1991, 1, 7), (1992, 7, 8), (1993, 7, 9), (1994, 7, 10), (1996, 1, 11), (1997, 7, 12),
+    (1999, 1, 13), (2006, 1, 14), (2009, 1, 15), (2012, 7, 16), (2015, 7, 17), (2017, 1, 18)))
+# Deterministic default network time: 2002-11-21 09:05 local, broadcast with LTM_OFF +9 h.
+# 1972년 11월 21일
+DEFAULT_NETWORK_TIME = calendar.timegm((2002, 11, 21, 0, 5, 0))
 DEFAULT_LTM_OFF = 18                   # +9 h in 30-minute units
 
 
@@ -71,7 +75,7 @@ def sync_message_hex(sys_time: int, lp_sec: int = 0, ltm_off: int = 0, daylt: in
 
 
 def _leap_seconds(utc: float) -> int:
-    offset = 13                        # in force from 1999-01-01 until 2006
+    offset = 0
     for start, value in _LEAP_SECONDS:
         if utc >= start:
             offset = value
@@ -93,7 +97,7 @@ def host_sync_message_hex(now: float | None = None) -> str:
 
 
 def virtual_cell_scenario(enabled: bool = False, *, host_time: bool = False,
-                          now: float | None = None) -> dict | None:
+                          now: float | None = None, start_time: float | None = None) -> dict | None:
     """Return fresh parameters; existing firmware signatures decide support.
 
     The announced network time is a fixed default so guest behaviour stays deterministic;
@@ -101,6 +105,12 @@ def virtual_cell_scenario(enabled: bool = False, *, host_time: bool = False,
     """
     if type(enabled) is not bool:
         raise TypeError("enabled must be a bool")
+    if start_time is not None:
+        if isinstance(start_time, bool) or not isinstance(start_time, numbers.Real):
+            raise TypeError("start_time must be a number")
+        if (not math.isfinite(start_time) or start_time < _GPS_EPOCH
+                or (start_time - _GPS_EPOCH + _leap_seconds(start_time)) / 0.08 >= 1 << 36):
+            raise ValueError("start_time outside CDMA system time range")
     if not enabled:
         return None
     # Ideal decoded input has no RF, SIP or successful-call guarantee.
@@ -111,7 +121,8 @@ def virtual_cell_scenario(enabled: bool = False, *, host_time: bool = False,
         'raw_energy': 64000,
         'virtual_delay_ns': 1000000,
         'decoder_init_delay_ns': 80000000,
-        'sync_message_hex': (host_sync_message_hex(now) if host_time else
+        'sync_message_hex': (host_sync_message_hex(start_time) if start_time is not None else
+                             host_sync_message_hex(now) if host_time else
                              network_sync_message_hex(DEFAULT_NETWORK_TIME, DEFAULT_LTM_OFF)),
         'paging_messages_hex': list(_PAGING_MESSAGES),
         'sid': 2222,

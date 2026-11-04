@@ -512,3 +512,21 @@ class GuiLocaleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetworkTimeSettingsTests(unittest.TestCase):
+    def test_parse_network_start_time(self):
+        from msm5xxx_emulator.qemu.live_display import parse_network_start_time
+        from datetime import datetime
+        self.assertIsNone(parse_network_start_time(""))
+        self.assertEqual(parse_network_start_time("2002-11-21 09:05"),
+                         datetime(2002, 11, 21, 9, 5).timestamp())
+        for value in ("2002-02-30 09:05", "1970-01-01 00:00", "bad"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_network_start_time(value)
+
+    def test_host_time_default_on(self):
+        from msm5xxx_emulator.gui import controls
+        from unittest import mock
+        with mock.patch.object(controls, "LAST_CONFIG", Path("/nonexistent/config")):
+            self.assertTrue(controls.ControlsMixin._load_virtual_network(None, "network_host_time"))

@@ -63,7 +63,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
             binary.write_bytes(b'input')
             request = dict(experimental_rex=False, firmware=str(binary),
                            profile=profile, qemu=str(binary), state=None,
-                           virtual_network=True)
+                           virtual_network=True, network_host_time=True, network_start_time=1037837100)
             with mock.patch('msm5xxx_emulator.detection.firmware.detect',
                             return_value=config), mock.patch(
                                 'msm5xxx_emulator.qemu.transport.Transport', return_value=transport) as constructor:
@@ -72,7 +72,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
                     self.assertTrue(result['process_running'])
                     self.assertIs(runtime._session, transport)
                     self.assertEqual(constructor.call_args.kwargs['virtual_cell'],
-                                     virtual_cell_scenario(True))
+                                     virtual_cell_scenario(True, host_time=True, start_time=1037837100))
                 finally:
                     runtime.stop_session()
         request = dict(experimental_rex=False, firmware='unused',

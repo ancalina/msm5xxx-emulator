@@ -113,4 +113,7 @@
     <string name="display_automatic">자동</string>
     <string name="display_external">%1$s (디스플레이 %2$d)</string>
     <string name="display_preview_notice">미리보기: 색상·방향 미확정</string>
+    <string name="network_host_time">통신망 시간에 기기 시계 사용</string>
+    <string name="network_start_time">통신망 시작 시간 (YYYY-MM-DD HH:MM; 비우면 사용 안 함)</string>
+    <string name="network_time_error">올바른 통신망 시작 시간을 입력하세요</string>
 </resources>

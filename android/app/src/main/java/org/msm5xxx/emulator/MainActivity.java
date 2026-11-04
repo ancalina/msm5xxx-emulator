@@ -93,6 +93,8 @@ public final class MainActivity extends Activity {
     private static final String KEY_PERSISTENT_STATE = "persistent_state";
     private static final String KEY_EXPERIMENTAL_REX = "experimental_rex";
     private static final String KEY_VIRTUAL_NETWORK = "virtual_network";
+    private static final String KEY_NETWORK_HOST_TIME = "network_host_time";
+    private static final String KEY_NETWORK_START_TIME = "network_start_time";
     private static final String KEY_SECONDARY_DESTINATION = "secondary_destination";
     private static final String SECONDARY_INTERNAL = "internal";
     private static final String SECONDARY_AUTO = "auto";
@@ -981,6 +983,8 @@ public final class MainActivity extends Activity {
                 KEY_EXPERIMENTAL_REX, false);
         boolean virtualNetwork = preferences.getBoolean(
                 KEY_VIRTUAL_NETWORK, false);
+        boolean networkHostTime = preferences.getBoolean(KEY_NETWORK_HOST_TIME, true);
+        Double networkStartTime = parseNetworkStartTime(preferences.getString(KEY_NETWORK_START_TIME, ""));
         int generation = ++sessionGeneration;
         sessionStarting = true;
         latestStatus = null;
@@ -997,13 +1001,13 @@ public final class MainActivity extends Activity {
         sessionView.setText(R.string.starting_session);
         Context application = getApplicationContext();
         new Thread(() -> runSession(application, new File(path), profile,
-                persistentState, experimentalRex, virtualNetwork, generation),
+                persistentState, experimentalRex, virtualNetwork, networkHostTime, networkStartTime, generation),
                 "qemu-session").start();
     }
 
     private void runSession(Context context, File firmware, String profile,
                             boolean persistentState, boolean experimentalRex,
-                            boolean virtualNetwork,
+                            boolean virtualNetwork, boolean networkHostTime, Double networkStartTime,
                             int generation) {
         BackendBridge.Session opened = null;
         FramePacket latestFrame = null;
@@ -1014,7 +1018,7 @@ public final class MainActivity extends Activity {
         boolean failed = false;
         try {
             opened = BackendBridge.open(context, firmware, profile,
-                    persistentState, experimentalRex, virtualNetwork);
+                    persistentState, experimentalRex, virtualNetwork, networkHostTime, networkStartTime);
             if (generation != sessionGeneration) {
                 return;
             }
@@ -1745,6 +1749,18 @@ public final class MainActivity extends Activity {
         updateKeypad(session);
     }
 
+    private static Double parseNetworkStartTime(String value) {
+        if (value.trim().isEmpty()) return null;
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US);
+        format.setLenient(false);
+        java.text.ParsePosition position = new java.text.ParsePosition(0);
+        java.util.Date date = format.parse(value, position);
+        if (date == null || position.getIndex() != value.length() || !format.format(date).equals(value)
+                || date.getTime() < 315964800000L || date.getTime() >= 5813522920000L)
+            throw new IllegalArgumentException("Invalid network time");
+        return date.getTime() / 1000.0;
+    }
+
     private void showSettings() {
         if (session != null || sessionStarting) {
             return;
@@ -1766,23 +1782,40 @@ public final class MainActivity extends Activity {
         virtualNetwork.setText(R.string.virtual_network);
         virtualNetwork.setChecked(preferences.getBoolean(
                 KEY_VIRTUAL_NETWORK, false));
+        Switch networkHostTime = new Switch(this);
+        networkHostTime.setText(R.string.network_host_time);
+        networkHostTime.setChecked(preferences.getBoolean(KEY_NETWORK_HOST_TIME, true));
+        android.widget.EditText networkStartTime = new android.widget.EditText(this);
+        networkStartTime.setSingleLine(true);
+        networkStartTime.setHint(R.string.network_start_time);
+        networkStartTime.setText(preferences.getString(KEY_NETWORK_START_TIME, ""));
         body.addView(persistent, matchWidth());
         body.addView(experimental, matchWidth());
         body.addView(virtualNetwork, matchWidth());
-        new AlertDialog.Builder(this)
+        body.addView(networkHostTime, matchWidth());
+        body.addView(networkStartTime, matchWidth());
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_title)
                 .setView(body)
                 .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.save, (dialog, which) ->
-                        preferences.edit()
-                                .putBoolean(KEY_PERSISTENT_STATE,
-                                        persistent.isChecked())
-                                .putBoolean(KEY_EXPERIMENTAL_REX,
-                                        experimental.isChecked())
-                                .putBoolean(KEY_VIRTUAL_NETWORK,
-                                        virtualNetwork.isChecked())
-                                .apply())
-                .show();
+                .setPositiveButton(R.string.save, null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String value = networkStartTime.getText().toString();
+            try {
+                parseNetworkStartTime(value);
+            } catch (IllegalArgumentException error) {
+                networkStartTime.setError(getString(R.string.network_time_error));
+                return;
+            }
+            preferences.edit().putBoolean(KEY_PERSISTENT_STATE, persistent.isChecked())
+                    .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked())
+                    .putBoolean(KEY_VIRTUAL_NETWORK, virtualNetwork.isChecked())
+                    .putBoolean(KEY_NETWORK_HOST_TIME, networkHostTime.isChecked())
+                    .putString(KEY_NETWORK_START_TIME, value).apply();
+            dialog.dismiss();
+        }));
+        dialog.show();
     }
 
     private void updateSessionControls(boolean canStart) {

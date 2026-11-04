@@ -113,4 +113,7 @@
     <string name="display_automatic">Automatic</string>
     <string name="display_external">%1$s (display %2$d)</string>
     <string name="display_preview_notice">Preview: colors and orientation unverified</string>
+    <string name="network_host_time">Use device clock for network time</string>
+    <string name="network_start_time">Network start time (YYYY-MM-DD HH:MM; blank = off)</string>
+    <string name="network_time_error">Enter a valid network start time</string>
 </resources>

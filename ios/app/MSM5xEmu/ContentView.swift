@@ -12,6 +12,9 @@ struct ContentView: View {
     @AppStorage("persistent_state") private var persistentState = true
     @AppStorage("experimental_rex") private var experimentalRex = false
     @AppStorage("virtual_network") private var virtualNetwork = false
+    @AppStorage("network_host_time") private var networkHostTime = true
+    @AppStorage("network_start_time_enabled") private var networkStartTimeEnabled = false
+    @AppStorage("network_start_time") private var networkStartTime = 1037837100.0
 
     // Same order, labels and guest bits as Android's KEY_LAYOUT; volume keys sit in the side column.
     private static let keypad: [[(String, Int)]] = [
@@ -108,6 +111,15 @@ struct ContentView: View {
                     Toggle("Persistent device state (firmware SHA-isolated)", isOn: $persistentState)
                     Toggle("Experimental static REX controller", isOn: $experimentalRex)
                     Toggle("Virtual network (calls unavailable)", isOn: $virtualNetwork)
+                    Toggle("Use device clock for network time", isOn: $networkHostTime)
+                    Toggle("Network start time", isOn: $networkStartTimeEnabled)
+                    if networkStartTimeEnabled {
+                        DatePicker("Network start time", selection: Binding(
+                            get: { Date(timeIntervalSince1970: networkStartTime) },
+                            set: { networkStartTime = $0.timeIntervalSince1970 }),
+                            in: Date(timeIntervalSince1970: 315964800)...Date(timeIntervalSince1970: 5813520000),
+                            displayedComponents: [.date, .hourAndMinute])
+                    }
                 }
                 .navigationTitle("Settings")
                 .toolbar { Button("Done") { showingSettings = false } }
@@ -124,7 +136,8 @@ struct ContentView: View {
     private func run() {
         guard let firmware = firmware else { return }
         engine.start(firmware, persistentState: persistentState, experimentalRex: experimentalRex,
-                     virtualNetwork: virtualNetwork)
+                     virtualNetwork: virtualNetwork, networkHostTime: networkHostTime,
+                     networkStartTime: networkStartTimeEnabled ? networkStartTime : nil)
     }
 
     private func key(_ label: String, _ bit: Int) -> some View {

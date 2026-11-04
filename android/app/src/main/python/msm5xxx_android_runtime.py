@@ -85,11 +85,13 @@ def start_session(request_json):
     request = json.loads(request_json)
     required = {"experimental_rex", "firmware", "profile", "qemu", "state"}
     if (not isinstance(request, dict) or not required <= request.keys()
-            or request.keys() - required - {"virtual_network", "session_log"}):
+            or request.keys() - required - {"virtual_network", "network_host_time", "network_start_time", "session_log"}):
         raise ValueError("invalid session request")
     virtual_network = request.get("virtual_network", False)
     if type(virtual_network) is not bool:
         raise ValueError("invalid virtual network setting")
+    if type(request.get("network_host_time", True)) is not bool:
+        raise ValueError("invalid network time setting")
     firmware = Path(request["firmware"])
     qemu = Path(request["qemu"])
     state_value = request["state"]
@@ -113,7 +115,8 @@ def start_session(request_json):
         sys.stderr = open(_session_log, "a", buffering=1)
     transport = Transport(
         qemu, firmware, state, experimental_rex, config=config,
-        audio_stream=True, virtual_cell=virtual_cell_scenario(virtual_network),
+        audio_stream=True, virtual_cell=virtual_cell_scenario(virtual_network, host_time=request.get("network_host_time", True),
+                                          start_time=request.get("network_start_time")),
     )
     input_bits = [
         bit for bit in range(HANDSET_KEY_COUNT)

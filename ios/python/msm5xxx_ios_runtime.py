@@ -55,10 +55,12 @@ def start_session(request_json):
         raise RuntimeError("session already running")
     request = json.loads(request_json)
     if (not isinstance(request, dict)
-            or set(request) - {"virtual_network"} != {"firmware", "profile", "qemu", "state", "experimental_rex"}
+            or set(request) - {"virtual_network", "network_host_time", "network_start_time"} != {"firmware", "profile", "qemu", "state", "experimental_rex"}
             or type(request["experimental_rex"]) is not bool
             or type(request.get("virtual_network", False)) is not bool):
         raise ValueError("invalid session request")
+    if type(request.get("network_host_time", True)) is not bool:
+        raise ValueError("invalid network time setting")
     firmware = Path(request["firmware"])
     config = detect(firmware)
     # Apply the same fail-closed admission policy used by Android before starting.
@@ -73,7 +75,9 @@ def start_session(request_json):
     transport = Transport(
         Path(request["qemu"]), firmware, state, request["experimental_rex"],
         config=config, audio_stream=True, audio_pcm=True,
-        virtual_cell=virtual_cell_scenario(request.get("virtual_network", False)),
+        virtual_cell=virtual_cell_scenario(request.get("virtual_network", False),
+                                           host_time=request.get("network_host_time", True),
+                                           start_time=request.get("network_start_time")),
         launcher=IOSLauncher(),
     )
     stop = threading.Event()

@@ -116,11 +116,23 @@ class SyncMessageTimeTests(unittest.TestCase):
 
     def test_default_time_is_fixed_and_deterministic(self):
         values = self.fields(virtual_cell_scenario(True)["sync_message_hex"])
-        utc = 1217462400  # 2008-07-31 00:00 UTC = 09:00 at +9 h
-        self.assertEqual(values["sys_time"], int((utc - 315964800 + 14) / 0.08))
-        self.assertEqual((values["lp_sec"], values["ltm_off"], values["daylt"]), (14, 18, 0))
+        utc = 1037837100  # 2002-11-21 00:05 UTC = 09:05 at +9 h
+        self.assertEqual(values["sys_time"], int((utc - 315964800 + 13) / 0.08))
+        self.assertEqual((values["lp_sec"], values["ltm_off"], values["daylt"]), (13, 18, 0))
 
     def test_leap_seconds_follow_announced_date(self):
-        self.assertEqual(_leap_seconds(1217462400), 14)   # 2008
+        self.assertEqual(_leap_seconds(1136073600), 14)   # 2006
         self.assertEqual(_leap_seconds(1230768000), 15)   # 2009-01-01
         self.assertEqual(_leap_seconds(1793600000), 18)   # 2026
+
+    def test_start_time_precedence_and_validation(self):
+        start = 1037837100
+        self.assertEqual(virtual_cell_scenario(True, host_time=True, now=1700000000, start_time=start)["sync_message_hex"],
+                         host_sync_message_hex(start))
+        for value in ("123", True, [], {}):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                virtual_cell_scenario(True, start_time=value)
+        for value in (315964799, float("nan"), float("inf"), 6000000000):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                virtual_cell_scenario(True, start_time=value)
+        self.assertEqual(_leap_seconds(315964800), 0)

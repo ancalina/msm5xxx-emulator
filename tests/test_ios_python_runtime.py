@@ -111,7 +111,8 @@ class IOSRuntimeTests(unittest.TestCase):
             take_native_audio=lambda timeout: b"", can_set_key=lambda bit: False,
             process=SimpleNamespace(poll=lambda: None))
         request = {"firmware": "synthetic", "profile": profile, "qemu": "q",
-                   "state": None, "experimental_rex": False}
+                   "state": None, "experimental_rex": False, "virtual_network": True,
+                   "network_host_time": True, "network_start_time": 1037837100}
         self.runtime.detect_profile = lambda _: json.dumps({"accepted": True})
         with patch("msm5xxx_emulator.detection.firmware.detect", return_value=config), \
              patch("msm5xxx_emulator.qemu.transport.Transport", return_value=transport) as factory, \
@@ -121,6 +122,9 @@ class IOSRuntimeTests(unittest.TestCase):
         self.assertTrue(result["audio_admitted"])
         self.assertTrue(factory.call_args.kwargs["audio_stream"])
         self.assertTrue(factory.call_args.kwargs["audio_pcm"])
+        from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
+        self.assertEqual(factory.call_args.kwargs["virtual_cell"],
+                         virtual_cell_scenario(True, host_time=True, start_time=1037837100))
 
     def test_stop_retains_resources_when_replay_still_alive(self):
         transport = self.shared._session = Mock()

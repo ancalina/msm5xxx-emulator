@@ -180,7 +180,8 @@ final class BackendBridge {
 
     static synchronized Session open(Context context, File firmware,
                         String profileJson, boolean persistentState,
-                        boolean experimentalRex, boolean virtualNetwork)
+                        boolean experimentalRex, boolean virtualNetwork,
+                        boolean networkHostTime, Double networkStartTime)
             throws IOException {
         File qemu = resolveQemu(context);
         File state = persistentState
@@ -199,7 +200,7 @@ final class BackendBridge {
         try {
             JSONObject result = new JSONObject(PythonRuntime.start(
                     context, firmware, qemu, state, profileJson,
-                    experimentalRex, virtualNetwork));
+                    experimentalRex, virtualNetwork, networkHostTime, networkStartTime));
             int width = result.getInt("width");
             int height = result.getInt("height");
             boolean[] inputBits = parseInputBits(result.getJSONArray("input_bits"));

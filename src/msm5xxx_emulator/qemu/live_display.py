@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import os
 from pathlib import Path
 import queue
@@ -21,6 +22,19 @@ from ..gui.worker import _prepared_profile_matches
 from .virtual_cell import virtual_cell_scenario
 
 
+def parse_network_start_time(value: str) -> float | None:
+    if not value.strip():
+        return None
+    parsed = datetime.strptime(value, "%Y-%m-%d %H:%M")
+    if parsed.strftime("%Y-%m-%d %H:%M") != value:
+        raise ValueError("invalid date format")
+    timestamp = parsed.timestamp()
+    if datetime.fromtimestamp(timestamp) != parsed:
+        raise ValueError("invalid local time")
+    virtual_cell_scenario(False, start_time=timestamp)
+    return timestamp
+
+
 class LiveWindow(Window):
     def __init__(self, root: tk.Tk, firmware: Path,
                  qemu: Path, state_dir: Path | None = None,
@@ -32,6 +46,8 @@ class LiveWindow(Window):
         self._active_virtual_network = self.virtual_network_enabled
         self.network_host_time_enabled = self._load_virtual_network("network_host_time")
         self._active_network_host_time = self.network_host_time_enabled
+        self.network_start_time = self._load_network_start_time()
+        self._active_network_start_time = self.network_start_time
         self.transport: Transport | None = None
         self._active_firmware: Path | None = None
         self._active_overrides: dict[str, object] = {}
@@ -67,6 +83,13 @@ class LiveWindow(Window):
             variable=self.network_host_time_var, command=self._set_network_host_time,
         )
         self.network_host_time_button.grid(row=3, column=0, columnspan=2, pady=2)
+        self.network_start_time_label = ttk.Label(self.settings_button.master, text=self._text("network_start_time"))
+        self.network_start_time_label.grid(row=4, column=0, columnspan=2)
+        self.network_start_time_var = tk.StringVar(master=self.root, value=self.network_start_time)
+        entry = ttk.Entry(self.settings_button.master, textvariable=self.network_start_time_var)
+        entry.grid(row=5, column=0, columnspan=2, pady=2)
+        entry.bind("<Return>", self._set_network_start_time)
+        entry.bind("<FocusOut>", self._set_network_start_time)
         self.secondary_window = tk.Toplevel(self.root)
         self.secondary_window.withdraw()
         self.secondary_window.title("Additional display (experimental)")
@@ -97,6 +120,7 @@ class LiveWindow(Window):
         if hasattr(self, "virtual_network_button"):
             self.virtual_network_button.configure(text=self._text("virtual_network"))
             self.network_host_time_button.configure(text=self._text("network_host_time"))
+            self.network_start_time_label.configure(text=self._text("network_start_time"))
 
     def _set_virtual_network(self, key: str = "virtual_network") -> None:
         variable = getattr(self, key + "_var")
@@ -119,6 +143,24 @@ class LiveWindow(Window):
 
     def _set_network_host_time(self) -> None:
         self._set_virtual_network("network_host_time")
+
+    def _set_network_start_time(self, event=None) -> None:
+        value = self.network_start_time_var.get()
+        if value == self.network_start_time:
+            return
+        try:
+            parse_network_start_time(value)
+        except (ValueError, OverflowError, OSError):
+            self.network_start_time_var.set(self.network_start_time)
+            messagebox.showerror(self._text("settings_save_error"), self._text("network_time_error"), parent=self.root)
+            return
+        self.network_start_time = value
+        if self.virtual_network_enabled:
+            self._restart()
+        try:
+            self._save_config()
+        except (OSError, TimeoutError) as error:
+            messagebox.showerror(self._text("settings_save_error"), str(error), parent=self.root)
 
     def _virtual_network_notice(self, transport: Transport) -> str:
         if not self.virtual_network_enabled:
@@ -222,6 +264,9 @@ class LiveWindow(Window):
             self.virtual_network_var.set(self.virtual_network_enabled)
             self.network_host_time_enabled = self._active_network_host_time
             self.network_host_time_var.set(self.network_host_time_enabled)
+            if hasattr(self, "network_start_time_var"):
+                self.network_start_time = self._active_network_start_time
+                self.network_start_time_var.set(self.network_start_time)
             self.status.set(str(error))
             messagebox.showerror(
                 self._text("settings_error"), str(error), parent=self.root
@@ -245,7 +290,8 @@ class LiveWindow(Window):
                 self.qemu, requested_firmware, self.state_dir,
                 self.experimental_c80, config=config,
                 virtual_cell=virtual_cell_scenario(
-                    self.virtual_network_enabled, host_time=self.network_host_time_enabled),
+                    self.virtual_network_enabled, host_time=self.network_host_time_enabled,
+                    start_time=parse_network_start_time(getattr(self, "network_start_time", ""))),
             )
         except Exception as error:
             if self._active_firmware is None:
@@ -256,6 +302,9 @@ class LiveWindow(Window):
             self.virtual_network_var.set(self.virtual_network_enabled)
             self.network_host_time_enabled = self._active_network_host_time
             self.network_host_time_var.set(self.network_host_time_enabled)
+            if hasattr(self, "network_start_time_var"):
+                self.network_start_time = self._active_network_start_time
+                self.network_start_time_var.set(self.network_start_time)
             save_error = None
             try:
                 self._save_config()
@@ -269,7 +318,8 @@ class LiveWindow(Window):
                     self.qemu, self.firmware, self.state_dir,
                     self.experimental_c80, config=rollback,
                     virtual_cell=virtual_cell_scenario(
-                    self.virtual_network_enabled, host_time=self.network_host_time_enabled),
+                        self.virtual_network_enabled, host_time=self.network_host_time_enabled,
+                        start_time=parse_network_start_time(getattr(self, "network_start_time", ""))),
                 )
             except Exception as rollback_error:
                 detail = f"{error}; restore failed: {rollback_error}"
@@ -306,6 +356,7 @@ class LiveWindow(Window):
         self._active_overrides = dict(overrides)
         self._active_virtual_network = self.virtual_network_enabled
         self._active_network_host_time = self.network_host_time_enabled
+        self._active_network_start_time = getattr(self, "network_start_time", "")
         config = transport.config
         self.model.set(display_model_name(
             config.model, config.verified_model, self.ui_language, firmware.stem

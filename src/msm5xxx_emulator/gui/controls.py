@@ -729,9 +729,16 @@ class ControlsMixin:
     def _load_virtual_network(self, key: str = "virtual_network") -> bool:
         try:
             data = json.loads(LAST_CONFIG.read_text(encoding="utf-8"))
-            return data.get(key) is True
+            return data.get(key, key == "network_host_time") is True
         except (AttributeError, OSError, ValueError):
-            return False
+            return key == "network_host_time"
+
+    def _load_network_start_time(self) -> str:
+        try:
+            value = json.loads(LAST_CONFIG.read_text(encoding="utf-8")).get("network_start_time", "")
+            return value if isinstance(value, str) else ""
+        except (AttributeError, OSError, ValueError):
+            return ""
 
     def _load_config(self) -> dict[str, object]:
         try:
@@ -768,6 +775,8 @@ class ControlsMixin:
             for key in ("virtual_network", "network_host_time"):
                 if hasattr(self, key + "_enabled") or key in data:
                     settings[key] = getattr(self, key + "_enabled", data.get(key) is True)
+            if hasattr(self, "network_start_time") or "network_start_time" in data:
+                settings["network_start_time"] = getattr(self, "network_start_time", data.get("network_start_time", ""))
             atomic_write_text(path, json.dumps(
                 settings, ensure_ascii=False, indent=2) + "\n")
             LOGGER.info("GUI profile saved firmware=%s override_keys=%s",

@@ -32,16 +32,16 @@ class LegacyCellTransportTests(unittest.TestCase):
                 self.assertEqual((sync>>(208-32-15))&0x7fff,sid)
                 self.assertEqual((sync>>(208-167-11))&0x7ff,channel)
                 self.assertEqual(neighbor[1],14)
-                # The decoder clock starts at the announced SYS_TIME (2008-07-31 00:00 UTC).
-                self.assertEqual(int(parts[0],16),0x29FAB062F)
-                self.assertEqual((sync>>(208-114-36))&((1<<36)-1),0x29FAB062F)
+                # The decoder clock starts at the announced SYS_TIME (2002-11-21 00:05 UTC).
+                self.assertEqual(int(parts[0],16),0x219D63788)
+                self.assertEqual((sync>>(208-114-36))&((1<<36)-1),0x219D63788)
                 host,_=qemu_virtual_cell_property(data,config,virtual_cell_scenario(
                     True,host_time=True,now=1_300_000_000))
                 host_values=dict(item.split('=',1) for item in host.split(','))
                 host_parts=host_values['legacy-decoder'].split(':')
                 self.assertEqual(int(host_values['legacy-search'].split(':')[-1],16),channel)
                 self.assertEqual((int(host_parts[1],16)>>(208-32-15))&0x7fff,sid)
-                self.assertNotEqual(int(host_parts[0],16),0x29FAB062F)
+                self.assertNotEqual(int(host_parts[0],16),0x219D63788)
                 self.assertEqual(int(host_parts[0],16),
                                  (int(host_parts[1],16)>>(208-114-36))&((1<<36)-1))
                 self.assertEqual((paging>>(72-31-11))&0x7ff,channel)
