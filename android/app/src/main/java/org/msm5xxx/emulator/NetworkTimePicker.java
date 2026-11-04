@@ -37,29 +37,36 @@ final class NetworkTimePicker {
         }, date.get(Calendar.YEAR), date.get(Calendar.MONTH), date.get(Calendar.DAY_OF_MONTH));
         picker.getDatePicker().setMinDate(min.getTimeInMillis());
         picker.getDatePicker().setMaxDate(max.getTimeInMillis());
-        picker.setButton(DatePickerDialog.BUTTON_NEUTRAL, activity.getString(R.string.time_clear),
-                (dialog, which) -> changed.accept(""));
         picker.show();
     }
+    /** One "통신망 시간" row: device clock or a manually chosen start time (empty value = device clock). */
     static LinearLayout row(Activity activity, String value, Consumer<String> changed) {
         int pad = Math.round(16 * activity.getResources().getDisplayMetrics().density);
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.VERTICAL); row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(pad, pad / 2, pad, pad / 2); row.setMinimumHeight(pad * 4);
-        TextView title = new TextView(activity); title.setText(R.string.network_start_time);
+        TextView title = new TextView(activity); title.setText(R.string.network_time);
         title.setTextSize(16); title.setTextColor(Color.WHITE); row.addView(title);
         TextView subtitle = new TextView(activity); subtitle.setTextSize(13);
         subtitle.setTextColor(Color.rgb(160, 160, 166)); row.addView(subtitle);
         final String[] current = {value};
         Runnable update = () -> {
             Date date = NetworkTimeValue.parse(current[0]);
-            subtitle.setText(date == null ? activity.getString(R.string.time_off)
+            subtitle.setText(date == null ? activity.getString(R.string.time_device_clock)
                     : NetworkTimeValue.display(date, activity.getResources().getConfiguration().getLocales().get(0)));
         };
         update.run();
-        row.setOnClickListener(v -> show(activity, current[0], next -> {
-            current[0] = next; update.run(); changed.accept(next);
-        }));
+        Consumer<String> apply = next -> { current[0] = next; update.run(); changed.accept(next); };
+        row.setOnClickListener(v -> new android.app.AlertDialog.Builder(activity)
+                .setTitle(R.string.network_time)
+                .setSingleChoiceItems(new String[]{activity.getString(R.string.time_device_clock),
+                                activity.getString(R.string.time_set_manually)},
+                        NetworkTimeValue.parse(current[0]) == null ? 0 : 1, (dialog, which) -> {
+                            dialog.dismiss();
+                            if (which == 0) apply.accept("");
+                            else show(activity, current[0], apply);
+                        })
+                .show());
         return row;
     }
 }

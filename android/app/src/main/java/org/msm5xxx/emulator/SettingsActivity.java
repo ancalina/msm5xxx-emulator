@@ -79,7 +79,6 @@ public final class SettingsActivity extends Activity {
         SharedPreferences session = getSharedPreferences("launcher", MODE_PRIVATE);
         header(R.string.library_session_settings);
         toggle(session, "virtual_network", false, R.string.virtual_network);
-        toggle(session, "network_host_time", true, R.string.network_host_time);
         startTime(session);
         toggle(session, "persistent_state", true, R.string.persistent_state);
     }
@@ -145,13 +144,22 @@ public final class SettingsActivity extends Activity {
         toggle.setMinHeight(dp(56));
         toggle.setPadding(dp(16), 0, dp(16), 0);
         toggle.setBackground(null);
-        toggle.setOnCheckedChangeListener((view, checked) -> session.edit().putBoolean(key, checked).apply());
+        toggle.setOnCheckedChangeListener((view, checked) -> {
+            session.edit().putBoolean(key, checked).apply();
+            if ("virtual_network".equals(key)) build();
+        });
         body.addView(toggle, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private void startTime(SharedPreferences session) {
-        body.addView(NetworkTimePicker.row(this, session.getString("network_start_time", ""),
-                value -> session.edit().putString("network_start_time", value).apply()));
+        // Network time only matters with the virtual network on; empty start time means device clock.
+        LinearLayout row = NetworkTimePicker.row(this, session.getString("network_start_time", ""),
+                value -> session.edit().putBoolean("network_host_time", value.isEmpty())
+                        .putString("network_start_time", value).apply());
+        boolean enabled = session.getBoolean("virtual_network", false);
+        row.setEnabled(enabled);
+        row.setAlpha(enabled ? 1f : 0.4f);
+        body.addView(row);
     }
 
     private ImageButton icon(int resource, String description) {

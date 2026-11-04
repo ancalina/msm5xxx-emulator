@@ -226,4 +226,7 @@
     <string name="time_clear">지우기</string>
     <string name="confirm_power_off_library">전원을 끄고 목록으로 돌아갈까요?</string>
     <string name="library_files">파일 선택</string>
+    <string name="network_time">통신망 시간</string>
+    <string name="time_device_clock">기기 시계</string>
+    <string name="time_set_manually">직접 지정…</string>
 </resources>

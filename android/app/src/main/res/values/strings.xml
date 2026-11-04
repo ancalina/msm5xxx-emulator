@@ -226,4 +226,7 @@
     <string name="time_clear">Clear</string>
     <string name="confirm_power_off_library">Power off and return to the library?</string>
     <string name="library_files">Choose file</string>
+    <string name="network_time">Network time</string>
+    <string name="time_device_clock">Device clock</string>
+    <string name="time_set_manually">Set manually…</string>
 </resources>
