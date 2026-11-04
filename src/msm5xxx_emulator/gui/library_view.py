@@ -15,8 +15,8 @@ from .locale import UI_TEXT
 
 def format_size(size: int) -> str:
     value = max(0, size)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
             return f"{value:.1f} {unit}" if unit != "B" else f"{value} B"
         value /= 1024
 

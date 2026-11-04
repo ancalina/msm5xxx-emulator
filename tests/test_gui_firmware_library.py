@@ -87,7 +87,7 @@ class FirmwareLibraryTest(unittest.TestCase):
 
     def test_size_formatting(self):
         from msm5xxx_emulator.gui.library_view import format_size
-        self.assertEqual(format_size(4259824), "4.1 MB")
+        self.assertEqual(format_size(4259824), "4.1 MiB")
         self.assertEqual(format_size(42), "42 B")
 
     def test_fallback_name(self):

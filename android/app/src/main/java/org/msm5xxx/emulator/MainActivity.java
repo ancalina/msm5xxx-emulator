@@ -297,6 +297,8 @@ public final class MainActivity extends Activity {
     @Override
     protected void onPause() {
         activityResumed = false;
+        if (session != null && libraryScreen != null && frameView != null)
+            libraryScreen.recordFrame(preferences().getString(KEY_URI, null), frameView.bitmap);
         if (presentationListenerRegistered && displayManager != null) {
             displayManager.unregisterDisplayListener(presentationDisplayListener);
             presentationListenerRegistered = false;

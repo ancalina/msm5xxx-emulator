@@ -424,10 +424,12 @@ struct FirmwareLibraryView: View {
                         }
                         VStack(alignment: .leading) {
                             Text(entry.displayName)
-                            Text("\(entry.chipset ?? "—") · \(ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file)) · \(lastBoot(entry))")
+                            Text("\(entry.chipset ?? "—") · \(String(format: "%.1f MiB", Double(entry.size) / 1048576)) · \(lastBoot(entry))")
                                 .font(.caption).foregroundColor(.secondary)
                             if !entry.available { Text(text("Library unavailable")).font(.caption) }
                         }
+                        Spacer(minLength: 0)
+                        if entry.available && (entry.sha256 ?? "").isEmpty { ProgressView().accessibilityHidden(true) }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { select(entry) }

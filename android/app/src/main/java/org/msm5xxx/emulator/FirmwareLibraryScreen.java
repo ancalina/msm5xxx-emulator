@@ -204,11 +204,18 @@ final class FirmwareLibraryScreen {
                         : DateFormat.getDateTimeInstance().format(new Date(last));
                 String spoken = activity.getString(R.string.library_row, name, chipset, booted);
                 label.setText(name + "\n" + chipset + " · " + (entry.optLong("size", -1) < 0 ? activity.getString(R.string.size_unavailable) :
-                        android.text.format.Formatter.formatShortFileSize(activity, entry.optLong("size"))) + "\n" + booted
+                        String.format(java.util.Locale.US, "%.1f MiB", entry.optLong("size") / 1048576.0)) + "\n" + booted
                         + (entry.optBoolean("available", false) ? "" : " · " + activity.getString(R.string.library_unavailable))
                         + (entry.optBoolean("preview_deferred", false) ? " · " + activity.getString(R.string.library_preview_after_boot) : ""));
                 label.setTextSize(16);
                 row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+                if (entry.optBoolean("available", false) && entry.optString("sha256", "").isEmpty()) {
+                    android.widget.ProgressBar spinner = new android.widget.ProgressBar(activity, null, android.R.attr.progressBarStyleSmall);
+                    spinner.setIndeterminate(true);
+                    spinner.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                    row.addView(spinner, new LinearLayout.LayoutParams(pad * 2, pad * 2));
+                    spoken += ", " + activity.getString(R.string.library_loading);
+                }
                 row.setContentDescription(spoken);
                 label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
                 image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -638,6 +645,13 @@ final class FirmwareLibraryScreen {
                         entry.put("size", metadata.optLong("size", entry.optLong("size", -1)));
                     }
                     String sha = entry.optString("sha256", "");
+                    JSONObject done = new JSONObject(entry.toString());
+                    activity.runOnUiThread(() -> {
+                        if (token != revision.get() || !showing) return;
+                        for (int row = 0; row < visible.size(); row++)
+                            if (done.optString("uri").equals(visible.get(row).optString("uri"))) { visible.set(row, done); break; }
+                        adapter.notifyDataSetChanged();
+                    });
                     if (!sha.isEmpty() && !hashes.add(sha)) continue;
                     rows.add(entry);
                 } catch (IOException | RuntimeException | JSONException ignored) { }
