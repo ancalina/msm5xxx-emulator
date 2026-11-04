@@ -61,7 +61,13 @@ final class FirmwareLibraryScreen {
     private final Listener listener;
     private final SharedPreferences preferences;
     private final Object stateLock = new Object();
-    private final ExecutorService scanner = Executors.newSingleThreadExecutor();
+    private static ExecutorService backgroundExecutor(String name) {
+        return Executors.newSingleThreadExecutor(task -> new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+            task.run();
+        }, name));
+    }
+    private final ExecutorService scanner = backgroundExecutor("library-scan");
     private final ArrayList<JSONObject> visible = new ArrayList<>();
     private boolean showing;
     private ListView list;
@@ -74,7 +80,7 @@ final class FirmwareLibraryScreen {
     private final LruCache<String, Bitmap> thumbnails = new LruCache<>(4 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount(); }
     };
-    private final ExecutorService imageLoader = Executors.newSingleThreadExecutor();
+    private final ExecutorService imageLoader = backgroundExecutor("library-images");
     private final java.util.Set<String> loadingImages = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final Handler ui = new Handler(Looper.getMainLooper());
     private long lastListUpdate;
@@ -204,9 +210,15 @@ final class FirmwareLibraryScreen {
         list.setAdapter(adapter);
         JSONArray cached = read("entries");
         visible.clear();
-        for (int i = 0; i < cached.length(); i++) {
-            JSONObject entry = cached.optJSONObject(i);
-            if (entry != null) visible.add(entry);
+        HashSet<String> cachedHashes = new HashSet<>();
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < cached.length(); i++) {
+                JSONObject entry = cached.optJSONObject(i);
+                if (entry == null || entry.optBoolean("available", false) != (pass == 0)) continue;
+                String hash = entry.optString("sha256", "");
+                if (!hash.isEmpty() && !cachedHashes.add(hash)) continue;
+                visible.add(entry);
+            }
         }
         publishRows();
         list.setOnItemClickListener((parent, view, position, id) -> choose(groups.get(position), 0));
@@ -378,7 +390,9 @@ final class FirmwareLibraryScreen {
             else {
                 holder.image.setImageResource(R.drawable.ic_phone); holder.image.setScaleType(ImageView.ScaleType.CENTER); holder.image.setAlpha(0.35f);
                 if (!path.isEmpty() && loadingImages.add(key)) {
+                    long requestRevision = revision.get();
                     imageLoader.execute(() -> {
+                        if (requestRevision != revision.get()) { loadingImages.remove(key); return; }
                         Bitmap decoded = BitmapFactory.decodeFile(path);
                         if (decoded != null) thumbnails.put(key, decoded);
                         loadingImages.remove(key);
@@ -578,9 +592,20 @@ final class FirmwareLibraryScreen {
     }
 
     void recordBoot(String uri, String sha, String sessionPath, String name) {
+        boolean needsMetadata = true;
+        synchronized (stateLock) {
+            JSONArray entries = read("entries");
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject item = entries.optJSONObject(i);
+                if (item != null && uri != null && uri.equals(item.optString("uri"))) {
+                    needsMetadata = LibraryGrouping.needsMetadata(item.optString("sha256", ""), sha, item.has("model"));
+                    break;
+                }
+            }
+        }
         updateEntry(uri, "sha256", sha);
         updateEntry(uri, "last_booted", System.currentTimeMillis());
-        if (uri == null || sessionPath == null || name == null) return;
+        if (!needsMetadata || uri == null || sessionPath == null || name == null) return;
         scanner.execute(() -> {
             try {
                 JSONObject metadata = new JSONObject(PythonRuntime.describeLibrary(activity, new File(sessionPath), name));

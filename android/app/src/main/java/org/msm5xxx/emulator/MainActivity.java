@@ -1223,7 +1223,7 @@ public final class MainActivity extends Activity {
         latestStatus = status;
         foldButton.setEnabled(true);
         foldButton.setAlpha(1f);
-        foldButton.setText(status.foldOpen ? R.string.fold_close : R.string.fold_open);
+        setTextIfChanged(foldButton, getString(status.foldOpen ? R.string.fold_close : R.string.fold_open));
         secondaryPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
         if (presentationPreviewNotice != null) {
             presentationPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
@@ -2261,8 +2261,8 @@ public final class MainActivity extends Activity {
             if (bitmap != null) {
                 bitmap.recycle();
                 bitmap = null;
+                invalidate();
             }
-            invalidate();
         }
 
         void setFrame(FramePacket frame, int generation) {

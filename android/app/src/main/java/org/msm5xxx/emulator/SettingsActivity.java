@@ -2,16 +2,14 @@ package org.msm5xxx.emulator;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
-import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.view.inputmethod.EditorInfo;
-import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -27,6 +25,16 @@ public final class SettingsActivity extends Activity {
     private static final int BACKGROUND = Color.rgb(18, 18, 18);
     private static final int SECONDARY_TEXT = Color.rgb(160, 160, 166);
     private LinearLayout body;
+
+    @Override protected void attachBaseContext(Context base) {
+        String language = base.getSharedPreferences("launcher", MODE_PRIVATE).getString("ui_language", "auto");
+        if (!"auto".equals(language)) {
+            android.content.res.Configuration config = new android.content.res.Configuration(base.getResources().getConfiguration());
+            config.setLocale(java.util.Locale.forLanguageTag(language));
+            base = base.createConfigurationContext(config);
+        }
+        super.attachBaseContext(base);
+    }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
