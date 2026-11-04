@@ -74,13 +74,9 @@ def runtime_status_text(latest: dict[str, object], ui_language: str) -> str:
 def runtime_notice_text(latest: dict[str, object], ui_language: str) -> str:
     """Return only exceptional or optional runtime notices below metrics."""
     parts: list[str] = []
-    audio_requests = int(latest.get("audio_play_requests", 0))
     audio_backend = str(latest.get("audio_backend", ""))
-    if audio_requests:
-        parts.append(f"{UI_TEXT[ui_language]['audio_label']} {audio_requests}")
-    elif audio_backend in ("disabled", "render-only"):
+    if audio_backend in ("disabled", "render-only"):
         parts.append(UI_TEXT[ui_language]["audio_unavailable"])
     if latest.get("audio_error"):
-        parts.append(f"{UI_TEXT[ui_language]['audio_error']}: "
-                     f"{latest['audio_error']}")
+        parts.append(UI_TEXT[ui_language]["audio_error"])
     return "\n".join(parts)

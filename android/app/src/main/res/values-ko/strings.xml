@@ -7,7 +7,7 @@
     <string name="stop">중지</string>
     <string name="more">•••</string>
     <string name="more_actions">메뉴</string>
-    <string name="edit_input_mapping">입력 매핑 편집</string>
+    <string name="edit_input_mapping">키 배치 편집</string>
     <string name="done_editing">편집 완료</string>
 
     <string name="key_menu">메뉴</string>
@@ -37,14 +37,14 @@
     <string name="size_unavailable">크기 정보 없음</string>
     <string name="size_bytes">%1$d바이트</string>
     <string name="copying_firmware">펌웨어 복사 중…</string>
-    <string name="detecting_firmware">펌웨어 프로필 탐지 중…</string>
+    <string name="detecting_firmware">펌웨어 확인 중…</string>
     <string name="model_unknown">알 수 없음 (%1$s)</string>
     <string name="model_unverified">%1$s (미확인)</string>
     <string name="profile_header">%1$s · %2$d×%3$d · %4$s</string>
     <string name="profile_header_without_geometry">%1$s · %2$s</string>
-    <string name="starting_session">QEMU 시작 중…</string>
-    <string name="lcd_visible">LCD 화면 표시됨</string>
-    <string name="lcd_waiting">LCD 화면 대기 중</string>
+    <string name="starting_session">시작 중…</string>
+    <string name="lcd_visible">화면 표시 중</string>
+    <string name="lcd_waiting">화면을 기다리는 중</string>
     <string name="metric_pc_empty">PC —</string>
     <string name="metric_run_empty">실행 —</string>
     <string name="metric_lcd_empty">LCD —</string>
@@ -63,49 +63,49 @@
     <string name="metric_ack">ACK %1$s</string>
     <string name="latency_pending">—</string>
     <string name="latency_milliseconds">%1$d ms</string>
-    <string name="stopping_session">QEMU 중지 중…</string>
-    <string name="session_failed">세션 실패</string>
+    <string name="stopping_session">종료 중…</string>
+    <string name="session_failed">실행 실패</string>
 
-    <string name="error_no_picker">문서 선택기를 사용할 수 없습니다.</string>
-    <string name="error_unreadable_document">선택한 문서는 읽을 수 있는 펌웨어 파일이 아닙니다.</string>
-    <string name="error_copy_failed">선택한 펌웨어를 private storage에 복사하지 못했습니다.</string>
-    <string name="error_private_copy_missing">private 펌웨어 복사본이 없습니다. 다시 선택하세요.</string>
-    <string name="error_preparation_failed">펌웨어 준비 실패</string>
+    <string name="error_no_picker">파일 선택을 사용할 수 없습니다.</string>
+    <string name="error_unreadable_document">선택한 펌웨어 파일을 읽을 수 없습니다.</string>
+    <string name="error_copy_failed">펌웨어를 복사하지 못했습니다.</string>
+    <string name="error_private_copy_missing">펌웨어 복사본이 없습니다. 다시 선택하세요.</string>
+    <string name="error_preparation_failed">펌웨어를 준비하지 못했습니다.</string>
     <string name="error_unsupported_firmware">지원하지 않는 펌웨어입니다.</string>
-    <string name="error_detection_failed">펌웨어 탐지 실패</string>
-    <string name="error_backend_failed">QEMU backend를 사용할 수 없습니다.</string>
-    <string name="error_detector_runtime_failed">detector runtime을 사용할 수 없습니다.</string>
+    <string name="error_detection_failed">펌웨어를 확인하지 못했습니다.</string>
+    <string name="error_backend_failed">에뮬레이터를 사용할 수 없습니다.</string>
+    <string name="error_detector_runtime_failed">펌웨어를 확인할 수 없습니다.</string>
     <string name="error_not_ready">선택한 펌웨어는 아직 실행 준비가 되지 않았습니다.</string>
-    <string name="error_session_failed">QEMU 세션을 계속할 수 없습니다.</string>
-    <string name="error_process_exited">QEMU process가 종료되었습니다.</string>
+    <string name="error_session_failed">계속 실행할 수 없습니다.</string>
+    <string name="error_process_exited">에뮬레이터가 종료되었습니다.</string>
     <string name="error_input_failed">입력을 전송하지 못했습니다.</string>
-    <string name="error_stop_failed">QEMU 세션이 정상 종료되지 않았습니다.</string>
+    <string name="error_stop_failed">정상적으로 종료하지 못했습니다.</string>
 
     <string name="settings_title">설정</string>
     <string name="persistent_state">기기 상태 저장</string>
-    <string name="experimental_rex">실험적 static REX controller</string>
+    <string name="experimental_rex">실험적 REX 제어</string>
     <string name="virtual_network">가상 통신망 (통화 미지원)</string>
     <string name="virtual_network_active">가상 통신망</string>
     <string name="virtual_network_unavailable">이 펌웨어는 가상 통신망 미지원</string>
     <string name="save">저장</string>
     <string name="cancel">취소</string>
 
-    <string name="mapping_title">%1$s 매핑</string>
+    <string name="mapping_title">%1$s 키 설정</string>
     <string name="mapping_value">0x%1$02X</string>
-    <string name="mapping_prompt">탐지된 physical input event byte를 입력하세요(예: 0x53 또는 053). 고유한 firmware matrix/sideband producer만 허용합니다. 빈 값은 매핑을 삭제합니다.</string>
-    <string name="mapping_invalid">0x00..0xFF, zero-prefixed hex 또는 decimal 0..255를 사용하세요.</string>
-    <string name="mapping_rejected">해당 event에는 고유하게 탐지된 physical input producer가 없습니다.</string>
-    <string name="mapping_saved">수동 키 매핑 저장됨</string>
-    <string name="mapping_deleted">수동 키 매핑 삭제됨</string>
-    <string name="key_detected_description">%1$s, 탐지된 입력</string>
-    <string name="key_mapped_description">%1$s, 수동 매핑</string>
-    <string name="key_mapping_description">%1$s, 탭하여 입력 매핑</string>
+    <string name="mapping_prompt">키 코드 (예: 0x53 또는 053)를 입력하세요; 비우면 설정이 삭제됩니다.</string>
+    <string name="mapping_invalid">0x00~0xFF, 0으로 시작하는 16진수 또는 0~255를 입력하세요.</string>
+    <string name="mapping_rejected">이 키 코드는 사용할 수 없습니다.</string>
+    <string name="mapping_saved">키 설정 저장됨</string>
+    <string name="mapping_deleted">키 설정 삭제됨</string>
+    <string name="key_detected_description">%1$s, 자동 설정</string>
+    <string name="key_mapped_description">%1$s, 직접 설정</string>
+    <string name="key_mapping_description">%1$s, 탭하여 키 설정</string>
 
     <string name="unnamed_firmware">이름 없는 펌웨어</string>
     <string name="additional_display">보조 화면</string>
     <string name="move_display">화면 이동</string>
     <string name="resize_display">화면 크기 조절</string>
-    <string name="reboot">ROM 재부팅</string>
+    <string name="reboot">재부팅</string>
     <string name="fold_open">폴더 열기</string>
     <string name="fold_close">폴더 닫기</string>
     <string name="display_destination">보조 화면 표시 위치</string>
@@ -127,42 +127,42 @@
         <item>칩셋</item>
         <item>화면 너비</item>
         <item>화면 높이</item>
-        <item>Board revision 이름</item>
+        <item>보드 버전 이름</item>
         <item>이미지 오프셋</item>
         <item>로드 주소</item>
-        <item>Flash 크기</item>
+        <item>플래시 크기</item>
         <item>RAM 시작 주소</item>
         <item>RAM 크기</item>
-        <item>RAM image 오프셋</item>
-        <item>RAM image 크기 (0=끔)</item>
+        <item>RAM 이미지 오프셋</item>
+        <item>RAM 이미지 크기 (0=끔)</item>
         <item>진입점 오프셋</item>
-        <item>Framebuffer 주소 (빈 값=끔)</item>
-        <item>프레임 버퍼 행 크기 (바이트)</item>
-        <item>프레임 버퍼 픽셀 형식</item>
-        <item>Board revision 레지스터</item>
-        <item>Board revision 값</item>
+        <item>화면 버퍼 주소 (빈 값=끔)</item>
+        <item>화면 버퍼 행 크기 (바이트)</item>
+        <item>화면 버퍼 픽셀 형식</item>
+        <item>보드 버전 레지스터</item>
+        <item>보드 버전 값</item>
         <item>키 레지스터</item>
-        <item>키 active-low</item>
-        <item>REX idle 함수</item>
-        <item>REX tick 함수</item>
-        <item>REX tick 밀리초</item>
-        <item>Board ADC 값</item>
-        <item>Flash ID 함수</item>
-        <item>Flash ID 값</item>
-        <item>DMD download 함수</item>
-        <item>NOR probe 함수</item>
+        <item>키 낮은 신호 활성화</item>
+        <item>REX 대기 함수</item>
+        <item>REX 틱 함수</item>
+        <item>REX 틱 간격 (밀리초)</item>
+        <item>보드 ADC 값</item>
+        <item>플래시 ID 함수</item>
+        <item>플래시 ID 값</item>
+        <item>DMD 다운로드 함수</item>
+        <item>NOR 확인 함수</item>
         <item>보조 NOR 주소 (0=끔)</item>
         <item>보조 NOR 크기</item>
-        <item>보조 NOR image</item>
-        <item>보조 NOR state</item>
-        <item>보조 NOR write 함수</item>
+        <item>보조 NOR 이미지</item>
+        <item>보조 NOR 상태 파일</item>
+        <item>보조 NOR 쓰기 함수</item>
         <item>플래시 상태 파일</item>
         <item>NAND 사용</item>
         <item>NAND 원본 이미지</item>
-        <item>NAND data 크기</item>
-        <item>NAND page 크기</item>
-        <item>NAND spare 크기</item>
-        <item>NAND block당 pages</item>
+        <item>NAND 데이터 크기</item>
+        <item>NAND 페이지 크기</item>
+        <item>NAND 예비 영역 크기</item>
+        <item>블록당 NAND 페이지 수</item>
         <item>NAND 버스 폭 (바이트)</item>
     </string-array>
     <string name="virtual_network_menu">가상 통신망</string>
@@ -195,7 +195,7 @@
         <item>메모리</item>
         <item>화면 버퍼</item>
         <item>하드웨어</item>
-        <item>장치 전송</item>
+        <item>장치 설정</item>
         <item>보조 플래시</item>
         <item>저장</item>
     </string-array>
@@ -205,7 +205,7 @@
     <string name="time_format_hint">YYYY-MM-DD HH:MM</string>
     <string name="library_title">펌웨어 목록</string>
     <string name="library_empty">펌웨어를 추가하세요</string>
-    <string name="library_loading">탐지 중…</string>
+    <string name="library_loading">확인 중…</string>
     <string name="library_add_folder">폴더 추가</string>
     <string name="library_import">파일 가져오기</string>
     <string name="library_refresh">새로고침</string>

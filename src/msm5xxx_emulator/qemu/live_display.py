@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from datetime import datetime
 import os
 from pathlib import Path
@@ -566,15 +567,12 @@ class LiveWindow(Window):
             f"QEMU TCG · {emulator.config.chipset} · {width}×{height}"
             + self._virtual_network_notice(transport)
         )
-        self.metric_values["run"].set(f"{transport.instructions:,}")
-        self.metric_values["pc"].set(f"0x{transport.pc:08X}")
-        self.metric_values["lcd"].set(f"{emulator.lcd_writes:,}")
-        secondary = emulator.secondary_display_snapshot()
-        sub_frames = secondary.get("sequence", 0) if secondary else 0
-        frames = str(emulator.frame_sequence)
-        if sub_frames:
-            frames += f" + {sub_frames} sub"
-        self.metric_values["frame"].set(frames)
+        now = time.monotonic()
+        if now - getattr(self, "_last_qemu_metric_log", 0) >= 10:
+            self._last_qemu_metric_log = now
+            logging.getLogger("gui").debug(
+                "runtime diagnostics: run=%s pc=0x%08X lcd=%s frame=%s",
+                transport.instructions, transport.pc, emulator.lcd_writes, emulator.frame_sequence)
         self.root.after(100, self._refresh_qemu_metrics)
 
     def _refresh_display(self) -> None:

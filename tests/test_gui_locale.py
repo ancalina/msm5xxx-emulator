@@ -67,7 +67,7 @@ class GuiLocaleTests(unittest.TestCase):
 
     def test_korean_metric_labels_and_pc_expansion(self) -> None:
         self.assertEqual(METRIC_TEXT["ko"]["run"][0], "실행")
-        self.assertIn("Program Counter", METRIC_TEXT["ko"]["pc"][1])
+        self.assertEqual(METRIC_TEXT["ko"]["pc"][1], "다음에 실행할 명령어 주소")
 
     def test_apply_mode_separates_language_firmware_and_overrides(self) -> None:
         self.assertEqual(settings_apply_mode(set(), False), "language")
@@ -119,7 +119,7 @@ class GuiLocaleTests(unittest.TestCase):
                 "instructions": 1_234_567, "pc": "0x1000", "lcd_writes": 2,
                 "frame_sequence": 3, "audio_backend": "disabled",
             }, "en"),
-            "Run 1,234,567\nPC 0x1000\nLCD 2\nframe 3\nAudio unavailable",
+            "Run 1,234,567\nPC 0x1000\nLCD 2\nframe 3\nSound unavailable",
         )
 
     def test_input_errors_are_not_gui_runtime_text(self) -> None:
@@ -133,11 +133,17 @@ class GuiLocaleTests(unittest.TestCase):
             notice = runtime_notice_text(latest, language)
             self.assertIn("12", status)
             self.assertIn("5", status)
-            self.assertIn("5", notice)
+            self.assertNotIn("5", notice)
             self.assertNotIn(label, status)
             self.assertNotIn(label, notice)
             self.assertNotIn("fail-closed key rejected", status)
             self.assertNotIn("fail-closed key rejected", notice)
+
+    def test_audio_notice_hides_diagnostic_details(self) -> None:
+        notice = runtime_notice_text({"audio_play_requests": 123, "audio_error": "internal detail"}, "en")
+        self.assertEqual(notice, "Sound error")
+        self.assertNotIn("internal detail", notice)
+        self.assertNotIn("123", notice)
 
     def test_preference_is_global_not_firmware_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

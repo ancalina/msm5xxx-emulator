@@ -7,7 +7,7 @@
     <string name="stop">Stop</string>
     <string name="more">•••</string>
     <string name="more_actions">Menu</string>
-    <string name="edit_input_mapping">Edit input mapping</string>
+    <string name="edit_input_mapping">Edit key layout</string>
     <string name="done_editing">Done</string>
 
     <string name="key_menu">Menu</string>
@@ -37,14 +37,14 @@
     <string name="size_unavailable">Size unavailable</string>
     <string name="size_bytes">%1$d bytes</string>
     <string name="copying_firmware">Copying firmware…</string>
-    <string name="detecting_firmware">Detecting firmware profile…</string>
+    <string name="detecting_firmware">Checking firmware…</string>
     <string name="model_unknown">Unknown (%1$s)</string>
     <string name="model_unverified">%1$s (unverified)</string>
     <string name="profile_header">%1$s · %2$d×%3$d · %4$s</string>
     <string name="profile_header_without_geometry">%1$s · %2$s</string>
-    <string name="starting_session">Starting QEMU…</string>
-    <string name="lcd_visible">LCD frame visible</string>
-    <string name="lcd_waiting">LCD frame pending</string>
+    <string name="starting_session">Starting…</string>
+    <string name="lcd_visible">Screen visible</string>
+    <string name="lcd_waiting">Waiting for screen</string>
     <string name="metric_pc_empty">PC —</string>
     <string name="metric_run_empty">Run —</string>
     <string name="metric_lcd_empty">LCD —</string>
@@ -63,49 +63,49 @@
     <string name="metric_ack">ACK %1$s</string>
     <string name="latency_pending">—</string>
     <string name="latency_milliseconds">%1$d ms</string>
-    <string name="stopping_session">Stopping QEMU…</string>
-    <string name="session_failed">Session failed.</string>
+    <string name="stopping_session">Stopping…</string>
+    <string name="session_failed">Could not run</string>
 
-    <string name="error_no_picker">No document picker is available.</string>
-    <string name="error_unreadable_document">The selected document is not a readable firmware file.</string>
-    <string name="error_copy_failed">Could not copy the selected firmware into private storage.</string>
-    <string name="error_private_copy_missing">The private firmware copy is unavailable. Choose it again.</string>
-    <string name="error_preparation_failed">Firmware preparation failed.</string>
+    <string name="error_no_picker">Cannot open the file picker.</string>
+    <string name="error_unreadable_document">Cannot read the selected firmware file.</string>
+    <string name="error_copy_failed">Could not copy the firmware.</string>
+    <string name="error_private_copy_missing">Firmware copy missing. Choose it again.</string>
+    <string name="error_preparation_failed">Could not prepare the firmware.</string>
     <string name="error_unsupported_firmware">Unsupported firmware.</string>
-    <string name="error_detection_failed">Firmware detection failed.</string>
-    <string name="error_backend_failed">The QEMU backend is unavailable.</string>
-    <string name="error_detector_runtime_failed">The detector runtime is unavailable.</string>
+    <string name="error_detection_failed">Could not check the firmware.</string>
+    <string name="error_backend_failed">The emulator is unavailable.</string>
+    <string name="error_detector_runtime_failed">Cannot check the firmware.</string>
     <string name="error_not_ready">The selected firmware is not ready to run.</string>
-    <string name="error_session_failed">The QEMU session could not continue.</string>
-    <string name="error_process_exited">The QEMU process exited.</string>
+    <string name="error_session_failed">Cannot continue running.</string>
+    <string name="error_process_exited">The emulator stopped.</string>
     <string name="error_input_failed">The input could not be sent.</string>
-    <string name="error_stop_failed">The QEMU session did not stop cleanly.</string>
+    <string name="error_stop_failed">Could not stop cleanly.</string>
 
     <string name="settings_title">Settings</string>
-    <string name="persistent_state">Persistent device state</string>
-    <string name="experimental_rex">Experimental static REX controller</string>
+    <string name="persistent_state">Save device state</string>
+    <string name="experimental_rex">Experimental REX control</string>
     <string name="virtual_network">Virtual network (calls unavailable)</string>
     <string name="virtual_network_active">Virtual network</string>
     <string name="virtual_network_unavailable">Virtual network unavailable for this firmware</string>
     <string name="save">Save</string>
     <string name="cancel">Cancel</string>
 
-    <string name="mapping_title">Map %1$s</string>
+    <string name="mapping_title">Set %1$s key</string>
     <string name="mapping_value">0x%1$02X</string>
-    <string name="mapping_prompt">Enter a detected physical input event byte (example: 0x53 or 053). Only a unique firmware matrix/sideband producer is accepted. Leave empty to remove the mapping.</string>
-    <string name="mapping_invalid">Use 0x00..0xFF, zero-prefixed hex, or decimal 0..255.</string>
-    <string name="mapping_rejected">That event has no unique detected physical input producer.</string>
-    <string name="mapping_saved">Manual key mapping saved.</string>
-    <string name="mapping_deleted">Manual key mapping removed.</string>
-    <string name="key_detected_description">%1$s, detected input</string>
-    <string name="key_mapped_description">%1$s, manual mapping</string>
-    <string name="key_mapping_description">%1$s, tap to map input</string>
+    <string name="mapping_prompt">Enter a key code (e.g. 0x53 or 053); leave blank to remove the assignment.</string>
+    <string name="mapping_invalid">Enter 0x00–0xFF, hex starting with 0, or 0–255.</string>
+    <string name="mapping_rejected">This key code cannot be used.</string>
+    <string name="mapping_saved">Key assignment saved</string>
+    <string name="mapping_deleted">Key assignment removed</string>
+    <string name="key_detected_description">%1$s, automatically assigned</string>
+    <string name="key_mapped_description">%1$s, manually assigned</string>
+    <string name="key_mapping_description">%1$s, tap to assign a key</string>
 
     <string name="unnamed_firmware">Unnamed firmware</string>
     <string name="additional_display">Additional display</string>
     <string name="move_display">Move display</string>
     <string name="resize_display">Resize display</string>
-    <string name="reboot">Reboot ROM</string>
+    <string name="reboot">Reboot</string>
     <string name="fold_open">Open fold</string>
     <string name="fold_close">Close fold</string>
     <string name="display_destination">Additional display destination</string>
@@ -119,7 +119,7 @@
     <string name="more_settings">More…</string>
     <string name="capture">Save screenshot</string>
     <string name="capture_saved">Saved: %1$s</string>
-    <string name="ui_language">UI language</string>
+    <string name="ui_language">Language</string>
     <string name="language_auto">Auto (system)</string>
     <string name="automatic_value">Automatic</string>
     <string-array name="detail_labels">
@@ -127,43 +127,43 @@
         <item>Chipset</item>
         <item>Screen Width</item>
         <item>Screen Height</item>
-        <item>Board Revision Name</item>
+        <item>Board version name</item>
         <item>Image Offset</item>
         <item>Load Address</item>
-        <item>Flash Size</item>
+        <item>Flash size</item>
         <item>RAM Base</item>
         <item>RAM Size</item>
-        <item>RAM Image Offset</item>
-        <item>RAM Image Size (0=off)</item>
+        <item>RAM image offset</item>
+        <item>RAM image size (0=off)</item>
         <item>Entry Offset</item>
-        <item>Framebuffer Address (empty=off)</item>
-        <item>Framebuffer stride bytes</item>
-        <item>Framebuffer pixel format</item>
-        <item>Board Revision Register</item>
-        <item>Board Revision Value</item>
+        <item>Display buffer address (blank=off)</item>
+        <item>Display buffer row size (bytes)</item>
+        <item>Display buffer pixel format</item>
+        <item>Board version register</item>
+        <item>Board version value</item>
         <item>Key Register</item>
-        <item>Key Active-Low</item>
-        <item>REX Idle Function</item>
-        <item>REX Tick Function</item>
-        <item>REX Tick Milliseconds</item>
-        <item>Board ADC Value</item>
-        <item>Flash ID Function</item>
-        <item>Flash ID Value</item>
-        <item>DMD Download Function</item>
-        <item>NOR Probe Function</item>
+        <item>Key active low</item>
+        <item>REX idle function</item>
+        <item>REX tick function</item>
+        <item>REX tick interval (ms)</item>
+        <item>Board ADC value</item>
+        <item>Flash ID function</item>
+        <item>Flash ID value</item>
+        <item>DMD download function</item>
+        <item>NOR probe function</item>
         <item>Secondary NOR Address (0=off)</item>
         <item>Secondary NOR Size</item>
-        <item>Secondary NOR Image</item>
-        <item>Secondary NOR State</item>
-        <item>Secondary NOR Write Function</item>
-        <item>Flash state</item>
+        <item>Secondary NOR image</item>
+        <item>Secondary NOR state file</item>
+        <item>Secondary NOR write function</item>
+        <item>Flash state file</item>
         <item>Enable NAND</item>
-        <item>NAND raw image</item>
-        <item>NAND Data Size</item>
-        <item>NAND Page Size</item>
-        <item>NAND Spare Size</item>
-        <item>NAND Pages per Block</item>
-        <item>NAND bus bytes</item>
+        <item>NAND image</item>
+        <item>NAND data size</item>
+        <item>NAND page size</item>
+        <item>NAND spare size</item>
+        <item>NAND pages per block</item>
+        <item>NAND bus width (bytes)</item>
     </string-array>
     <string name="virtual_network_menu">Virtual network</string>
     <string name="stop_emulator">Power off</string>
@@ -195,7 +195,7 @@
         <item>Memory</item>
         <item>Display buffer</item>
         <item>Hardware</item>
-        <item>Device transport</item>
+        <item>Device settings</item>
         <item>Secondary flash</item>
         <item>Storage</item>
     </string-array>
@@ -205,7 +205,7 @@
     <string name="time_format_hint">YYYY-MM-DD HH:MM</string>
     <string name="library_title">Firmware library</string>
     <string name="library_empty">Add firmware to your library</string>
-    <string name="library_loading">Detecting…</string>
+    <string name="library_loading">Checking…</string>
     <string name="library_add_folder">Add folder</string>
     <string name="library_import">Import file</string>
     <string name="library_refresh">Refresh</string>

@@ -147,6 +147,7 @@ public final class MainActivity extends Activity {
     private final InputTiming inputTiming = new InputTiming();
     // Only the key-edge executor accesses this state.
     private final KeyPressDuration keyPressDuration = new KeyPressDuration();
+    private long lastMetricsLog;
     private TextView profileView;
     private TextView sessionView;
     private LinearLayout metricsGroup;
@@ -1252,6 +1253,12 @@ public final class MainActivity extends Activity {
         setTextIfChanged(frameMetricView, getString(
                 R.string.metric_frame, status.frameSequence));
         updateMetricsDescription();
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastMetricsLog >= 10000) {
+            lastMetricsLog = now;
+            android.util.Log.d("MSM5xxxSession", "Run " + status.instructions + " PC " + status.pc
+                    + " LCD " + status.lcdWrites + " Frame " + status.frameSequence);
+        }
         setTextIfChanged(inputView, getString(
                 R.string.metric_input, status.inputHostEvents));
         setTextIfChanged(rejectView, getString(
@@ -1927,7 +1934,7 @@ public final class MainActivity extends Activity {
             button.setEnabled(running);
             target.setEnabled(running);
             if (!running) {
-                button.setAlpha(0.72f);
+                button.setAlpha(1f);
                 target.setContentDescription(spokenKeyLabel(key));
                 continue;
             }
@@ -2088,7 +2095,7 @@ public final class MainActivity extends Activity {
         int[] colors = {
                 Color.rgb(46, 46, 48),
                 Color.rgb(112, 112, 116),
-                Color.rgb(83, 83, 86),
+                Color.rgb(46, 46, 48),
         };
         StateListDrawable background = new StateListDrawable();
         for (int index = 0; index < states.length; index++) {

@@ -59,7 +59,7 @@ class MoreMenuTest(unittest.TestCase):
             self.view._show_more()
         popup.assert_not_called()
         self.assertEqual(self.view.settings_button.cget('text'), '•••')
-        self.assertEqual(self.view._text('key_prompt'), 'Key value for this button (blank = default)')
+        self.assertEqual(self.view._text('key_prompt'), 'Enter a key value (leave blank for the default).')
 
     def test_edit_mode_opens_short_popup_without_guest_press(self):
         v = self.view
@@ -70,7 +70,7 @@ class MoreMenuTest(unittest.TestCase):
         with patch('msm5xxx_emulator.gui.controls.simpledialog.askstring', return_value=None) as prompt:
             v._mouse_key_press('1')
             v._mouse_key_release('1')
-        self.assertEqual(prompt.call_args.args[1], 'Key value for this button (blank = default)')
+        self.assertEqual(prompt.call_args.args[1], 'Enter a key value (leave blank for the default).')
         v._key.assert_not_called()
 
     def test_time_validation_and_restart(self):

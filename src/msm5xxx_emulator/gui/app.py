@@ -252,7 +252,8 @@ class Window(ControlsMixin, DisplayViewMixin):
                 launch_args=self._update_launch_args(),
             )
         except UpdateError as error:
-            self.status.set(f"{self._text('update_prepare_failed')}: {error}")
+            LOGGER.warning("update preparation failed: %s", error)
+            self.status.set(self._text('update_prepare_failed'))
             self.update_download_active = False
             return
         self._close()

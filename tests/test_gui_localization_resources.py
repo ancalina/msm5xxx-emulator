@@ -32,6 +32,10 @@ class LocalizationResourcesTest(unittest.TestCase):
         self.assertIn('target.setContentDescription(spokenKeyLabel(key))', source)
         self.assertIn('default: return getString(key.labelResource)', source)
         self.assertNotRegex(source, r'\.(?:setText|setHint|setTitle|setMessage|setContentDescription)\("[^"\n]+"')
+        self.assertNotIn('metricsGroup.setVisibility(View.INVISIBLE)', source)  # the 4 metrics stay visible
+        library = (ROOT / 'android/app/src/main/java/org/msm5xxx/emulator/FirmwareLibraryScreen.java').read_text()
+        self.assertNotIn('row.setFocusable(true)', library)
+        self.assertIn('foldButton.setBackground(handsetButtonBackground())', source)
 
     def test_ios_tables_and_project_registration(self):
         base = ROOT / 'ios/app/MSM5xEmu'

@@ -128,7 +128,7 @@ struct ContentView: View {
                         key(text("Vol+"), 10).frame(height: 44)
                         key(text("Vol-"), 8).frame(height: 44)
                         Button(text(engine.foldOpen ? "Close fold" : "Open fold")) { engine.toggleFold() }
-                            .buttonStyle(HandsetKeyStyle())
+                            .buttonStyle(HandsetKeyStyle(dimmed: !engine.running))
                             .frame(height: 44)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(text(engine.status)).foregroundColor(.gray)
@@ -468,14 +468,15 @@ struct ContentView: View {
 
 
 private struct HandsetKeyStyle: ButtonStyle {
+    let dimmed: Bool
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, relativeTo: .body))
             .lineLimit(1).minimumScaleFactor(0.7)
-            .foregroundColor(enabled ? .white : .gray)
+            .foregroundColor(enabled && !dimmed ? .white : .gray)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(white: !enabled ? 0.18 : configuration.isPressed ? 0.44 : 0.33))
+            .background(Color(white: !enabled || dimmed ? 0.18 : configuration.isPressed ? 0.44 : 0.33))
             .contentShape(Rectangle())
     }
 }

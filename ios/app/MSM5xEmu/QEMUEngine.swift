@@ -37,6 +37,7 @@ final class QEMUEngine: ObservableObject {
     private var audioPackets = 0
     private var audioNonzeroPackets = 0
     private var audioMalformedPackets = 0
+    private var lastMetricsLog = Date.distantPast
     private var lastAudioLog = Date.distantPast
     private var lastAudioError = Date.distantPast
 
@@ -84,8 +85,8 @@ final class QEMUEngine: ObservableObject {
         }
         PythonBridge.configureQEMUEntry(symbol, requestQuit: quit)
         entry = unsafeBitCast(symbol, to: Entry.self)
-        status = "QEMU 10.2.1 loaded (\(name == "QEMU" ? "TCG" : "TCI"))"
-        NSLog("MSM5xEmu engine: %@; JIT %@; cs flags 0x%08x", status, QEMUEngine.jitAvailable ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
+        status = "Ready"
+        NSLog("MSM5xEmu engine: %@; JIT %@; cs flags 0x%08x", name, QEMUEngine.jitAvailable ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
     }
 
     // Called from the library's background queue, never from the Python queue.
@@ -284,6 +285,10 @@ final class QEMUEngine: ObservableObject {
                 let pc = value?["pc"] as? Int ?? 0
                 let lcd = value?["lcd_writes"] as? Int ?? 0
                 let frame = value?["frame_sequence"] as? Int ?? 0
+                if Date().timeIntervalSince(self.lastMetricsLog) >= 10 {
+                    self.lastMetricsLog = Date()
+                    NSLog("MSM5xEmu Run %lld PC %llx LCD %lld Frame %lld", Int64(run), UInt64(bitPattern: Int64(pc)), Int64(lcd), Int64(frame))
+                }
                 DispatchQueue.main.async {
                     self.secondaryAvailable = value?["secondary_available"] as? Bool ?? false
                     self.secondaryPreview = value?["secondary_preview"] as? Bool ?? false
@@ -345,7 +350,7 @@ final class QEMUEngine: ObservableObject {
 
     private func report(_ error: Error) {
         NSLog("MSM5xEmu error: %@", String(describing: error))
-        DispatchQueue.main.async { self.status = error.localizedDescription }
+        DispatchQueue.main.async { self.status = "Could not run" }
     }
 
 }

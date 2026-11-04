@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 import queue
 from pathlib import Path
 import tkinter as tk
@@ -10,7 +12,7 @@ from PIL import Image, ImageTk
 from ..update import UpdateError, UpdateInfo
 
 from .controls import METRIC_TEXT
-from .locale import display_model_name, runtime_notice_text
+from .locale import display_model_name, runtime_notice_text, runtime_status_text
 
 
 DISPLAY_REFRESH_MS = 33
@@ -102,7 +104,8 @@ class DisplayViewMixin:
                 self._launch_update(value[0], value[1], bool(value[2]))
                 return
             elif kind == "error" and isinstance(value, (OSError, UpdateError)):
-                self.status.set(f"{self._text('update_failed')}: {value}")
+                logging.getLogger("gui").warning("update failed: %s", value)
+                self.status.set(self._text('update_failed'))
                 self.update_download_active = False
         latest: dict[str, object] = {}
         while True:
@@ -129,6 +132,14 @@ class DisplayViewMixin:
             if "device_details" in latest:
                 self.device_details.set(str(latest["device_details"]))
             if "instructions" in latest:
+                now = time.monotonic()
+                if now - getattr(self, "_last_metric_log", 0) >= 10:
+                    self._last_metric_log = now
+                    logging.getLogger("gui").debug("runtime diagnostics: %s", runtime_status_text(latest, self.ui_language))
+                audio_error = latest.get("audio_error")
+                if audio_error and audio_error != getattr(self, "_last_audio_error", None):
+                    logging.getLogger("gui").warning("audio error: %s", audio_error)
+                self._last_audio_error = audio_error
                 self.metric_values["run"].set(f"{int(latest['instructions']):,}")
                 self.metric_values["pc"].set(str(latest.get("pc", "?")))
                 self.metric_values["lcd"].set(
@@ -139,14 +150,11 @@ class DisplayViewMixin:
                 )
                 self.status.set(runtime_notice_text(latest, self.ui_language))
             if latest.get("fault"):
-                self.status.set(
-                    f"{self._text('stopped')}: {latest['fault']}"
-                )
+                logging.getLogger("gui").error("emulator fault: %s", latest['fault'])
+                self.status.set(self._text('stopped'))
             if latest.get("host_backend_fault"):
-                self.status.set(
-                    f"{self._text('backend_stopped')}: "
-                    f"{latest['host_backend_fault']}"
-                )
+                logging.getLogger("gui").error("backend fault: %s", latest['host_backend_fault'])
+                self.status.set(self._text('backend_stopped'))
         if (getattr(self, "_settings_requested", False)
                 and getattr(self, "emulator", None) is not None):
             self._settings_requested = False
@@ -194,8 +202,9 @@ class DisplayViewMixin:
         if not errors:
             return
         detail = "\n".join(dict.fromkeys(errors))
-        self.status.set(f"{self._text('save_failed')}: {detail}")
-        messagebox.showerror(self._text("save_failed"), detail, parent=self.root)
+        logging.getLogger("gui").error("save failed: %s", detail)
+        self.status.set(self._text('save_failed'))
+        messagebox.showerror(self._text("save_failed"), self._text("save_failed"), parent=self.root)
 
     def _save_png(self) -> None:
         emulator = self.emulator

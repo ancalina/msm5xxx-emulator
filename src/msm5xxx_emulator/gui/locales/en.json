@@ -1,7 +1,7 @@
 {
   "window_title": "MSM5XXX Emulator",
   "ready": "Ready",
-  "detecting": "Detecting automatically",
+  "detecting": "Checking",
   "unknown_model": "Unknown model",
   "settings": "Settings",
   "more": "•••",
@@ -15,23 +15,23 @@
   "time": "Network time",
   "host_time": "Use device clock",
   "set_time": "Set manually…",
-  "key_prompt": "Key value for this button (blank = default)",
+  "key_prompt": "Enter a key value (leave blank for the default).",
   "additional_display": "Additional display",
   "display_position": "Additional display position",
   "display_left": "Left",
   "display_right": "Right",
-  "persistent_state": "Persistent device state",
+  "persistent_state": "Save device state",
   "reboot": "Reboot",
   "capture": "Capture",
   "virtual_network": "Virtual network (calls unavailable)",
   "virtual_network_active": "Virtual network",
   "virtual_network_unavailable": "Virtual network unavailable",
-  "network_host_time": "Use PC clock for network time",
+  "network_host_time": "Use computer clock for network time",
   "network_start_time": "Network start time (blank = off)",
   "network_time_error": "Enter a valid time in YYYY-MM-DD HH:MM format",
   "restarting": "Restarting",
   "boot_settings": "Boot Settings",
-  "ui_language": "UI Language",
+  "ui_language": "Language",
   "choose_file": "Choose File…",
   "choose_firmware": "Choose Firmware",
   "apply": "Apply (restart if needed)",
@@ -186,37 +186,37 @@
     "ko": {
       "run": [
         "실행",
-        "지금까지 실행한 guest CPU 명령어 수"
+        "실행한 명령어 수"
       ],
       "pc": [
         "PC",
-        "Program Counter: 다음에 실행할 guest 코드 주소"
+        "다음에 실행할 명령어 주소"
       ],
       "lcd": [
         "LCD",
-        "firmware가 LCD port에 기록한 누적 횟수"
+        "화면에 기록한 횟수"
       ],
       "frame": [
         "프레임",
-        "완성된 화면으로 게시한 누적 횟수"
+        "표시한 화면 수"
       ]
     },
     "en": {
       "run": [
         "Run",
-        "Guest CPU instructions executed so far"
+        "Instructions executed"
       ],
       "pc": [
         "PC",
-        "Program Counter: guest code address to execute next"
+        "Address of the next instruction"
       ],
       "lcd": [
         "LCD",
-        "Firmware writes observed on LCD ports"
+        "Number of screen writes"
       ],
       "frame": [
         "Frame",
-        "Completed display frames published"
+        "Number of displayed frames"
       ]
     }
   },
@@ -236,50 +236,50 @@
     "메모리": "Memory",
     "화면 버퍼": "Display Buffer",
     "하드웨어": "Hardware",
-    "장치 전송": "Device Transport",
     "저장": "Storage",
     "펌웨어": "Firmware",
     "모델": "Model",
     "칩셋": "Chipset",
     "화면 너비": "Screen Width",
     "화면 높이": "Screen Height",
-    "Board revision 이름": "Board Revision Name",
     "이미지 오프셋": "Image Offset",
     "로드 주소": "Load Address",
-    "Flash 크기": "Flash Size",
     "RAM 시작 주소": "RAM Base",
     "RAM 크기": "RAM Size",
-    "RAM image 오프셋": "RAM Image Offset",
-    "RAM image 크기 (0=끔)": "RAM Image Size (0=off)",
     "진입점 오프셋": "Entry Offset",
-    "Framebuffer 주소 (빈 값=끔)": "Framebuffer Address (empty=off)",
-    "Board revision 레지스터": "Board Revision Register",
-    "Board revision 값": "Board Revision Value",
     "키 레지스터": "Key Register",
-    "키 active-low": "Key Active-Low",
-    "REX idle 함수": "REX Idle Function",
-    "REX tick 함수": "REX Tick Function",
-    "REX tick 밀리초": "REX Tick Milliseconds",
-    "Board ADC 값": "Board ADC Value",
-    "Flash ID 함수": "Flash ID Function",
-    "Flash ID 값": "Flash ID Value",
-    "DMD download 함수": "DMD Download Function",
-    "NOR probe 함수": "NOR Probe Function",
     "보조 NOR 주소 (0=끔)": "Secondary NOR Address (0=off)",
     "보조 NOR 크기": "Secondary NOR Size",
-    "보조 NOR image": "Secondary NOR Image",
-    "보조 NOR state": "Secondary NOR State",
-    "보조 NOR write 함수": "Secondary NOR Write Function",
     "NAND 사용": "Enable NAND",
-    "NAND data 크기": "NAND Data Size",
-    "NAND page 크기": "NAND Page Size",
-    "NAND spare 크기": "NAND Spare Size",
-    "NAND block당 pages": "NAND Pages per Block",
-    "프레임 버퍼 행 크기 (바이트)": "Framebuffer stride bytes",
-    "프레임 버퍼 픽셀 형식": "Framebuffer pixel format",
-    "플래시 상태 파일": "Flash state",
-    "NAND 원본 이미지": "NAND raw image",
-    "NAND 버스 폭 (바이트)": "NAND bus bytes"
+    "보드 버전 이름": "Board version name",
+    "플래시 크기": "Flash size",
+    "RAM 이미지 오프셋": "RAM image offset",
+    "RAM 이미지 크기 (0=끔)": "RAM image size (0=off)",
+    "화면 버퍼 주소 (빈 값=끔)": "Display buffer address (blank=off)",
+    "화면 버퍼 행 크기 (바이트)": "Display buffer row size (bytes)",
+    "화면 버퍼 픽셀 형식": "Display buffer pixel format",
+    "보드 버전 레지스터": "Board version register",
+    "보드 버전 값": "Board version value",
+    "키 낮은 신호 활성화": "Key active low",
+    "REX 대기 함수": "REX idle function",
+    "REX 틱 함수": "REX tick function",
+    "REX 틱 간격 (밀리초)": "REX tick interval (ms)",
+    "보드 ADC 값": "Board ADC value",
+    "플래시 ID 함수": "Flash ID function",
+    "플래시 ID 값": "Flash ID value",
+    "DMD 다운로드 함수": "DMD download function",
+    "NOR 확인 함수": "NOR probe function",
+    "보조 NOR 이미지": "Secondary NOR image",
+    "보조 NOR 상태 파일": "Secondary NOR state file",
+    "보조 NOR 쓰기 함수": "Secondary NOR write function",
+    "플래시 상태 파일": "Flash state file",
+    "NAND 원본 이미지": "NAND image",
+    "NAND 데이터 크기": "NAND data size",
+    "NAND 페이지 크기": "NAND page size",
+    "NAND 예비 영역 크기": "NAND spare size",
+    "블록당 NAND 페이지 수": "NAND pages per block",
+    "NAND 버스 폭 (바이트)": "NAND bus width (bytes)",
+    "장치 설정": "Device settings"
   },
   "_sections": [
     [
@@ -307,7 +307,7 @@
         ],
         [
           "board_revision",
-          "Board revision 이름"
+          "보드 버전 이름"
         ]
       ]
     ],
@@ -324,7 +324,7 @@
         ],
         [
           "flash_size",
-          "Flash 크기"
+          "플래시 크기"
         ],
         [
           "ram_base",
@@ -336,11 +336,11 @@
         ],
         [
           "ram_image_offset",
-          "RAM image 오프셋"
+          "RAM 이미지 오프셋"
         ],
         [
           "ram_image_size",
-          "RAM image 크기 (0=끔)"
+          "RAM 이미지 크기 (0=끔)"
         ],
         [
           "entry",
@@ -353,15 +353,15 @@
       [
         [
           "framebuffer_address",
-          "Framebuffer 주소 (빈 값=끔)"
+          "화면 버퍼 주소 (빈 값=끔)"
         ],
         [
           "framebuffer_stride",
-          "프레임 버퍼 행 크기 (바이트)"
+          "화면 버퍼 행 크기 (바이트)"
         ],
         [
           "framebuffer_format",
-          "프레임 버퍼 픽셀 형식"
+          "화면 버퍼 픽셀 형식"
         ]
       ]
     ],
@@ -370,11 +370,11 @@
       [
         [
           "board_revision_register",
-          "Board revision 레지스터"
+          "보드 버전 레지스터"
         ],
         [
           "board_revision_value",
-          "Board revision 값"
+          "보드 버전 값"
         ],
         [
           "key_register",
@@ -382,44 +382,44 @@
         ],
         [
           "key_active_low",
-          "키 active-low"
+          "키 낮은 신호 활성화"
         ]
       ]
     ],
     [
-      "장치 전송",
+      "장치 설정",
       [
         [
           "rex_idle_address",
-          "REX idle 함수"
+          "REX 대기 함수"
         ],
         [
           "rex_tick_address",
-          "REX tick 함수"
+          "REX 틱 함수"
         ],
         [
           "rex_tick_ms",
-          "REX tick 밀리초"
+          "REX 틱 간격 (밀리초)"
         ],
         [
           "board_adc_value",
-          "Board ADC 값"
+          "보드 ADC 값"
         ],
         [
           "flash_id_address",
-          "Flash ID 함수"
+          "플래시 ID 함수"
         ],
         [
           "flash_id_value",
-          "Flash ID 값"
+          "플래시 ID 값"
         ],
         [
           "dmd_download_address",
-          "DMD download 함수"
+          "DMD 다운로드 함수"
         ],
         [
           "primary_flash_probe_address",
-          "NOR probe 함수"
+          "NOR 확인 함수"
         ]
       ]
     ],
@@ -436,15 +436,15 @@
         ],
         [
           "secondary_flash_image",
-          "보조 NOR image"
+          "보조 NOR 이미지"
         ],
         [
           "secondary_flash_state",
-          "보조 NOR state"
+          "보조 NOR 상태 파일"
         ],
         [
           "secondary_flash_write_address",
-          "보조 NOR write 함수"
+          "보조 NOR 쓰기 함수"
         ]
       ]
     ],
@@ -465,19 +465,19 @@
         ],
         [
           "nand_data_size",
-          "NAND data 크기"
+          "NAND 데이터 크기"
         ],
         [
           "nand_page_size",
-          "NAND page 크기"
+          "NAND 페이지 크기"
         ],
         [
           "nand_spare_size",
-          "NAND spare 크기"
+          "NAND 예비 영역 크기"
         ],
         [
           "nand_pages_per_block",
-          "NAND block당 pages"
+          "블록당 NAND 페이지 수"
         ],
         [
           "nand_bus_width",
@@ -486,40 +486,40 @@
       ]
     ]
   ],
-  "validation_36": "NAND raw image not found",
-  "validation_35": "NAND raw backing limit: 256 MiB",
+  "validation_36": "NAND image not found",
+  "validation_35": "NAND storage file must be at most 256 MiB",
   "validation_34": "NAND bus width must be 1 or 2 bytes",
   "validation_33": "NAND data size must be a multiple of page size",
-  "validation_32": "NAND pages per block must be 1..4096",
-  "validation_31": "NAND spare size must be 1..4096",
-  "validation_30": "NAND page size must be 256..16384",
-  "validation_29": "NAND data size limit: 128 MiB",
-  "validation_28": "NAND size and geometry must be positive",
-  "validation_27": "Secondary NOR image exceeds configured size",
+  "validation_32": "NAND pages per block must be 1–4096",
+  "validation_31": "NAND spare size must be 1–4096",
+  "validation_30": "NAND page size must be 256–16384",
+  "validation_29": "NAND data size must be at most 128 MiB",
+  "validation_28": "NAND size and layout values must be positive",
+  "validation_27": "Secondary NOR image exceeds the configured size",
   "validation_26": "Secondary NOR image file not found",
-  "validation_25": "Secondary NOR state path is empty",
+  "validation_25": "Enter a secondary NOR state file path",
   "validation_24": "Secondary NOR overlaps RAM",
   "validation_23": "Secondary NOR overlaps primary flash",
-  "validation_22": "Invalid secondary NOR address or size",
+  "validation_22": "Check the secondary NOR address and size",
   "validation_21": "Secondary NOR size cannot be negative",
-  "validation_20": "Flash state path is empty",
-  "validation_19": "REX tick must be 0..60000 ms",
+  "validation_20": "Enter a flash state file path",
+  "validation_19": "REX tick interval must be 0–60000 ms",
   "validation_18": "Addresses and register values must be 0..0xFFFFFFFF",
   "validation_17": "RAM image exceeds RAM size",
-  "validation_16": "RAM image exceeds firmware",
+  "validation_16": "RAM image extends beyond the firmware",
   "validation_15": "RAM image offset and size cannot be negative",
-  "validation_14": "Framebuffer lies outside RAM",
+  "validation_14": "Display buffer is outside RAM",
   "validation_13": "Primary flash overlaps RAM",
   "validation_12": "RAM range exceeds 32-bit address space",
   "validation_11": "RAM size limit: 128 MiB",
   "validation_10": "RAM base and size must be positive",
   "validation_09": "Entry offset is outside flash",
-  "validation_08": "Flash mapping exceeds 32-bit address space",
+  "validation_08": "Flash range exceeds 32-bit address space",
   "validation_07": "Flash size is outside firmware range",
   "validation_06": "Image offset is outside firmware",
-  "validation_05": "Framebuffer stride is smaller than one row",
-  "validation_04": "Select a framebuffer pixel format",
-  "validation_03": "Framebuffer format must be none when disabled",
+  "validation_05": "Display buffer row size is smaller than one row",
+  "validation_04": "Select a display buffer pixel format",
+  "validation_03": "Display buffer format must be none when disabled",
   "validation_02": "Screen dimensions must be 32..1024",
   "validation_01": "Unsupported chipset",
   "validation_00": "Model name is empty",
@@ -528,36 +528,36 @@
   "unverified": "unverified",
   "run_label": "Run",
   "audio_label": "Audio",
-  "audio_unavailable": "Audio unavailable",
-  "audio_error": "Audio error",
+  "audio_unavailable": "Sound unavailable",
+  "audio_error": "Sound error",
   "update_title": "Update",
   "update_downloading": "Downloading update",
   "update_prepare_failed": "Update preparation failed",
   "update_failed": "Update failed",
   "stopped": "Stopped",
-  "backend_stopped": "Host backend stopped",
+  "backend_stopped": "Emulator stopped",
   "auto_system": "Auto (System)",
   "korean": "Korean",
   "missing_firmware": "Firmware file not found",
-  "framebuffer_applying": "Applying framebuffer colour map",
-  "update_modified": "Found GitHub commit {revision}.\n\nDiscard local source edits and update? Firmware, logs, and persistent state are preserved.",
-  "update_clean": "Found GitHub commit {revision}.\n\nUpdate the application?",
+  "framebuffer_applying": "Applying screen colors",
+  "update_modified": "Update {revision} is available. Discard your program changes and update? Firmware, logs, and saved state will be kept.",
+  "update_clean": "Update {revision} is available. Update now?",
   "fold_unavailable": "Fold unavailable",
   "fold_open": "Fold open (experimental)",
   "fold_closed": "Fold closed (experimental)",
   "secondary_title": "Additional display (experimental)",
   "secondary_preview": "Preview: colors and orientation unverified",
-  "secondary_unknown": "Panel role unverified",
+  "secondary_unknown": "Display purpose unknown",
   "power_on": "On",
   "power_off": "Off",
   "power_unknown": "Power unknown",
-  "transport_status": "QEMU display transport running",
+  "transport_status": "Display running",
   "time_format": "YYYY-MM-DD HH:MM",
   "firmware_file_type": "Firmware images",
   "all_file_types": "All files",
   "mapping_invalid": "Enter a valid key value",
   "mapping_rejected": "This key value is unavailable",
-  "detection_not_ready": "Firmware detection is not ready",
+  "detection_not_ready": "Firmware check is not complete",
   "language_invalid": "UI language selection is invalid",
   "settings_restored": "Settings failed; previous firmware restored",
   "restore_failed": "Restore failed",
@@ -574,7 +574,7 @@
   "library_info": "Info",
   "library_remove": "Remove",
   "library_boot": "Boot",
-  "library_loading": "Detecting…",
+  "library_loading": "Checking…",
   "library_unavailable": "Unavailable",
   "library_never": "Never booted",
   "library_size": "Size",
