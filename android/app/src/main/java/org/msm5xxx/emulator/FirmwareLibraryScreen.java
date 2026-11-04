@@ -151,10 +151,34 @@ final class FirmwareLibraryScreen {
         body.setOrientation(LinearLayout.VERTICAL);
         int pad = Math.round(12 * activity.getResources().getDisplayMetrics().density);
         body.setPadding(pad, pad, pad, pad);
+        body.setBackgroundColor(android.graphics.Color.rgb(18, 18, 18));
+        LinearLayout titleBar = new LinearLayout(activity);
+        titleBar.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(activity);
         title.setText(R.string.library_title);
         title.setTextSize(20);
-        body.addView(title);
+        title.setTextColor(android.graphics.Color.WHITE);
+        titleBar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        int square = Math.round(48 * activity.getResources().getDisplayMetrics().density);
+        Button add = flatButton("+", R.string.library_add);
+        add.setOnClickListener(v -> {
+            android.widget.PopupMenu menu = new android.widget.PopupMenu(activity, v);
+            menu.getMenu().add(0, 1, 0, R.string.library_add_folder);
+            menu.getMenu().add(0, 2, 1, R.string.library_import);
+            menu.setOnMenuItemClickListener(item -> {
+                if (item.getItemId() == 1) listener.chooseFolder(); else listener.importFile();
+                return true;
+            });
+            menu.show();
+        });
+        Button reload = flatButton("\u27F3", R.string.library_refresh);
+        reload.setTextSize(24);
+        reload.setOnClickListener(v -> refresh());
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(square, square);
+        iconParams.leftMargin = pad / 2;
+        titleBar.addView(add, iconParams);
+        titleBar.addView(reload, new LinearLayout.LayoutParams(iconParams));
+        body.addView(titleBar, new LinearLayout.LayoutParams(-1, -2));
         empty = new TextView(activity);
         empty.setText(R.string.library_empty);
         empty.setGravity(Gravity.CENTER);
@@ -237,30 +261,41 @@ final class FirmwareLibraryScreen {
         emptyArea.setGravity(Gravity.CENTER);
         emptyArea.addView(empty);
         for (int id : new int[]{R.string.library_add_folder, R.string.library_import}) {
-            Button action = new Button(activity);
-            action.setText(id);
+            Button action = flatButton(activity.getString(id), id);
+            LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, square);
+            actionParams.topMargin = pad / 2;
             action.setOnClickListener(v -> {
                 if (id == R.string.library_add_folder) listener.chooseFolder();
                 else listener.importFile();
             });
-            emptyArea.addView(action);
+            emptyArea.addView(action, actionParams);
         }
         listArea.addView(emptyArea, new android.widget.FrameLayout.LayoutParams(-1, -1));
         body.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
-        LinearLayout buttons = new LinearLayout(activity);
-        for (int id : new int[]{R.string.library_add_folder, R.string.library_import, R.string.library_refresh}) {
-            Button button = new Button(activity);
-            button.setText(id);
-            button.setOnClickListener(v -> {
-                if (id == R.string.library_add_folder) listener.chooseFolder();
-                else if (id == R.string.library_import) listener.importFile();
-                else refresh();
-            });
-            buttons.addView(button, new LinearLayout.LayoutParams(0, -2, 1));
-        }
-        body.addView(buttons, 1);
         activity.setContentView(body);
         refresh();
+    }
+
+    private Button flatButton(String text, int description) {
+        Button button = new Button(activity);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextColor(android.graphics.Color.WHITE);
+        button.setTextSize(18);
+        button.setPadding(0, 0, 0, 0);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setStateListAnimator(null);
+        button.setElevation(0);
+        android.graphics.drawable.StateListDrawable background = new android.graphics.drawable.StateListDrawable();
+        android.graphics.drawable.ColorDrawable pressed = new android.graphics.drawable.ColorDrawable(android.graphics.Color.rgb(112, 112, 116));
+        background.addState(new int[]{android.R.attr.state_pressed}, pressed);
+        background.addState(new int[]{}, new android.graphics.drawable.ColorDrawable(android.graphics.Color.rgb(46, 46, 48)));
+        button.setBackground(background);
+        button.setContentDescription(activity.getString(description));
+        return button;
     }
 
     boolean isShowing() { return showing; }
@@ -461,7 +496,7 @@ final class FirmwareLibraryScreen {
     void refresh() {
         if (!showing) return;
         final long token = revision.incrementAndGet();
-        emptyArea.setVisibility(View.VISIBLE);
+        emptyArea.setVisibility(visible.isEmpty() ? View.VISIBLE : View.GONE);
         empty.setText(R.string.library_loading);
         scanner.execute(() -> {
             JSONArray entries = read("entries"), folders = read("folders"), excluded = read("excluded");

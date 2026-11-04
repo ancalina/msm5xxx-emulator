@@ -203,7 +203,8 @@
     <string name="error_capture">Could not save screenshot</string>
     <string name="resize_symbol">↘</string>
     <string name="time_format_hint">YYYY-MM-DD HH:MM</string>
-    <string name="library_title">Firmware library</string>
+    <string name="library_title">MSM5xxx Emu</string>
+    <string name="library_add">Add</string>
     <string name="library_empty">Add firmware to your library</string>
     <string name="library_loading">Checking…</string>
     <string name="library_add_folder">Add folder</string>

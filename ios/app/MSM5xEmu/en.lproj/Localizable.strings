@@ -147,7 +147,7 @@
 "◀" = "◀";
 "▶" = "▶";
 "•••" = "•••";
-"Library title" = "Firmware library";
+"Library title" = "MSM5xxx Emu";
 "Library empty" = "Add firmware to your library";
 "Library loading" = "Checking…";
 "Library add folder" = "Add folder";
@@ -162,3 +162,4 @@
 "Library error" = "Could not access the firmware library";
 "Ready" = "Ready";
 "Could not run" = "Could not run";
+"Library add" = "Add";

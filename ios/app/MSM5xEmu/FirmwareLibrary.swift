@@ -445,14 +445,24 @@ struct FirmwareLibraryView: View {
                     .accessibilityAction(named: Text(text("Library info"))) { infoEntry = entry }
                     .accessibilityAction(named: Text(text("Library remove"))) { store.remove(entry) }
                 }
-                HStack {
-                    Button(text("Library add folder")) { folderPicker = true }
-                    Button(text("Library import")) { filePicker = true }
-                    Button(text("Library refresh")) { store.refresh(engine: engine) }
-                }.padding()
+                .listStyle(.plain)
             }
             .navigationTitle(text("Library title"))
-            .toolbar { if canClose { Button(text("Done")) { close() } } }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Menu {
+                        Button(text("Library add folder")) { folderPicker = true }
+                        Button(text("Library import")) { filePicker = true }
+                    } label: { Image(systemName: "plus") }
+                    .accessibilityLabel(text("Library add"))
+                    Button { store.refresh(engine: engine) } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel(text("Library refresh"))
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if canClose { Button(text("Done")) { close() } }
+                }
+            }
             .onAppear { store.refresh(engine: engine) }
             .sheet(isPresented: $folderPicker) {
                 LibraryFolderPicker { url in store.addFolder(url, engine: engine) }

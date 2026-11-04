@@ -203,7 +203,8 @@
     <string name="error_capture">스크린샷을 저장할 수 없습니다</string>
     <string name="resize_symbol">↘</string>
     <string name="time_format_hint">YYYY-MM-DD HH:MM</string>
-    <string name="library_title">펌웨어 목록</string>
+    <string name="library_title">MSM5xxx Emu</string>
+    <string name="library_add">추가</string>
     <string name="library_empty">펌웨어를 추가하세요</string>
     <string name="library_loading">확인 중…</string>
     <string name="library_add_folder">폴더 추가</string>
