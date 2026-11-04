@@ -353,19 +353,24 @@ final class FirmwareLibraryStore: ObservableObject {
               sha.allSatisfy({ $0.isHexDigit }) else { return }
         let directory = support.appendingPathComponent("library-thumbnails", isDirectory: true)
         let target = directory.appendingPathComponent(sha + ".png")
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let ratio = min(1, 160 / CGFloat(max(image.width, image.height)))
-            let size = CGSize(width: max(1, CGFloat(image.width) * ratio), height: max(1, CGFloat(image.height) * ratio))
-            let format = UIGraphicsImageRendererFormat()
-            format.scale = 1
-            let renderer = UIGraphicsImageRenderer(size: size, format: format)
-            let small = renderer.image { _ in UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size)) }
-            try small.pngData()?.write(to: target, options: .atomic)
-            index.entries[position].thumbnail = target.path
-            entries = index.entries
-            save()
-        } catch { self.error = "Library error" }
+        scanner.async {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let ratio = min(1, 160 / CGFloat(max(image.width, image.height)))
+                let size = CGSize(width: max(1, CGFloat(image.width) * ratio), height: max(1, CGFloat(image.height) * ratio))
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = 1
+                let renderer = UIGraphicsImageRenderer(size: size, format: format)
+                let small = renderer.image { _ in UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size)) }
+                try small.pngData()?.write(to: target, options: .atomic)
+                DispatchQueue.main.async {
+                    guard let position = self.index.entries.firstIndex(where: { $0.id == id && $0.sha256 == sha }) else { return }
+                    self.index.entries[position].thumbnail = target.path
+                    self.entries = self.index.entries
+                    self.save()
+                }
+            } catch { DispatchQueue.main.async { self.error = "Library error" } }
+        }
     }
 }
 
@@ -393,6 +398,7 @@ struct FirmwareLibraryView: View {
     @ObservedObject var engine: QEMUEngine
     let text: (String) -> String
     let canClose: Bool
+    let preparing: Bool
     let close: () -> Void
     let boot: (LibraryEntry) -> Void
     @State private var folderPicker = false
@@ -441,7 +447,7 @@ struct FirmwareLibraryView: View {
     }
 
     private func select(_ entry: LibraryEntry) {
-        guard entry.available && !engine.starting else { return }
+        guard entry.available && !engine.starting && !preparing else { return }
         boot(entry)
     }
 
@@ -462,7 +468,11 @@ struct FirmwareLibraryView: View {
 
     private var libraryContent: some View {
             VStack {
-                if store.scanning { ProgressView(text("Library loading")) }
+                if store.scanning || preparing || engine.starting { ProgressView(text("Library loading")) }
+                if engine.sessionFailed {
+                    Text(text(engine.status)).foregroundColor(.secondary)
+                    if !engine.errorDetail.isEmpty { Text(engine.errorDetail).font(.caption).foregroundColor(.secondary) }
+                }
                 if store.entries.isEmpty && !store.scanning { Text(text("Library empty")) }
                 if let error = store.error { Text(text(error)).foregroundColor(.secondary) }
                 List(store.entries) { entry in
@@ -515,7 +525,7 @@ struct FirmwareLibraryView: View {
                     .accessibilityLabel(text("Library add"))
                     Button { store.refresh(engine: engine) } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel(text("Library refresh"))
-                    Button { showingSettings = true } label: { Image(systemName: "slider.horizontal.3") }
+                    Button { showingSettings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel(text("Settings"))
                 }
                 ToolbarItem(placement: .navigationBarLeading) {

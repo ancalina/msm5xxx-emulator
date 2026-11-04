@@ -6,6 +6,7 @@ are platform specific. No detector logic is duplicated here.
 """
 import json
 import platform
+import socket
 import struct
 import sys
 import threading
@@ -18,6 +19,76 @@ from msm5xxx_android_runtime import (  # noqa: F401: exported native bridge API
 )
 
 _PCM_PACKET = struct.Struct("<4sIQQQ")
+_control = None
+
+
+class _ControlLauncher:
+    """Add a loopback QMP connection to the existing embedded launcher."""
+
+    supports_pass_fds = False
+
+    def __init__(self, launcher):
+        self.launcher = launcher
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.listener.settimeout(30)
+        self.connection = None
+        self.reader = None
+        self.next_id = 0
+
+    def __call__(self, argv, **options):
+        host, port = self.listener.getsockname()
+        args = list(argv) + ["-chardev", f"socket,id=app-control,host={host},port={port},server=off,nodelay=on",
+                             "-mon", "chardev=app-control,mode=control"]
+        process = self.launcher(args, **options)
+        try:
+            self.connection, _ = self.listener.accept()
+            self.connection.settimeout(2)
+            self.reader = self.connection.makefile("rb")
+            if "QMP" not in self._receive():
+                raise RuntimeError("monitor greeting missing")
+            self.command("qmp_capabilities")
+        except Exception:
+            process.terminate()
+            try:
+                process.wait(3)
+            except Exception:
+                pass
+            self.close()
+            raise
+        finally:
+            if self.listener is not None:
+                self.listener.close()
+                self.listener = None
+        return process
+
+    def _receive(self):
+        line = self.reader.readline(65537)
+        if not line or len(line) > 65536 or not line.endswith(b"\n"):
+            raise RuntimeError("invalid monitor response")
+        response = json.loads(line)
+        if not isinstance(response, dict):
+            raise RuntimeError("invalid monitor response")
+        return response
+
+    def command(self, name):
+        self.next_id += 1
+        request = {"execute": name, "id": self.next_id}
+        self.connection.sendall((json.dumps(request) + "\n").encode())
+        for _ in range(64):
+            response = self._receive()
+            if response.get("id") == self.next_id:
+                if "error" in response or "return" not in response:
+                    raise RuntimeError("monitor command failed: " + name)
+                return response["return"]
+        raise RuntimeError("monitor response limit exceeded")
+
+    def close(self):
+        for channel in (self.reader, self.connection, self.listener):
+            if channel is not None:
+                channel.close()
+        self.reader = self.connection = self.listener = None
 
 
 def _audio_admitted(transport, *, require_native_ma5=False):
@@ -47,6 +118,7 @@ def probe():
 
 
 def start_session(request_json):
+    global _control
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
     from msm5xxx_emulator.detection.firmware import detect
     from msm5xxx_emulator.qemu.transport import Transport, IOSLauncher
@@ -73,14 +145,20 @@ def start_session(request_json):
     state = None if request["state"] is None else Path(request["state"])
     if state is not None:
         state.mkdir(parents=True, exist_ok=True)
-    transport = Transport(
-        Path(request["qemu"]), firmware, state, request["experimental_rex"],
-        config=config, audio_stream=True, audio_pcm=True,
-        virtual_cell=virtual_cell_scenario(request.get("virtual_network", False),
-                                           host_time=request.get("network_host_time", True),
-                                           start_time=request.get("network_start_time")),
-        launcher=IOSLauncher(),
-    )
+    control = _ControlLauncher(IOSLauncher())
+    try:
+        transport = Transport(
+            Path(request["qemu"]), firmware, state, request["experimental_rex"],
+            config=config, audio_stream=True, audio_pcm=True,
+            virtual_cell=virtual_cell_scenario(request.get("virtual_network", False),
+                                               host_time=request.get("network_host_time", True),
+                                               start_time=request.get("network_start_time")),
+            launcher=control,
+        )
+    except Exception:
+        control.close()
+        raise
+    _control = control
     stop = threading.Event()
     thread = threading.Thread(target=shared._replay, args=(transport, stop),
                               name="msm5xxx-ios-replay", daemon=True)
@@ -121,8 +199,19 @@ def session_audio():
     return raw
 
 
+def set_session_paused(request_json):
+    request = json.loads(request_json)
+    if not isinstance(request, dict) or set(request) != {"paused"} or type(request["paused"]) is not bool:
+        raise ValueError("invalid pause request")
+    if shared._session is None or _control is None or shared._session.process.poll() is not None:
+        raise RuntimeError("session is not running")
+    _control.command("stop" if request["paused"] else "cont")
+    return shared._json({"schema": 1, "paused": request["paused"]})
+
+
 def stop_session():
     """Keep resources owned if a worker cannot stop; never close beneath replay."""
+    global _control
     transport = shared._session
     if transport is None:
         return shared._json({"schema": 1, "stopped": True})
@@ -135,6 +224,9 @@ def stop_session():
         if thread.is_alive():
             raise RuntimeError("replay did not stop; relaunch app")
     transport.close()
+    if _control is not None:
+        _control.close()
+        _control = None
     shared._session = None
     shared._session_stop = None
     shared._session_thread = None

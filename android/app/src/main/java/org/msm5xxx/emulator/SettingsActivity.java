@@ -142,36 +142,8 @@ public final class SettingsActivity extends Activity {
     }
 
     private void startTime(SharedPreferences session) {
-        TextView label = new TextView(this);
-        label.setText(R.string.network_start_time);
-        label.setTextSize(16);
-        label.setTextColor(Color.WHITE);
-        label.setPadding(dp(16), dp(12), dp(16), 0);
-        body.addView(label);
-        EditText field = new EditText(this);
-        field.setSingleLine(true);
-        field.setHint("YYYY-MM-DD HH:MM");
-        field.setTextColor(Color.WHITE);
-        field.setHintTextColor(Color.rgb(100, 100, 106));
-        field.setInputType(InputType.TYPE_CLASS_DATETIME);
-        field.setImeOptions(EditorInfo.IME_ACTION_DONE);
-        field.setText(session.getString("network_start_time", ""));
-        Runnable store = () -> {
-            String value = field.getText().toString().trim();
-            try {
-                MainActivity.parseNetworkStartTime(value);
-                field.setError(null);
-                session.edit().putString("network_start_time", value).apply();
-            } catch (IllegalArgumentException error) {
-                field.setError(getString(R.string.network_time_error));
-            }
-        };
-        field.setOnFocusChangeListener((view, focused) -> { if (!focused) store.run(); });
-        field.setOnEditorActionListener((view, id, event) -> { store.run(); return false; });
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.leftMargin = dp(12);
-        params.rightMargin = dp(12);
-        body.addView(field, params);
+        body.addView(NetworkTimePicker.row(this, session.getString("network_start_time", ""),
+                value -> session.edit().putString("network_start_time", value).apply()));
     }
 
     private ImageButton icon(int resource, String description) {

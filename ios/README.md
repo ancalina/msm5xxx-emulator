@@ -18,8 +18,10 @@ iOS cannot spawn processes, so QEMU is relinked as an embeddable framework expor
 ios/build_qemu_framework.sh /new/qemu-work/build ios/app/Frameworks/iphoneos QEMU   # QEMUTCI for a tci build
 ```
 
-Packages: `ios/package_ios.sh OUT` builds `MSM5xEmu.ipa` and `MSM5xEmu.tipa` (TrollStore), both with
-`get-task-allow` only. `dynamic-codesigning` is banned on A12+ iOS 15 and makes the app fail to launch.
+Packages: `ios/package_ios.sh OUT` builds `MSM5xEmu.ipa` and `MSM5xEmu.tipa` (TrollStore).
+The IPA requests no custom entitlements and uses TCI without probing JIT; it still needs
+the normal signature and provisioning for the intended device. The TIPA requests
+`get-task-allow` for optional debugger-assisted JIT. `dynamic-codesigning` is banned on A12+ iOS 15 and makes the app fail to launch.
 JIT comes from a debugger setting CS_DEBUGGED: Dopamine's "Allow JIT in Apps" (verified on iPhone XS,
 iOS 15.6.1), TrollStore "Open with JIT", StikJIT, Jitterbug or AltJIT. The app probes JIT the way QEMU's
 split-wx TCG uses it (write, then make executable), picks QEMU (TCG) or QEMUTCI, and re-probes while

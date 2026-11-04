@@ -1,8 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import CryptoKit
+import AVFoundation
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var engine = QEMUEngine()
     @StateObject private var library = FirmwareLibraryStore()
     @State private var showingLibrary = !ContentView.bypassLibraryOnLaunch()
@@ -10,6 +12,9 @@ struct ContentView: View {
     @AppStorage("active_library_id") private var activeLibraryID = ""
     @State private var firmware: URL?
     @State private var message = ""
+    @State private var preparingFirmware = false
+    @State private var refreshTimer: Timer?
+    @State private var lastMaintenance = Date.distantPast
     @State private var jit = QEMUEngine.jitAvailable
     @State private var showingSettings = false
     @State private var showingCapture = false
@@ -67,15 +72,16 @@ struct ContentView: View {
             if showingLibrary {
                 FirmwareLibraryView(store: library, engine: engine, text: text,
                     canClose: engine.running || engine.used || firmware != nil,
+                    preparing: preparingFirmware,
                     close: { showingLibrary = false },
                     boot: { entry in
                         library.ensureEntry(entry)
                         library.pauseScanning()
                         let found = library.withSource(entry) { url in
-                            if importFirmware(url) {
-                                activeLibraryID = entry.id
-                                showingLibrary = false
-                            } else { library.error = "Library error" }
+                            importFirmware(url) { success in
+                                if success { activeLibraryID = entry.id; showingLibrary = false }
+                                else { library.error = "Library error" }
+                            }
                         }
                         if !found { library.error = "Library unavailable" }
                     })
@@ -84,6 +90,8 @@ struct ContentView: View {
             }
         }
         .onAppear(perform: pickStoredFirmware)
+        .onAppear { engine.setSceneActive(scenePhase == .active); updateRefreshTimer() }
+        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil }
         .onChange(of: engine.running) { running in
             if running {
                 runningLibraryID = activeLibraryID
@@ -93,15 +101,54 @@ struct ContentView: View {
                 runningLibraryID = ""
             }
             UIAccessibility.post(notification: .announcement, argument: text(running ? "Booted" : "Powered off"))
+            updateRefreshTimer()
         }
         .onChange(of: engine.status) { value in
             UIAccessibility.post(notification: .announcement, argument: text(value))
         }
+        .onChange(of: engine.sessionFailed) { failed in
+            if failed { showingLibrary = true }
+        }
+        .onChange(of: scenePhase) { phase in
+            engine.setSceneActive(phase == .active)
+            updateRefreshTimer()
+        }
+        .onChange(of: engine.paused) { _ in updateRefreshTimer() }
+        .onChange(of: engine.refreshInterval) { _ in updateRefreshTimer() }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
+            guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            if type == .began { engine.setAudioInterrupted(true) }
+            else if type == .ended { engine.setAudioInterrupted(false) }
+        }
         .onChange(of: message) { value in
             if !value.isEmpty { UIAccessibility.post(notification: .announcement, argument: value) }
         }
-        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
-            engine.refresh()
+    }
+
+    private func updateRefreshTimer() {
+        refreshTimer?.invalidate(); refreshTimer = nil
+        guard scenePhase == .active, engine.running, !engine.paused else { return }
+        let timer = Timer(timeInterval: engine.refreshInterval, repeats: true) { _ in refreshTick() }
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+    }
+
+    private func refreshTick() {
+        engine.refresh()
+        guard Date().timeIntervalSince(lastMaintenance) >= 2 else { return }
+        lastMaintenance = Date()
+        if let frame = engine.frame,
+           let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+           FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
+            DispatchQueue.global(qos: .utility).async {
+                try? UIImage(cgImage: frame).pngData()?.write(to: support.appendingPathComponent("frame.png"), options: .atomic)
+            }
+        }
+        let now = QEMUEngine.jitAvailable
+        if now != jit || QEMUEngine.codeSigningFlags & 0x1000_0000 != 0 && !now {
+            jit = now
+            NSLog("MSM5xEmu JIT %@ (cs flags 0x%08x)", now ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
         }
     }
 
@@ -112,6 +159,7 @@ struct ContentView: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(localizedMetrics)
             if !message.isEmpty { Text(message).foregroundColor(.gray) }
+            if !engine.errorDetail.isEmpty { Text(engine.errorDetail).foregroundColor(.secondary) }
         }
         .font(.system(size: 10)).foregroundColor(.white).lineLimit(3)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -211,20 +259,7 @@ struct ContentView: View {
         .padding(2)
         .environment(\.locale, Locale(identifier: uiLanguage == "auto" ? Locale.current.identifier : uiLanguage))
         .background(Color(white: 0.07).ignoresSafeArea())
-        // JIT can be granted while running (TrollStore "Open with JIT", Dopamine); poll cheaply.
-        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
-            // Headless test runs (autorun marker) leave the latest LCD frame as frame.png.
-            if let frame = engine.frame,
-               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
-               FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
-                try? UIImage(cgImage: frame).pngData()?.write(to: support.appendingPathComponent("frame.png"))
-            }
-            let now = QEMUEngine.jitAvailable
-            if now != jit || QEMUEngine.codeSigningFlags & 0x1000_0000 != 0 && !now {
-                jit = now
-                NSLog("MSM5xEmu JIT %@ (cs flags 0x%08x)", now ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
-            }
-        }
+        .overlay { if preparingFirmware { ProgressView(text("Library loading")) } }
         .sheet(isPresented: $showingTime) {
             NavigationView {
                 Form {
@@ -353,7 +388,7 @@ struct ContentView: View {
         guard engine.running else { return }
         UserDefaults.standard.set(true, forKey: "pending_boot")
         engine.stop()
-        message = text("Reopen the app to start the selected firmware.")
+        message = text("Force-close and reopen the app to start the selected firmware.")
     }
 
     private func run() {
@@ -396,7 +431,7 @@ struct ContentView: View {
     /// Reuse a firmware already in Application Support/firmware (imported earlier or copied in over
     /// SSH); an `autorun` file next to that folder starts it without touching the screen.
     private func pickStoredFirmware() {
-        guard firmware == nil, !engine.used,
+        guard firmware == nil, !engine.used, !preparingFirmware,
               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
         let pending = UserDefaults.standard.bool(forKey: "pending_boot")
         let marker = FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path)
@@ -405,33 +440,47 @@ struct ContentView: View {
             return
         }
         showingLibrary = false
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: support.appendingPathComponent("firmware").path),
-              let name = names.filter({ !$0.hasPrefix(".") }).sorted().first else { return }
-        firmware = support.appendingPathComponent("firmware").appendingPathComponent(name)
-        loadDetailedSettings()
-        if pending {
-            UserDefaults.standard.removeObject(forKey: "pending_boot")
-            run()
-        } else if marker {
-            activeLibraryID = ""
-            NSLog("MSM5xEmu autorun %@", name)
-            run()
+        preparingFirmware = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let directory = support.appendingPathComponent("firmware")
+                let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                guard let name = names.filter({ !$0.hasPrefix(".") }).sorted().first else {
+                    throw NSError(domain: "Firmware", code: 1, userInfo: [NSLocalizedDescriptionKey: "Firmware is unavailable"])
+                }
+                let url = directory.appendingPathComponent(name)
+                let identity = try Self.fingerprint(url)
+                DispatchQueue.main.async {
+                    preparingFirmware = false
+                    firmware = url
+                    firmwareIdentity = identity
+                    detailedValues = UserDefaults.standard.dictionary(forKey: "details.\(identity)") as? [String: String] ?? [:]
+                    if pending { UserDefaults.standard.removeObject(forKey: "pending_boot") }
+                    if marker { activeLibraryID = "" }
+                    run()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    preparingFirmware = false; showingLibrary = true
+                    message = error.localizedDescription
+                }
+            }
         }
     }
 
-    private func loadDetailedSettings() {
-        guard let firmware = firmware, let stream = InputStream(url: firmware) else { return }
+    private static func fingerprint(_ firmware: URL) throws -> String {
+        guard let stream = InputStream(url: firmware) else { throw CocoaError(.fileReadUnknown) }
         stream.open()
         defer { stream.close() }
         var hash = SHA256()
         var buffer = [UInt8](repeating: 0, count: 65536)
         while true {
             let count = stream.read(&buffer, maxLength: buffer.count)
-            if count <= 0 { break }
+            if count < 0 { throw stream.streamError ?? CocoaError(.fileReadUnknown) }
+            if count == 0 { break }
             hash.update(data: Data(buffer.prefix(count)))
         }
-        firmwareIdentity = hash.finalize().map { String(format: "%02x", $0) }.joined()
-        detailedValues = UserDefaults.standard.dictionary(forKey: "details.\(firmwareIdentity)") as? [String: String] ?? [:]
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func supportStagingURL() -> URL {
@@ -439,38 +488,71 @@ struct ContentView: View {
     }
 
     /// Copy the picked image into the app container; the original is never modified.
-    private func importFirmware(_ url: URL) -> Bool {
+    private func importFirmware(_ url: URL, completion: @escaping (Bool) -> Void) {
+        guard !preparingFirmware else { completion(false); return }
+        preparingFirmware = true
         let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let dir = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                                  appropriateFor: nil, create: true)
-                .appendingPathComponent("firmware", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let target = dir.appendingPathComponent(url.lastPathComponent)
-            let staged = supportStagingURL()
-            try FileManager.default.copyItem(at: url, to: staged)
-            defer { try? FileManager.default.removeItem(at: staged) }
-            // Preserve the previous selection if the source could not be copied.
-            if engine.running { restartOnNextLaunchIfRunning() }
-            for old in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
-                try FileManager.default.removeItem(at: old)
+        let staged = supportStagingURL()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                try FileManager.default.copyItem(at: url, to: staged)
+                let identity = try Self.fingerprint(staged)
+                DispatchQueue.main.async {
+                    let commit = {
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let fm = FileManager.default
+                            let backup = Self.temporaryDirectory()
+                            var moved: [(URL, URL)] = []
+                            do {
+                                let dir = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                     appropriateFor: nil, create: true).appendingPathComponent("firmware", isDirectory: true)
+                                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                                try fm.createDirectory(at: backup, withIntermediateDirectories: true)
+                                for old in try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                                    let saved = backup.appendingPathComponent(old.lastPathComponent)
+                                    try fm.moveItem(at: old, to: saved); moved.append((saved, old))
+                                }
+                                let target = dir.appendingPathComponent(url.lastPathComponent)
+                                try fm.moveItem(at: staged, to: target)
+                                try? fm.removeItem(at: backup)
+                                DispatchQueue.main.async {
+                                    preparingFirmware = false; firmware = target; firmwareIdentity = identity
+                                    detailedValues = UserDefaults.standard.dictionary(forKey: "details.\(identity)") as? [String: String] ?? [:]
+                                    if engine.used {
+                                        UserDefaults.standard.set(true, forKey: "pending_boot")
+                                        message = text("Force-close and reopen the app to start the selected firmware.")
+                                    }
+                                    completion(true)
+                                    if !engine.used { run() }
+                                }
+                            } catch {
+                                var restored = true
+                                for (saved, original) in moved.reversed() {
+                                    do { try fm.moveItem(at: saved, to: original) } catch { restored = false }
+                                }
+                                try? fm.removeItem(at: staged)
+                                if restored { try? fm.removeItem(at: backup) }
+                                DispatchQueue.main.async { preparingFirmware = false; message = error.localizedDescription; completion(false) }
+                            }
+                        }
+                    }
+                    if engine.running {
+                        engine.stop { stopped in
+                            if stopped { commit() }
+                            else { try? FileManager.default.removeItem(at: staged); preparingFirmware = false; completion(false) }
+                        }
+                    } else { commit() }
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: staged)
+                DispatchQueue.main.async { preparingFirmware = false; message = error.localizedDescription; completion(false) }
             }
-            try FileManager.default.moveItem(at: staged, to: target)
-            firmware = target
-            loadDetailedSettings()
-            if engine.used {
-                UserDefaults.standard.set(true, forKey: "pending_boot")
-                message = text("Reopen the app to start the selected firmware.")
-            } else {
-                run()
-            }
-            if !engine.used { message = String(format: text("Imported file"), target.lastPathComponent) }
-            return true
-        } catch {
-            message = error.localizedDescription
-            return false
         }
+    }
+
+    private static func temporaryDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
 }
 

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 import struct
+import socket
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -125,6 +127,42 @@ class IOSRuntimeTests(unittest.TestCase):
         from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
         self.assertEqual(factory.call_args.kwargs["virtual_cell"],
                          virtual_cell_scenario(True, host_time=True, start_time=1037837100))
+        self.runtime._control.close()
+
+    def test_pause_monitor_handshake_and_commands(self):
+        seen = []
+        reader = []
+        process = Mock()
+
+        def launch(argv, **kwargs):
+            spec = argv[argv.index("-chardev") + 1]
+            port = int(spec.split("port=")[1].split(",")[0])
+            def serve():
+                with socket.create_connection(("127.0.0.1", port), timeout=2) as peer:
+                    peer.sendall(b'{"QMP":{}}\n')
+                    with peer.makefile("rb") as stream:
+                        for _ in range(3):
+                            request = json.loads(stream.readline())
+                            seen.append(request["execute"])
+                            peer.sendall((json.dumps({"event": "STATUS"}) + "\n" +
+                                          json.dumps({"return": {}, "id": request["id"]}) + "\n").encode())
+            thread = threading.Thread(target=serve)
+            reader.append(thread); thread.start()
+            return process
+
+        control = self.runtime._ControlLauncher(launch)
+        self.addCleanup(control.close)
+        self.assertIs(control(["qemu"]), process)
+        self.shared._session = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+        self.runtime._control = control
+        self.assertTrue(json.loads(self.runtime.set_session_paused('{"paused":true}'))["paused"])
+        self.assertFalse(json.loads(self.runtime.set_session_paused('{"paused":false}'))["paused"])
+        reader[0].join(2)
+        self.assertFalse(reader[0].is_alive())
+        self.assertEqual(seen, ["qmp_capabilities", "stop", "cont"])
+        for invalid in ('{}', '{"paused":1}', '{"paused":true,"extra":0}'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                self.runtime.set_session_paused(invalid)
 
     def test_stop_retains_resources_when_replay_still_alive(self):
         transport = self.shared._session = Mock()

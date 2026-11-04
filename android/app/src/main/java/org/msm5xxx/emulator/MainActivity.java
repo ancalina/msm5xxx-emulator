@@ -148,6 +148,7 @@ public final class MainActivity extends Activity {
     // Only the key-edge executor accesses this state.
     private final KeyPressDuration keyPressDuration = new KeyPressDuration();
     private long lastMetricsLog;
+    private long lastMetricLabels;
     private TextView profileView;
     private TextView sessionView;
     private LinearLayout metricsGroup;
@@ -279,7 +280,9 @@ public final class MainActivity extends Activity {
     @Override
     public void onBackPressed() {
         if (session == null && !sessionStarting) returnToLibrary();
-        else super.onBackPressed();
+        else new AlertDialog.Builder(this).setMessage(R.string.confirm_power_off_library)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.stop_emulator, (dialog, which) -> returnToLibrary()).show();
     }
 
     @Override
@@ -1093,6 +1096,10 @@ public final class MainActivity extends Activity {
                 boolean inputChanged = status.inputHostEvents
                         != publishedInputEvents
                         || status.inputRejections != publishedRejections;
+                if (inputChanged && timing.ackMillis >= 0) {
+                    android.util.Log.d("MSM5xxxSession", "Key dispatch=" + timing.dispatchMillis
+                            + " ms ack=" + timing.ackMillis + " ms");
+                }
                 boolean frameDue = latestFrame != null || latestSecondary != null;
                 boolean metricDue = now >= nextMetricUpdate;
                 if (frameDue || inputChanged || metricDue) {
@@ -1270,32 +1277,35 @@ public final class MainActivity extends Activity {
                 ? getString(R.string.virtual_network_active)
                 : "rejected".equals(status.virtualCellStatus)
                         ? getString(R.string.virtual_network_unavailable) : "");
-        setTextIfChanged(pcView, getString(R.string.metric_pc, status.pc));
-        setTextIfChanged(runView, getString(
-                R.string.metric_run, status.instructions));
-        setTextIfChanged(lcdView, getString(
-                R.string.metric_lcd, status.lcdWrites));
-        setTextIfChanged(frameMetricView, getString(
-                R.string.metric_frame, status.frameSequence));
-        updateMetricsDescription();
         long now = SystemClock.elapsedRealtime();
         if (now - lastMetricsLog >= 10000) {
             lastMetricsLog = now;
             android.util.Log.d("MSM5xxxSession", "Run " + status.instructions + " PC " + status.pc
                     + " LCD " + status.lcdWrites + " Frame " + status.frameSequence);
         }
-        setTextIfChanged(inputView, getString(
-                R.string.metric_input, status.inputHostEvents));
-        setTextIfChanged(rejectView, getString(
-                R.string.metric_reject, status.inputRejections,
-                status.audioUnderflowFrames, status.audioOverflowFrames,
-                status.audioEpoch, localAudioFailures,
-                status.audioRejectReason.isEmpty()
-                        ? status.audioStatus : status.audioRejectReason));
-        setTextIfChanged(jniView, getString(
-                R.string.metric_jni, latency(timing.dispatchMillis)));
-        setTextIfChanged(ackView, getString(
-                R.string.metric_ack, latency(timing.ackMillis)));
+        if (now - lastMetricLabels >= 500) {
+            lastMetricLabels = now;
+            setTextIfChanged(pcView, getString(R.string.metric_pc, status.pc));
+            setTextIfChanged(runView, getString(
+                    R.string.metric_run, status.instructions));
+            setTextIfChanged(lcdView, getString(
+                    R.string.metric_lcd, status.lcdWrites));
+            setTextIfChanged(frameMetricView, getString(
+                    R.string.metric_frame, status.frameSequence));
+            updateMetricsDescription();
+            setTextIfChanged(inputView, getString(
+                    R.string.metric_input, status.inputHostEvents));
+            setTextIfChanged(rejectView, getString(
+                    R.string.metric_reject, status.inputRejections,
+                    status.audioUnderflowFrames, status.audioOverflowFrames,
+                    status.audioEpoch, localAudioFailures,
+                    status.audioRejectReason.isEmpty()
+                            ? status.audioStatus : status.audioRejectReason));
+            setTextIfChanged(jniView, getString(
+                    R.string.metric_jni, latency(timing.dispatchMillis)));
+            setTextIfChanged(ackView, getString(
+                    R.string.metric_ack, latency(timing.ackMillis)));
+        }
         if (!status.processRunning) {
             showError(getString(R.string.error_process_exited));
         }
@@ -1762,27 +1772,11 @@ public final class MainActivity extends Activity {
 
     private void showNetworkTimeDialog() {
         SharedPreferences prefs = preferences();
-        EditText entry = new EditText(this);
-        entry.setSingleLine(true);
-        entry.setHint(R.string.time_format_hint);
-        entry.setText(prefs.getString(KEY_NETWORK_START_TIME, ""));
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.set_time)
-                .setView(entry).setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.save, null).create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            String value = entry.getText().toString();
-            try {
-                if (parseNetworkStartTime(value) == null) throw new IllegalArgumentException();
-            } catch (IllegalArgumentException error) {
-                entry.setError(getString(R.string.network_time_error));
-                return;
-            }
-            prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, false)
+        NetworkTimePicker.show(this, prefs.getString(KEY_NETWORK_START_TIME, ""), value -> {
+            prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, value.isEmpty())
                     .putString(KEY_NETWORK_START_TIME, value).apply();
-            dialog.dismiss();
             if (prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
-        }));
-        dialog.show();
+        });
     }
 
     private void setInputMappingEditing(boolean enabled) {
@@ -1850,6 +1844,11 @@ public final class MainActivity extends Activity {
         body.setOrientation(LinearLayout.VERTICAL);
         int padding = dp(20);
         body.setPadding(padding, 0, padding, 0);
+        body.addView(NetworkTimePicker.row(this, preferences.getString(KEY_NETWORK_START_TIME, ""), value -> {
+            preferences.edit().putBoolean(KEY_NETWORK_HOST_TIME, value.isEmpty())
+                    .putString(KEY_NETWORK_START_TIME, value).apply();
+            if (preferences.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
+        }), matchWidth());
         Switch persistent = new Switch(this);
         persistent.setText(R.string.persistent_state);
         persistent.setChecked(preferences.getBoolean(

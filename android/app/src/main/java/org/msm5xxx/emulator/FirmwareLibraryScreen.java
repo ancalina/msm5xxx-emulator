@@ -18,7 +18,10 @@ import android.view.View;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
-import android.widget.ArrayAdapter;
+import android.widget.BaseAdapter;
+import android.util.LruCache;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -64,7 +67,18 @@ final class FirmwareLibraryScreen {
     private ListView list;
     private TextView empty;
     private LinearLayout emptyArea;
-    private ArrayAdapter<JSONObject> adapter;
+    private LibraryAdapter adapter;
+    private final ArrayList<LibraryGrouping.Group> groups = new ArrayList<>();
+    private final java.util.Map<String, JSONObject> indexed = new java.util.HashMap<>();
+    private final java.util.Map<String, String> renderFingerprints = new java.util.HashMap<>();
+    private final LruCache<String, Bitmap> thumbnails = new LruCache<>(4 * 1024 * 1024) {
+        @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount(); }
+    };
+    private final ExecutorService imageLoader = Executors.newSingleThreadExecutor();
+    private final java.util.Set<String> loadingImages = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private long lastListUpdate;
+    private Runnable listUpdate;
     private final AtomicLong revision = new AtomicLong();
     private String previousCopy;
     private String previousName;
@@ -130,7 +144,8 @@ final class FirmwareLibraryScreen {
                     }
                     JSONObject entry = new JSONObject().put("uri", Uri.fromFile(target).toString())
                             .put("name", name).put("size", target.length()).put("imported", true).put("available", true)
-                            .put("sha256", sha).put("display", metadata.optString("name", name))
+                            .put("sha256", sha).put("model", metadata.isNull("model") ? "" : metadata.optString("model", ""))
+                            .put("display", metadata.optString("name", name))
                             .put("chipset", metadata.isNull("chipset") ? "—" : metadata.optString("chipset", "—"));
                     entries.put(entry);
                     revision.incrementAndGet();
@@ -151,7 +166,7 @@ final class FirmwareLibraryScreen {
         LinearLayout body = new LinearLayout(activity);
         body.setOrientation(LinearLayout.VERTICAL);
         int pad = Math.round(12 * activity.getResources().getDisplayMetrics().density);
-        body.setPadding(pad, pad, pad, pad);
+        body.setFitsSystemWindows(true);
         body.setBackgroundColor(android.graphics.Color.rgb(18, 18, 18));
         LinearLayout titleBar = new LinearLayout(activity);
         titleBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -185,106 +200,20 @@ final class FirmwareLibraryScreen {
         empty.setText(R.string.library_empty);
         empty.setGravity(Gravity.CENTER);
         list = new ListView(activity);
-        adapter = new ArrayAdapter<JSONObject>(activity, android.R.layout.simple_list_item_1, visible) {
-            @Override public View getView(int position, View convert, ViewGroup parent) {
-                LinearLayout row = new LinearLayout(activity);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setPadding(pad / 2, pad * 3 / 4, pad / 2, pad * 3 / 4);
-                row.setGravity(Gravity.CENTER_VERTICAL);
-                JSONObject entry = getItem(position);
-                ImageView image = new ImageView(activity);
-                Bitmap thumbnail = BitmapFactory.decodeFile(entry.optString("thumbnail", ""));
-                // Every row keeps the same image slot; unbooted firmware shows a phone placeholder.
-                if (thumbnail != null) {
-                    image.setImageBitmap(thumbnail);
-                    image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                } else {
-                    image.setImageResource(R.drawable.ic_phone);
-                    image.setScaleType(ImageView.ScaleType.CENTER);
-                    image.setAlpha(0.35f);
-                }
-                image.setBackgroundColor(android.graphics.Color.rgb(28, 28, 30));
-                LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(pad * 5, pad * 5);
-                imageParams.rightMargin = pad;
-                row.addView(image, imageParams);
-                String name = entry.optString("display", entry.optString("name"));
-                String chipset = entry.optString("chipset", "—");
-                long last = entry.optLong("last_booted", 0);
-                String booted = last == 0 ? activity.getString(R.string.library_never)
-                        : DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(last));
-                String spoken = activity.getString(R.string.library_row, name, chipset, booted);
-                LinearLayout label = new LinearLayout(activity);
-                label.setOrientation(LinearLayout.VERTICAL);
-                TextView model = new TextView(activity);
-                model.setText(name);
-                model.setTextSize(18);
-                model.setTextColor(android.graphics.Color.WHITE);
-                model.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-                model.setSingleLine(true);
-                model.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                TextView detail = new TextView(activity);
-                detail.setText(chipset + " · " + (entry.optLong("size", -1) < 0 ? activity.getString(R.string.size_unavailable) :
-                        String.format(java.util.Locale.US, "%.1f MiB", entry.optLong("size") / 1048576.0)) + "\n" + booted
-                        + (entry.optBoolean("available", false) ? "" : " · " + activity.getString(R.string.library_unavailable))
-                        + (entry.optBoolean("preview_deferred", false) ? " · " + activity.getString(R.string.library_preview_after_boot) : ""));
-                detail.setTextSize(13);
-                detail.setTextColor(android.graphics.Color.rgb(160, 160, 166));
-                label.addView(model);
-                label.addView(detail);
-                row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
-                if (entry.optBoolean("available", false) && entry.optString("sha256", "").isEmpty()) {
-                    android.widget.ProgressBar spinner = new android.widget.ProgressBar(activity, null, android.R.attr.progressBarStyleSmall);
-                    spinner.setIndeterminate(true);
-                    spinner.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-                    row.addView(spinner, new LinearLayout.LayoutParams(pad * 2, pad * 2));
-                    spoken += ", " + activity.getString(R.string.library_loading);
-                }
-                row.setContentDescription(spoken);
-                label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-                image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-                row.setAccessibilityDelegate(new View.AccessibilityDelegate() {
-                    @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
-                        super.onInitializeAccessibilityNodeInfo(host, info);
-                        info.setClassName(Button.class.getName());
-                        info.setClickable(true);
-                        info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
-                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(infoAction, activity.getString(R.string.library_info)));
-                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(removeAction, activity.getString(R.string.library_remove)));
-                    }
-                    @Override public boolean performAccessibilityAction(View host, int action, android.os.Bundle args) {
-                        if (action == AccessibilityNodeInfo.ACTION_CLICK) {
-                            select(entry);
-                            return true;
-                        }
-                        if (action == infoAction) { info(entry); return true; }
-                        if (action == removeAction) { remove(entry); return true; }
-                        return super.performAccessibilityAction(host, action, args);
-                    }
-                });
-                return row;
-            }
-        };
+        adapter = new LibraryAdapter(pad);
         list.setAdapter(adapter);
         JSONArray cached = read("entries");
-        HashSet<String> cachedHashes = new HashSet<>();
         visible.clear();
-        for (int pass = 0; pass < 2; pass++) {
-            for (int i = 0; i < cached.length(); i++) {
-                JSONObject entry = cached.optJSONObject(i);
-                if (entry == null || entry.optBoolean("available", false) != (pass == 0)) continue;
-                String sha = entry.optString("sha256", "");
-                if (!sha.isEmpty() && !cachedHashes.add(sha)) continue;
-                visible.add(entry);
-            }
+        for (int i = 0; i < cached.length(); i++) {
+            JSONObject entry = cached.optJSONObject(i);
+            if (entry != null) visible.add(entry);
         }
-        adapter.notifyDataSetChanged();
-        list.setOnItemClickListener((parent, view, position, id) -> {
-            select(visible.get(position));
-        });
+        publishRows();
+        list.setOnItemClickListener((parent, view, position, id) -> choose(groups.get(position), 0));
         list.setOnItemLongClickListener((parent, view, position, id) -> {
-            JSONObject entry = visible.get(position);
+            LibraryGrouping.Group group = groups.get(position);
             new AlertDialog.Builder(activity).setItems(new String[]{activity.getString(R.string.library_info), activity.getString(R.string.library_remove)},
-                    (which, item) -> { if (item == 0) info(entry); else remove(entry); }).show();
+                    (which, item) -> choose(group, item == 0 ? 1 : 2)).show();
             return true;
         });
         android.widget.FrameLayout listArea = new android.widget.FrameLayout(activity);
@@ -307,6 +236,175 @@ final class FirmwareLibraryScreen {
         body.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
         activity.setContentView(body);
         refresh();
+    }
+
+    private void schedulePublish() {
+        if (listUpdate != null) ui.removeCallbacks(listUpdate);
+        long delay = Math.max(0, 250 - (android.os.SystemClock.uptimeMillis() - lastListUpdate));
+        listUpdate = () -> { if (showing) publishRows(); };
+        ui.postDelayed(listUpdate, delay);
+    }
+
+    private void publishRows() {
+        ArrayList<LibraryGrouping.Entry> entries = new ArrayList<>();
+        java.util.ArrayList<String> oldKeys = new java.util.ArrayList<>();
+        for (LibraryGrouping.Group group : groups) oldKeys.add(group.key);
+        java.util.Map<String, String> oldFingerprints = new java.util.HashMap<>(renderFingerprints);
+        indexed.clear();
+        for (JSONObject row : visible) {
+            String uri = row.optString("uri"), name = row.optString("name");
+            String model = row.optString("model", "");
+            String display = row.optString("display", name);
+            if (model.isEmpty() && !display.equals(name) && !row.optString("sha256").isEmpty()) model = display;
+            indexed.put(uri, row);
+            entries.add(new LibraryGrouping.Entry(uri, model, name, row.optLong("size", -1), row.optLong("last_booted", 0)));
+        }
+        int first = list.getFirstVisiblePosition();
+        View top = list.getChildAt(0);
+        int offset = top == null ? 0 : top.getTop();
+        groups.clear(); groups.addAll(LibraryGrouping.group(entries));
+        renderFingerprints.clear();
+        java.util.ArrayList<String> newKeys = new java.util.ArrayList<>();
+        for (LibraryGrouping.Group group : groups) {
+            newKeys.add(group.key);
+            StringBuilder value = new StringBuilder();
+            for (LibraryGrouping.Entry file : group.files) value.append(indexed.get(file.uri).toString());
+            renderFingerprints.put(group.key, value.toString());
+        }
+        if (!oldKeys.equals(newKeys)) {
+            adapter.notifyDataSetChanged();
+            if (first < groups.size()) list.setSelectionFromTop(first, offset);
+        } else {
+            for (int i = 0; i < list.getChildCount(); i++) {
+                int position = first + i;
+                if (position < groups.size() && !java.util.Objects.equals(
+                        oldFingerprints.get(groups.get(position).key), renderFingerprints.get(groups.get(position).key))) {
+                    adapter.getView(position, list.getChildAt(i), list);
+                }
+            }
+        }
+        lastListUpdate = android.os.SystemClock.uptimeMillis();
+    }
+
+    private String size(long value) {
+        return value < 0 ? activity.getString(R.string.size_unavailable)
+                : android.text.format.Formatter.formatShortFileSize(activity, value);
+    }
+    private String bootTime(long value) {
+        return value == 0 ? activity.getString(R.string.library_never)
+                : DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(value));
+    }
+    private void choose(LibraryGrouping.Group group, int action) {
+        if (group.files.size() == 1) { act(group.files.get(0), action); return; }
+        String[] labels = new String[group.files.size()];
+        for (int i = 0; i < labels.length; i++) {
+            LibraryGrouping.Entry file = group.files.get(i);
+            labels[i] = file.name + " · " + size(file.size) + "\n" + bootTime(file.lastBoot);
+        }
+        new AlertDialog.Builder(activity).setTitle(R.string.library_files)
+                .setItems(labels, (dialog, which) -> act(group.files.get(which), action))
+                .setNegativeButton(R.string.cancel, null).show();
+    }
+    private void act(LibraryGrouping.Entry file, int action) {
+        JSONObject entry = indexed.get(file.uri);
+        if (entry == null) return;
+        if (action == 0) select(entry); else if (action == 1) info(entry); else remove(entry);
+    }
+
+    private final class LibraryAdapter extends BaseAdapter {
+        private final int pad;
+        LibraryAdapter(int pad) { this.pad = pad; }
+        @Override public int getCount() { return groups.size(); }
+        @Override public Object getItem(int position) { return groups.get(position); }
+        @Override public long getItemId(int position) { return groups.get(position).stableId(); }
+        @Override public boolean hasStableIds() { return true; }
+        @Override public View getView(int position, View convert, ViewGroup parent) {
+            RowHolder holder;
+            if (convert == null) {
+                LinearLayout row = new LinearLayout(activity);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setPadding(pad, pad * 3 / 4, pad, pad * 3 / 4);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                ImageView image = new ImageView(activity);
+                image.setBackgroundColor(android.graphics.Color.rgb(28, 28, 30));
+                LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(pad * 5, pad * 5);
+                imageParams.rightMargin = pad; row.addView(image, imageParams);
+                LinearLayout labels = new LinearLayout(activity); labels.setOrientation(LinearLayout.VERTICAL);
+                TextView model = new TextView(activity); model.setTextSize(18); model.setTextColor(android.graphics.Color.WHITE);
+                model.setTypeface(android.graphics.Typeface.DEFAULT_BOLD); model.setSingleLine(true);
+                model.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                TextView detail = new TextView(activity); detail.setTextSize(13);
+                detail.setTextColor(android.graphics.Color.rgb(160, 160, 166));
+                labels.addView(model); labels.addView(detail); row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+                labels.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                holder = new RowHolder(row, image, model, detail); row.setTag(holder); convert = row;
+                row.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+                    @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+                        super.onInitializeAccessibilityNodeInfo(host, info);
+                        info.setClassName(Button.class.getName()); info.setClickable(true);
+                        info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
+                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(infoAction, activity.getString(R.string.library_info)));
+                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(removeAction, activity.getString(R.string.library_remove)));
+                    }
+                    @Override public boolean performAccessibilityAction(View host, int action, android.os.Bundle args) {
+                        LibraryGrouping.Group current = ((RowHolder) host.getTag()).group;
+                        if (action == AccessibilityNodeInfo.ACTION_CLICK) { choose(current, 0); return true; }
+                        if (action == infoAction) { choose(current, 1); return true; }
+                        if (action == removeAction) { choose(current, 2); return true; }
+                        return super.performAccessibilityAction(host, action, args);
+                    }
+                });
+            } else holder = (RowHolder) convert.getTag();
+            LibraryGrouping.Group group = groups.get(position);
+            holder.group = group;
+            LibraryGrouping.Entry recent = group.recent();
+            JSONObject entry = indexed.get(recent.uri);
+            String name = recent.model.isEmpty() ? entry.optString("display", recent.name) : recent.model;
+            String chipset = entry.optString("chipset", "—");
+            String booted = bootTime(recent.lastBoot);
+            String summary = group.files.size() > 1
+                    ? activity.getString(R.string.library_file_count, group.files.size()) + " · " + size(group.size())
+                    : size(recent.size);
+            holder.model.setText(name);
+            holder.detail.setText(chipset + " · " + summary + "\n" + booted
+                    + (entry.optBoolean("available", false) ? "" : " · " + activity.getString(R.string.library_unavailable)));
+            holder.row.setContentDescription(activity.getString(R.string.library_row, name, chipset, booted));
+            String path = entry.optString("thumbnail", "");
+            String key = path.isEmpty() ? "" : path + ":" + new File(path).lastModified();
+            holder.image.setTag(key);
+            Bitmap bitmap = thumbnails.get(key);
+            if (bitmap != null) { holder.image.setImageBitmap(bitmap); holder.image.setScaleType(ImageView.ScaleType.FIT_CENTER); holder.image.setAlpha(1f); }
+            else {
+                holder.image.setImageResource(R.drawable.ic_phone); holder.image.setScaleType(ImageView.ScaleType.CENTER); holder.image.setAlpha(0.35f);
+                if (!path.isEmpty() && loadingImages.add(key)) {
+                    imageLoader.execute(() -> {
+                        Bitmap decoded = BitmapFactory.decodeFile(path);
+                        if (decoded != null) thumbnails.put(key, decoded);
+                        loadingImages.remove(key);
+                        if (decoded != null) ui.post(() -> {
+                            if (!showing) return;
+                            for (int i = 0; i < list.getChildCount(); i++) {
+                                RowHolder visibleHolder = (RowHolder) list.getChildAt(i).getTag();
+                                if (key.equals(visibleHolder.image.getTag())) {
+                                    visibleHolder.image.setImageBitmap(decoded);
+                                    visibleHolder.image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                                    visibleHolder.image.setAlpha(1f);
+                                }
+                            }
+                        });
+                    });
+                }
+            }
+            return convert;
+        }
+    }
+    private static final class RowHolder {
+        final LinearLayout row; final ImageView image; final TextView model, detail;
+        LibraryGrouping.Group group;
+        RowHolder(LinearLayout row, ImageView image, TextView model, TextView detail) {
+            this.row = row; this.image = image; this.model = model; this.detail = detail;
+        }
     }
 
     static void removeFolder(Context context, String folder) {
@@ -387,7 +485,7 @@ final class FirmwareLibraryScreen {
         }
     }
 
-    void close() { dismiss(); scanner.shutdown(); }
+    void close() { dismiss(); scanner.shutdown(); imageLoader.shutdown(); }
 
     private void select(JSONObject entry) {
         if (!entry.optBoolean("available", false)) return;
@@ -413,7 +511,7 @@ final class FirmwareLibraryScreen {
             activity.runOnUiThread(() -> {
                 if (!showing || revision.get() != selectedRevision) return;
                 boolean stillPresent = false;
-                for (JSONObject row : visible) if (value.equals(row.optString("uri"))) { stillPresent = true; break; }
+                stillPresent = indexed.containsKey(value);
                 if (!stillPresent) return;
                 if (!available) {
                     updateEntry(value, "available", false);
@@ -487,6 +585,7 @@ final class FirmwareLibraryScreen {
             try {
                 JSONObject metadata = new JSONObject(PythonRuntime.describeLibrary(activity, new File(sessionPath), name));
                 updateEntry(uri, "display", metadata.optString("name", name));
+                updateEntry(uri, "model", metadata.isNull("model") ? "" : metadata.optString("model", ""));
                 updateEntry(uri, "chipset", metadata.isNull("chipset") ? "—" : metadata.optString("chipset", "—"));
                 updateEntry(uri, "preview_deferred", false);
             } catch (IOException | JSONException | RuntimeException ignored) { }
@@ -572,6 +671,13 @@ final class FirmwareLibraryScreen {
         }
     }
 
+    private Cursor queryChildren(Uri children, String[] columns) {
+        try { return activity.getContentResolver().query(children, columns, null, null, null); }
+        catch (IllegalArgumentException error) {
+            return activity.getContentResolver().query(children, java.util.Arrays.copyOf(columns, 4), null, null, null);
+        }
+    }
+
     void refresh() {
         if (!showing) return;
         final long token = revision.incrementAndGet();
@@ -629,8 +735,9 @@ final class FirmwareLibraryScreen {
                 try {
                     Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
                     String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                            DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_MIME_TYPE};
-                    try (Cursor cursor = activity.getContentResolver().query(children, columns, null, null, null)) {
+                            DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_MIME_TYPE,
+                            DocumentsContract.Document.COLUMN_LAST_MODIFIED};
+                    try (Cursor cursor = queryChildren(children, columns)) {
                         if (cursor == null) continue;
                         while (cursor.moveToNext()) {
                             if (token != revision.get()) return;
@@ -654,28 +761,16 @@ final class FirmwareLibraryScreen {
                                         .put("size", cursor.isNull(2) ? -1 : cursor.getLong(2)).put("imported", false);
                                 entries.put(entry);
                             }
-                            if (entry != null) entry.put("available", true).put("name", displayName).put("size", fileSize);
+                            if (entry != null) {
+                                int stampColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED);
+                                long stamp = stampColumn < 0 || cursor.isNull(stampColumn) ? 0 : cursor.getLong(stampColumn);
+                                entry.put("observed_stamp", stamp).put("observed_size", fileSize)
+                                        .put("available", true).put("name", displayName).put("size", fileSize);
+                            }
                         }
                     }
                 } catch (IOException | RuntimeException | JSONException ignored) { }
             }
-            ArrayList<JSONObject> pending = new ArrayList<>();
-            for (int i = 0; i < entries.length(); i++) {
-                JSONObject entry = entries.optJSONObject(i);
-                if (entry == null || oversizedUris.contains(entry.optString("uri"))) continue;
-                try {
-                    JSONObject copy = new JSONObject(entry.toString());
-                    if (copy.optBoolean("imported")) {
-                        String path = Uri.parse(copy.optString("uri")).getPath();
-                        copy.put("available", path != null && new File(path).isFile());
-                    }
-                    pending.add(copy);
-                } catch (JSONException ignored) { }
-            }
-            activity.runOnUiThread(() -> {
-                if (token != revision.get() || !showing) return;
-                visible.clear(); visible.addAll(pending); adapter.notifyDataSetChanged();
-            });
             ArrayList<JSONObject> rows = new ArrayList<>();
             HashSet<String> hashes = new HashSet<>();
             for (int i = 0; i < entries.length(); i++) {
@@ -685,31 +780,33 @@ final class FirmwareLibraryScreen {
                 Uri uri = Uri.parse(entry.optString("uri"));
                 try {
                     JSONObject metadata = null;
-                    if (entry.optBoolean("imported")) {
-                        File file = new File(uri.getPath());
+                    File file = entry.optBoolean("imported") ? new File(uri.getPath()) : null;
+                    if (file != null) {
                         entry.put("available", file.isFile() && file.canRead());
-                        if (entry.optBoolean("available"))
-                            metadata = new JSONObject(PythonRuntime.describeLibrary(activity, file, entry.optString("name")));
-                    } else {
-                        if (!entry.optBoolean("available")) { rows.add(entry); continue; }
-                        metadata = describeDocument(uri, entry.optString("name"), token);
+                        entry.put("observed_stamp", file.lastModified()).put("observed_size", file.length());
                     }
-                    if (metadata == null) entry.put("preview_deferred", entry.optString("sha256", "").isEmpty());
-                    else {
+                    if (!entry.optBoolean("available")) { rows.add(entry); continue; }
+                    long stamp = entry.optLong("observed_stamp", 0);
+                    long actualSize = entry.optLong("observed_size", -1);
+                    boolean cacheHit = stamp > 0 && actualSize >= 0 && entry.has("model")
+                            && !entry.optString("sha256", "").isEmpty()
+                            && stamp == entry.optLong("source_stamp", -1)
+                            && actualSize == entry.optLong("source_size", -2);
+                    if (!cacheHit) {
+                        if (file != null) metadata = new JSONObject(PythonRuntime.describeLibrary(activity, file, entry.optString("name")));
+                        else metadata = describeDocument(uri, entry.optString("name"), token);
+                    }
+                    if (!cacheHit && metadata == null) entry.put("preview_deferred", entry.optString("sha256", "").isEmpty());
+                    else if (metadata != null) {
+                        entry.put("source_stamp", stamp).put("source_size", actualSize);
                         entry.remove("preview_deferred");
                         entry.put("sha256", metadata.optString("sha256"));
+                        entry.put("model", metadata.isNull("model") ? "" : metadata.optString("model", ""));
                         entry.put("display", metadata.optString("name", entry.optString("name")));
                         entry.put("chipset", metadata.isNull("chipset") ? "—" : metadata.optString("chipset", "—"));
                         entry.put("size", metadata.optLong("size", entry.optLong("size", -1)));
                     }
                     String sha = entry.optString("sha256", "");
-                    JSONObject done = new JSONObject(entry.toString());
-                    activity.runOnUiThread(() -> {
-                        if (token != revision.get() || !showing) return;
-                        for (int row = 0; row < visible.size(); row++)
-                            if (done.optString("uri").equals(visible.get(row).optString("uri"))) { visible.set(row, done); break; }
-                        adapter.notifyDataSetChanged();
-                    });
                     if (!sha.isEmpty() && !hashes.add(sha)) continue;
                     rows.add(entry);
                 } catch (IOException | RuntimeException | JSONException ignored) { }
@@ -727,7 +824,7 @@ final class FirmwareLibraryScreen {
             }
             activity.runOnUiThread(() -> {
                 if (token != revision.get() || !showing) return;
-                visible.clear(); visible.addAll(rows); adapter.notifyDataSetChanged();
+                visible.clear(); visible.addAll(rows); schedulePublish();
                 empty.setText(R.string.library_empty);
                 emptyArea.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
             });

@@ -114,7 +114,7 @@
     <string name="display_external">%1$s (디스플레이 %2$d)</string>
     <string name="display_preview_notice">미리보기: 색상·방향 미확정</string>
     <string name="network_host_time">통신망 시간에 기기 시계 사용</string>
-    <string name="network_start_time">통신망 시작 시간 (비우면 사용 안 함)</string>
+    <string name="network_start_time">통신망 시작 시간</string>
     <string name="network_time_error">올바른 통신망 시작 시간을 입력하세요</string>
     <string name="more_settings">더보기…</string>
     <string name="capture">스크린샷 저장</string>
@@ -222,4 +222,9 @@
     <string name="library_remove_folder">삭제</string>
     <string name="library_session_settings">실행 설정</string>
     <string name="back">뒤로</string>
+    <string name="time_off">사용 안 함</string>
+    <string name="time_clear">지우기</string>
+    <string name="confirm_power_off_library">전원을 끄고 목록으로 돌아갈까요?</string>
+    <string name="library_files">파일 선택</string>
+    <string name="library_file_count">%1$d개 파일</string>
 </resources>

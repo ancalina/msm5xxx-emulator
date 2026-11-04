@@ -167,3 +167,9 @@
 "Library no folders" = "No folders added";
 "Library remove folder" = "Remove";
 "Library session settings" = "Before boot";
+"Unable to start. Force-close and reopen the app to try again." = "Unable to start. Force-close and reopen the app to try again.";
+"Unable to stop. Force-close and reopen the app to try again." = "Unable to stop. Force-close and reopen the app to try again.";
+"Unable to pause or resume. Force-close and reopen the app to try again." = "Unable to pause or resume. Force-close and reopen the app to try again.";
+"Emulation stopped. Force-close and reopen the app to try again." = "Emulation stopped. Force-close and reopen the app to try again.";
+"Stopped. Force-close and reopen the app to run again." = "Stopped. Force-close and reopen the app to run again.";
+"Force-close and reopen the app to start the selected firmware." = "Force-close and reopen the app to start the selected firmware.";

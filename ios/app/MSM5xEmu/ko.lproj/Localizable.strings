@@ -167,3 +167,9 @@
 "Library no folders" = "등록된 폴더가 없습니다";
 "Library remove folder" = "삭제";
 "Library session settings" = "실행 설정";
+"Unable to start. Force-close and reopen the app to try again." = "실행할 수 없습니다. 앱을 완전히 종료하고 다시 열어 주세요.";
+"Unable to stop. Force-close and reopen the app to try again." = "종료할 수 없습니다. 앱을 완전히 종료하고 다시 열어 주세요.";
+"Unable to pause or resume. Force-close and reopen the app to try again." = "일시 정지하거나 다시 시작할 수 없습니다. 앱을 완전히 종료하고 다시 열어 주세요.";
+"Emulation stopped. Force-close and reopen the app to try again." = "에뮬레이션이 중지되었습니다. 앱을 완전히 종료하고 다시 열어 주세요.";
+"Stopped. Force-close and reopen the app to run again." = "중지되었습니다. 다시 실행하려면 앱을 완전히 종료하고 다시 열어 주세요.";
+"Force-close and reopen the app to start the selected firmware." = "선택한 펌웨어를 실행하려면 앱을 완전히 종료하고 다시 열어 주세요.";

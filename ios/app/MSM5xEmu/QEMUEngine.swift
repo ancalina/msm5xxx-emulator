@@ -4,9 +4,6 @@ import Combine
 import CoreGraphics
 import AVFoundation
 
-@_silgen_name("csops")
-private func csops(_ pid: pid_t, _ ops: UInt32, _ useraddr: UnsafeMutableRawPointer?, _ usersize: Int) -> Int32
-
 /// Loads the embedded QEMU framework (built by ios/build_qemu_framework.sh): QEMU (TCG) when JIT
 /// memory is usable, otherwise QEMUTCI. All Python calls run on one serial queue.
 final class QEMUEngine: ObservableObject {
@@ -26,6 +23,10 @@ final class QEMUEngine: ObservableObject {
     @Published private(set) var running = false
     @Published private(set) var starting = false
     @Published private(set) var used = false
+    @Published private(set) var paused = false
+    @Published private(set) var errorDetail = ""
+    @Published private(set) var sessionFailed = false
+    @Published private(set) var refreshInterval = 0.1
     private let queue = DispatchQueue(label: "me.ancal.msm5xemu.python")
     private var runtimeReady = false
     private var polling = false
@@ -33,6 +34,12 @@ final class QEMUEngine: ObservableObject {
     // short intervals without tying guest audio cadence to screen refresh.
     private var audioPolling = false
     private var audioSink: MSM5xxxAudioSink?
+    private var sessionStarted = false
+    private var sceneActive = true
+    private var audioInterrupted = false
+    private var audioGeneration = 0
+    private var monitorPaused = false
+    private var unchangedPolls = 0
     private var audioDiagnostics = false
     private var audioPackets = 0
     private var audioNonzeroPackets = 0
@@ -59,8 +66,13 @@ final class QEMUEngine: ObservableObject {
 
     /// Code-signing flags of this process; CS_DEBUGGED (0x10000000) is what JIT enablers set.
     static var codeSigningFlags: UInt32 {
+        typealias CSOps = @convention(c) (pid_t, UInt32, UnsafeMutableRawPointer?, Int) -> Int32
+        guard let handle = dlopen(nil, RTLD_LAZY) else { return 0 }
+        defer { dlclose(handle) }
+        guard let symbol = dlsym(handle, "csops") else { return 0 }
+        let operation = unsafeBitCast(symbol, to: CSOps.self)
         var flags: UInt32 = 0
-        _ = csops(getpid(), 0, &flags, MemoryLayout<UInt32>.size)
+        _ = operation(getpid(), 0, &flags, MemoryLayout<UInt32>.size)
         return flags
     }
 
@@ -120,9 +132,17 @@ final class QEMUEngine: ObservableObject {
     func start(_ firmware: URL, persistentState: Bool = true, experimentalRex: Bool = false,
                virtualNetwork: Bool = false, networkHostTime: Bool = true,
                networkStartTime: Double? = nil) {
-        guard entry != nil, !used else { return }
+        guard entry != nil, !used else {
+            clearDisplay()
+            status = "Unable to start. Force-close and reopen the app to try again."
+            errorDetail = entry == nil ? "QEMU unavailable" : "QEMU already used"
+            sessionFailed = true
+            return
+        }
         used = true
         starting = true
+        sessionFailed = false
+        errorDetail = ""
         queue.async {
             do {
                 if !self.runtimeReady {
@@ -154,6 +174,7 @@ final class QEMUEngine: ObservableObject {
                 let json = try JSONSerialization.data(withJSONObject: request)
                 let result = try PythonBridge.call("start_session", argument: String(decoding: json, as: UTF8.self))
                 let started = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any]
+                self.sessionStarted = true
                 let bits = Set(started?["input_bits"] as? [Int] ?? [])
                 self.audioDiagnostics = FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path)
                 if started?["audio_admitted"] as? Bool == true {
@@ -169,6 +190,7 @@ final class QEMUEngine: ObservableObject {
                     self.audioPolling = true
                     self.pollAudio()
                 }
+                if !self.sceneActive { self.setSceneActive(false) }
                 DispatchQueue.main.async {
                     self.starting = false
                     self.running = true
@@ -177,7 +199,7 @@ final class QEMUEngine: ObservableObject {
                 }
             } catch {
                 DispatchQueue.main.async { self.starting = false }
-                self.report(error)
+                self.failSession(error, message: "Unable to start. Force-close and reopen the app to try again.")
             }
         }
     }
@@ -185,7 +207,9 @@ final class QEMUEngine: ObservableObject {
     func key(_ bit: Int, pressed: Bool) {
         let mapped = UserDefaults.standard.object(forKey: "keymap.\(identity).\(bit)") != nil
         guard running, inputBits.contains(bit) || mapped else { return }
+        if refreshInterval != 0.1 { refreshInterval = 0.1 }
         queue.async {
+            self.unchangedPolls = 0
             do {
                 let key = "keymap.\(self.identity).\(bit)"
                 let eventCode = UserDefaults.standard.object(forKey: key) as? Int
@@ -231,21 +255,64 @@ final class QEMUEngine: ObservableObject {
         }
     }
 
-    func stop() {
-        guard running else { return }
+    func stop(completion: ((Bool) -> Void)? = nil) {
+        guard running else { completion?(false); return }
         running = false
+        starting = true
         inputBits = []
         queue.async {
             do {
                 self.stopAudio()
                 _ = try PythonBridge.call("stop_session", argument: nil)
-                DispatchQueue.main.async { self.status = "Stopped. Relaunch app for another session." }
-            } catch { self.report(error) }
+                self.sessionStarted = false
+                DispatchQueue.main.async {
+                    self.starting = false
+                    self.clearDisplay()
+                    self.status = "Stopped. Force-close and reopen the app to run again."
+                    completion?(true)
+                }
+            } catch {
+                self.failSession(error, message: "Unable to stop. Force-close and reopen the app to try again.")
+                DispatchQueue.main.async { completion?(false) }
+            }
+        }
+    }
+
+    func setSceneActive(_ active: Bool) {
+        queue.async {
+            self.sceneActive = active
+            guard self.sessionStarted, self.monitorPaused == active else { return }
+            do {
+                if !active {
+                    self.audioGeneration += 1
+                    self.audioSink?.pauseOutput()
+                }
+                let request = active ? "{\"paused\":false}" : "{\"paused\":true}"
+                _ = try PythonBridge.call("set_session_paused", argument: request)
+                self.monitorPaused = !active
+                NSLog("MSM5xEmu %@", active ? "resumed" : "paused")
+                if active {
+                    if !self.audioInterrupted { self.audioSink?.resumeOutput() }
+                    self.audioGeneration += 1
+                    self.pollAudio(generation: self.audioGeneration)
+                }
+                DispatchQueue.main.async { self.paused = !active }
+            } catch {
+                self.failSession(error, message: "Unable to pause or resume. Force-close and reopen the app to try again.")
+            }
+        }
+    }
+
+    func setAudioInterrupted(_ interrupted: Bool) {
+        queue.async {
+            self.audioInterrupted = interrupted
+            if interrupted { self.audioSink?.pauseOutput() }
+            else if self.sceneActive && !self.monitorPaused { self.audioSink?.resumeOutput() }
         }
     }
 
     func refresh() {
-        guard running, !polling else { return }
+        guard running, !paused, !polling else { return }
         polling = true
         queue.async {
             defer { DispatchQueue.main.async { self.polling = false } }
@@ -263,10 +330,19 @@ final class QEMUEngine: ObservableObject {
                             bitsPerPixel: 24, bytesPerRow: width * 3, space: CGColorSpaceCreateDeviceRGB(),
                             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
                             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
-                    else { return }
+                    else { throw NSError(domain: "MSM5xEmu", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid display frame"]) }
                     DispatchQueue.main.async { self.frame = image }
                 }
                 let secondary = try PythonBridge.bytes("session_secondary_frame")
+                if packet.count > 16 || secondary.count > 16 {
+                    self.unchangedPolls = 0
+                    DispatchQueue.main.async { if self.refreshInterval != 0.1 { self.refreshInterval = 0.1 } }
+                } else {
+                    self.unchangedPolls += 1
+                    if self.unchangedPolls == 8 {
+                        DispatchQueue.main.async { self.refreshInterval = 0.5 }
+                    }
+                }
                 if secondary.count > 16 {
                     func word(_ offset: Int) -> Int {
                         (0..<4).reduce(0) { $0 | Int(secondary[offset + $1]) << ($1 * 8) }
@@ -310,26 +386,24 @@ final class QEMUEngine: ObservableObject {
                           String(describing: value?["audio_overflow_frames"] ?? 0))
                 }
                 if value?["process_running"] as? Bool == false {
-                    self.stopAudio()
-                    DispatchQueue.main.async {
-                        self.running = false; self.inputBits = []
-                        self.status = "QEMU exited. Relaunch app for another session."
-                    }
+                    throw NSError(domain: "MSM5xEmu", code: 2, userInfo: [NSLocalizedDescriptionKey: "QEMU exited"])
                 }
             } catch {
-                DispatchQueue.main.async { self.running = false; self.inputBits = [] }
-                self.report(error)
+                self.failSession(error, message: "Emulation stopped. Force-close and reopen the app to try again.")
             }
         }
     }
 
-    private func pollAudio() {
-        guard audioPolling else { return }
+    private func pollAudio(generation: Int? = nil) {
+        let generation = generation ?? audioGeneration
+        guard audioPolling, sceneActive, !monitorPaused, generation == audioGeneration else { return }
+        var received = false
         do {
             // Bound each drain to avoid starving display and input work.
             for _ in 0..<4 {
                 let packet = try PythonBridge.bytes("session_audio")
                 if packet.isEmpty { break }
+                received = true
                 if audioDiagnostics {
                     audioPackets += 1
                     if packet.dropFirst(32).contains(where: { $0 != 0 }) { audioNonzeroPackets += 1 }
@@ -344,18 +418,40 @@ final class QEMUEngine: ObservableObject {
                 NSLog("MSM5xEmu iOS audio poll failed: %@", String(describing: error))
             }
         }
-        queue.asyncAfter(deadline: .now() + .milliseconds(10)) { self.pollAudio() }
+        queue.asyncAfter(deadline: .now() + .milliseconds(received ? 20 : 30)) { self.pollAudio(generation: generation) }
     }
 
     private func stopAudio() {
         audioPolling = false
+        audioGeneration += 1
         audioSink?.close()
         audioSink = nil
     }
 
     private func report(_ error: Error) {
         NSLog("MSM5xEmu error: %@", String(describing: error))
-        DispatchQueue.main.async { self.status = "Could not run" }
+        DispatchQueue.main.async { self.errorDetail = error.localizedDescription }
+    }
+
+    private func clearDisplay() {
+        frame = nil; secondaryFrame = nil; secondaryAvailable = false
+        secondaryPreview = false; foldSupported = false; foldOpen = false
+        inputBits = []; metrics = "Run —  PC —\nLCD —  Frame —"; paused = false
+    }
+
+    private func failSession(_ error: Error, message: String) {
+        NSLog("MSM5xEmu error: %@", String(describing: error))
+        stopAudio()
+        sessionStarted = false
+        DispatchQueue.main.async {
+            self.running = false; self.starting = true
+            self.clearDisplay()
+            self.errorDetail = error.localizedDescription
+            self.status = message
+            self.sessionFailed = true
+        }
+        if runtimeReady { _ = try? PythonBridge.call("stop_session", argument: nil) }
+        DispatchQueue.main.async { self.starting = false }
     }
 
 }
@@ -404,6 +500,25 @@ private final class MSM5xxxAudioSink {
             NSLog("MSM5xEmu AVAudioEngine start failed: %@", String(describing: error))
             close()
             return false
+        }
+    }
+
+    func pauseOutput() {
+        player.pause()
+        engine.pause()
+    }
+
+    func resumeOutput() {
+        guard !closed else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            try engine.start()
+            lock.lock()
+            let shouldPlay = playing && pendingFrames > 0
+            lock.unlock()
+            if shouldPlay { player.play() }
+        } catch {
+            NSLog("MSM5xEmu audio resume failed: %@", String(describing: error))
         }
     }
 
