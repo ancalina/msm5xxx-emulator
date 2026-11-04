@@ -278,7 +278,9 @@ struct ContentView: View {
         .background(Color(white: 0.07).ignoresSafeArea())
         .overlay {
             if showingSecondary && engine.secondaryAvailable {
-                FloatingDisplay(frame: engine.secondaryFrame, title: text("Additional display"))
+                GeometryReader { proxy in
+                    FloatingDisplay(frame: engine.secondaryFrame, title: text("Additional display"), bounds: proxy.size)
+                }
             }
             if preparingFirmware { ProgressView(text("Library loading")) }
         }
@@ -607,57 +609,79 @@ private struct CaptureShare: UIViewControllerRepresentable {
 private struct FloatingDisplay: View {
     let frame: CGImage?
     let title: String
+    let bounds: CGSize
     @AppStorage("secondary_x") private var savedX = 12.0
     @AppStorage("secondary_y") private var savedY = 12.0
     @AppStorage("secondary_width") private var savedWidth = 160.0
     @AppStorage("secondary_height") private var savedHeight = 160.0
-    @GestureState private var drag = CGSize.zero
-    @GestureState private var resize = CGSize.zero
+    // Position and size live in @State while dragging; storage is written only when a gesture ends.
+    @State private var origin = CGPoint(x: 12, y: 12)
+    @State private var size = CGSize(width: 160, height: 160)
+    @State private var loaded = false
+    @State private var dragStart: CGPoint?
+    @State private var resizeStart: CGSize?
 
-    private func clamp(_ value: CGFloat, _ lower: CGFloat, _ upper: CGFloat) -> CGFloat {
-        min(max(value, lower), max(lower, upper))
+    private func clamped(_ point: CGPoint, _ size: CGSize) -> CGPoint {
+        CGPoint(x: min(max(point.x, 0), max(0, bounds.width - size.width)),
+                y: min(max(point.y, 0), max(0, bounds.height - size.height)))
+    }
+
+    private func clamped(_ size: CGSize) -> CGSize {
+        CGSize(width: min(max(size.width, 100), max(100, bounds.width)),
+               height: min(max(size.height, 80), max(80, bounds.height)))
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let available = geometry.size
-            let width = clamp(CGFloat(savedWidth) + resize.width, min(100, available.width), available.width)
-            let height = clamp(CGFloat(savedHeight) + resize.height, min(80, available.height), available.height)
-            let x = clamp(CGFloat(savedX) + drag.width, 0, available.width - width)
-            let y = clamp(CGFloat(savedY) + drag.height, 0, available.height - height)
-            VStack(spacing: 0) {
-                HStack {
-                    Text(title).font(.caption).lineLimit(1)
-                    Spacer(minLength: 0)
-                }
+        VStack(spacing: 0) {
+            Text(title).font(.caption).lineLimit(1).foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 8).frame(height: 32)
-                .background(.regularMaterial)
+                .background(Color(white: 0.2))
                 .contentShape(Rectangle())
-                .gesture(DragGesture().updating($drag) { value, state, _ in state = value.translation }
-                    .onEnded { value in
-                        savedX = Double(clamp(CGFloat(savedX) + value.translation.width, 0, available.width - width))
-                        savedY = Double(clamp(CGFloat(savedY) + value.translation.height, 0, available.height - height))
-                    })
-                ZStack(alignment: .bottomTrailing) {
-                    Color.black
-                    if let frame = frame {
-                        Image(decorative: frame, scale: 1).resizable().interpolation(.none).aspectRatio(contentMode: .fit)
+                .gesture(DragGesture(coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = dragStart ?? origin
+                        dragStart = start
+                        origin = clamped(CGPoint(x: start.x + value.translation.width,
+                                                 y: start.y + value.translation.height), size)
                     }
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.caption).padding(8).background(.regularMaterial)
-                        .contentShape(Rectangle())
-                        .gesture(DragGesture().updating($resize) { value, state, _ in state = value.translation }
-                            .onEnded { value in
-                                savedWidth = Double(clamp(CGFloat(savedWidth) + value.translation.width, min(100, available.width), available.width - x))
-                                savedHeight = Double(clamp(CGFloat(savedHeight) + value.translation.height, min(80, available.height), available.height - y))
-                                savedX = Double(x); savedY = Double(y)
-                            })
+                    .onEnded { _ in
+                        dragStart = nil
+                        savedX = Double(origin.x); savedY = Double(origin.y)
+                    })
+            ZStack(alignment: .bottomTrailing) {
+                Color.black
+                if let frame = frame {
+                    Image(decorative: frame, scale: 1).resizable().interpolation(.none)
+                        .aspectRatio(contentMode: .fit)
                 }
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption).foregroundColor(.white).padding(8)
+                    .background(Color(white: 0.2))
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(coordinateSpace: .global)
+                        .onChanged { value in
+                            let start = resizeStart ?? size
+                            resizeStart = start
+                            size = clamped(CGSize(width: start.width + value.translation.width,
+                                                  height: start.height + value.translation.height))
+                            origin = clamped(origin, size)
+                        }
+                        .onEnded { _ in
+                            resizeStart = nil
+                            savedWidth = Double(size.width); savedHeight = Double(size.height)
+                        })
             }
-            .frame(width: width, height: height)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
-            .offset(x: x, y: y)
+        }
+        .frame(width: size.width, height: size.height)
+        .overlay(Rectangle().stroke(Color(white: 0.35)))
+        .offset(x: origin.x, y: origin.y)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            size = clamped(CGSize(width: savedWidth, height: savedHeight))
+            origin = clamped(CGPoint(x: savedX, y: savedY), size)
         }
     }
 }
