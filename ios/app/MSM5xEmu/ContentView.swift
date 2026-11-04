@@ -78,8 +78,8 @@ struct ContentView: View {
                         key(text("Vol-"), 8).frame(height: 44)
                         Button(text(engine.foldOpen ? "Close fold" : "Open fold")) { engine.toggleFold() }
                             .disabled(!engine.running || !engine.foldSupported)
-                            .font(.system(size: 11, relativeTo: .body)).lineLimit(1).minimumScaleFactor(0.7)
-                            .frame(maxWidth: .infinity).frame(height: 44)
+                            .buttonStyle(HandsetKeyStyle())
+                            .frame(height: 44)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(text(engine.status)).foregroundColor(.gray)
                             Text(localizedMetrics).foregroundColor(.gray)
@@ -130,7 +130,7 @@ struct ContentView: View {
                             } label: {
                                 Text(text("•••")).font(.title2).foregroundColor(.white)
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .background(Color(white: 0.33)).cornerRadius(4)
+                                    .background(Color(white: 0.33))
                             }
                             .frame(height: 44)
                             .accessibilityLabel(text("More actions"))
@@ -424,6 +424,19 @@ struct ContentView: View {
 }
 
 
+private struct HandsetKeyStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, relativeTo: .body))
+            .lineLimit(1).minimumScaleFactor(0.7)
+            .foregroundColor(enabled ? .white : .gray)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(white: !enabled ? 0.18 : configuration.isPressed ? 0.44 : 0.33))
+            .contentShape(Rectangle())
+    }
+}
+
 private struct PhoneKey: View {
     let label: String
     let accessibilityName: String
@@ -437,7 +450,6 @@ private struct PhoneKey: View {
             .foregroundColor(enabled ? .white : .gray)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(white: !enabled ? 0.18 : pressed ? 0.44 : 0.33))
-            .cornerRadius(4)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { _ in

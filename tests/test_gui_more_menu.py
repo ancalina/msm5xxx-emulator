@@ -16,6 +16,7 @@ class MoreMenuTest(unittest.TestCase):
         self.view = LiveWindow.__new__(LiveWindow)
         v = self.view
         v.root = self.root
+        v.library = Mock()
         v.ui_language = 'en'
         v.settings_button = tk.Button(self.root)
         v.settings_button.pack()
@@ -95,9 +96,8 @@ class MoreMenuTest(unittest.TestCase):
         v = self.view
         v.transport = object()
         with patch('msm5xxx_emulator.qemu.live_display.messagebox.askokcancel', return_value=False), \
-             patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename') as picker:
+             patch('msm5xxx_emulator.qemu.live_display.choose_from_library', return_value=Path('/tmp/new.bin')):
             v._choose_firmware_from_menu()
-        picker.assert_not_called()
         v._restart.assert_not_called()
 
     def test_firmware_change_stops_before_start(self):
@@ -124,7 +124,7 @@ class MoreMenuTest(unittest.TestCase):
         v._activate_transport = Mock(side_effect=lambda *args: events.append('start'))
         v._restart = LiveWindow._restart.__get__(v)
         with patch('msm5xxx_emulator.qemu.live_display.messagebox.askokcancel', return_value=True), \
-             patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename', return_value='/tmp/new.bin'), \
+             patch('msm5xxx_emulator.qemu.live_display.choose_from_library', return_value=Path('/tmp/new.bin')), \
              patch('msm5xxx_emulator.qemu.live_display.detect_profile', return_value=(object(), {})), \
              patch('msm5xxx_emulator.qemu.live_display.Transport', side_effect=lambda *args, **kwargs: object()), \
              patch('msm5xxx_emulator.qemu.live_display.virtual_cell_scenario', return_value=None):
@@ -137,7 +137,7 @@ class MoreMenuTest(unittest.TestCase):
         v.transport = object()
         v._load_config = Mock(return_value={})
         with patch('msm5xxx_emulator.qemu.live_display.messagebox.askokcancel', return_value=True), \
-             patch('msm5xxx_emulator.qemu.live_display.filedialog.askopenfilename', return_value='/tmp/new.bin'):
+             patch('msm5xxx_emulator.qemu.live_display.choose_from_library', return_value=Path('/tmp/new.bin')):
             v._choose_firmware_from_menu()
         self.assertEqual(v.firmware, Path('/tmp/new.bin'))
         v._restart.assert_called_once()

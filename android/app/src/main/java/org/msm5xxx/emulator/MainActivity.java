@@ -197,7 +197,7 @@ public final class MainActivity extends Activity {
     private boolean qemuReady;
     private boolean detectorRuntimeReady;
     private volatile boolean activityResumed;
-    private boolean sessionStarting;
+    private volatile boolean sessionStarting;
     private boolean canStartSession;
     private boolean editingInputMapping;
     private int heldKeyBit = -1;
@@ -209,6 +209,7 @@ public final class MainActivity extends Activity {
     private String lastErrorMessage;
     private volatile BackendBridge.Session session;
     private volatile int sessionGeneration;
+    private final Object sessionLifecycleLock = new Object();
 
     private final Runnable refreshWhileCopying = new Runnable() {
         @Override
@@ -353,8 +354,19 @@ public final class MainActivity extends Activity {
             keyTargets[key.bit] = target;
         }
 
-        foldButton = compactButton(R.string.fold_open, view -> toggleFold());
+        foldButton = new Button(this);
+        foldButton.setText(R.string.fold_open);
+        foldButton.setTextSize(11);
+        foldButton.setTextColor(Color.WHITE);
+        foldButton.setMinHeight(0);
+        foldButton.setMinimumHeight(0);
+        foldButton.setMinWidth(0);
+        foldButton.setMinimumWidth(0);
+        foldButton.setPadding(0, 0, 0, 0);
+        foldButton.setBackground(handsetButtonBackground());
+        foldButton.setOnClickListener(view -> toggleFold());
         foldButton.setEnabled(false);
+        foldButton.setAlpha(0.72f);
         side.addView(foldButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
@@ -391,6 +403,7 @@ public final class MainActivity extends Activity {
 
         moreButton = compactButton(R.string.more, view -> showMoreMenu());
         moreButton.setTextSize(20);
+        moreButton.setBackground(menuButtonBackground());
         moreButton.setContentDescription(getString(R.string.more_actions) + ". " + getString(R.string.menu_hint));
         side.addView(moreButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
@@ -1008,7 +1021,7 @@ public final class MainActivity extends Activity {
         int generation = ++sessionGeneration;
         sessionStarting = true;
         latestStatus = null;
-        if (foldButton != null) foldButton.setEnabled(false);
+        if (foldButton != null) { foldButton.setEnabled(false); foldButton.setAlpha(0.72f); }
         secondaryHidden = false;
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
@@ -1040,12 +1053,14 @@ public final class MainActivity extends Activity {
         try {
             opened = BackendBridge.open(context, firmware, profile,
                     persistentState, experimentalRex, virtualNetwork, networkHostTime, networkStartTime);
-            if (generation != sessionGeneration) {
-                return;
+            synchronized (sessionLifecycleLock) {
+                if (generation != sessionGeneration) {
+                    return;
+                }
+                session = opened;
+                sessionStarting = false;
             }
-            session = opened;
             updateSessionKeepScreenOn(true, generation);
-            sessionStarting = false;
             BackendBridge.Session active = opened;
             handler.post(() -> {
                 if (generation == sessionGeneration && session != null) {
@@ -1121,9 +1136,15 @@ public final class MainActivity extends Activity {
         } catch (IOException | RuntimeException | LinkageError error) {
             android.util.Log.e("MSM5xxxSession", "Session failed", error);
             failed = true;
-            if (generation == sessionGeneration) {
-                session = null;
-                sessionStarting = false;
+            boolean currentGeneration;
+            synchronized (sessionLifecycleLock) {
+                currentGeneration = generation == sessionGeneration;
+                if (currentGeneration) {
+                    session = null;
+                    sessionStarting = false;
+                }
+            }
+            if (currentGeneration) {
                 updateSessionKeepScreenOn(false, generation);
                 handler.post(() -> {
                     if (generation == sessionGeneration) {
@@ -1210,6 +1231,7 @@ public final class MainActivity extends Activity {
                 || latestStatus.secondaryAvailable != status.secondaryAvailable;
         latestStatus = status;
         foldButton.setEnabled(status.foldSupported);
+        foldButton.setAlpha(status.foldSupported ? 1f : 0.72f);
         foldButton.setText(status.foldOpen ? R.string.fold_close : R.string.fold_open);
         secondaryPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
         if (presentationPreviewNotice != null) {
@@ -1530,20 +1552,24 @@ public final class MainActivity extends Activity {
     }
 
     private void stopSession(boolean visible) {
-        int generation = ++sessionGeneration;
+        int generation;
+        BackendBridge.Session current;
+        synchronized (sessionLifecycleLock) {
+            generation = ++sessionGeneration;
+            current = session;
+            releaseHeldKey(false);
+            session = null;
+            sessionStarting = false;
+        }
         updateSessionKeepScreenOn(false, generation);
         autoStartToken = null;
-        releaseHeldKey(false);
         setInputMappingEditing(false);
         FrameUpdate staleFrame = pendingFrame.getAndSet(null);
         if (staleFrame != null) {
             staleFrame.recycle();
         }
-        BackendBridge.Session current = session;
-        session = null;
-        sessionStarting = false;
         latestStatus = null;
-        if (foldButton != null) foldButton.setEnabled(false);
+        if (foldButton != null) { foldButton.setEnabled(false); foldButton.setAlpha(0.72f); }
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
         secondaryFrameView.clear();
@@ -2071,6 +2097,19 @@ public final class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER);
         target.addView(button, visual);
         return target;
+    }
+
+    private Drawable menuButtonBackground() {
+        StateListDrawable background = new StateListDrawable();
+        int[][] states = {{-android.R.attr.state_enabled}, {android.R.attr.state_pressed}, {}};
+        int[] colors = {Color.rgb(46, 46, 48), Color.rgb(112, 112, 116), Color.rgb(89, 88, 91)};
+        for (int index = 0; index < states.length; index++) {
+            GradientDrawable shape = new GradientDrawable();
+            shape.setColor(colors[index]);
+            shape.setCornerRadius(0);
+            background.addState(states[index], shape);
+        }
+        return background;
     }
 
     private Drawable handsetButtonBackground() {

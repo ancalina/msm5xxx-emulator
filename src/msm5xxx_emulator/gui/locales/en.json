@@ -565,5 +565,21 @@
   "metric_pc_label": "PC",
   "metric_lcd_label": "LCD",
   "metric_frame_label": "frame",
-  "english_language": "English"
+  "english_language": "English",
+  "library_title": "Firmware library",
+  "library_empty": "Add firmware to your library",
+  "library_add_folder": "Add folder",
+  "library_import": "Import file",
+  "library_refresh": "Refresh",
+  "library_info": "Info",
+  "library_remove": "Remove",
+  "library_boot": "Boot",
+  "library_loading": "Detecting…",
+  "library_unavailable": "Unavailable",
+  "library_never": "Never booted",
+  "library_size": "Size",
+  "library_path": "Path",
+  "library_last": "Last booted",
+  "library_model": "Model",
+  "library_chipset": "Chipset"
 }

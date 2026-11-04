@@ -8,6 +8,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageTk
@@ -17,7 +18,9 @@ from .transport import *  # noqa: F403
 from ..detection.firmware import DEFAULT_STATE_ROOT
 from ..gui.app import Window, choose_firmware
 from ..gui.controls import detect_profile
-from ..gui.locale import display_model_name
+from ..gui.locale import display_model_name, resolve_ui_language
+from ..gui.firmware_library import FirmwareLibrary
+from ..gui.library_view import choose_from_library
 from ..gui.worker import _prepared_profile_matches
 from .virtual_cell import virtual_cell_scenario
 
@@ -41,6 +44,7 @@ class LiveWindow(Window):
                  experimental_c80: bool = False) -> None:
         self.qemu = qemu
         self.state_dir = state_dir
+        self.library = FirmwareLibrary(DEFAULT_STATE_ROOT / "firmware_library.json")
         self.persistent_state_enabled = self._load_persistent_state()
         self.experimental_c80 = experimental_c80
         self.virtual_network_enabled = self._load_virtual_network()
@@ -155,15 +159,15 @@ class LiveWindow(Window):
             menu.grab_release()
 
     def _choose_firmware_from_menu(self) -> None:
+        chosen = choose_from_library(self.root, self.library, self.ui_language)
+        if chosen is None:
+            return
         if self.transport is not None and not messagebox.askokcancel(
                 self._text("choose_firmware_menu"), self._text("confirm_firmware"), parent=self.root):
             return
-        chosen = filedialog.askopenfilename(parent=self.root, title=self._text("choose_firmware_menu"),
-                                            filetypes=((self._text("firmware_file_type"), "*.bin *.dump *.img *.mbn *.hex *.hxb"), (self._text("all_file_types"), "*")))
-        if chosen:
-            self.firmware = Path(chosen)
-            self.overrides = self._load_config()
-            self._restart()
+        self.firmware = chosen
+        self.overrides = self._load_config()
+        self._restart()
 
     def _choose_network_time(self, host: bool) -> None:
         if host:
@@ -442,6 +446,15 @@ class LiveWindow(Window):
         self.firmware = firmware
         self.overrides = dict(overrides)
         self._active_firmware = firmware
+        try:
+            self.library.add_file(firmware)
+            for entry in self.library.entries:
+                if entry.get("path") == str(firmware.resolve()):
+                    entry["last_booted"] = time.time()
+                    entry["sha256"] = str(transport.config.firmware_sha256)
+            self.library.save()
+        except OSError:
+            pass
         self._active_overrides = dict(overrides)
         self._active_virtual_network = self.virtual_network_enabled
         self._active_network_host_time = self.network_host_time_enabled
@@ -468,6 +481,22 @@ class LiveWindow(Window):
             self.display_menu.entryconfigure(0, state="disabled")
         transport = self.transport
         worker = self.worker
+        if transport is not None and self.emulator is not None and self._active_firmware is not None:
+            try:
+                width, height, frame = self.emulator.display_snapshot()
+                image = Image.frombytes("RGB", (width, height), frame)
+                image.thumbnail((160, 160), Image.Resampling.NEAREST)
+                for entry in self.library.entries:
+                    if entry.get("path") == str(self._active_firmware.resolve()) and entry.get("sha256"):
+                        directory = self.library.path.parent / "library-thumbnails"
+                        directory.mkdir(parents=True, exist_ok=True)
+                        thumbnail = directory / (entry["sha256"] + ".png")
+                        image.save(thumbnail)
+                        entry["thumbnail"] = str(thumbnail)
+                        self.library.save()
+                        break
+            except (OSError, ValueError):
+                pass
         self.transport = None
         self.worker = None
         self.emulator = None
@@ -569,12 +598,16 @@ def main() -> int:
         dest="experimental_c80_controller", action="store_true",
     )
     args = parser.parse_args()
+    root = tk.Tk()
     firmware = args.firmware
     if firmware is None:
-        firmware = choose_firmware()
+        root.withdraw()
+        firmware = choose_from_library(root, FirmwareLibrary(DEFAULT_STATE_ROOT / "firmware_library.json"),
+                                       resolve_ui_language("auto"))
         if firmware is None:
+            root.destroy()
             return 0
-    root = tk.Tk()
+        root.deiconify()
     state_dir = args.state_dir or DEFAULT_STATE_ROOT / "qemu-state"
     window = LiveWindow(
         root, firmware.resolve(), args.qemu.resolve(),
