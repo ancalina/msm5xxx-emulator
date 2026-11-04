@@ -160,7 +160,7 @@ final class FirmwareLibraryScreen {
         title.setTextColor(android.graphics.Color.WHITE);
         titleBar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         int square = Math.round(48 * activity.getResources().getDisplayMetrics().density);
-        android.widget.ImageButton add = iconButton(R.drawable.ic_library_add, R.string.library_add);
+        android.widget.ImageButton add = iconButton(android.R.drawable.ic_menu_add, R.string.library_add);
         add.setOnClickListener(v -> {
             android.widget.PopupMenu menu = new android.widget.PopupMenu(activity, v);
             menu.getMenu().add(0, 1, 0, R.string.library_add_folder);
@@ -171,9 +171,9 @@ final class FirmwareLibraryScreen {
             });
             menu.show();
         });
-        android.widget.ImageButton reload = iconButton(R.drawable.ic_library_refresh, R.string.library_refresh);
+        android.widget.ImageButton reload = iconButton(android.R.drawable.ic_popup_sync, R.string.library_refresh);
         reload.setOnClickListener(v -> refresh());
-        android.widget.ImageButton settings = iconButton(R.drawable.ic_library_settings, R.string.settings_title);
+        android.widget.ImageButton settings = iconButton(android.R.drawable.ic_menu_preferences, R.string.settings_title);
         settings.setOnClickListener(v -> showSettings());
         LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(square, square);
         titleBar.addView(add, iconParams);
@@ -414,6 +414,7 @@ final class FirmwareLibraryScreen {
     private android.widget.ImageButton iconButton(int icon, int description) {
         android.widget.ImageButton button = new android.widget.ImageButton(activity);
         button.setImageResource(icon);
+        button.setColorFilter(android.graphics.Color.WHITE);
         button.setScaleType(android.widget.ImageView.ScaleType.CENTER);
         button.setStateListAnimator(null);
         button.setElevation(0);

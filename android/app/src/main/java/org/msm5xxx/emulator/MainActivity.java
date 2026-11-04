@@ -165,6 +165,9 @@ public final class MainActivity extends Activity {
     private TextView secondaryPreviewNotice;
     private TextView presentationPreviewNotice;
     private FrameLayout displayHost;
+    // Whole-app overlay host for the additional display; safe insets keep it out of cutouts and bars.
+    private FrameLayout appRoot;
+    private final android.graphics.Rect safeInsets = new android.graphics.Rect();
     private FrameLayout secondaryPanel;
     private boolean secondaryHidden;
     private DisplayManager displayManager;
@@ -327,7 +330,9 @@ public final class MainActivity extends Activity {
     }
 
     private View buildContent() {
+        appRoot = new FrameLayout(this);
         LinearLayout content = new LinearLayout(this);
+        appRoot.addView(content, new FrameLayout.LayoutParams(-1, -1));
         content.setOrientation(LinearLayout.VERTICAL);
         content.setBackgroundColor(Color.rgb(18, 18, 18));
         int padding = dp(2);
@@ -341,7 +346,6 @@ public final class MainActivity extends Activity {
         displayHost.addView(frameView, new FrameLayout.LayoutParams(-1, -1));
         content.addView(displayHost, new LinearLayout.LayoutParams(-1, 0, 1));
         displayHost.setMinimumHeight(dp(120));
-        buildSecondaryPanel();
 
         GridLayout keypad = new GridLayout(this);
         keypad.setColumnCount(3);
@@ -443,17 +447,33 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams controlsLayout = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(336));
         content.addView(controls, controlsLayout);
-        content.setOnApplyWindowInsetsListener((view, insets) -> {
-            int bottom = Build.VERSION.SDK_INT >= 30
-                    ? insets.getInsets(WindowInsets.Type.systemBars()).bottom
-                    : insets.getSystemWindowInsetBottom();
+        appRoot.setOnApplyWindowInsetsListener((view, insets) -> {
+            int left, top, right, bottom;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets safe = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                left = safe.left; top = safe.top; right = safe.right; bottom = safe.bottom;
+            } else {
+                left = insets.getSystemWindowInsetLeft(); top = insets.getSystemWindowInsetTop();
+                right = insets.getSystemWindowInsetRight(); bottom = insets.getSystemWindowInsetBottom();
+                android.view.DisplayCutout cutout = insets.getDisplayCutout();
+                if (cutout != null) {
+                    left = Math.max(left, cutout.getSafeInsetLeft()); top = Math.max(top, cutout.getSafeInsetTop());
+                    right = Math.max(right, cutout.getSafeInsetRight()); bottom = Math.max(bottom, cutout.getSafeInsetBottom());
+                }
+            }
+            safeInsets.set(left, top, right, bottom);
+            int edge = dp(2);
+            content.setPadding(edge + left, edge + top, edge + right, edge);
             if (controlsLayout.bottomMargin != bottom) {
                 controlsLayout.bottomMargin = bottom;
                 controls.setLayoutParams(controlsLayout);
             }
+            if (secondaryPanel != null) clampSecondary((FrameLayout.LayoutParams) secondaryPanel.getLayoutParams());
             return insets;
         });
-        return content;
+        buildSecondaryPanel();
+        return appRoot;
     }
 
     private TextView previewNotice(Context context) {
@@ -473,7 +493,9 @@ public final class MainActivity extends Activity {
         secondaryPanel.setVisibility(View.GONE);
         FrameLayout.LayoutParams bounds = new FrameLayout.LayoutParams(dp(160), dp(128));
         bounds.gravity = Gravity.TOP | Gravity.LEFT;
-        displayHost.addView(secondaryPanel, bounds);
+        bounds.leftMargin = dp(8);
+        bounds.topMargin = dp(8);
+        appRoot.addView(secondaryPanel, bounds);
         TextView title = statusLine(getString(R.string.additional_display));
         title.setTextSize(11);
         title.setContentDescription(getString(R.string.move_display));
@@ -487,8 +509,8 @@ public final class MainActivity extends Activity {
         secondaryPanel.addView(secondaryFrameView, image);
         Button resize = compactButton(R.string.resize_display, view -> {
             FrameLayout.LayoutParams size = (FrameLayout.LayoutParams) secondaryPanel.getLayoutParams();
-            size.width = Math.min(displayHost.getWidth(), size.width + dp(24));
-            size.height = Math.min(displayHost.getHeight(), size.height + dp(16));
+            size.width += dp(24);
+            size.height += dp(16);
             clampSecondary(size);
         });
         resize.setText(R.string.resize_symbol);
@@ -502,7 +524,7 @@ public final class MainActivity extends Activity {
         noticeBounds.rightMargin = dp(32);
         secondaryPanel.addView(secondaryPreviewNotice, noticeBounds);
         resize.setOnTouchListener((view, event) -> moveSecondary(view, event, true));
-        displayHost.addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> {
+        appRoot.addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> {
             if (r > l && b > t && (r - l != or - ol || b - t != ob - ot)) {
                 clampSecondary((FrameLayout.LayoutParams) secondaryPanel.getLayoutParams());
             }
@@ -557,16 +579,17 @@ public final class MainActivity extends Activity {
     }
 
     private void clampSecondary(FrameLayout.LayoutParams bounds) {
-        int width = displayHost.getWidth(), height = displayHost.getHeight();
+        int width = appRoot.getWidth() - safeInsets.left - safeInsets.right;
+        int height = appRoot.getHeight() - safeInsets.top - safeInsets.bottom;
         if (width < 1 || height < 1) {
             return;
         }
         int clampedWidth = Math.min(width, Math.max(dp(96), bounds.width));
         int clampedHeight = Math.min(height, Math.max(dp(72), bounds.height));
-        int clampedLeft = Math.max(0,
-                Math.min(width - clampedWidth, bounds.leftMargin));
-        int clampedTop = Math.max(0,
-                Math.min(height - clampedHeight, bounds.topMargin));
+        int clampedLeft = Math.max(safeInsets.left,
+                Math.min(safeInsets.left + width - clampedWidth, bounds.leftMargin));
+        int clampedTop = Math.max(safeInsets.top,
+                Math.min(safeInsets.top + height - clampedHeight, bounds.topMargin));
         bounds.width = clampedWidth;
         bounds.height = clampedHeight;
         bounds.leftMargin = clampedLeft;
