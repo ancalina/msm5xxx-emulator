@@ -105,6 +105,66 @@ struct ContentView: View {
         }
     }
 
+    private var statusBlock: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(text(engine.status)).foregroundColor(.gray)
+            Text(localizedMetrics).foregroundColor(.gray)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(localizedMetrics)
+            if !message.isEmpty { Text(message).foregroundColor(.gray) }
+        }
+        .font(.system(size: 10)).foregroundColor(.white).lineLimit(3)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder private var moreControl: some View {
+        if editingMapping {
+            Button(text("Done editing")) { editingMapping = false }
+                .frame(maxWidth: .infinity).frame(height: 44)
+        } else {
+            Menu {
+                Toggle(text("Virtual network"), isOn: Binding(
+                    get: { virtualNetwork },
+                    set: { value in
+                        guard value != virtualNetwork else { return }
+                        virtualNetwork = value
+                        restartOnNextLaunchIfRunning()
+                    }))
+                Button(text("Start")) { run() }.disabled(engine.running || engine.used || firmware == nil)
+                Button(text("Stop emulator")) { engine.stop() }.disabled(!engine.running)
+                Button(text("Reboot emulator")) { restartOnNextLaunchIfRunning() }.disabled(!engine.running)
+                Button(text("Choose firmware…")) { showingLibrary = true }
+                Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
+                Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)
+                Menu(text("Time")) {
+                    Button {
+                        networkHostTime = true
+                        networkStartTimeEnabled = false
+                        if virtualNetwork { restartOnNextLaunchIfRunning() }
+                    } label: {
+                        if networkHostTime { Label(text("Host time"), systemImage: "checkmark").accessibilityAddTraits(.isSelected) }
+                        else { Text(text("Host time")) }
+                    }
+                    Button {
+                        timeDraft = Date(timeIntervalSince1970: networkStartTime)
+                        showingTime = true
+                    } label: {
+                        if !networkHostTime { Label(text("Set time…"), systemImage: "checkmark").accessibilityAddTraits(.isSelected) }
+                        else { Text(text("Set time…")) }
+                    }
+                }
+                Button(text("Settings…")) { showingSettings = true }
+            } label: {
+                Text(text("•••")).font(.title2).foregroundColor(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(white: 0.33))
+            }
+            .frame(height: 44)
+            .accessibilityLabel(text("More actions"))
+            .accessibilityHint(text("Menu hint"))
+        }
+    }
+
     private var emulatorView: some View {
         VStack(spacing: 2) {
             if secondaryAbove { secondaryDisplay }
@@ -130,60 +190,8 @@ struct ContentView: View {
                         Button(text(engine.foldOpen ? "Close fold" : "Open fold")) { engine.toggleFold() }
                             .buttonStyle(HandsetKeyStyle(dimmed: !engine.running))
                             .frame(height: 44)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(text(engine.status)).foregroundColor(.gray)
-                            Text(localizedMetrics).foregroundColor(.gray)
-                                .accessibilityElement(children: .ignore)
-                                .accessibilityLabel(localizedMetrics)
-                            if !message.isEmpty { Text(message).foregroundColor(.gray) }
-                        }
-                        .font(.system(size: 10, relativeTo: .caption)).foregroundColor(.white).lineLimit(3)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        if editingMapping {
-                            Button(text("Done editing")) { editingMapping = false }
-                                .frame(maxWidth: .infinity).frame(height: 44)
-                        } else {
-                            Menu {
-                                Toggle(text("Virtual network"), isOn: Binding(
-                                    get: { virtualNetwork },
-                                    set: { value in
-                                        guard value != virtualNetwork else { return }
-                                        virtualNetwork = value
-                                        restartOnNextLaunchIfRunning()
-                                    }))
-                                Button(text("Start")) { run() }.disabled(engine.running || engine.used || firmware == nil)
-                                Button(text("Stop emulator")) { engine.stop() }.disabled(!engine.running)
-                                Button(text("Reboot emulator")) { restartOnNextLaunchIfRunning() }.disabled(!engine.running)
-                                Button(text("Choose firmware…")) { showingLibrary = true }
-                                Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
-                                Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)
-                                Menu(text("Time")) {
-                                    Button {
-                                        networkHostTime = true
-                                        networkStartTimeEnabled = false
-                                        if virtualNetwork { restartOnNextLaunchIfRunning() }
-                                    } label: {
-                                        if networkHostTime { Label(text("Host time"), systemImage: "checkmark").accessibilityAddTraits(.isSelected) }
-                                        else { Text(text("Host time")) }
-                                    }
-                                    Button {
-                                        timeDraft = Date(timeIntervalSince1970: networkStartTime)
-                                        showingTime = true
-                                    } label: {
-                                        if !networkHostTime { Label(text("Set time…"), systemImage: "checkmark").accessibilityAddTraits(.isSelected) }
-                                        else { Text(text("Set time…")) }
-                                    }
-                                }
-                                Button(text("Settings…")) { showingSettings = true }
-                            } label: {
-                                Text(text("•••")).font(.title2).foregroundColor(.white)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .background(Color(white: 0.33))
-                            }
-                            .frame(height: 44)
-                            .accessibilityLabel(text("More actions"))
-                            .accessibilityHint(text("Menu hint"))
-                        }
+                        statusBlock
+                        moreControl
                     }
                     .frame(width: geometry.size.width / 3)
                     VStack(spacing: 2) {
@@ -472,7 +480,7 @@ private struct HandsetKeyStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13, relativeTo: .body))
+            .font(.system(size: 13))
             .lineLimit(1).minimumScaleFactor(0.7)
             .foregroundColor(enabled && !dimmed ? .white : .gray)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -489,7 +497,7 @@ private struct PhoneKey: View {
     @State private var pressed = false
     var body: some View {
         Text(label)
-            .font(.system(size: 13, relativeTo: .body))
+            .font(.system(size: 13))
             .lineLimit(1).minimumScaleFactor(0.7)
             .foregroundColor(enabled ? .white : .gray)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
