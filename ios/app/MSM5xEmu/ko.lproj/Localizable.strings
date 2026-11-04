@@ -149,7 +149,7 @@
 "▶" = "▶";
 "•••" = "•••";
 "Library title" = "MSM5xxx Emu";
-"Library empty" = "펌웨어를 추가하세요";
+"Library empty" = "펌웨어 없음";
 "Library loading" = "확인 중…";
 "Library add folder" = "폴더 추가";
 "Library import" = "파일 가져오기";
@@ -160,12 +160,12 @@
 "Library unavailable" = "사용할 수 없음";
 "Library row" = "%@, %@, %@";
 "Library info body" = "모델: %@\n칩셋: %@\nSHA-256: %@\n출처: %@";
-"Library error" = "펌웨어 목록에 접근할 수 없습니다";
+"Library error" = "오류";
 "Ready" = "준비됨";
 "Could not run" = "실행 실패";
 "Library add" = "추가";
 "Library folders" = "펌웨어 폴더";
-"Library no folders" = "등록된 폴더가 없습니다";
+"Library no folders" = "폴더 없음";
 "Library remove folder" = "삭제";
 "Library session settings" = "실행 설정";
 "Unable to start. Force-close and reopen the app to try again." = "실행할 수 없습니다. 앱을 완전히 종료하고 다시 열어 주세요.";
@@ -174,3 +174,11 @@
 "Emulation stopped. Force-close and reopen the app to try again." = "에뮬레이션이 중지되었습니다. 앱을 완전히 종료하고 다시 열어 주세요.";
 "Stopped. Force-close and reopen the app to run again." = "중지되었습니다. 다시 실행하려면 앱을 완전히 종료하고 다시 열어 주세요.";
 "Force-close and reopen the app to start the selected firmware." = "선택한 펌웨어를 실행하려면 앱을 완전히 종료하고 다시 열어 주세요.";
+
+"Starting…" = "시작 중…";
+
+"Paused" = "일시정지";
+
+"Error" = "오류";
+
+"Reopen the app to switch firmware" = "다른 펌웨어는 앱을 다시 열어야 합니다";

@@ -20,8 +20,8 @@ struct ContentView: View {
     @State private var showingCapture = false
     @State private var showingTime = false
     @State private var timeDraft = Date()
-    @State private var showingSecondary = false
-    @AppStorage("secondary_above") private var secondaryAbove = false
+    @AppStorage("show_secondary") private var showingSecondary = false
+    @State private var showingSwitchAlert = false
     @State private var editingMapping = false
     @State private var mappingBit = 0
     @State private var mappingValue = ""
@@ -71,27 +71,46 @@ struct ContentView: View {
         Group {
             if showingLibrary {
                 FirmwareLibraryView(store: library, engine: engine, text: text,
-                    canClose: engine.running || engine.used || firmware != nil,
+                    canClose: engine.running,
                     preparing: preparingFirmware,
                     close: { showingLibrary = false },
                     boot: { entry in
-                        if engine.running && entry.id == runningLibraryID {
+                        let same = entry.id == runningLibraryID ||
+                            (!engine.identity.isEmpty && entry.sha256 == engine.identity)
+                        if same && engine.running {
                             showingLibrary = false
                             return
                         }
-                        library.ensureEntry(entry)
-                        library.pauseScanning()
-                        let found = library.withSource(entry) { url in
-                            importFirmware(url) { success in
-                                if success { activeLibraryID = entry.id; showingLibrary = false }
-                                else { library.error = "Library error" }
-                            }
+                        if same && engine.poweredOff {
+                            UserDefaults.standard.removeObject(forKey: "pending_boot")
+                            activeLibraryID = entry.id
+                            engine.powerOn { success in if success { showingLibrary = false } }
+                            return
                         }
-                        if !found { library.error = "Library unavailable" }
+                        let select = {
+                            library.ensureEntry(entry)
+                            library.pauseScanning()
+                            let found = library.withSource(entry) { url in
+                                importFirmware(url) { success in
+                                    if success {
+                                        activeLibraryID = entry.id
+                                        if engine.used { showingSwitchAlert = true }
+                                        else { showingLibrary = false }
+                                    } else { library.error = "Library error" }
+                                }
+                            }
+                            if !found { library.error = "Library unavailable" }
+                        }
+                        if engine.running {
+                            engine.powerOff { success in if success { select() } }
+                        } else { select() }
                     })
             } else {
                 emulatorView
             }
+        }
+        .alert(text("Reopen the app to switch firmware"), isPresented: $showingSwitchAlert) {
+            Button(text("OK"), role: .cancel) { }
         }
         .onAppear(perform: pickStoredFirmware)
         .onAppear { engine.setSceneActive(scenePhase == .active); updateRefreshTimer() }
@@ -102,13 +121,9 @@ struct ContentView: View {
                 library.recordBoot(runningLibraryID.isEmpty ? nil : runningLibraryID, sha: engine.identity)
             } else {
                 library.recordFrame(runningLibraryID.isEmpty ? nil : runningLibraryID, image: engine.frame)
-                runningLibraryID = ""
             }
             UIAccessibility.post(notification: .announcement, argument: text(running ? "Booted" : "Powered off"))
             updateRefreshTimer()
-        }
-        .onChange(of: engine.status) { value in
-            UIAccessibility.post(notification: .announcement, argument: text(value))
         }
         .onChange(of: engine.sessionFailed) { failed in
             if failed { showingLibrary = true }
@@ -158,14 +173,14 @@ struct ContentView: View {
 
     private var statusBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(text(engine.status)).foregroundColor(.gray)
-            Text(localizedMetrics).foregroundColor(.gray)
+            if engine.starting { Text(text("Starting…")) }
+            else if engine.sessionFailed || !message.isEmpty { Text(text("Error")) }
+            else if engine.paused { Text(text("Paused")) }
+            Text(localizedMetrics)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(localizedMetrics)
-            if !message.isEmpty { Text(message).foregroundColor(.gray) }
-            if !engine.errorDetail.isEmpty { Text(engine.errorDetail).foregroundColor(.secondary) }
         }
-        .font(.system(size: 10)).foregroundColor(.white).lineLimit(3)
+        .font(.system(size: 10)).foregroundColor(.gray).lineLimit(3)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -180,10 +195,11 @@ struct ContentView: View {
                     set: { value in
                         guard value != virtualNetwork else { return }
                         virtualNetwork = value
-                        restartOnNextLaunchIfRunning()
                     }))
                 Button(text("Start")) { run() }.disabled(engine.running || engine.used || firmware == nil)
-                Button(text("Stop emulator")) { engine.stop() }.disabled(!engine.running)
+                Button(text("Stop emulator")) {
+                    engine.powerOff { success in if success { showingLibrary = true } }
+                }.disabled(!engine.running)
                 Button(text("Reboot emulator")) { engine.reboot() }.disabled(!engine.running)
                 Button(text("Choose firmware…")) { showingLibrary = true }
                 Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
@@ -192,7 +208,6 @@ struct ContentView: View {
                     Button {
                         networkHostTime = true
                         networkStartTimeEnabled = false
-                        if virtualNetwork { restartOnNextLaunchIfRunning() }
                     } label: {
                         if networkHostTime { Label(text("Host time"), systemImage: "checkmark").accessibilityAddTraits(.isSelected) }
                         else { Text(text("Host time")) }
@@ -207,7 +222,7 @@ struct ContentView: View {
                 }
                 Button(text("Settings…")) { showingSettings = true }
             } label: {
-                Text(text("•••")).font(.title2).foregroundColor(.white)
+                Image(systemName: "ellipsis").font(.title2).foregroundColor(.white)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(white: 0.33))
             }
@@ -219,7 +234,6 @@ struct ContentView: View {
 
     private var emulatorView: some View {
         VStack(spacing: 2) {
-            if secondaryAbove { secondaryDisplay }
             ZStack {
                 Color.black
                 if let frame = engine.frame {
@@ -232,7 +246,6 @@ struct ContentView: View {
             .frame(maxHeight: .infinity)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(text("Phone screen"))
-            if !secondaryAbove { secondaryDisplay }
 
             GeometryReader { geometry in
                 HStack(spacing: 2) {
@@ -263,7 +276,12 @@ struct ContentView: View {
         .padding(2)
         .environment(\.locale, Locale(identifier: uiLanguage == "auto" ? Locale.current.identifier : uiLanguage))
         .background(Color(white: 0.07).ignoresSafeArea())
-        .overlay { if preparingFirmware { ProgressView(text("Library loading")) } }
+        .overlay {
+            if showingSecondary && engine.secondaryAvailable {
+                FloatingDisplay(frame: engine.secondaryFrame, title: text("Additional display"))
+            }
+            if preparingFirmware { ProgressView(text("Library loading")) }
+        }
         .sheet(isPresented: $showingTime) {
             NavigationView {
                 Form {
@@ -277,7 +295,6 @@ struct ContentView: View {
                             networkHostTime = false
                             networkStartTimeEnabled = true
                             showingTime = false
-                            if virtualNetwork { restartOnNextLaunchIfRunning() }
                         }
                     }
             }
@@ -285,7 +302,6 @@ struct ContentView: View {
         .sheet(isPresented: $showingMapping) {
             NavigationView {
                 Form {
-                    Text(text("Event code (blank restores automatic mapping)"))
                     TextField(text("Event code"), text: $mappingValue).autocapitalization(.none)
                     Button(text("Save")) {
                         let raw = mappingValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -318,11 +334,6 @@ struct ContentView: View {
                     }
                     Toggle(text("Additional display"), isOn: $showingSecondary)
                         .disabled(!engine.secondaryAvailable)
-                    Picker(text("Display position"), selection: $secondaryAbove) {
-                        Text(text("Above")).tag(true)
-                        Text(text("Below")).tag(false)
-                    }
-                    if !hasProfile { Text(text("Profile required")) }
                     Section(text("Detailed settings")) {
                         Toggle(text("Experimental static REX controller"), isOn: $experimentalRex)
                     }.disabled(!hasProfile)
@@ -353,20 +364,6 @@ struct ContentView: View {
             .replacingOccurrences(of: "Frame ", with: text("Frame") + " ")
     }
 
-    @ViewBuilder private var secondaryDisplay: some View {
-        if showingSecondary && engine.secondaryAvailable {
-            VStack {
-                if let frame = engine.secondaryFrame {
-                    Image(decorative: frame, scale: 1).resizable().interpolation(.none)
-                        .aspectRatio(contentMode: .fit).frame(height: 90)
-                }
-                if engine.secondaryPreview {
-                    Text(text("Preview: colors and orientation unverified")).font(.caption)
-                }
-            }.foregroundColor(.white)
-        }
-    }
-
     private static func parseEventCode(_ source: String) -> Int? {
         var value = source.lowercased()
         if value.isEmpty { return nil }
@@ -386,13 +383,6 @@ struct ContentView: View {
         guard let number = Int(value.replacingOccurrences(of: "_", with: ""), radix: radix) else { return nil }
         let result = number * sign
         return (0...255).contains(result) ? result : nil
-    }
-
-    private func restartOnNextLaunchIfRunning() {
-        guard engine.running else { return }
-        UserDefaults.standard.set(true, forKey: "pending_boot")
-        engine.stop()
-        message = text("Force-close and reopen the app to start the selected firmware.")
     }
 
     private func run() {
@@ -466,7 +456,7 @@ struct ContentView: View {
             } catch {
                 DispatchQueue.main.async {
                     preparingFirmware = false; showingLibrary = true
-                    message = error.localizedDescription
+                    NSLog("MSM5xEmu: %@", error.localizedDescription); message = text("Error")
                 }
             }
         }
@@ -525,7 +515,6 @@ struct ContentView: View {
                                     detailedValues = UserDefaults.standard.dictionary(forKey: "details.\(identity)") as? [String: String] ?? [:]
                                     if engine.used {
                                         UserDefaults.standard.set(true, forKey: "pending_boot")
-                                        message = text("Force-close and reopen the app to start the selected firmware.")
                                     }
                                     completion(true)
                                     if !engine.used { run() }
@@ -537,20 +526,15 @@ struct ContentView: View {
                                 }
                                 try? fm.removeItem(at: staged)
                                 if restored { try? fm.removeItem(at: backup) }
-                                DispatchQueue.main.async { preparingFirmware = false; message = error.localizedDescription; completion(false) }
+                                DispatchQueue.main.async { preparingFirmware = false; NSLog("MSM5xEmu: %@", error.localizedDescription); message = text("Error"); completion(false) }
                             }
                         }
                     }
-                    if engine.running {
-                        engine.stop { stopped in
-                            if stopped { commit() }
-                            else { try? FileManager.default.removeItem(at: staged); preparingFirmware = false; completion(false) }
-                        }
-                    } else { commit() }
+                    commit()
                 }
             } catch {
                 try? FileManager.default.removeItem(at: staged)
-                DispatchQueue.main.async { preparingFirmware = false; message = error.localizedDescription; completion(false) }
+                DispatchQueue.main.async { preparingFirmware = false; NSLog("MSM5xEmu: %@", error.localizedDescription); message = text("Error"); completion(false) }
             }
         }
     }
@@ -618,4 +602,62 @@ private struct CaptureShare: UIViewControllerRepresentable {
         return controller
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+private struct FloatingDisplay: View {
+    let frame: CGImage?
+    let title: String
+    @AppStorage("secondary_x") private var savedX = 12.0
+    @AppStorage("secondary_y") private var savedY = 12.0
+    @AppStorage("secondary_width") private var savedWidth = 160.0
+    @AppStorage("secondary_height") private var savedHeight = 160.0
+    @GestureState private var drag = CGSize.zero
+    @GestureState private var resize = CGSize.zero
+
+    private func clamp(_ value: CGFloat, _ lower: CGFloat, _ upper: CGFloat) -> CGFloat {
+        min(max(value, lower), max(lower, upper))
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let available = geometry.size
+            let width = clamp(CGFloat(savedWidth) + resize.width, min(100, available.width), available.width)
+            let height = clamp(CGFloat(savedHeight) + resize.height, min(80, available.height), available.height)
+            let x = clamp(CGFloat(savedX) + drag.width, 0, available.width - width)
+            let y = clamp(CGFloat(savedY) + drag.height, 0, available.height - height)
+            VStack(spacing: 0) {
+                HStack {
+                    Text(title).font(.caption).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8).frame(height: 32)
+                .background(.regularMaterial)
+                .contentShape(Rectangle())
+                .gesture(DragGesture().updating($drag) { value, state, _ in state = value.translation }
+                    .onEnded { value in
+                        savedX = Double(clamp(CGFloat(savedX) + value.translation.width, 0, available.width - width))
+                        savedY = Double(clamp(CGFloat(savedY) + value.translation.height, 0, available.height - height))
+                    })
+                ZStack(alignment: .bottomTrailing) {
+                    Color.black
+                    if let frame = frame {
+                        Image(decorative: frame, scale: 1).resizable().interpolation(.none).aspectRatio(contentMode: .fit)
+                    }
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption).padding(8).background(.regularMaterial)
+                        .contentShape(Rectangle())
+                        .gesture(DragGesture().updating($resize) { value, state, _ in state = value.translation }
+                            .onEnded { value in
+                                savedWidth = Double(clamp(CGFloat(savedWidth) + value.translation.width, min(100, available.width), available.width - x))
+                                savedHeight = Double(clamp(CGFloat(savedHeight) + value.translation.height, min(80, available.height), available.height - y))
+                                savedX = Double(x); savedY = Double(y)
+                            })
+                }
+            }
+            .frame(width: width, height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary))
+            .offset(x: x, y: y)
+        }
+    }
 }

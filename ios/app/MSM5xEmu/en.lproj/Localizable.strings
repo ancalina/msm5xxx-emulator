@@ -149,7 +149,7 @@
 "▶" = "▶";
 "•••" = "•••";
 "Library title" = "MSM5xxx Emu";
-"Library empty" = "Add firmware to your library";
+"Library empty" = "No firmware";
 "Library loading" = "Checking…";
 "Library add folder" = "Add folder";
 "Library import" = "Import file";
@@ -160,12 +160,12 @@
 "Library unavailable" = "Unavailable";
 "Library row" = "%@, %@, %@";
 "Library info body" = "Model: %@\nChipset: %@\nSHA-256: %@\nSource: %@";
-"Library error" = "Could not access the firmware library";
+"Library error" = "Error";
 "Ready" = "Ready";
 "Could not run" = "Could not run";
 "Library add" = "Add";
 "Library folders" = "Firmware folders";
-"Library no folders" = "No folders added";
+"Library no folders" = "No folders";
 "Library remove folder" = "Remove";
 "Library session settings" = "Before boot";
 "Unable to start. Force-close and reopen the app to try again." = "Unable to start. Force-close and reopen the app to try again.";
@@ -174,3 +174,11 @@
 "Emulation stopped. Force-close and reopen the app to try again." = "Emulation stopped. Force-close and reopen the app to try again.";
 "Stopped. Force-close and reopen the app to run again." = "Stopped. Force-close and reopen the app to run again.";
 "Force-close and reopen the app to start the selected firmware." = "Force-close and reopen the app to start the selected firmware.";
+
+"Starting…" = "Starting…";
+
+"Paused" = "Paused";
+
+"Error" = "Error";
+
+"Reopen the app to switch firmware" = "Reopen the app to switch firmware";

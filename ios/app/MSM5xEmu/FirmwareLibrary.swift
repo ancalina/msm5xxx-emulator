@@ -470,8 +470,7 @@ struct FirmwareLibraryView: View {
             VStack {
                 if store.scanning || preparing || engine.starting { ProgressView(text("Library loading")) }
                 if engine.sessionFailed {
-                    Text(text(engine.status)).foregroundColor(.secondary)
-                    if !engine.errorDetail.isEmpty { Text(engine.errorDetail).font(.caption).foregroundColor(.secondary) }
+                    Text(text("Error")).foregroundColor(.secondary)
                 }
                 if store.entries.isEmpty && !store.scanning { Text(text("Library empty")) }
                 if let error = store.error { Text(text(error)).foregroundColor(.secondary) }

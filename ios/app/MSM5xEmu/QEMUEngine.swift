@@ -24,6 +24,7 @@ final class QEMUEngine: ObservableObject {
     @Published private(set) var starting = false
     @Published private(set) var used = false
     @Published private(set) var paused = false
+    @Published private(set) var poweredOff = false
     @Published private(set) var errorDetail = ""
     @Published private(set) var sessionFailed = false
     @Published private(set) var refreshInterval = 0.1
@@ -39,6 +40,7 @@ final class QEMUEngine: ObservableObject {
     private var audioInterrupted = false
     private var audioGeneration = 0
     private var monitorPaused = false
+    private var parked = false
     private var unchangedPolls = 0
     private var audioDiagnostics = false
     private var audioPackets = 0
@@ -270,6 +272,49 @@ final class QEMUEngine: ObservableObject {
         }
     }
 
+    func powerOff(completion: @escaping (Bool) -> Void) {
+        guard running, !starting else { completion(false); return }
+        starting = true
+        queue.async {
+            do {
+                self.parked = true
+                try self.applySceneActive(self.sceneActive)
+                DispatchQueue.main.async {
+                    self.poweredOff = true
+                    self.running = false
+                    self.starting = false
+                    completion(true)
+                }
+            } catch {
+                self.failSession(error, message: "Unable to stop. Force-close and reopen the app to try again.")
+                DispatchQueue.main.async { completion(false) }
+            }
+        }
+    }
+
+    func powerOn(completion: @escaping (Bool) -> Void) {
+        guard poweredOff, !starting else { completion(false); return }
+        starting = true
+        queue.async {
+            do {
+                _ = try PythonBridge.call("reset_session", argument: nil)
+                self.parked = false
+                try self.applySceneActive(self.sceneActive)
+                DispatchQueue.main.async {
+                    self.frame = nil
+                    self.secondaryFrame = nil
+                    self.poweredOff = false
+                    self.running = true
+                    self.starting = false
+                    completion(true)
+                }
+            } catch {
+                self.failSession(error, message: "Unable to start. Force-close and reopen the app to try again.")
+                DispatchQueue.main.async { completion(false) }
+            }
+        }
+    }
+
     func stop(completion: ((Bool) -> Void)? = nil) {
         guard running else { completion?(false); return }
         running = false
@@ -305,21 +350,22 @@ final class QEMUEngine: ObservableObject {
 
     private func applySceneActive(_ active: Bool) throws {
         sceneActive = active
-        guard sessionStarted, monitorPaused == active else { return }
-        if !active {
+        let shouldPause = !active || parked
+        guard sessionStarted, monitorPaused != shouldPause else { return }
+        if shouldPause {
             audioGeneration += 1
             audioSink?.pauseOutput()
         }
-        let request = active ? "{\"paused\":false}" : "{\"paused\":true}"
+        let request = shouldPause ? "{\"paused\":true}" : "{\"paused\":false}"
         _ = try PythonBridge.call("set_session_paused", argument: request)
-        monitorPaused = !active
-        NSLog("MSM5xEmu %@", active ? "resumed" : "paused")
-        if active {
+        monitorPaused = shouldPause
+        NSLog("MSM5xEmu %@", shouldPause ? "paused" : "resumed")
+        if !shouldPause {
             if !audioInterrupted { audioSink?.resumeOutput() }
             audioGeneration += 1
             pollAudio(generation: audioGeneration)
         }
-        DispatchQueue.main.async { self.paused = !active }
+        DispatchQueue.main.async { self.paused = shouldPause }
     }
 
     func setAudioInterrupted(_ interrupted: Bool) {
