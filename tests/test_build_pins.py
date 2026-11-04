@@ -27,6 +27,11 @@ class BuildPinTests(unittest.TestCase):
         actual = hashlib.sha256((NATIVE / "qemu-10.2.1-ios-host.patch").read_bytes()).hexdigest()
         self.assertIn(f"MSM5XXX_IOS_PATCH_SHA256={actual}", pins)
 
+    def test_ios_interpreter_buffer_skips_map_jit(self) -> None:
+        # Without the JIT entitlement iOS rejects MAP_JIT; TCI never executes the buffer.
+        patch = (NATIVE / "qemu-10.2.1-ios-host.patch").read_text()
+        self.assertIn("+#if defined(CONFIG_DARWIN) && !defined(CONFIG_TCG_INTERPRETER)", patch)
+
 
 if __name__ == "__main__":
     unittest.main()
