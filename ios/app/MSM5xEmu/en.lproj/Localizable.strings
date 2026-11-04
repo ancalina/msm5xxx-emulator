@@ -163,3 +163,7 @@
 "Ready" = "Ready";
 "Could not run" = "Could not run";
 "Library add" = "Add";
+"Library folders" = "Firmware folders";
+"Library no folders" = "No folders added";
+"Library remove folder" = "Remove";
+"Library session settings" = "Before boot";

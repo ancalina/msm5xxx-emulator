@@ -217,4 +217,8 @@
     <string name="library_row">%1$s, %2$s, %3$s</string>
     <string name="library_info_body">모델: %1$s\n칩셋: %2$s\nSHA-256: %3$s\n출처: %4$s</string>
     <string name="library_preview_after_boot">부팅 후 세부 정보를 볼 수 있습니다</string>
+    <string name="library_folders">펌웨어 폴더</string>
+    <string name="library_no_folders">등록된 폴더가 없습니다</string>
+    <string name="library_remove_folder">삭제</string>
+    <string name="library_session_settings">실행 설정</string>
 </resources>

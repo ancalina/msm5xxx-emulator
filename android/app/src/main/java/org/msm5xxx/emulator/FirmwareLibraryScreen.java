@@ -173,10 +173,12 @@ final class FirmwareLibraryScreen {
         });
         android.widget.ImageButton reload = iconButton(R.drawable.ic_library_refresh, R.string.library_refresh);
         reload.setOnClickListener(v -> refresh());
+        android.widget.ImageButton settings = iconButton(R.drawable.ic_library_settings, R.string.settings_title);
+        settings.setOnClickListener(v -> showSettings());
         LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(square, square);
-        iconParams.leftMargin = pad / 2;
         titleBar.addView(add, iconParams);
         titleBar.addView(reload, new LinearLayout.LayoutParams(iconParams));
+        titleBar.addView(settings, new LinearLayout.LayoutParams(iconParams));
         body.addView(titleBar, new LinearLayout.LayoutParams(-1, -2));
         empty = new TextView(activity);
         empty.setText(R.string.library_empty);
@@ -186,28 +188,43 @@ final class FirmwareLibraryScreen {
             @Override public View getView(int position, View convert, ViewGroup parent) {
                 LinearLayout row = new LinearLayout(activity);
                 row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
+                row.setPadding(pad / 2, pad * 3 / 4, pad / 2, pad * 3 / 4);
+                row.setGravity(Gravity.CENTER_VERTICAL);
                 JSONObject entry = getItem(position);
                 ImageView image = new ImageView(activity);
                 Bitmap thumbnail = BitmapFactory.decodeFile(entry.optString("thumbnail", ""));
                 if (thumbnail != null) {
                     image.setImageBitmap(thumbnail);
-                    LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(pad * 4, pad * 4);
+                    image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                    image.setAdjustViewBounds(true);
+                    LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(pad * 5, pad * 5);
                     imageParams.rightMargin = pad;
                     row.addView(image, imageParams);
                 }
-                TextView label = new TextView(activity);
                 String name = entry.optString("display", entry.optString("name"));
                 String chipset = entry.optString("chipset", "—");
                 long last = entry.optLong("last_booted", 0);
                 String booted = last == 0 ? activity.getString(R.string.library_never)
-                        : DateFormat.getDateTimeInstance().format(new Date(last));
+                        : DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(last));
                 String spoken = activity.getString(R.string.library_row, name, chipset, booted);
-                label.setText(name + "\n" + chipset + " · " + (entry.optLong("size", -1) < 0 ? activity.getString(R.string.size_unavailable) :
+                LinearLayout label = new LinearLayout(activity);
+                label.setOrientation(LinearLayout.VERTICAL);
+                TextView model = new TextView(activity);
+                model.setText(name);
+                model.setTextSize(18);
+                model.setTextColor(android.graphics.Color.WHITE);
+                model.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                model.setSingleLine(true);
+                model.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                TextView detail = new TextView(activity);
+                detail.setText(chipset + " · " + (entry.optLong("size", -1) < 0 ? activity.getString(R.string.size_unavailable) :
                         String.format(java.util.Locale.US, "%.1f MiB", entry.optLong("size") / 1048576.0)) + "\n" + booted
                         + (entry.optBoolean("available", false) ? "" : " · " + activity.getString(R.string.library_unavailable))
                         + (entry.optBoolean("preview_deferred", false) ? " · " + activity.getString(R.string.library_preview_after_boot) : ""));
-                label.setTextSize(16);
+                detail.setTextSize(13);
+                detail.setTextColor(android.graphics.Color.rgb(160, 160, 166));
+                label.addView(model);
+                label.addView(detail);
                 row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
                 if (entry.optBoolean("available", false) && entry.optString("sha256", "").isEmpty()) {
                     android.widget.ProgressBar spinner = new android.widget.ProgressBar(activity, null, android.R.attr.progressBarStyleSmall);
@@ -286,13 +303,125 @@ final class FirmwareLibraryScreen {
         refresh();
     }
 
+    private void removeFolder(String folder) {
+        synchronized (stateLock) {
+            JSONArray folders = read("folders"), kept = new JSONArray();
+            for (int i = 0; i < folders.length(); i++) if (!folder.equals(folders.optString(i))) kept.put(folders.optString(i));
+            JSONArray entries = read("entries"), remaining = new JSONArray();
+            String prefix = folder + "/document/";
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject entry = entries.optJSONObject(i);
+                if (entry != null && !entry.optBoolean("imported") && entry.optString("uri").startsWith(prefix)) continue;
+                remaining.put(entry);
+            }
+            revision.incrementAndGet();
+            preferences.edit().putString("folders", kept.toString()).putString("entries", remaining.toString()).apply();
+        }
+        try {
+            activity.getContentResolver().releasePersistableUriPermission(Uri.parse(folder),
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (RuntimeException ignored) { }
+        refresh();
+    }
+
+    private void showSettings() {
+        android.content.SharedPreferences session = activity.getSharedPreferences("launcher", android.content.Context.MODE_PRIVATE);
+        int pad = Math.round(16 * activity.getResources().getDisplayMetrics().density);
+        LinearLayout body = new LinearLayout(activity);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(pad, pad / 2, pad, 0);
+        TextView foldersTitle = new TextView(activity);
+        foldersTitle.setText(R.string.library_folders);
+        foldersTitle.setTextSize(15);
+        foldersTitle.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        body.addView(foldersTitle);
+        JSONArray folders = read("folders");
+        android.app.AlertDialog[] holder = new android.app.AlertDialog[1];
+        if (folders.length() == 0) {
+            TextView none = new TextView(activity);
+            none.setText(R.string.library_no_folders);
+            body.addView(none);
+        }
+        for (int i = 0; i < folders.length(); i++) {
+            String folder = folders.optString(i);
+            LinearLayout line = new LinearLayout(activity);
+            line.setGravity(Gravity.CENTER_VERTICAL);
+            TextView name = new TextView(activity);
+            String path = Uri.decode(Uri.parse(folder).getLastPathSegment() == null ? folder : Uri.parse(folder).getLastPathSegment());
+            name.setText(path.contains(":") ? path.substring(path.indexOf(':') + 1) : path);
+            line.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+            Button remove = new Button(activity);
+            remove.setText(R.string.library_remove_folder);
+            remove.setOnClickListener(v -> { removeFolder(folder); if (holder[0] != null) holder[0].dismiss(); showSettings(); });
+            line.addView(remove);
+            body.addView(line);
+        }
+        LinearLayout addLine = new LinearLayout(activity);
+        Button addFolder = new Button(activity);
+        addFolder.setText(R.string.library_add_folder);
+        addFolder.setOnClickListener(v -> { if (holder[0] != null) holder[0].dismiss(); listener.chooseFolder(); });
+        Button importFile = new Button(activity);
+        importFile.setText(R.string.library_import);
+        importFile.setOnClickListener(v -> { if (holder[0] != null) holder[0].dismiss(); listener.importFile(); });
+        addLine.addView(addFolder, new LinearLayout.LayoutParams(0, -2, 1));
+        addLine.addView(importFile, new LinearLayout.LayoutParams(0, -2, 1));
+        body.addView(addLine);
+        TextView sessionTitle = new TextView(activity);
+        sessionTitle.setText(R.string.library_session_settings);
+        sessionTitle.setTextSize(15);
+        sessionTitle.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        sessionTitle.setPadding(0, pad, 0, 0);
+        body.addView(sessionTitle);
+        android.widget.Switch network = new android.widget.Switch(activity);
+        network.setText(R.string.virtual_network);
+        network.setChecked(session.getBoolean("virtual_network", false));
+        android.widget.Switch hostTime = new android.widget.Switch(activity);
+        hostTime.setText(R.string.network_host_time);
+        hostTime.setChecked(session.getBoolean("network_host_time", true));
+        TextView startLabel = new TextView(activity);
+        startLabel.setText(R.string.network_start_time);
+        android.widget.EditText start = new android.widget.EditText(activity);
+        start.setSingleLine(true);
+        start.setHint("YYYY-MM-DD HH:MM");
+        start.setText(session.getString("network_start_time", ""));
+        android.widget.Switch persistent = new android.widget.Switch(activity);
+        persistent.setText(R.string.persistent_state);
+        persistent.setChecked(session.getBoolean("persistent_state", true));
+        for (View view : new View[]{network, hostTime, startLabel, start, persistent}) body.addView(view);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(activity);
+        scroll.addView(body);
+        android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(activity)
+                .setTitle(R.string.settings_title).setView(scroll)
+                .setNegativeButton(R.string.cancel, null).setPositiveButton(R.string.save, null).create();
+        holder[0] = dialog;
+        dialog.setOnShowListener(ignored -> dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String value = start.getText().toString().trim();
+            try {
+                MainActivity.parseNetworkStartTime(value);
+            } catch (IllegalArgumentException error) {
+                start.setError(activity.getString(R.string.network_time_error));
+                return;
+            }
+            session.edit().putBoolean("virtual_network", network.isChecked())
+                    .putBoolean("network_host_time", hostTime.isChecked())
+                    .putString("network_start_time", value)
+                    .putBoolean("persistent_state", persistent.isChecked()).apply();
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
     private android.widget.ImageButton iconButton(int icon, int description) {
         android.widget.ImageButton button = new android.widget.ImageButton(activity);
         button.setImageResource(icon);
         button.setScaleType(android.widget.ImageView.ScaleType.CENTER);
         button.setStateListAnimator(null);
         button.setElevation(0);
-        button.setBackground(flatButton("", description).getBackground());
+        android.graphics.drawable.StateListDrawable background = new android.graphics.drawable.StateListDrawable();
+        background.addState(new int[]{android.R.attr.state_pressed},
+                new android.graphics.drawable.ColorDrawable(android.graphics.Color.rgb(46, 46, 48)));
+        background.addState(new int[]{}, new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+        button.setBackground(background);
         button.setContentDescription(activity.getString(description));
         return button;
     }

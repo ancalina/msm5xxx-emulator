@@ -217,4 +217,8 @@
     <string name="library_row">%1$s, %2$s, %3$s</string>
     <string name="library_info_body">Model: %1$s\nChipset: %2$s\nSHA-256: %3$s\nSource: %4$s</string>
     <string name="library_preview_after_boot">Details available after boot</string>
+    <string name="library_folders">Firmware folders</string>
+    <string name="library_no_folders">No folders added</string>
+    <string name="library_remove_folder">Remove</string>
+    <string name="library_session_settings">Before boot</string>
 </resources>

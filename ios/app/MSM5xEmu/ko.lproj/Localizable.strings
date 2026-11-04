@@ -163,3 +163,7 @@
 "Ready" = "준비됨";
 "Could not run" = "실행 실패";
 "Library add" = "추가";
+"Library folders" = "펌웨어 폴더";
+"Library no folders" = "등록된 폴더가 없습니다";
+"Library remove folder" = "삭제";
+"Library session settings" = "실행 설정";

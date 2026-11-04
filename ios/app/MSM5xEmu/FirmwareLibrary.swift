@@ -85,6 +85,16 @@ final class FirmwareLibraryStore: ObservableObject {
         } catch { self.error = "Library error" }
     }
 
+    var folders: [LibraryFolder] { index.folders }
+
+    func removeFolder(_ id: String, engine: QEMUEngine) {
+        _ = nextGeneration()
+        index.folders.removeAll { $0.id == id }
+        index.entries.removeAll { !$0.imported && $0.folder == id }
+        save()
+        refresh(engine: engine)
+    }
+
     func addFolder(_ url: URL, engine: QEMUEngine) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -388,6 +398,47 @@ struct FirmwareLibraryView: View {
     @State private var folderPicker = false
     @State private var filePicker = false
     @State private var infoEntry: LibraryEntry?
+    @State private var showingSettings = false
+    @AppStorage("persistent_state") private var persistentState = true
+    @AppStorage("virtual_network") private var virtualNetwork = false
+    @AppStorage("network_host_time") private var networkHostTime = true
+    @AppStorage("network_start_time_enabled") private var networkStartTimeEnabled = false
+    @AppStorage("network_start_time") private var networkStartTime = 1037837100.0
+
+    private var librarySettings: some View {
+        NavigationView {
+            Form {
+                Section(header: Text(text("Library folders"))) {
+                    if store.folders.isEmpty { Text(text("Library no folders")).foregroundColor(.secondary) }
+                    ForEach(store.folders) { folder in
+                        HStack {
+                            Text((folder.path as NSString?)?.lastPathComponent ?? folder.id).lineLimit(1)
+                            Spacer()
+                            Button(text("Library remove folder"), role: .destructive) { store.removeFolder(folder.id, engine: engine) }
+                        }
+                    }
+                    Button(text("Library add folder")) { showingSettings = false; folderPicker = true }
+                    Button(text("Library import")) { showingSettings = false; filePicker = true }
+                }
+                Section(header: Text(text("Library session settings"))) {
+                    Toggle(text("Virtual network"), isOn: $virtualNetwork)
+                    Toggle(text("Use device clock for network time"), isOn: $networkHostTime)
+                    Toggle(text("Network start time"), isOn: $networkStartTimeEnabled)
+                    if networkStartTimeEnabled {
+                        DatePicker(text("Network start time"), selection: Binding(
+                            get: { Date(timeIntervalSince1970: networkStartTime) },
+                            set: { networkStartTime = $0.timeIntervalSince1970 }),
+                            in: Date(timeIntervalSince1970: 315964800)...Date(timeIntervalSince1970: 5813520000),
+                            displayedComponents: [.date, .hourAndMinute])
+                    }
+                    Toggle(text("Persistent device state"), isOn: $persistentState)
+                }
+            }
+            .navigationTitle(text("Settings"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button(text("Done")) { showingSettings = false } }
+        }
+    }
 
     private func select(_ entry: LibraryEntry) {
         guard entry.available && !engine.starting else { return }
@@ -420,17 +471,20 @@ struct FirmwareLibraryView: View {
                     HStack {
                         if let path = entry.thumbnail, let image = UIImage(contentsOfFile: path) {
                             Image(uiImage: image).resizable().interpolation(.none)
-                                .scaledToFit().frame(width: 48, height: 48)
+                                .scaledToFit().frame(width: 60, height: 60)
                         }
-                        VStack(alignment: .leading) {
-                            Text(entry.displayName)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.displayName).font(.headline).foregroundColor(.white).lineLimit(1)
                             Text("\(entry.chipset ?? "—") · \(String(format: "%.1f MiB", Double(entry.size) / 1048576)) · \(lastBoot(entry))")
-                                .font(.caption).foregroundColor(.secondary)
+                                .font(.footnote).foregroundColor(Color(white: 0.63))
                             if !entry.available { Text(text("Library unavailable")).font(.caption) }
                         }
                         Spacer(minLength: 0)
                         if entry.available && (entry.sha256 ?? "").isEmpty { ProgressView().accessibilityHidden(true) }
                     }
+                    .padding(.vertical, 6)
+                    .listRowBackground(Color(white: 0.07))
+                    .listRowSeparatorTint(Color(white: 0.25))
                     .contentShape(Rectangle())
                     .onTapGesture { select(entry) }
                     .contextMenu {
@@ -445,9 +499,13 @@ struct FirmwareLibraryView: View {
                     .accessibilityAction(named: Text(text("Library remove"))) { store.remove(entry) }
                 }
                 .listStyle(.plain)
+                .modifier(LibraryListBackground())
             }
+            .background(Color(white: 0.07).ignoresSafeArea())
             .navigationTitle(text("Library title"))
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
+            .tint(.white)
+            .preferredColorScheme(.dark)
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
@@ -457,12 +515,15 @@ struct FirmwareLibraryView: View {
                     .accessibilityLabel(text("Library add"))
                     Button { store.refresh(engine: engine) } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel(text("Library refresh"))
+                    Button { showingSettings = true } label: { Image(systemName: "slider.horizontal.3") }
+                        .accessibilityLabel(text("Settings"))
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     if canClose { Button(text("Done")) { close() } }
                 }
             }
             .onAppear { store.refresh(engine: engine) }
+            .sheet(isPresented: $showingSettings) { librarySettings }
             .sheet(isPresented: $folderPicker) {
                 LibraryFolderPicker { url in store.addFolder(url, engine: engine) }
             }
@@ -479,5 +540,16 @@ struct FirmwareLibraryView: View {
                       dismissButton: .default(Text(text("Done"))))
             }
 
+    }
+}
+
+
+private struct LibraryListBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.scrollContentBackground(.hidden)
+        } else {
+            content.onAppear { UITableView.appearance().backgroundColor = .clear }
+        }
     }
 }

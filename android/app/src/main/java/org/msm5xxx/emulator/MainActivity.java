@@ -1807,7 +1807,7 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private static Double parseNetworkStartTime(String value) {
+    static Double parseNetworkStartTime(String value) {
         if (value.trim().isEmpty()) return null;
         java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US);
         format.setLenient(false);
