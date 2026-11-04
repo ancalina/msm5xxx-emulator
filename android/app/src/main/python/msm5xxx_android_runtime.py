@@ -43,6 +43,10 @@ def probe():
 
 
 def detect_profile(firmware_path):
+    # The existing JNI entry point accepts absolute paths for ordinary detection.
+    # An explicit protocol prefix carries library requests without changing JNI.
+    if firmware_path.startswith("library-v1:"):
+        return library_describe(firmware_path[len("library-v1:"):])
     from msm5xxx_emulator.detection.firmware import detect
 
     config = detect(Path(firmware_path))
@@ -62,6 +66,20 @@ def detect_profile(firmware_path):
         "reject_reason": reject_reason,
         "schema": 1,
     })
+
+
+def library_describe(request_json):
+    from msm5xxx_emulator.gui.firmware_library import FirmwareLibrary, describe_file, source_size_limit
+    request = json.loads(request_json)
+    if isinstance(request, dict) and set(request) == {"limit_name"} and isinstance(request["limit_name"], str):
+        return _json({"limit": source_size_limit(Path(request["limit_name"]))})
+    if (not isinstance(request, dict) or set(request) != {"path", "cache", "name"}
+            or not all(isinstance(request[k], str) for k in request)):
+        raise ValueError("invalid library request")
+    library = FirmwareLibrary(Path(request["cache"]))
+    result = describe_file(Path(request["path"]), library.cache, name=request["name"])
+    library.save()
+    return _json(result)
 
 
 def _apply_settings(firmware, baseline, edits):

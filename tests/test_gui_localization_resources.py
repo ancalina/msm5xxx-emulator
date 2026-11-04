@@ -48,4 +48,5 @@ class LocalizationResourcesTest(unittest.TestCase):
         project = (ROOT / 'ios/app/MSM5xEmu.xcodeproj/project.pbxproj').read_text()
         self.assertIn('isa = PBXVariantGroup', project)
         self.assertIn('Localizable.strings in Resources', project)
+        self.assertIn('FirmwareLibrary.swift in Sources', project)
         self.assertRegex(project, r'knownRegions\s*=\s*\([^)]*\bko\b')

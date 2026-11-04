@@ -13,7 +13,7 @@ from pathlib import Path
 
 import msm5xxx_android_runtime as shared
 from msm5xxx_android_runtime import (  # noqa: F401: exported native bridge API
-    detect_profile, session_frame, session_secondary_frame, session_fold,
+    detect_profile, library_describe, session_frame, session_secondary_frame, session_fold,
     session_status, can_session_key, set_session_key,
 )
 

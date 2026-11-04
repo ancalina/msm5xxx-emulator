@@ -69,6 +69,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class MainActivity extends Activity {
     private static final int PICK_FIRMWARE = 1;
+    private static final int PICK_LIBRARY_FOLDER = 2;
     private static final String PREFS = "launcher";
     private static final String KEY_URI = "uri";
     private static final String KEY_NAME = "name";
@@ -208,6 +209,7 @@ public final class MainActivity extends Activity {
     private String autoStartToken;
     private String lastErrorMessage;
     private volatile BackendBridge.Session session;
+    private FirmwareLibraryScreen libraryScreen;
     private volatile int sessionGeneration;
     private final Object sessionLifecycleLock = new Object();
 
@@ -240,6 +242,27 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         displayManager = getSystemService(DisplayManager.class);
         setContentView(buildContent());
+        libraryScreen = new FirmwareLibraryScreen(this, new FirmwareLibraryScreen.Listener() {
+            @Override public void chooseFolder() {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                try { startActivityForResult(intent, PICK_LIBRARY_FOLDER); }
+                catch (ActivityNotFoundException error) { showError(getString(R.string.error_no_picker)); }
+            }
+            @Override public void importFile() { chooseFirmware(); }
+            @Override public void boot(Uri uri, String name, long size) {
+                Runnable boot = () -> {
+                    libraryScreen.ensureEntry(uri, name, size);
+                    libraryScreen.dismiss();
+                    preparePrivateCopy(new Selection(uri, name, size));
+                };
+                if (session != null || sessionStarting) {
+                    new AlertDialog.Builder(MainActivity.this).setMessage(R.string.confirm_firmware)
+                            .setNegativeButton(R.string.cancel, null)
+                            .setPositiveButton(android.R.string.ok, (dialog, which) -> boot.run()).show();
+                } else boot.run();
+            }
+        });
         File external = getExternalFilesDir(null);
         if (external != null && new File(external, "autorun").isFile()) {
             autorunDirectory = external;
@@ -251,8 +274,8 @@ public final class MainActivity extends Activity {
         }
         refreshSelection();
         probeBackend();
-        if (savedInstanceState == null && autorunDirectory == null) {
-            frameView.post(this::chooseFirmware);
+        if (autorunDirectory == null) {
+            frameView.post(() -> libraryScreen.show());
         }
     }
 
@@ -295,6 +318,7 @@ public final class MainActivity extends Activity {
         }
         dismissSecondaryPresentation();
         stopSession(false);
+        if (libraryScreen != null) libraryScreen.close();
         inputExecutor.execute(controlExecutor::shutdown);
         inputExecutor.shutdown();
         super.onDestroy();
@@ -693,7 +717,7 @@ public final class MainActivity extends Activity {
     private void chooseFirmware() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT)
                 .addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("application/octet-stream")
+                .setType("*/*")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
                         | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         try {
@@ -707,7 +731,7 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != PICK_FIRMWARE || resultCode != RESULT_OK
+        if ((requestCode != PICK_FIRMWARE && requestCode != PICK_LIBRARY_FOLDER) || resultCode != RESULT_OK
                 || data == null || data.getData() == null) {
             return;
         }
@@ -720,9 +744,15 @@ public final class MainActivity extends Activity {
         } catch (SecurityException ignored) {
             // The private copy remains usable when a provider declines persistence.
         }
+        if (requestCode == PICK_LIBRARY_FOLDER) {
+            libraryScreen.addFolder(uri);
+            libraryScreen.show();
+            return;
+        }
         try {
             Selection selection = inspect(uri);
-            preparePrivateCopy(selection);
+            libraryScreen.importFile(uri, selection.name);
+            libraryScreen.show();
         } catch (IOException | SecurityException error) {
             showError(getString(R.string.error_unreadable_document));
         }
@@ -1066,6 +1096,8 @@ public final class MainActivity extends Activity {
                 if (generation == sessionGeneration && session != null) {
                     sessionView.setText("");
                     moreButton.announceForAccessibility(getString(R.string.booted_announcement));
+                    libraryScreen.recordBoot(preferences().getString(KEY_URI, null), active.identity(),
+                            preferences().getString(KEY_COPY, null), preferences().getString(KEY_NAME, null));
                     updateKeypad(active);
                     updateSessionControls(false);
                 }
@@ -1150,6 +1182,8 @@ public final class MainActivity extends Activity {
                     if (generation == sessionGeneration) {
                         setInputMappingEditing(false);
                         updateKeypad(null);
+                        if (libraryScreen != null && frameView != null)
+                            libraryScreen.recordFrame(preferences().getString(KEY_URI, null), frameView.bitmap);
                         sessionView.setText(R.string.session_failed);
                         showError(getString(R.string.error_session_failed));
                         refreshSelection();
@@ -1557,6 +1591,8 @@ public final class MainActivity extends Activity {
         synchronized (sessionLifecycleLock) {
             generation = ++sessionGeneration;
             current = session;
+            if (current != null && libraryScreen != null && frameView != null)
+                libraryScreen.recordFrame(preferences().getString(KEY_URI, null), frameView.bitmap);
             releaseHeldKey(false);
             session = null;
             sessionStarting = false;
@@ -1734,13 +1770,7 @@ public final class MainActivity extends Activity {
                 case 102: startSession(); return true;
                 case 103: stopSession(true); return true;
                 case 104: stopSession(false); startSession(); return true;
-                case 105:
-                    if (session != null || sessionStarting) {
-                        new AlertDialog.Builder(this).setMessage(R.string.confirm_firmware)
-                                .setNegativeButton(R.string.cancel, null)
-                                .setPositiveButton(android.R.string.ok, (dialog, which) -> chooseFirmware()).show();
-                    } else chooseFirmware();
-                    return true;
+                case 105: libraryScreen.show(); return true;
                 case 106: saveCapture(); return true;
                 case 107: setInputMappingEditing(true); return true;
                 case 109:

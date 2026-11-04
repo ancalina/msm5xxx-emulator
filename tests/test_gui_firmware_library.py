@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from msm5xxx_emulator.gui.firmware_library import FirmwareLibrary, display_name, source_size_limit
+from msm5xxx_emulator.gui.firmware_library import FirmwareLibrary, display_name, source_size_limit, source_hash
 
 
 class FirmwareLibraryTest(unittest.TestCase):
@@ -78,6 +78,13 @@ class FirmwareLibraryTest(unittest.TestCase):
                 lib.remove(external)
             self.assertTrue(external.exists())
 
+    def test_hash_read_is_bounded(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'sample.bin'
+            path.write_bytes(b'1234')
+            with self.assertRaises(ValueError):
+                source_hash(path, 3)
+
     def test_fallback_name(self):
         self.assertEqual(display_name(None, 'filename.bin'), 'filename.bin')
         self.assertEqual(display_name('  detected  ', 'filename.bin'), 'detected')
@@ -100,3 +107,72 @@ class LibraryViewTest(unittest.TestCase):
         dialog.list.selection_set('0')
         dialog.boot()
         self.assertEqual(dialog.selected, Path('/tmp/demo'))
+
+class MobileLibraryBridgeTest(unittest.TestCase):
+    def test_descriptor_path_uses_shared_metadata_rules(self):
+        import importlib.util
+        import json
+        import os
+        from msm5xxx_emulator.detection import firmware
+        root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location('fd_android_runtime', root / 'android/app/src/main/python/msm5xxx_android_runtime.py')
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'synthetic.bin'
+            source.write_bytes(b'synthetic descriptor')
+            with source.open('rb') as handle, patch.object(firmware, 'detect', return_value=SimpleNamespace(model='Detected', chipset='MSM5xxx')):
+                descriptor = Path('/proc/self/fd') / str(handle.fileno())
+                if not descriptor.exists():
+                    self.skipTest('descriptor filesystem unavailable')
+                result = json.loads(runtime.library_describe(json.dumps({'path': str(descriptor),
+                    'cache': str(Path(tmp) / 'cache.json'), 'name': 'original.bin'})))
+            self.assertEqual(result['name'], 'Detected')
+            self.assertEqual(result['size'], len(b'synthetic descriptor'))
+
+    def test_bridge_rejects_oversize_and_invalid_requests(self):
+        import importlib.util
+        import json
+        from msm5xxx_emulator.detection import firmware
+        root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location('limit_android_runtime', root / 'android/app/src/main/python/msm5xxx_android_runtime.py')
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'large.bin'
+            with source.open('wb') as output:
+                output.truncate(source_size_limit(source) + 1)
+            request = json.dumps({'path': str(source), 'cache': str(Path(tmp) / 'cache.json'), 'name': 'large.bin'})
+            with patch.object(firmware, 'detect') as detect, self.assertRaises(ValueError):
+                runtime.library_describe(request)
+            detect.assert_not_called()
+            with self.assertRaises(ValueError):
+                runtime.library_describe('{}')
+
+    def test_shared_bridge_uses_cache_and_preserves_filename_fallback(self):
+        import importlib.util
+        import json
+        import sys
+        from msm5xxx_emulator.detection import firmware
+        root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location('library_android_runtime', root / 'android/app/src/main/python/msm5xxx_android_runtime.py')
+        android = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(android)
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'sample.bin'
+            source.write_bytes(b'synthetic data')
+            request = json.dumps({'path': str(source), 'cache': str(Path(tmp) / 'cache.json'), 'name': 'Original'})
+            with patch.object(firmware, 'detect', return_value=SimpleNamespace(model=None, chipset='MSM5xxx')) as detect:
+                first = json.loads(android.library_describe(request))
+                second = json.loads(android.detect_profile('library-v1:' + request))
+            self.assertEqual(first, second)
+            self.assertEqual(first['name'], 'Original')
+            self.assertEqual(first['chipset'], 'MSM5xxx')
+            self.assertEqual(detect.call_count, 1)
+            limit = json.loads(android.detect_profile('library-v1:' + json.dumps({'limit_name': 'capture.hex'})))
+            self.assertEqual(limit['limit'], source_size_limit(Path('capture.hex')))
+            with patch.dict(sys.modules, {'msm5xxx_android_runtime': android}):
+                ios_spec = importlib.util.spec_from_file_location('library_ios_runtime', root / 'ios/python/msm5xxx_ios_runtime.py')
+                ios = importlib.util.module_from_spec(ios_spec)
+                ios_spec.loader.exec_module(ios)
+                self.assertEqual(json.loads(ios.library_describe(request)), first)

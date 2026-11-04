@@ -4,9 +4,11 @@ import CryptoKit
 
 struct ContentView: View {
     @StateObject private var engine = QEMUEngine()
+    @StateObject private var library = FirmwareLibraryStore()
+    @State private var showingLibrary = false
+    @State private var runningLibraryID = ""
+    @AppStorage("active_library_id") private var activeLibraryID = ""
     @State private var firmware: URL?
-    @State private var importing = false
-    @State private var confirmingFirmware = false
     @State private var message = ""
     @State private var jit = QEMUEngine.jitAvailable
     @State private var showingSettings = false
@@ -104,9 +106,7 @@ struct ContentView: View {
                                 Button(text("Start")) { run() }.disabled(engine.running || engine.used || firmware == nil)
                                 Button(text("Stop emulator")) { engine.stop() }.disabled(!engine.running)
                                 Button(text("Reboot emulator")) { restartOnNextLaunchIfRunning() }.disabled(!engine.running)
-                                Button(text("Choose firmware…")) {
-                                    if engine.running { confirmingFirmware = true } else { importing = true }
-                                }
+                                Button(text("Choose firmware…")) { showingLibrary = true }
                                 Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
                                 Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)
                                 Menu(text("Time")) {
@@ -157,6 +157,13 @@ struct ContentView: View {
         .background(Color(white: 0.07).ignoresSafeArea())
         .onAppear(perform: pickStoredFirmware)
         .onChange(of: engine.running) { running in
+            if running {
+                runningLibraryID = activeLibraryID
+                library.recordBoot(runningLibraryID.isEmpty ? nil : runningLibraryID, sha: engine.identity)
+            } else {
+                library.recordFrame(runningLibraryID.isEmpty ? nil : runningLibraryID, image: engine.frame)
+                runningLibraryID = ""
+            }
             UIAccessibility.post(notification: .announcement, argument: text(running ? "Booted" : "Powered off"))
         }
         .onChange(of: engine.status) { value in
@@ -262,16 +269,25 @@ struct ContentView: View {
                 .toolbar { Button(text("Done")) { showingSettings = false } }
             }
         }
-        .alert(text("Choose firmware…"), isPresented: $confirmingFirmware) {
-            Button(text("Choose firmware…")) { importing = true }
-            Button(text("Cancel"), role: .cancel) {}
-        } message: { Text(text("Confirm firmware")) }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
-            switch result {
-            case .success(let url): importFirmware(url)
-            case .failure(let error): message = error.localizedDescription
-            }
+        .fullScreenCover(isPresented: $showingLibrary) {
+            FirmwareLibraryView(store: library, engine: engine, text: text,
+                canClose: engine.running || engine.used || firmware != nil,
+                close: { showingLibrary = false },
+                boot: { entry in
+                    library.ensureEntry(entry)
+                    library.pauseScanning()
+                    let found = library.withSource(entry) { url in
+                        if importFirmware(url) {
+                            activeLibraryID = entry.id
+                            showingLibrary = false
+                        } else {
+                            library.error = "Library error"
+                        }
+                    }
+                    if !found { library.error = "Library unavailable" }
+                })
         }
+
     }
 
     private var localizedMetrics: String {
@@ -362,15 +378,22 @@ struct ContentView: View {
     /// SSH); an `autorun` file next to that folder starts it without touching the screen.
     private func pickStoredFirmware() {
         guard firmware == nil, !engine.used,
-              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
-              let names = try? FileManager.default.contentsOfDirectory(atPath: support.appendingPathComponent("firmware").path),
+              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let pending = UserDefaults.standard.bool(forKey: "pending_boot")
+        let marker = FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path)
+        if !pending && !marker {
+            showingLibrary = true
+            return
+        }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: support.appendingPathComponent("firmware").path),
               let name = names.filter({ !$0.hasPrefix(".") }).sorted().first else { return }
         firmware = support.appendingPathComponent("firmware").appendingPathComponent(name)
         loadDetailedSettings()
-        if UserDefaults.standard.bool(forKey: "pending_boot") {
+        if pending {
             UserDefaults.standard.removeObject(forKey: "pending_boot")
             run()
-        } else if FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
+        } else if marker {
+            activeLibraryID = ""
             NSLog("MSM5xEmu autorun %@", name)
             run()
         }
@@ -391,8 +414,12 @@ struct ContentView: View {
         detailedValues = UserDefaults.standard.dictionary(forKey: "details.\(firmwareIdentity)") as? [String: String] ?? [:]
     }
 
+    private func supportStagingURL() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    }
+
     /// Copy the picked image into the app container; the original is never modified.
-    private func importFirmware(_ url: URL) {
+    private func importFirmware(_ url: URL) -> Bool {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -401,13 +428,15 @@ struct ContentView: View {
                 .appendingPathComponent("firmware", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let target = dir.appendingPathComponent(url.lastPathComponent)
-            // Stop the active session before replacing its selected image.
+            let staged = supportStagingURL()
+            try FileManager.default.copyItem(at: url, to: staged)
+            defer { try? FileManager.default.removeItem(at: staged) }
+            // Preserve the previous selection if the source could not be copied.
             if engine.running { restartOnNextLaunchIfRunning() }
-            // Keep one image so the next launch reuses exactly this pick.
             for old in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
-                try? FileManager.default.removeItem(at: old)
+                try FileManager.default.removeItem(at: old)
             }
-            try FileManager.default.copyItem(at: url, to: target)
+            try FileManager.default.moveItem(at: staged, to: target)
             firmware = target
             loadDetailedSettings()
             if engine.used {
@@ -417,8 +446,10 @@ struct ContentView: View {
                 run()
             }
             if !engine.used { message = String(format: text("Imported file"), target.lastPathComponent) }
+            return true
         } catch {
             message = error.localizedDescription
+            return false
         }
     }
 }

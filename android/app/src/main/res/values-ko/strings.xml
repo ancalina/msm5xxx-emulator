@@ -203,4 +203,17 @@
     <string name="error_capture">스크린샷을 저장할 수 없습니다</string>
     <string name="resize_symbol">↘</string>
     <string name="time_format_hint">YYYY-MM-DD HH:MM</string>
+    <string name="library_title">펌웨어 목록</string>
+    <string name="library_empty">펌웨어를 추가하세요</string>
+    <string name="library_loading">탐지 중…</string>
+    <string name="library_add_folder">폴더 추가</string>
+    <string name="library_import">파일 가져오기</string>
+    <string name="library_refresh">새로고침</string>
+    <string name="library_info">정보</string>
+    <string name="library_remove">목록에서 제거</string>
+    <string name="library_never">부팅 기록 없음</string>
+    <string name="library_unavailable">사용할 수 없음</string>
+    <string name="library_row">%1$s, %2$s, %3$s</string>
+    <string name="library_info_body">모델: %1$s\n칩셋: %2$s\nSHA-256: %3$s\n출처: %4$s</string>
+    <string name="library_preview_after_boot">부팅 후 세부 정보를 볼 수 있습니다</string>
 </resources>

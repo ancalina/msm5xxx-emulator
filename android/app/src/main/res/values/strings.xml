@@ -203,4 +203,17 @@
     <string name="error_capture">Could not save screenshot</string>
     <string name="resize_symbol">↘</string>
     <string name="time_format_hint">YYYY-MM-DD HH:MM</string>
+    <string name="library_title">Firmware library</string>
+    <string name="library_empty">Add firmware to your library</string>
+    <string name="library_loading">Detecting…</string>
+    <string name="library_add_folder">Add folder</string>
+    <string name="library_import">Import file</string>
+    <string name="library_refresh">Refresh</string>
+    <string name="library_info">Info</string>
+    <string name="library_remove">Remove</string>
+    <string name="library_never">Never booted</string>
+    <string name="library_unavailable">Unavailable</string>
+    <string name="library_row">%1$s, %2$s, %3$s</string>
+    <string name="library_info_body">Model: %1$s\nChipset: %2$s\nSHA-256: %3$s\nSource: %4$s</string>
+    <string name="library_preview_after_boot">Details available after boot</string>
 </resources>

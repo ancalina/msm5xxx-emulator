@@ -147,3 +147,16 @@
 "◀" = "◀";
 "▶" = "▶";
 "•••" = "•••";
+"Library title" = "Firmware library";
+"Library empty" = "Add firmware to your library";
+"Library loading" = "Detecting…";
+"Library add folder" = "Add folder";
+"Library import" = "Import file";
+"Library refresh" = "Refresh";
+"Library info" = "Info";
+"Library remove" = "Remove";
+"Library never" = "Never booted";
+"Library unavailable" = "Unavailable";
+"Library row" = "%@, %@, %@";
+"Library info body" = "Model: %@\nChipset: %@\nSHA-256: %@\nSource: %@";
+"Library error" = "Could not access the firmware library";

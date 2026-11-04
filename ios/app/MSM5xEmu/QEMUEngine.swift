@@ -24,6 +24,7 @@ final class QEMUEngine: ObservableObject {
     @Published private(set) var inputBits = Set<Int>()
     @Published private(set) var identity = ""
     @Published private(set) var running = false
+    @Published private(set) var starting = false
     @Published private(set) var used = false
     private let queue = DispatchQueue(label: "me.ancal.msm5xemu.python")
     private var runtimeReady = false
@@ -87,11 +88,35 @@ final class QEMUEngine: ObservableObject {
         NSLog("MSM5xEmu engine: %@; JIT %@; cs flags 0x%08x", status, QEMUEngine.jitAvailable ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
     }
 
+    // Called from the library's background queue, never from the Python queue.
+    func libraryRequest(_ request: [String: String]) throws -> [String: Any] {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Result<[String: Any], Error>!
+        queue.async {
+            defer { semaphore.signal() }
+            do {
+                if !self.runtimeReady {
+                    try PythonBridge.initializeRuntime()
+                    self.runtimeReady = true
+                }
+                let data = try JSONSerialization.data(withJSONObject: request)
+                let reply = try PythonBridge.call("library_describe", argument: String(decoding: data, as: UTF8.self))
+                guard let value = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any] else {
+                    throw NSError(domain: "FirmwareLibrary", code: 1)
+                }
+                result = .success(value)
+            } catch { result = .failure(error) }
+        }
+        semaphore.wait()
+        return try result.get()
+    }
+
     func start(_ firmware: URL, persistentState: Bool = true, experimentalRex: Bool = false,
                virtualNetwork: Bool = false, networkHostTime: Bool = true,
                networkStartTime: Double? = nil) {
         guard entry != nil, !used else { return }
         used = true
+        starting = true
         queue.async {
             do {
                 if !self.runtimeReady {
@@ -139,11 +164,15 @@ final class QEMUEngine: ObservableObject {
                     self.pollAudio()
                 }
                 DispatchQueue.main.async {
+                    self.starting = false
                     self.running = true
                     self.inputBits = bits
                     self.status = "Running (detector-admitted input only)"; NSLog("MSM5xEmu running, input bits %@", String(describing: bits.sorted()))
                 }
-            } catch { self.report(error) }
+            } catch {
+                DispatchQueue.main.async { self.starting = false }
+                self.report(error)
+            }
         }
     }
 

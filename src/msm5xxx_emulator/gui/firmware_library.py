@@ -26,12 +26,41 @@ def display_name(model: object, filename: str) -> str:
     return model.strip() if isinstance(model, str) and model.strip() else filename
 
 
-def source_hash(path: Path) -> str:
+def source_hash(path: Path, limit: int | None = None) -> str:
     digest = hashlib.sha256()
+    maximum = source_size_limit(path) if limit is None else limit
+    total = 0
     with path.open('rb') as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            total += len(chunk)
+            if total > maximum:
+                raise ValueError('library source exceeds size limit')
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def describe_file(path: Path, cache: dict, *, detector: Callable | None = None,
+                  name: str | None = None) -> dict:
+    """Describe one readable source, sharing the library's SHA-indexed cache."""
+    size = path.stat().st_size
+    maximum = source_size_limit(Path(name) if name else path)
+    if not path.is_file() or size > maximum:
+        raise ValueError('invalid library source')
+    digest = source_hash(path, maximum)
+    if digest not in cache:
+        if detector is None:
+            from ..detection.firmware import detect
+            detector = detect
+        try:
+            config = detector(path)
+            cache[digest] = {'model': getattr(config, 'model', None),
+                             'chipset': getattr(config, 'chipset', None)}
+        except (OSError, ValueError):
+            cache[digest] = {'model': None, 'chipset': None}
+    metadata = cache[digest]
+    return {'sha256': digest, 'model': metadata.get('model'),
+            'chipset': metadata.get('chipset'), 'size': size,
+            'name': display_name(metadata.get('model'), name or path.name)}
 
 
 class FirmwareLibrary:
@@ -119,18 +148,9 @@ class FirmwareLibrary:
                     continue
                 seen.add(digest)
                 if digest not in self.cache:
-                    if self.detector is None:
-                        from ..detection.firmware import detect
-                        detector = detect
-                    else:
-                        detector = self.detector
-                    try:
-                        config = detector(path)
-                        self.cache[digest] = {'model': getattr(config, 'model', None),
-                                              'chipset': getattr(config, 'chipset', None)}
-                    except (OSError, ValueError):
-                        self.cache[digest] = {'model': None, 'chipset': None}
-                entry.update(self.cache[digest])
+                    described = describe_file(path, self.cache, detector=self.detector)
+                    entry['sha256'] = described['sha256']
+                entry.update(self.cache[entry['sha256']])
                 entry['size'] = stat.st_size
                 entry['available'] = True
             except (OSError, ValueError):

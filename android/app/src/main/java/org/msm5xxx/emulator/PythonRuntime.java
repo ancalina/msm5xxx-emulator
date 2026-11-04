@@ -52,6 +52,29 @@ final class PythonRuntime {
         return nativeDetect(firmware.getPath());
     }
 
+    static synchronized String describeLibrary(Context context, File firmware, String name)
+            throws IOException {
+        if (home == null) probe(context);
+        try {
+            JSONObject request = new JSONObject().put("path", firmware.getPath())
+                    .put("cache", new File(context.getFilesDir(), "library-cache.json").getPath())
+                    .put("name", name);
+            return nativeDetect("library-v1:" + LibraryPolicy.asciiJson(request.toString()));
+        } catch (JSONException error) {
+            throw new IOException("invalid library request", error);
+        }
+    }
+
+    static synchronized long librarySizeLimit(Context context, String name) throws IOException {
+        if (home == null) probe(context);
+        try {
+            JSONObject request = new JSONObject().put("limit_name", name);
+            return new JSONObject(nativeDetect("library-v1:" + LibraryPolicy.asciiJson(request.toString()))).getLong("limit");
+        } catch (JSONException error) {
+            throw new IOException("invalid library size", error);
+        }
+    }
+
     static synchronized String start(Context context, File firmware, File qemu,
                                      File stateDirectory, String profileJson,
                                      boolean experimentalRex, boolean virtualNetwork,

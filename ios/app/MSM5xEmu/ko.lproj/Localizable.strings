@@ -147,3 +147,16 @@
 "◀" = "◀";
 "▶" = "▶";
 "•••" = "•••";
+"Library title" = "펌웨어 목록";
+"Library empty" = "펌웨어를 추가하세요";
+"Library loading" = "탐지 중…";
+"Library add folder" = "폴더 추가";
+"Library import" = "파일 가져오기";
+"Library refresh" = "새로고침";
+"Library info" = "정보";
+"Library remove" = "목록에서 제거";
+"Library never" = "부팅 기록 없음";
+"Library unavailable" = "사용할 수 없음";
+"Library row" = "%@, %@, %@";
+"Library info body" = "모델: %@\n칩셋: %@\nSHA-256: %@\n출처: %@";
+"Library error" = "펌웨어 목록에 접근할 수 없습니다";
