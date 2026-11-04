@@ -140,6 +140,9 @@ struct ContentView: View {
             if type == .began { engine.setAudioInterrupted(true) }
             else if type == .ended { engine.setAudioInterrupted(false) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in
+            engine.resetAudioServices()
+        }
         .onChange(of: message) { value in
             if !value.isEmpty { UIAccessibility.post(notification: .announcement, argument: value) }
         }

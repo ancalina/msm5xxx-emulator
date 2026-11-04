@@ -49,6 +49,7 @@ final class QEMUEngine: ObservableObject {
     private var lastMetricsLog = Date.distantPast
     private var lastAudioLog = Date.distantPast
     private var lastAudioError = Date.distantPast
+    private var lastAudioRecovery = Date.distantPast
 
     /// True when this process may turn freshly written memory executable, as QEMU's split-wx TCG
     /// does: an attached debugger (TrollStore "Open with JIT", Dopamine, StikJIT, Jitterbug) or the
@@ -57,6 +58,7 @@ final class QEMUEngine: ObservableObject {
         #if targetEnvironment(simulator)
         return true
         #else
+        if UserDefaults.standard.bool(forKey: "internal_force_tci") { return false }
         let size = Int(getpagesize())
         guard let page = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0),
               page != MAP_FAILED else { return false }
@@ -361,7 +363,7 @@ final class QEMUEngine: ObservableObject {
         monitorPaused = shouldPause
         NSLog("MSM5xEmu %@", shouldPause ? "paused" : "resumed")
         if !shouldPause {
-            if !audioInterrupted { audioSink?.resumeOutput() }
+            audioSink?.resumeOutput()
             audioGeneration += 1
             pollAudio(generation: audioGeneration)
         }
@@ -373,6 +375,14 @@ final class QEMUEngine: ObservableObject {
             self.audioInterrupted = interrupted
             if interrupted { self.audioSink?.pauseOutput() }
             else if self.sceneActive && !self.monitorPaused { self.audioSink?.resumeOutput() }
+        }
+    }
+
+    func resetAudioServices() {
+        queue.async {
+            guard self.audioPolling else { return }
+            self.audioSink?.close()
+            self.audioSink = nil
         }
     }
 
@@ -463,6 +473,14 @@ final class QEMUEngine: ObservableObject {
         let generation = generation ?? audioGeneration
         guard audioPolling, sceneActive, !monitorPaused, generation == audioGeneration else { return }
         var received = false
+        if Date().timeIntervalSince(lastAudioRecovery) >= 1 {
+            lastAudioRecovery = Date()
+            if let sink = audioSink { sink.resumeOutput() }
+            else {
+                let sink = MSM5xxxAudioSink()
+                if sink.start() { audioSink = sink }
+            }
+        }
         do {
             // Bound each drain to avoid starving display and input work.
             for _ in 0..<4 {
@@ -572,23 +590,30 @@ private final class MSM5xxxAudioSink {
     func pauseOutput() {
         lock.lock()
         suspended = true
+        lock.unlock()
         player.pause()
         engine.pause()
-        lock.unlock()
     }
 
     func resumeOutput() {
         lock.lock()
-        defer { lock.unlock() }
-        guard !closed else { return }
+        let needsRestart = !closed && (suspended || !engine.isRunning)
+        if needsRestart { suspended = true }
+        lock.unlock()
+        guard needsRestart else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
-            try engine.start()
-            suspended = false
-            if pendingFrames > 0 {
-                playing = true
-                player.play()
-            }
+            if !engine.isRunning { try engine.start() }
+            lock.lock()
+            generation &+= 1
+            pendingFrames = 0
+            playing = false
+            lock.unlock()
+            player.stop()
+            player.reset()
+            lock.lock()
+            if !closed { suspended = false }
+            lock.unlock()
         } catch {
             NSLog("MSM5xEmu audio resume failed: %@", String(describing: error))
         }

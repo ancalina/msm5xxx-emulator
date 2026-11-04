@@ -28,6 +28,15 @@ struct LibraryEntry: Codable, Identifiable {
     var displayName: String { display ?? name }
 }
 
+private struct LibraryGroup: Identifiable {
+    let id: String
+    var files: [LibraryEntry]
+    var latest: LibraryEntry {
+        files.max { ($0.lastBooted ?? .distantPast) < ($1.lastBooted ?? .distantPast) } ?? files[0]
+    }
+    var sizes: String { files.map { String(format: "%.1f MiB", Double($0.size) / 1048576) }.joined(separator: " / ") }
+}
+
 private struct LibraryIndex: Codable {
     var folders: [LibraryFolder] = []
     var entries: [LibraryEntry] = []
@@ -404,6 +413,8 @@ struct FirmwareLibraryView: View {
     @State private var folderPicker = false
     @State private var filePicker = false
     @State private var infoEntry: LibraryEntry?
+    @State private var selectedGroup: LibraryGroup?
+    @State private var choosingFiles = false
     @State private var showingSettings = false
     @AppStorage("persistent_state") private var persistentState = true
     @AppStorage("virtual_network") private var virtualNetwork = false
@@ -452,6 +463,33 @@ struct FirmwareLibraryView: View {
         }
     }
 
+    private var groups: [LibraryGroup] {
+        var result: [LibraryGroup] = []
+        var positions: [String: Int] = [:]
+        for entry in store.entries {
+            let model = entry.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let key = model.isEmpty ? "file:" + entry.id : "model:" + model.lowercased()
+            if let position = positions[key] {
+                if let hash = entry.sha256, !hash.isEmpty,
+                   let duplicate = result[position].files.firstIndex(where: { $0.sha256 == hash }) {
+                    let old = result[position].files[duplicate]
+                    if (entry.available && !old.available) ||
+                       (entry.available == old.available && (entry.lastBooted ?? .distantPast) > (old.lastBooted ?? .distantPast)) {
+                        result[position].files[duplicate] = entry
+                    }
+                } else { result[position].files.append(entry) }
+            } else { positions[key] = result.count; result.append(LibraryGroup(id: key, files: [entry])) }
+        }
+        return result
+    }
+
+    private func select(_ group: LibraryGroup) {
+        let files = group.files.filter { $0.available }
+        guard !files.isEmpty && !engine.starting && !preparing else { return }
+        if files.count == 1 { boot(files[0]) }
+        else { selectedGroup = group; choosingFiles = true }
+    }
+
     private func select(_ entry: LibraryEntry) {
         guard entry.available && !engine.starting && !preparing else { return }
         boot(entry)
@@ -480,7 +518,8 @@ struct FirmwareLibraryView: View {
                 }
                 if store.entries.isEmpty && !store.scanning { Text(text("Library empty")) }
                 if let error = store.error { Text(text(error)).foregroundColor(.secondary) }
-                List(store.entries) { entry in
+                List(groups) { group in
+                    let entry = group.latest
                     let spoken = String(format: text("Library row"), entry.displayName,
                                         entry.chipset ?? "—", lastBoot(entry))
                     HStack {
@@ -490,7 +529,7 @@ struct FirmwareLibraryView: View {
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.displayName).font(.headline).foregroundColor(.white).lineLimit(1)
-                            Text("\(entry.chipset ?? "—") · \(String(format: "%.1f MiB", Double(entry.size) / 1048576)) · \(lastBoot(entry))")
+                            Text("\(entry.chipset ?? "—") · \(group.sizes) · \(lastBoot(entry))")
                                 .font(.footnote).foregroundColor(Color(white: 0.63))
                             if !entry.available { Text(text("Library unavailable")).font(.caption) }
                         }
@@ -501,15 +540,17 @@ struct FirmwareLibraryView: View {
                     .listRowBackground(Color(white: 0.07))
                     .listRowSeparatorTint(Color(white: 0.25))
                     .contentShape(Rectangle())
-                    .onTapGesture { select(entry) }
+                    .onTapGesture { select(group) }
                     .contextMenu {
-                        Button(text("Library info")) { infoEntry = entry }
-                        Button(text("Library remove"), role: .destructive) { store.remove(entry) }
+                        if group.files.count == 1 {
+                            Button(text("Library info")) { infoEntry = entry }
+                            Button(text("Library remove"), role: .destructive) { store.remove(entry) }
+                        }
                     }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(spoken)
                     .accessibilityAddTraits(.isButton)
-                    .accessibilityAction { select(entry) }
+                    .accessibilityAction { select(group) }
                     .accessibilityAction(named: Text(text("Library info"))) { infoEntry = entry }
                     .accessibilityAction(named: Text(text("Library remove"))) { store.remove(entry) }
                 }
@@ -560,6 +601,12 @@ struct FirmwareLibraryView: View {
                 case .success(let url): store.importFile(url, engine: engine)
                 case .failure(let error): store.error = "Library error"
                 }
+            }
+            .confirmationDialog(selectedGroup?.latest.displayName ?? text("Choose firmware"), isPresented: $choosingFiles, titleVisibility: .visible) {
+                ForEach(selectedGroup?.files.filter { $0.available } ?? []) { entry in
+                    Button("\(entry.name) · \(String(format: "%.1f MiB", Double(entry.size) / 1048576))") { select(entry) }
+                }
+                Button(text("Cancel"), role: .cancel) { }
             }
             .alert(item: $infoEntry) { entry in
                 Alert(title: Text(text("Library info")),
