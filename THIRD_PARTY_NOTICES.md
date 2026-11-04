@@ -15,6 +15,7 @@
   license. CPython's bundled third-party license notices are included.
 - Pillow (`Pillow>=10,<13`) uses the MIT-CMU License.
 - NumPy (`numpy>=1.26,<3`) uses the BSD 3-Clause License.
+- The Android app's icons are Google Material Icons under the Apache License 2.0.
 
 Desktop Python dependencies are installed by the launcher. Native release
 bundles include their license texts and companion source assets beside the

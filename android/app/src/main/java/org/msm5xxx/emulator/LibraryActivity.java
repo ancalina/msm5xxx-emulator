@@ -16,6 +16,7 @@ import java.io.File;
 public final class LibraryActivity extends Activity {
     private static final int PICK_FILE = 1;
     private static final int PICK_FOLDER = 2;
+    private static final int SETTINGS = 3;
     private FirmwareLibraryScreen library;
 
     @Override protected void attachBaseContext(Context base) {
@@ -40,6 +41,9 @@ public final class LibraryActivity extends Activity {
         library = new FirmwareLibraryScreen(this, new FirmwareLibraryScreen.Listener() {
             @Override public void chooseFolder() { pick(true); }
             @Override public void importFile() { pick(false); }
+            @Override public void openSettings() {
+                startActivityForResult(new Intent(LibraryActivity.this, SettingsActivity.class), SETTINGS);
+            }
             @Override public void boot(Uri uri, String name, long size) {
                 library.ensureEntry(uri, name, size);
                 library.dismiss();
@@ -76,6 +80,12 @@ public final class LibraryActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == SETTINGS) {
+            String action = data == null ? null : data.getStringExtra(SettingsActivity.EXTRA_ACTION);
+            if (SettingsActivity.ACTION_ADD_FOLDER.equals(action)) pick(true);
+            else if (SettingsActivity.ACTION_IMPORT_FILE.equals(action)) pick(false);
+            return;
+        }
         if (library == null || result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         try {

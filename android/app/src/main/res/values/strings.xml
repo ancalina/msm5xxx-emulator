@@ -114,7 +114,7 @@
     <string name="display_external">%1$s (display %2$d)</string>
     <string name="display_preview_notice">Preview: colors and orientation unverified</string>
     <string name="network_host_time">Use device clock for network time</string>
-    <string name="network_start_time">Network start time (YYYY-MM-DD HH:MM; blank = off)</string>
+    <string name="network_start_time">Network start time (blank = off)</string>
     <string name="network_time_error">Enter a valid network start time</string>
     <string name="more_settings">More…</string>
     <string name="capture">Save screenshot</string>
@@ -221,4 +221,5 @@
     <string name="library_no_folders">No folders added</string>
     <string name="library_remove_folder">Remove</string>
     <string name="library_session_settings">Before boot</string>
+    <string name="back">Back</string>
 </resources>
