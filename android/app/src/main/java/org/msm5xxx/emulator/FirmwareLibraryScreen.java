@@ -303,6 +303,15 @@ final class FirmwareLibraryScreen {
         return value < 0 ? activity.getString(R.string.size_unavailable)
                 : String.format(java.util.Locale.US, "%.1f MiB", value / 1048576.0);
     }
+    // Each file keeps its own size, e.g. "4.1 MiB / 6.0 MiB".
+    private String groupSizes(LibraryGrouping.Group group) {
+        StringBuilder sizes = new StringBuilder();
+        for (LibraryGrouping.Entry file : group.files) {
+            if (sizes.length() > 0) sizes.append(" / ");
+            sizes.append(size(file.size));
+        }
+        return sizes.toString();
+    }
     private String bootTime(long value) {
         return value == 0 ? activity.getString(R.string.library_never)
                 : DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(value));
@@ -377,7 +386,7 @@ final class FirmwareLibraryScreen {
             String chipset = entry.optString("chipset", "—");
             String booted = bootTime(recent.lastBoot);
             String summary = group.files.size() > 1
-                    ? activity.getString(R.string.library_file_count, group.files.size()) + " · " + size(group.size())
+                    ? groupSizes(group)
                     : size(recent.size);
             holder.model.setText(name);
             holder.detail.setText(chipset + " · " + summary + "\n" + booted

@@ -226,5 +226,4 @@
     <string name="time_clear">지우기</string>
     <string name="confirm_power_off_library">전원을 끄고 목록으로 돌아갈까요?</string>
     <string name="library_files">파일 선택</string>
-    <string name="library_file_count">%1$d개 파일</string>
 </resources>

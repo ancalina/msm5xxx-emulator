@@ -226,5 +226,4 @@
     <string name="time_clear">Clear</string>
     <string name="confirm_power_off_library">Power off and return to the library?</string>
     <string name="library_files">Choose file</string>
-    <string name="library_file_count">%1$d files</string>
 </resources>
