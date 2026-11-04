@@ -463,6 +463,8 @@ struct MSM5xxxPOCMachineState {
     bool search2_virtual;
     uint32_t search2_position, search2_pending_position, search2_pilot_phase;
     uint16_t search2_peak_energy;
+    uint16_t virtual_service_energy;
+    bool virtual_service_off;
     uint32_t search2_route[9];
     uint16_t search2_samples[8];
     uint64_t search2_delay_ns;
@@ -19800,8 +19802,8 @@ static void msm5xxx_poc_set_decoder_sync_source(Object *obj, const char *value,
     uint16_t words[8];
     unsigned i, length;
 
-    if (s->decoder_init_timer || g_strv_length(fields) != 4) {
-        error_setg(errp, "decoder-sync-source needs position-getter:roll-isr:consumer:message-hex before init");
+    if (g_strv_length(fields) != 4) {
+        error_setg(errp, "decoder-sync-source needs position-getter:roll-isr:consumer:message-hex");
         return;
     }
     for (i = 0; i < 3; i++) {
@@ -19812,6 +19814,13 @@ static void msm5xxx_poc_set_decoder_sync_source(Object *obj, const char *value,
             error_setg(errp, "invalid decoder-sync-source code field");
             return;
         }
+    }
+    if (s->decoder_init_timer && (!s->decoder_sync_enabled ||
+        values[0] != s->combiner_position_reader ||
+        values[1] != s->combiner_roll_isr ||
+        values[2] != s->decoder_sync_consumer)) {
+        error_setg(errp, "decoder-sync-source route cannot change after init");
+        return;
     }
     length = strlen(fields[3]);
     if (length < 10 || length > sizeof(message) * 2 || length & 1) {
@@ -20031,6 +20040,35 @@ static void msm5xxx_poc_set_traffic_service_source(Object *obj, const char *valu
     memcpy(s->traffic_service_route, route, sizeof(route));
     s->traffic_service_enabled = s->decoder_traffic_response_enabled = true;
     s->traffic_service_description = g_strdup(value);
+}
+
+static char *msm5xxx_poc_get_virtual_service(Object *obj, Error **errp)
+{
+    return g_strdup(MSM5XXX_POC_MACHINE(obj)->virtual_service_off ? "off" : "on");
+}
+
+static void msm5xxx_poc_set_virtual_service(Object *obj, const char *value,
+                                             Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (!s->search2_virtual && !s->legacy_decoder_enabled) {
+        error_setg(errp, "virtual service is not configured");
+        return;
+    }
+    if (!strcmp(value, "off")) {
+        if (!s->virtual_service_off) {
+            s->virtual_service_energy = s->search2_peak_energy;
+            s->search2_peak_energy = 0;
+            s->virtual_service_off = true;
+        }
+    } else if (!strcmp(value, "on")) {
+        if (s->virtual_service_off) {
+            s->search2_peak_energy = s->virtual_service_energy;
+            s->virtual_service_off = false;
+        }
+    } else {
+        error_setg(errp, "virtual-service requires on or off");
+    }
 }
 
 static char *msm5xxx_poc_get_legacy_cdma(Object *obj, Error **errp)
@@ -20277,6 +20315,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                   msm5xxx_poc_set_search1_virtual);
     object_class_property_set_description(oc, "search1-virtual",
         "Experimental byte-program/selected-result search using the shared virtual pilot");
+    object_class_property_add_str(oc, "virtual-service",
+                                  msm5xxx_poc_get_virtual_service,
+                                  msm5xxx_poc_set_virtual_service);
     object_class_property_add_str(oc, "decoder-sync-source",
                                   msm5xxx_poc_get_decoder_sync_source,
                                   msm5xxx_poc_set_decoder_sync_source);

@@ -259,11 +259,31 @@ final class QEMUEngine: ObservableObject {
         }
     }
 
+    private func networkRequest(refresh: Bool, includeEnabled: Bool = false) -> String {
+        let defaults = UserDefaults.standard
+        let manual = defaults.bool(forKey: "network_start_time_enabled")
+        var request: [String: Any] = ["host_time": !manual,
+                                      "start_time": manual ? defaults.double(forKey: "network_start_time") : NSNull(),
+                                      "refresh": refresh]
+        if includeEnabled { request["enabled"] = defaults.bool(forKey: "virtual_network") }
+        return String(decoding: try! JSONSerialization.data(withJSONObject: request), as: UTF8.self)
+    }
+
+    func refreshNetworkTime() {
+        guard running else { return }
+        let request = networkRequest(refresh: true)
+        queue.async {
+            do { _ = try PythonBridge.call("refresh_network_time", argument: request) }
+            catch { self.report(error) }
+        }
+    }
+
     func reboot() {
         guard running else { return }
+        let request = networkRequest(refresh: false, includeEnabled: true)
         queue.async {
             do {
-                _ = try PythonBridge.call("reset_session", argument: nil)
+                _ = try PythonBridge.call("reset_session", argument: request)
                 DispatchQueue.main.async {
                     self.frame = nil
                     self.secondaryFrame = nil
@@ -297,9 +317,10 @@ final class QEMUEngine: ObservableObject {
     func powerOn(completion: @escaping (Bool) -> Void) {
         guard poweredOff, !starting else { completion(false); return }
         starting = true
+        let request = networkRequest(refresh: false, includeEnabled: true)
         queue.async {
             do {
-                _ = try PythonBridge.call("reset_session", argument: nil)
+                _ = try PythonBridge.call("reset_session", argument: request)
                 self.parked = false
                 try self.applySceneActive(self.sceneActive)
                 DispatchQueue.main.async {

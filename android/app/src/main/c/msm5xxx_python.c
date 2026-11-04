@@ -277,6 +277,17 @@ Java_org_msm5xxx_emulator_PythonRuntime_nativeFold(
     return result;
 }
 
+JNIEXPORT jstring JNICALL
+Java_org_msm5xxx_emulator_PythonRuntime_nativeNetworkTime(
+        JNIEnv *env, jclass type, jstring request_value) {
+    (void)type;
+    const char *request = (*env)->GetStringUTFChars(env, request_value, NULL);
+    if (request == NULL) return NULL;
+    jstring result = call_python(env, "refresh_network_time", request);
+    (*env)->ReleaseStringUTFChars(env, request_value, request);
+    return result;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_org_msm5xxx_emulator_PythonRuntime_nativeAudio(
         JNIEnv *env, jclass type) {

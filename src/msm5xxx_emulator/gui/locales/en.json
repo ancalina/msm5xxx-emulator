@@ -586,5 +586,6 @@
   "fold_short_close": "Close",
   "fold_access_open": "Open fold",
   "fold_access_close": "Close fold",
-  "menu_access": "Menu"
+  "menu_access": "Menu",
+  "refresh_network_time": "Refresh network time"
 }

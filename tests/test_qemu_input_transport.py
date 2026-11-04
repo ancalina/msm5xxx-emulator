@@ -1607,11 +1607,13 @@ class QEMUInputTransportTests(unittest.TestCase):
             listener.close()
         argv = ["live_display.py", "--qemu", "qemu-system-arm"]
         with mock.patch.object(sys, "argv", argv), \
-             mock.patch.object(MODULE, "choose_firmware",
+             mock.patch.object(MODULE.tk, "Tk"), \
+             mock.patch.object(MODULE, "FirmwareLibrary"), \
+             mock.patch.object(MODULE, "choose_from_library",
                                return_value=None) as chooser, \
              mock.patch.object(MODULE, "Transport") as transport:
             self.assertEqual(MODULE.main(), 0)
-        chooser.assert_called_once_with()
+        chooser.assert_called_once()
         transport.assert_not_called()
 
     def test_launcher_uses_persistent_state_by_default(self) -> None:
@@ -1851,11 +1853,14 @@ class QEMUInputTransportTests(unittest.TestCase):
         window.transport = old_transport
         window.worker = old_worker
         window.emulator = old_transport.decoder
+        window.emulator.display_snapshot.side_effect = ValueError("no frame")
+        window.library = mock.Mock(entries=[])
         window._active_firmware = firmware
         window._active_overrides = {"width": 96}
         window._render_cache = (object(), b"", 1, 1, 1, 1)
         window.qemu = Path("/tmp/qemu-system-arm")
         window.state_dir = Path("/tmp/qemu-state")
+        window.persistent_state_enabled = True
         window.experimental_c80 = True
         window.virtual_network_enabled = False
         window._active_virtual_network = False
@@ -1940,9 +1945,12 @@ class QEMUInputTransportTests(unittest.TestCase):
         window.transport = mock.Mock()
         window.worker = worker
         window.emulator = window.transport.decoder
+        window.emulator.display_snapshot.side_effect = ValueError("no frame")
+        window.library = mock.Mock(entries=[])
         window._render_cache = None
         window.qemu = Path("/tmp/qemu-system-arm")
         window.state_dir = Path("/tmp/qemu-state")
+        window.persistent_state_enabled = True
         window.experimental_c80 = False
         window.virtual_network_enabled = True
         window._active_virtual_network = False
@@ -1983,6 +1991,7 @@ class QEMUInputTransportTests(unittest.TestCase):
 
     def test_virtual_network_toggle_saves_only_the_active_mode(self) -> None:
         window = MODULE.LiveWindow.__new__(MODULE.LiveWindow)
+        window.transport = object()
         window.virtual_network_enabled = False
         window.virtual_network_var = mock.Mock()
         window.virtual_network_var.get.return_value = True

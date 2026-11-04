@@ -586,5 +586,6 @@
   "fold_short_close": "닫기",
   "fold_access_open": "폴더 열기",
   "fold_access_close": "폴더 닫기",
-  "menu_access": "메뉴"
+  "menu_access": "메뉴",
+  "refresh_network_time": "통신망 시간 새로고침"
 }

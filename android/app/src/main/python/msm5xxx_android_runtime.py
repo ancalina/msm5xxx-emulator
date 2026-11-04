@@ -245,6 +245,20 @@ def _secondary_frame_packet(*, parts):
     return _scanout_packet("secondary", width, height, frame, parts=parts)
 
 
+def refresh_network_time(request_json):
+    from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
+    request = json.loads(request_json)
+    if (not isinstance(request, dict) or set(request) != {"host_time", "start_time", "refresh"}
+            or type(request["host_time"]) is not bool or type(request["refresh"]) is not bool):
+        raise ValueError("invalid network time request")
+    virtual_cell_scenario(True, host_time=request["host_time"], start_time=request["start_time"])
+    if _session is None or _session.process.poll() is not None:
+        raise RuntimeError("session is not running")
+    timestamp = request["start_time"] if not request["host_time"] else None
+    _session.update_network_time(timestamp, request["refresh"])
+    return _json({"schema": 1, "accepted": True})
+
+
 def session_fold(request_json):
     transport = _require_session()
     request = json.loads(request_json)

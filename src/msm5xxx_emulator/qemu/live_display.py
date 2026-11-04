@@ -143,6 +143,8 @@ class LiveWindow(Window):
         menu.add_command(label=self._text("start"), command=self._restart, state="disabled" if running else "normal")
         menu.add_command(label=self._text("stop_emulator"), command=self._stop_transport, state="normal" if running else "disabled")
         menu.add_command(label=self._text("reboot_emulator"), command=self._restart, state="normal" if running else "disabled")
+        menu.add_command(label=self._text("refresh_network_time"), command=self._refresh_network_time,
+                         state="normal" if running and self._active_virtual_network else "disabled")
         menu.add_command(label=self._text("choose_firmware_menu"), command=self._choose_firmware_from_menu)
         menu.add_command(label=self._text("edit_input"), command=lambda: self._set_editing_input(True),
                          state="normal" if running else "disabled")
@@ -161,6 +163,18 @@ class LiveWindow(Window):
                           self.settings_button.winfo_rooty() + self.settings_button.winfo_height())
         finally:
             menu.grab_release()
+
+    def _refresh_network_time(self) -> None:
+        transport = self.transport
+        if transport is None or not self._active_virtual_network:
+            return
+        timestamp = None if self.network_host_time_enabled else parse_network_start_time(self.network_start_time)
+        def refresh():
+            try:
+                transport.update_network_time(timestamp, refresh=True)
+            except Exception as error:
+                self.root.after(0, lambda error=error: messagebox.showerror(self._text("settings_error"), str(error), parent=self.root))
+        threading.Thread(target=refresh, daemon=True).start()
 
     def _choose_firmware_from_menu(self) -> None:
         chosen = choose_from_library(self.root, self.library, self.ui_language)
@@ -192,8 +206,6 @@ class LiveWindow(Window):
             self.network_start_time_var.set(value)
         self.network_host_time_enabled = host
         self.network_host_time_var.set(host)
-        if self.transport is not None and self.virtual_network_enabled:
-            self._restart()
         self._save_config()
 
     def _set_persistent_state(self) -> None:

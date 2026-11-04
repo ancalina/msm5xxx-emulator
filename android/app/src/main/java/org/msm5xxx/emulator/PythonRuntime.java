@@ -131,6 +131,16 @@ final class PythonRuntime {
         }
     }
 
+    static synchronized String refreshNetworkTime(boolean hostTime, Double startTime) throws IOException {
+        try {
+            return nativeNetworkTime(new JSONObject().put("host_time", hostTime)
+                    .put("start_time", startTime == null ? JSONObject.NULL : startTime)
+                    .put("refresh", true).toString());
+        } catch (JSONException error) {
+            throw new IOException("network time request is invalid", error);
+        }
+    }
+
     static byte[] audio() {
         AUDIO_GATE.lock();
         try {
@@ -260,6 +270,7 @@ final class PythonRuntime {
     private static native byte[] nativeAudio();
     private static native byte[] nativeSecondaryFrame();
     private static native String nativeFold(String request);
+    private static native String nativeNetworkTime(String request);
     private static native String nativeStatus();
     private static native String nativeCanKey(String request);
     private static native String nativeKey(String request);

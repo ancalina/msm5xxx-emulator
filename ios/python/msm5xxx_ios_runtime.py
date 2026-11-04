@@ -209,9 +209,19 @@ def set_session_paused(request_json):
     return shared._json({"schema": 1, "paused": request["paused"]})
 
 
-def reset_session():
+def refresh_network_time(request_json):
+    return shared.refresh_network_time(request_json)
+
+
+def reset_session(request_json=None):
     if shared._session is None or _control is None or shared._session.process.poll() is not None:
         raise RuntimeError("session is not running")
+    if request_json is not None:
+        request = json.loads(request_json)
+        if request.get("enabled") and shared._session.virtual_cell_status == "configured":
+            shared.refresh_network_time(json.dumps({"host_time": request["host_time"],
+                                                    "start_time": request["start_time"],
+                                                    "refresh": False}))
     _control.command("system_reset")
     return shared._json({"schema": 1, "reset": True})
 

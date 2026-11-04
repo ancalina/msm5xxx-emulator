@@ -15,6 +15,18 @@ JAVA = (Path(__file__).parents[1]
 
 
 class AndroidFrameTransportTests(unittest.TestCase):
+    def test_network_time_passes_through_to_session(self):
+        path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
+        spec = importlib.util.spec_from_file_location('android_network_runtime', path)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        transport = runtime._session = SimpleNamespace(
+            process=SimpleNamespace(poll=lambda: None), update_network_time=mock.Mock())
+        result = runtime.refresh_network_time(json.dumps(
+            {'host_time': False, 'start_time': 1700000000, 'refresh': True}))
+        self.assertTrue(json.loads(result)['accepted'])
+        transport.update_network_time.assert_called_once_with(1700000000, True)
+
     def test_android_session_keeps_common_guest_cadence(self) -> None:
         path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
         spec = importlib.util.spec_from_file_location('android_cadence_runtime', path)

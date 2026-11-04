@@ -4712,6 +4712,7 @@ class Transport:
                  or experimental_status_level not in (0, 4, 16))):
             raise ValueError("status level requires halfword opt-in and integer 0, 4 or 16")
         self.config = config if config is not None else detect(firmware)
+        self._network_monitor = None
         self._native_nand_lock = None
         self._native_nand_listener = None
         self._native_nand_socket = None
@@ -6793,6 +6794,11 @@ class Transport:
                     "-drive", f"file={self._native_nand_working},if=none,format=raw,"
                     "id=msm5xxx-small-page-nand,cache=writeback",
                 ))
+            network_monitor_args = []
+            if self.virtual_cell_status == "configured":
+                from .network_control import NetworkMonitor
+                self._network_monitor = NetworkMonitor()
+                network_monitor_args = self._network_monitor.arguments()
             popen_options = (
                 {"pass_fds": (audio_qemu_socket.fileno(),)}
                 if audio_qemu_socket is not None else {}
@@ -6835,7 +6841,7 @@ class Transport:
                     "-chardev",
                     f"socket,id=gdb,host={gdb_host},port={gdb_port},"
                     "server=off,nodelay=on",
-                    *nand_monitor_args,
+                    *nand_monitor_args, *network_monitor_args,
                     "-nographic", "-monitor", "none", "-serial", "none",
                     "-S", "-gdb", "chardev:gdb",
                     "-icount", f"shift={icount_shift},align=on,sleep=on",
@@ -6851,6 +6857,8 @@ class Transport:
                 audio_qemu_socket.close()
                 audio_qemu_socket = None
         except Exception:
+            if self._network_monitor is not None:
+                self._network_monitor.close()
             self._discard_native_nand()
             lcd_listener.close()
             input_listener.close()
@@ -6895,6 +6903,8 @@ class Transport:
             remote.command("qSupported:qXfer:features:read+")
             if self._native_nand_listener is not None:
                 self._connect_native_nand_monitor()
+            if self._network_monitor is not None:
+                self._network_monitor.connect()
             if (self._uis_idle_addresses is None
                     and self._rex_idle_candidate_address is None):
                 if remote.command("D") != "OK":
@@ -8149,7 +8159,15 @@ class Transport:
         self.decoder.input_error = ""
         return True
 
+    def update_network_time(self, timestamp=None, refresh=False):
+        if self._network_monitor is None or self.process.poll() is not None:
+            raise RuntimeError("virtual network is not running")
+        self._network_monitor.update(timestamp, refresh)
+
     def close(self) -> None:
+        if self._network_monitor is not None:
+            self._network_monitor.close()
+            self._network_monitor = None
         self._stop_uis_idle_observer()
         self._stop_rex_idle_candidate_observer()
         if getattr(self, "_native_nand_lock", None) is not None:

@@ -1732,7 +1732,9 @@ public final class MainActivity extends Activity {
         time.add(1, 110, 1, R.string.set_time).setCheckable(true)
                 .setChecked(!prefs.getBoolean(KEY_NETWORK_HOST_TIME, true));
         time.setGroupCheckable(1, true, true);
-        menu.add(0, 111, 8, R.string.settings_menu);
+        menu.add(0, 112, 8, R.string.refresh_network_time)
+                .setEnabled(session != null && !sessionStarting && prefs.getBoolean(KEY_VIRTUAL_NETWORK, false));
+        menu.add(0, 111, 9, R.string.settings_menu);
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 101:
@@ -1757,6 +1759,15 @@ public final class MainActivity extends Activity {
                     return true;
                 case 110: showNetworkTimeDialog(); return true;
                 case 111: showSettings(); return true;
+                case 112:
+                    BackendBridge.Session current = session;
+                    boolean host = prefs.getBoolean(KEY_NETWORK_HOST_TIME, true);
+                    Double start = parseNetworkStartTime(prefs.getString(KEY_NETWORK_START_TIME, ""));
+                    controlExecutor.execute(() -> {
+                        try { if (current != null) current.refreshNetworkTime(host, start); }
+                        catch (IOException error) { android.util.Log.e("MSM5xEmu", "Network time refresh failed", error); }
+                    });
+                    return true;
                 default: return false;
             }
         });

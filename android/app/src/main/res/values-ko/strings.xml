@@ -229,4 +229,5 @@
     <string name="network_time">통신망 시간</string>
     <string name="time_device_clock">기기 시계</string>
     <string name="time_set_manually">직접 지정…</string>
+    <string name="refresh_network_time">통신망 시간 새로고침</string>
 </resources>

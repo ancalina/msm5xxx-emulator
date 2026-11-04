@@ -165,6 +165,19 @@ class IOSRuntimeTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 self.runtime.set_session_paused(invalid)
 
+    def test_network_time_reaches_transport_before_reset(self):
+        transport = self.shared._session = SimpleNamespace(
+            process=SimpleNamespace(poll=lambda: None), virtual_cell_status="configured",
+            update_network_time=Mock())
+        self.runtime._control = SimpleNamespace(command=Mock())
+        request = json.dumps({"enabled": True, "host_time": False, "start_time": 1700000000, "refresh": False})
+        self.runtime.reset_session(request)
+        transport.update_network_time.assert_called_once_with(1700000000, False)
+        self.runtime._control.command.assert_called_once_with("system_reset")
+        transport.update_network_time.reset_mock()
+        self.runtime.refresh_network_time(json.dumps({"host_time": True, "start_time": None, "refresh": True}))
+        transport.update_network_time.assert_called_once_with(None, True)
+
     def test_reset_requires_a_running_session(self):
         with self.assertRaisesRegex(RuntimeError, "session is not running"):
             self.runtime.reset_session()

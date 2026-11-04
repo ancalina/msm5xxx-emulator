@@ -253,6 +253,7 @@ final class BackendBridge {
         byte[] audio() throws IOException;
         byte[] secondaryFrame() throws IOException;
         void setFold(boolean opened) throws IOException;
+        void refreshNetworkTime(boolean hostTime, Double startTime) throws IOException;
         Status status() throws IOException;
         String identity();
         boolean supportsKey(int bit);
@@ -273,6 +274,12 @@ final class BackendBridge {
         private PythonSession(String identity, boolean[] inputBits) {
             this.identity = identity;
             this.inputBits = inputBits;
+        }
+
+        @Override
+        public synchronized void refreshNetworkTime(boolean hostTime, Double startTime) throws IOException {
+            requireOpen();
+            PythonRuntime.refreshNetworkTime(hostTime, startTime);
         }
 
         @Override
