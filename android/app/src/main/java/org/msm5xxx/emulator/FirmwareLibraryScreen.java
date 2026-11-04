@@ -183,7 +183,6 @@ final class FirmwareLibraryScreen {
                 label.setTextSize(16);
                 row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
                 row.setContentDescription(spoken);
-                row.setFocusable(true);
                 label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
                 image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
                 row.setAccessibilityDelegate(new View.AccessibilityDelegate() {
