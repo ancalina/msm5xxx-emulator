@@ -10,7 +10,10 @@ struct ContentView: View {
     @State private var jit = QEMUEngine.jitAvailable
     @State private var showingSettings = false
     @State private var showingCapture = false
+    @State private var showingTime = false
+    @State private var timeDraft = Date()
     @State private var showingSecondary = false
+    @AppStorage("secondary_above") private var secondaryAbove = false
     @State private var editingMapping = false
     @State private var mappingBit = 0
     @State private var mappingValue = ""
@@ -38,6 +41,12 @@ struct ContentView: View {
     private func text(_ english: String) -> String {
         let korean = uiLanguage == "ko" || (uiLanguage == "auto" && Locale.preferredLanguages.first?.hasPrefix("ko") == true)
         let translations = [
+            "Virtual network": "가상 통신망", "Start": "실행", "Stop emulator": "에뮬 종료",
+            "Reboot emulator": "에뮬 재부팅", "Choose firmware…": "펌웨어 선택…",
+            "Edit key input": "키 입력 편집", "Done editing": "편집 완료", "Time": "시간",
+            "Display position": "보조 화면 표시 위치", "Above": "위", "Below": "아래",
+            "Host time": "호스트 시간", "Set time…": "지정 시간…", "Settings…": "설정…",
+            "Reopen the app to start the selected firmware.": "선택한 펌웨어를 실행하려면 앱을 다시 여세요.",
             "No firmware": "펌웨어 없음", "Phone display": "휴대전화 화면",
             "Close fold": "폴더 닫기", "Open fold": "폴더 열기",
             "Choose firmware": "펌웨어 선택", "Settings": "설정", "Capture": "화면 캡처",
@@ -71,6 +80,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 2) {
+            if secondaryAbove { secondaryDisplay }
             ZStack {
                 Color.black
                 if let frame = engine.frame {
@@ -82,17 +92,7 @@ struct ContentView: View {
             }
             .frame(maxHeight: .infinity)
             .accessibilityLabel(text("Phone display"))
-            if showingSecondary && engine.secondaryAvailable {
-                VStack {
-                    if let frame = engine.secondaryFrame {
-                        Image(decorative: frame, scale: 1).resizable().interpolation(.none)
-                            .aspectRatio(contentMode: .fit).frame(height: 90)
-                    }
-                    if engine.secondaryPreview {
-                        Text(text("Preview: colors and orientation unverified")).font(.caption)
-                    }
-                }.foregroundColor(.white)
-            }
+            if !secondaryAbove { secondaryDisplay }
 
             GeometryReader { geometry in
                 HStack(spacing: 2) {
@@ -109,30 +109,50 @@ struct ContentView: View {
                         }
                         .font(.system(size: 10)).foregroundColor(.white).lineLimit(3)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        Menu {
-                            // QEMU runs once per app process; after Stop, picks and settings apply on relaunch.
-                            Button(text("Choose firmware")) { importing = true }.disabled(engine.running)
-                            Button(text("Settings")) { showingSettings = true }
-                            Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
-                            Button(text("Additional display")) { showingSecondary.toggle() }
-                                .disabled(!engine.secondaryAvailable)
-                            Button(text(editingMapping ? "Finish mapping" : "Edit input mapping")) {
-                                editingMapping.toggle()
-                            }.disabled(!engine.running)
-                            if engine.running {
-                                Button(text("Stop")) { engine.stop() }
-                            } else if engine.used {
-                                Button(text("Relaunch app to run again")) {}.disabled(true)
-                            } else {
-                                Button(text("Run")) { run() }.disabled(firmware == nil)
+                        if editingMapping {
+                            Button(text("Done editing")) { editingMapping = false }
+                                .frame(maxWidth: .infinity).frame(height: 40)
+                        } else {
+                            Menu {
+                                Button {
+                                    virtualNetwork.toggle()
+                                    restartOnNextLaunchIfRunning()
+                                } label: {
+                                    if virtualNetwork { Label(text("Virtual network"), systemImage: "checkmark") }
+                                    else { Text(text("Virtual network")) }
+                                }
+                                Button(text("Start")) { run() }.disabled(engine.running || engine.used || firmware == nil)
+                                Button(text("Stop emulator")) { engine.stop() }.disabled(!engine.running)
+                                Button(text("Reboot emulator")) { restartOnNextLaunchIfRunning() }.disabled(!engine.running)
+                                Button(text("Choose firmware…")) { importing = true }
+                                Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
+                                Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)
+                                Menu(text("Time")) {
+                                    Button {
+                                        networkHostTime = true
+                                        networkStartTimeEnabled = false
+                                        if virtualNetwork { restartOnNextLaunchIfRunning() }
+                                    } label: {
+                                        if networkHostTime { Label(text("Host time"), systemImage: "checkmark") }
+                                        else { Text(text("Host time")) }
+                                    }
+                                    Button {
+                                        timeDraft = Date(timeIntervalSince1970: networkStartTime)
+                                        showingTime = true
+                                    } label: {
+                                        if !networkHostTime { Label(text("Set time…"), systemImage: "checkmark") }
+                                        else { Text(text("Set time…")) }
+                                    }
+                                }
+                                Button(text("Settings…")) { showingSettings = true }
+                            } label: {
+                                Text("•••").font(.title2).foregroundColor(.white)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .background(Color(white: 0.33)).cornerRadius(4)
                             }
-                        } label: {
-                            Text("⋮").font(.title2).foregroundColor(.white)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .background(Color(white: 0.33)).cornerRadius(4)
+                            .frame(height: 40)
+                            .accessibilityLabel(text("More actions"))
                         }
-                        .frame(height: 40)
-                        .accessibilityLabel(text("More actions"))
                     }
                     .frame(width: geometry.size.width / 3)
                     VStack(spacing: 2) {
@@ -169,6 +189,24 @@ struct ContentView: View {
                 NSLog("MSM5xEmu JIT %@ (cs flags 0x%08x)", now ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
             }
         }
+        .sheet(isPresented: $showingTime) {
+            NavigationView {
+                Form {
+                    DatePicker(text("Set time…"), selection: $timeDraft,
+                        in: Date(timeIntervalSince1970: 315964800)...Date(timeIntervalSince1970: 5813520000),
+                        displayedComponents: [.date, .hourAndMinute])
+                }.navigationTitle(text("Time"))
+                    .toolbar {
+                        Button(text("Save")) {
+                            networkStartTime = timeDraft.timeIntervalSince1970
+                            networkHostTime = false
+                            networkStartTimeEnabled = true
+                            showingTime = false
+                            if virtualNetwork { restartOnNextLaunchIfRunning() }
+                        }
+                    }
+            }
+        }
         .sheet(isPresented: $showingMapping) {
             NavigationView {
                 Form {
@@ -197,27 +235,18 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) {
             NavigationView {
                 Form {
-                    Button(text("Choose firmware")) {
-                        showingSettings = false
-                        importing = true
-                    }.disabled(engine.running || engine.used)
                     Toggle(text("Persistent device state"), isOn: $persistentState)
-                    Toggle(text("Virtual network (calls unavailable)"), isOn: $virtualNetwork)
-                    Toggle(text("Use device clock for network time"), isOn: $networkHostTime)
-                    Toggle(text("Network start time"), isOn: $networkStartTimeEnabled)
-                    if networkStartTimeEnabled {
-                        DatePicker(text("Network start time"), selection: Binding(
-                            get: { Date(timeIntervalSince1970: networkStartTime) },
-                            set: { networkStartTime = $0.timeIntervalSince1970 }),
-                            in: Date(timeIntervalSince1970: 315964800)...Date(timeIntervalSince1970: 5813520000),
-                            displayedComponents: [.date, .hourAndMinute])
-                    }
                     Picker(text("UI language"), selection: $uiLanguage) {
                         Text(text("Auto (System)")).tag("auto")
                         Text("한국어").tag("ko")
                         Text("English").tag("en")
                     }
-                    Button(text("Reboot unavailable — relaunch the app")) {}.disabled(true)
+                    Toggle(text("Additional display"), isOn: $showingSecondary)
+                        .disabled(!engine.secondaryAvailable)
+                    Picker(text("Display position"), selection: $secondaryAbove) {
+                        Text(text("Above")).tag(true)
+                        Text(text("Below")).tag(false)
+                    }
                     NavigationLink(text("More…")) {
                         Form {
                             Toggle(text("Experimental static REX controller"), isOn: $experimentalRex)
@@ -245,6 +274,20 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder private var secondaryDisplay: some View {
+        if showingSecondary && engine.secondaryAvailable {
+            VStack {
+                if let frame = engine.secondaryFrame {
+                    Image(decorative: frame, scale: 1).resizable().interpolation(.none)
+                        .aspectRatio(contentMode: .fit).frame(height: 90)
+                }
+                if engine.secondaryPreview {
+                    Text(text("Preview: colors and orientation unverified")).font(.caption)
+                }
+            }.foregroundColor(.white)
+        }
+    }
+
     private static func parseEventCode(_ source: String) -> Int? {
         var value = source.lowercased()
         if value.isEmpty { return nil }
@@ -264,6 +307,13 @@ struct ContentView: View {
         guard let number = Int(value.replacingOccurrences(of: "_", with: ""), radix: radix) else { return nil }
         let result = number * sign
         return (0...255).contains(result) ? result : nil
+    }
+
+    private func restartOnNextLaunchIfRunning() {
+        guard engine.running else { return }
+        UserDefaults.standard.set(true, forKey: "pending_boot")
+        engine.stop()
+        message = text("Reopen the app to start the selected firmware.")
     }
 
     private func run() {
@@ -298,7 +348,10 @@ struct ContentView: View {
               let name = names.filter({ !$0.hasPrefix(".") }).sorted().first else { return }
         firmware = support.appendingPathComponent("firmware").appendingPathComponent(name)
         loadDetailedSettings()
-        if FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
+        if UserDefaults.standard.bool(forKey: "pending_boot") {
+            UserDefaults.standard.removeObject(forKey: "pending_boot")
+            run()
+        } else if FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path) {
             NSLog("MSM5xEmu autorun %@", name)
             run()
         }
@@ -329,6 +382,8 @@ struct ContentView: View {
                 .appendingPathComponent("firmware", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let target = dir.appendingPathComponent(url.lastPathComponent)
+            // Stop the active session before replacing its selected image.
+            if engine.running { restartOnNextLaunchIfRunning() }
             // Keep one image so the next launch reuses exactly this pick.
             for old in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
                 try? FileManager.default.removeItem(at: old)
@@ -336,7 +391,13 @@ struct ContentView: View {
             try FileManager.default.copyItem(at: url, to: target)
             firmware = target
             loadDetailedSettings()
-            message = "Imported \(target.lastPathComponent)"
+            if engine.used {
+                UserDefaults.standard.set(true, forKey: "pending_boot")
+                message = text("Reopen the app to start the selected firmware.")
+            } else {
+                run()
+            }
+            if !engine.used { message = "Imported \(target.lastPathComponent)" }
         } catch {
             message = error.localizedDescription
         }

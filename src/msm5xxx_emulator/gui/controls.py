@@ -268,7 +268,7 @@ class ControlsMixin:
         self.root.title(self._text("window_title"))
         for key, button in self.key_buttons.items():
             button.configure(text=self._key_text(key))
-        self.settings_button.configure(text=self._text("settings"))
+        self.settings_button.configure(text=self._text("done_editing" if getattr(self, "editing_input_mapping", False) else "more"))
         self.capture_button.configure(text=self._text("capture"))
         for key, label in self.metric_titles.items():
             label.configure(text=METRIC_TEXT[self.ui_language][key][0])
@@ -287,6 +287,8 @@ class ControlsMixin:
         self.root.bind("<FocusOut>", self._release_all)
 
     def _keyboard_event(self, event: tk.Event, pressed: bool) -> None:
+        if getattr(self, "editing_input_mapping", False):
+            return
         source = f"key:{event.keycode}"
         if not pressed and source in self.keyboard_bits:
             self._keyboard_release(source, self.keyboard_bits[source])
@@ -368,6 +370,8 @@ class ControlsMixin:
         return emulator is not None and emulator.can_set_key(bit, event_code)
 
     def _mouse_key_press(self, label: str) -> str:
+        if getattr(self, "editing_input_mapping", False):
+            return self._edit_key_mapping(label)
         bit = KEYS[label]
         event_code = self._manual_key_event(bit)
         if not self._key_supported(bit, event_code):
@@ -377,6 +381,8 @@ class ControlsMixin:
         return "break"
 
     def _mouse_key_release(self, label: str) -> str:
+        if getattr(self, "editing_input_mapping", False):
+            return "break"
         bit = KEYS[label]
         self._key(bit, False, f"mouse:{bit}")
         return "break"
@@ -458,15 +464,7 @@ class ControlsMixin:
         if bit in self.held:
             return "break"
         current = self._manual_key_event(bit)
-        prompt = (
-            "검출된 physical input event byte 입력 (예: 0x53 또는 053).\n"
-            "펌웨어의 고유 matrix/sideband producer만 사용합니다.\n"
-            "빈 값은 수동 매핑 삭제."
-            if self.ui_language == "ko" else
-            "Enter detected physical input event byte (example: 0x53 or 053).\n"
-            "Only a unique firmware matrix/sideband producer is used.\n"
-            "Leave empty to remove manual mapping."
-        )
+        prompt = self._text("key_prompt")
         value = simpledialog.askstring(
             self._key_text(label), prompt, parent=self.root,
             initialvalue=(f"0x{current:02X}" if current is not None else ""),
@@ -508,7 +506,7 @@ class ControlsMixin:
         return "break"
 
     def _settings(self) -> None:
-        if self.emulator is None:
+        if self.emulator is None and not hasattr(self, "_last_detected_config"):
             # Detection already runs in the worker.  Running it here freezes Tk
             # for multi-second firmware scans before the dialog can appear.
             self._settings_requested = True
@@ -518,7 +516,7 @@ class ControlsMixin:
         dialog = tk.Toplevel(self.root)
         dialog.title(self._text("settings"))
         dialog.transient(self.root)
-        detected = self.emulator.config
+        detected = self.emulator.config if self.emulator is not None else self._last_detected_config
 
         values = settings_values(self.firmware, detected, self.overrides)
         language_labels = {
@@ -534,7 +532,6 @@ class ControlsMixin:
         main_page = ttk.Frame(notebook, padding=10)
         notebook.add(main_page, text=self._text("settings"))
         firmware_frame = ttk.Frame(main_page)
-        firmware_frame.pack(fill="x")
         details = ttk.Notebook(notebook)
         notebook.add(details, text=self._text("more"))
         entries: dict[str, ttk.Entry | ttk.Combobox] = {}
@@ -596,13 +593,9 @@ class ControlsMixin:
                                command=choose_firmware).grid(
                         row=row, column=2, sticky="e", padx=(8, 0), pady=2)
 
-        ttk.Label(firmware_frame, text=self._text("choose_firmware")).pack(side="left")
         firmware_entry = ttk.Entry(firmware_frame, width=35)
         firmware_entry.insert(0, values["firmware"])
-        firmware_entry.pack(side="left", fill="x", expand=True, padx=8)
         entries["firmware"] = firmware_entry
-        ttk.Button(firmware_frame, text=self._text("choose_file"),
-                   command=choose_firmware).pack(side="left")
         if hasattr(self, "_settings_main_controls"):
             self._settings_main_controls(main_page)
         language_frame = ttk.Frame(main_page, padding=(0, 10, 0, 0))
@@ -611,8 +604,6 @@ class ControlsMixin:
         ttk.Combobox(language_frame, textvariable=language_choice,
                      values=tuple(language_labels.values()), state="readonly",
                      width=20).pack(side="right")
-        if hasattr(self, "_settings_main_controls"):
-            ttk.Button(main_page, text=self._text("reboot"), command=self._restart).pack(anchor="w", pady=4)
 
         def apply() -> None:
             try:

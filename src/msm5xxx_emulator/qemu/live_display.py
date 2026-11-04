@@ -9,7 +9,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageTk
 
 
@@ -61,6 +61,8 @@ class LiveWindow(Window):
 
     def _build(self) -> None:
         super()._build()
+        self.editing_input_mapping = False
+        self.settings_button.configure(text=self._text("more"), command=self._show_more)
         self.fold_button = ttk.Button(
             self.controls, text="Fold: unavailable",
             command=self._toggle_fold, state="disabled",
@@ -101,17 +103,85 @@ class LiveWindow(Window):
         ttk.Checkbutton(page, text=self._text("persistent_state"),
                         variable=self.persistent_state_var,
                         command=self._set_persistent_state).pack(anchor="w")
-        ttk.Checkbutton(page, text=self._text("virtual_network"),
-                        variable=self.virtual_network_var,
-                        command=self._set_virtual_network).pack(anchor="w")
-        ttk.Checkbutton(page, text=self._text("network_host_time"),
-                        variable=self.network_host_time_var,
-                        command=self._set_network_host_time).pack(anchor="w")
-        ttk.Label(page, text=self._text("network_start_time")).pack(anchor="w")
-        entry = ttk.Entry(page, textvariable=self.network_start_time_var)
-        entry.pack(fill="x")
-        entry.bind("<Return>", self._set_network_start_time)
-        entry.bind("<FocusOut>", self._set_network_start_time)
+        ttk.Button(page, text=self._text("additional_display"),
+                   command=self._show_secondary_display).pack(anchor="w", pady=4)
+        position = ttk.Frame(page)
+        position.pack(anchor="w")
+        ttk.Label(position, text=self._text("display_position")).pack(side="left")
+        for side in ("left", "right"):
+            ttk.Button(position, text=self._text("display_" + side),
+                       command=lambda value=side: self._position_secondary(value)).pack(side="left")
+
+    def _set_editing_input(self, enabled: bool) -> None:
+        if enabled:
+            self._release_all()
+            for bit in tuple(self.held):
+                self._key(bit, False, f"mouse:{bit}")
+        self.editing_input_mapping = enabled
+        self.settings_button.configure(text=self._text("done_editing" if enabled else "more"))
+
+    def _show_more(self) -> None:
+        if self.editing_input_mapping:
+            self._set_editing_input(False)
+            return
+        running = self.transport is not None
+        if hasattr(self, "_more_menu"):
+            self._more_menu.destroy()
+        menu = tk.Menu(self.root, tearoff=False)
+        menu.add_checkbutton(label=self._text("virtual_network_menu"), variable=self.virtual_network_var,
+                             command=self._set_virtual_network)
+        menu.add_command(label=self._text("start"), command=self._restart, state="disabled" if running else "normal")
+        menu.add_command(label=self._text("stop_emulator"), command=self._stop_transport, state="normal" if running else "disabled")
+        menu.add_command(label=self._text("reboot_emulator"), command=self._restart, state="normal" if running else "disabled")
+        menu.add_command(label=self._text("choose_firmware_menu"), command=self._choose_firmware_from_menu)
+        menu.add_command(label=self._text("edit_input"), command=lambda: self._set_editing_input(True),
+                         state="normal" if running else "disabled")
+        time_menu = tk.Menu(menu, tearoff=False)
+        mode = tk.StringVar(master=self.root, value="host" if self.network_host_time_enabled else "fixed")
+        self._more_time_var = mode
+        time_menu.add_radiobutton(label=self._text("host_time"), variable=mode, value="host",
+                                  command=lambda: self._choose_network_time(True))
+        time_menu.add_radiobutton(label=self._text("set_time"), variable=mode, value="fixed",
+                                  command=lambda: self._choose_network_time(False))
+        menu.add_cascade(label=self._text("time"), menu=time_menu)
+        menu.add_command(label=self._text("settings") + "…", command=self._settings)
+        self._more_menu = menu
+        try:
+            menu.tk_popup(self.settings_button.winfo_rootx(),
+                          self.settings_button.winfo_rooty() + self.settings_button.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def _choose_firmware_from_menu(self) -> None:
+        chosen = filedialog.askopenfilename(parent=self.root, title=self._text("choose_firmware_menu"),
+                                            filetypes=(("Firmware", "*.bin *.dump *.img *.mbn *.hex *.hxb"), ("All", "*")))
+        if chosen:
+            self.firmware = Path(chosen)
+            self.overrides = self._load_config()
+            self._restart()
+
+    def _choose_network_time(self, host: bool) -> None:
+        if host:
+            self.network_start_time = ""
+            self.network_start_time_var.set("")
+        else:
+            value = simpledialog.askstring(self._text("set_time"), "YYYY-MM-DD HH:MM",
+                                           parent=self.root, initialvalue=self.network_start_time)
+            if value is None:
+                return
+            try:
+                if parse_network_start_time(value) is None:
+                    raise ValueError("empty time")
+            except (ValueError, OverflowError, OSError):
+                messagebox.showerror(self._text("settings_error"), self._text("network_time_error"), parent=self.root)
+                return
+            self.network_start_time = value
+            self.network_start_time_var.set(value)
+        self.network_host_time_enabled = host
+        self.network_host_time_var.set(host)
+        if self.transport is not None and self.virtual_network_enabled:
+            self._restart()
+        self._save_config()
 
     def _set_persistent_state(self) -> None:
         old = self.persistent_state_enabled
@@ -123,7 +193,7 @@ class LiveWindow(Window):
             self.persistent_state_var.set(old)
             messagebox.showerror(self._text("settings_save_error"), str(error), parent=self.root)
             return
-        if old != self.persistent_state_enabled:
+        if old != self.persistent_state_enabled and self.transport is not None:
             self._restart()
 
     def _set_virtual_network(self, key: str = "virtual_network") -> None:
@@ -134,7 +204,7 @@ class LiveWindow(Window):
         setattr(self, key + "_enabled", requested)
         try:
             # The clock source only matters while the virtual network is on.
-            if key == "virtual_network" or self.virtual_network_enabled:
+            if self.transport is not None and (key == "virtual_network" or self.virtual_network_enabled):
                 self._restart()
         finally:
             variable.set(getattr(self, key + "_enabled"))
@@ -178,6 +248,16 @@ class LiveWindow(Window):
             self.display_menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.display_menu.grab_release()
+
+    def _position_secondary(self, side: str) -> None:
+        self.secondary_window.update_idletasks()
+        x = (self.root.winfo_x() - self.secondary_window.winfo_reqwidth() - 12
+             if side == "left" else self.root.winfo_x() + self.root.winfo_width() + 12)
+        x = max(0, min(x, self.root.winfo_screenwidth() - self.secondary_window.winfo_reqwidth()))
+        y = max(0, min(self.root.winfo_y(),
+                       self.root.winfo_screenheight() - self.secondary_window.winfo_reqheight()))
+        self.secondary_window.geometry(f"+{x}+{y}")
+        self._show_secondary_display()
 
     def _show_secondary_display(self) -> None:
         if self._secondary_cache is not None:
@@ -354,6 +434,7 @@ class LiveWindow(Window):
             overrides: dict[str, object]) -> None:
         self.transport = transport
         self.emulator = transport.decoder
+        self._last_detected_config = transport.config
         self.firmware = firmware
         self.overrides = dict(overrides)
         self._active_firmware = firmware

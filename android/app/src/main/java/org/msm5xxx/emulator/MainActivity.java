@@ -69,14 +69,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class MainActivity extends Activity {
     private static final int PICK_FIRMWARE = 1;
-    private static final int MORE_CHOOSE = 1;
-    private static final int MORE_SETTINGS = 2;
-    private static final int MORE_RUN_STOP = 3;
-    private static final int MORE_EDIT_MAPPING = 4;
-    private static final int MORE_REBOOT = 5;
-    private static final int MORE_SECONDARY = 6;
-    private static final int MORE_FOLD = 7;
-    private static final int MORE_SECONDARY_DESTINATION = 8;
     private static final String PREFS = "launcher";
     private static final String KEY_URI = "uri";
     private static final String KEY_NAME = "name";
@@ -743,7 +735,7 @@ public final class MainActivity extends Activity {
     }
 
     private void preparePrivateCopy(Selection selection) {
-        if (session != null) {
+        if (session != null || sessionStarting) {
             stopSession(true);
         }
         clearError();
@@ -1674,75 +1666,79 @@ public final class MainActivity extends Activity {
             setInputMappingEditing(false);
             return;
         }
-        boolean busy = session != null || sessionStarting;
+        MenuSessionState actions = new MenuSessionState(session != null, sessionStarting, canStartSession);
+        SharedPreferences prefs = preferences();
         PopupMenu popup = new PopupMenu(this, moreButton);
-        popup.getMenu().add(0, MORE_CHOOSE, 0, R.string.choose)
-                .setEnabled(!busy);
-        popup.getMenu().add(0, 1001, 1, R.string.capture).setEnabled(frameView.bitmap != null);
-        popup.getMenu().add(0, MORE_SETTINGS, 1, R.string.settings);
-        popup.getMenu().add(0, MORE_EDIT_MAPPING, 2,
-                R.string.edit_input_mapping).setEnabled(
-                        session != null && !sessionStarting);
-        popup.getMenu().add(0, MORE_RUN_STOP, 3,
-                busy ? R.string.stop : R.string.start)
-                .setEnabled(busy || canStartSession);
-        popup.getMenu().add(0, MORE_REBOOT, 4, R.string.reboot)
-                .setEnabled(session != null && !sessionStarting);
-        popup.getMenu().add(0, MORE_SECONDARY, 5, R.string.additional_display)
-                .setEnabled(latestStatus != null && latestStatus.secondaryAvailable)
-                .setCheckable(true).setChecked(!secondaryHidden);
-        popup.getMenu().add(0, MORE_FOLD, 6,
-                latestStatus != null && latestStatus.foldOpen
-                ? R.string.fold_close : R.string.fold_open)
-                .setEnabled(latestStatus != null && latestStatus.foldSupported);
-        popup.getMenu().add(0, MORE_SECONDARY_DESTINATION, 7,
-                R.string.display_destination);
+        android.view.Menu menu = popup.getMenu();
+        menu.add(0, 101, 0, R.string.virtual_network_menu).setCheckable(true)
+                .setChecked(prefs.getBoolean(KEY_VIRTUAL_NETWORK, false));
+        menu.add(0, 102, 1, R.string.start).setEnabled(actions.start);
+        menu.add(0, 103, 2, R.string.stop_emulator).setEnabled(actions.stop);
+        menu.add(0, 104, 3, R.string.reboot_emulator).setEnabled(actions.reboot);
+        menu.add(0, 105, 4, R.string.choose_firmware_menu);
+        menu.add(0, 106, 5, R.string.capture).setEnabled(frameView.bitmap != null);
+        menu.add(0, 107, 6, R.string.edit_key_input).setEnabled(session != null && !sessionStarting);
+        android.view.SubMenu time = menu.addSubMenu(0, 108, 7, R.string.time_menu);
+        time.add(1, 109, 0, R.string.host_time).setCheckable(true)
+                .setChecked(prefs.getBoolean(KEY_NETWORK_HOST_TIME, true));
+        time.add(1, 110, 1, R.string.set_time).setCheckable(true)
+                .setChecked(!prefs.getBoolean(KEY_NETWORK_HOST_TIME, true));
+        time.setGroupCheckable(1, true, true);
+        menu.add(0, 111, 8, R.string.settings_menu);
         popup.setOnMenuItemClickListener(item -> {
-            if (item.getItemId() == 1001) {
-                saveCapture();
-                return true;
+            switch (item.getItemId()) {
+                case 101:
+                    prefs.edit().putBoolean(KEY_VIRTUAL_NETWORK,
+                            !prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)).apply();
+                    restartIfRunning(); return true;
+                case 102: startSession(); return true;
+                case 103: stopSession(true); return true;
+                case 104: stopSession(false); startSession(); return true;
+                case 105: chooseFirmware(); return true;
+                case 106: saveCapture(); return true;
+                case 107: setInputMappingEditing(true); return true;
+                case 109:
+                    prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, true).putString(KEY_NETWORK_START_TIME, "").apply();
+                    if (prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
+                    return true;
+                case 110: showNetworkTimeDialog(); return true;
+                case 111: showSettings(); return true;
+                default: return false;
             }
-            if (item.getItemId() == MORE_REBOOT) {
-                stopSession(false);
-                startSession();
-                return true;
-            }
-            if (item.getItemId() == MORE_SECONDARY) {
-                secondaryHidden = !secondaryHidden;
-                updateSecondaryPresentation();
-                return true;
-            }
-            if (item.getItemId() == MORE_SECONDARY_DESTINATION) {
-                chooseSecondaryDestination();
-                return true;
-            }
-            if (item.getItemId() == MORE_FOLD) {
-                toggleFold();
-                return true;
-            }
-            if (item.getItemId() == MORE_CHOOSE) {
-                chooseFirmware();
-                return true;
-            }
-            if (item.getItemId() == MORE_SETTINGS) {
-                showSettings();
-                return true;
-            }
-            if (item.getItemId() == MORE_EDIT_MAPPING) {
-                setInputMappingEditing(true);
-                return true;
-            }
-            if (item.getItemId() == MORE_RUN_STOP) {
-                if (session != null || sessionStarting) {
-                    stopSession(true);
-                } else {
-                    startSession();
-                }
-                return true;
-            }
-            return false;
         });
         popup.show();
+    }
+
+    private void restartIfRunning() {
+        if (session != null && !sessionStarting) {
+            stopSession(false);
+            startSession();
+        }
+    }
+
+    private void showNetworkTimeDialog() {
+        SharedPreferences prefs = preferences();
+        EditText entry = new EditText(this);
+        entry.setSingleLine(true);
+        entry.setHint("YYYY-MM-DD HH:MM");
+        entry.setText(prefs.getString(KEY_NETWORK_START_TIME, ""));
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.set_time)
+                .setView(entry).setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.save, null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String value = entry.getText().toString();
+            try {
+                if (parseNetworkStartTime(value) == null) throw new IllegalArgumentException();
+            } catch (IllegalArgumentException error) {
+                entry.setError(getString(R.string.network_time_error));
+                return;
+            }
+            prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, false)
+                    .putString(KEY_NETWORK_START_TIME, value).apply();
+            dialog.dismiss();
+            if (prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
+        }));
+        dialog.show();
     }
 
     private void setInputMappingEditing(boolean enabled) {
@@ -1857,24 +1853,7 @@ public final class MainActivity extends Activity {
         experimental.setText(R.string.experimental_rex);
         experimental.setChecked(preferences.getBoolean(
                 KEY_EXPERIMENTAL_REX, false));
-        Switch virtualNetwork = new Switch(this);
-        virtualNetwork.setText(R.string.virtual_network);
-        virtualNetwork.setChecked(preferences.getBoolean(
-                KEY_VIRTUAL_NETWORK, false));
-        Switch networkHostTime = new Switch(this);
-        networkHostTime.setText(R.string.network_host_time);
-        networkHostTime.setChecked(preferences.getBoolean(KEY_NETWORK_HOST_TIME, true));
-        android.widget.EditText networkStartTime = new android.widget.EditText(this);
-        networkStartTime.setSingleLine(true);
-        networkStartTime.setHint(R.string.network_start_time);
-        networkStartTime.setText(preferences.getString(KEY_NETWORK_START_TIME, ""));
-        Button choose = compactButton(R.string.choose, view -> chooseFirmware());
-        choose.setEnabled(session == null && !sessionStarting);
-        body.addView(choose, matchWidth());
         body.addView(persistent, matchWidth());
-        body.addView(virtualNetwork, matchWidth());
-        body.addView(networkHostTime, matchWidth());
-        body.addView(networkStartTime, matchWidth());
         TextView languageTitle = text(getString(R.string.ui_language), 14);
         body.addView(languageTitle, matchWidth());
         android.widget.Spinner language = new android.widget.Spinner(this);
@@ -1884,16 +1863,29 @@ public final class MainActivity extends Activity {
         String selectedLanguage = preferences.getString("ui_language", "auto");
         language.setSelection("ko".equals(selectedLanguage) ? 1 : "en".equals(selectedLanguage) ? 2 : 0);
         body.addView(language, matchWidth());
-        Button reboot = compactButton(R.string.reboot, view -> {});
-        reboot.setEnabled(session != null && !sessionStarting);
-        body.addView(reboot, matchWidth());
+        Switch secondary = new Switch(this);
+        secondary.setText(R.string.additional_display);
+        secondary.setChecked(!secondaryHidden);
+        secondary.setEnabled(latestStatus != null && latestStatus.secondaryAvailable);
+        secondary.setOnCheckedChangeListener((button, checked) -> {
+            secondaryHidden = !checked;
+            updateSecondaryPresentation();
+        });
+        body.addView(secondary, matchWidth());
+        Button destination = new Button(this);
+        destination.setText(R.string.display_destination);
+        destination.setMinHeight(dp(48));
+        destination.setOnClickListener(view -> chooseSecondaryDestination());
+        body.addView(destination, matchWidth());
         String identity = null;
         try { identity = new JSONObject(preferences.getString(KEY_PROFILE, "{}"))
                     .getJSONObject("firmware").getString("sha256"); }
         catch (JSONException ignored) { }
         final String settingsIdentity = identity;
-        Button moreSettings = compactButton(R.string.more_settings,
-                view -> showDetailedSettings(settingsIdentity, experimental));
+        Button moreSettings = new Button(this);
+        moreSettings.setText(R.string.more_settings);
+        moreSettings.setMinHeight(dp(48));
+        moreSettings.setOnClickListener(view -> showDetailedSettings(settingsIdentity, experimental));
         moreSettings.setEnabled(settingsIdentity != null);
         body.addView(moreSettings, matchWidth());
         android.widget.ScrollView settingsScroll = new android.widget.ScrollView(this);
@@ -1904,26 +1896,18 @@ public final class MainActivity extends Activity {
                 .setNegativeButton(R.string.cancel, null)
                 .setPositiveButton(R.string.save, null)
                 .create();
-        choose.setOnClickListener(view -> { dialog.dismiss(); chooseFirmware(); });
-        reboot.setOnClickListener(view -> { dialog.dismiss(); stopSession(false); startSession(); });
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            String value = networkStartTime.getText().toString();
-            try {
-                parseNetworkStartTime(value);
-            } catch (IllegalArgumentException error) {
-                networkStartTime.setError(getString(R.string.network_time_error));
-                return;
-            }
             String newLanguage = languageValues[language.getSelectedItemPosition()];
             preferences.edit().putString("ui_language", newLanguage).putBoolean(KEY_PERSISTENT_STATE, persistent.isChecked())
-                    .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked())
-                    .putBoolean(KEY_VIRTUAL_NETWORK, virtualNetwork.isChecked())
-                    .putBoolean(KEY_NETWORK_HOST_TIME, networkHostTime.isChecked())
-                    .putString(KEY_NETWORK_START_TIME, value).apply();
+                    .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked()).apply();
             dialog.dismiss();
             if (!newLanguage.equals(selectedLanguage)) recreate();
         }));
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT);
+        }
     }
 
     private void updateSessionControls(boolean canStart) {

@@ -5,7 +5,7 @@
     <string name="settings">설정</string>
     <string name="start">실행</string>
     <string name="stop">중지</string>
-    <string name="more">⋮</string>
+    <string name="more">•••</string>
     <string name="more_actions">더보기</string>
     <string name="edit_input_mapping">입력 매핑 편집</string>
     <string name="done_editing">편집 완료</string>
@@ -165,4 +165,13 @@
         <item>NAND block당 pages</item>
         <item>NAND bus bytes</item>
     </string-array>
+    <string name="virtual_network_menu">가상 통신망</string>
+    <string name="stop_emulator">에뮬 종료</string>
+    <string name="reboot_emulator">에뮬 재부팅</string>
+    <string name="choose_firmware_menu">펌웨어 선택…</string>
+    <string name="edit_key_input">키 입력 편집</string>
+    <string name="time_menu">시간</string>
+    <string name="host_time">호스트 시간</string>
+    <string name="set_time">지정 시간…</string>
+    <string name="settings_menu">설정…</string>
 </resources>
