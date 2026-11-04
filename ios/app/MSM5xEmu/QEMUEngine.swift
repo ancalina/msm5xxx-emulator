@@ -190,7 +190,7 @@ final class QEMUEngine: ObservableObject {
                     self.audioPolling = true
                     self.pollAudio()
                 }
-                if !self.sceneActive { self.setSceneActive(false) }
+                if !self.sceneActive { try self.applySceneActive(false) }
                 DispatchQueue.main.async {
                     self.starting = false
                     self.running = true
@@ -255,6 +255,21 @@ final class QEMUEngine: ObservableObject {
         }
     }
 
+    func reboot() {
+        guard running else { return }
+        queue.async {
+            do {
+                _ = try PythonBridge.call("reset_session", argument: nil)
+                DispatchQueue.main.async {
+                    self.frame = nil
+                    self.secondaryFrame = nil
+                }
+            } catch {
+                self.failSession(error, message: "Unable to reboot. Force-close and reopen the app to try again.")
+            }
+        }
+    }
+
     func stop(completion: ((Bool) -> Void)? = nil) {
         guard running else { completion?(false); return }
         running = false
@@ -280,27 +295,31 @@ final class QEMUEngine: ObservableObject {
 
     func setSceneActive(_ active: Bool) {
         queue.async {
-            self.sceneActive = active
-            guard self.sessionStarted, self.monitorPaused == active else { return }
             do {
-                if !active {
-                    self.audioGeneration += 1
-                    self.audioSink?.pauseOutput()
-                }
-                let request = active ? "{\"paused\":false}" : "{\"paused\":true}"
-                _ = try PythonBridge.call("set_session_paused", argument: request)
-                self.monitorPaused = !active
-                NSLog("MSM5xEmu %@", active ? "resumed" : "paused")
-                if active {
-                    if !self.audioInterrupted { self.audioSink?.resumeOutput() }
-                    self.audioGeneration += 1
-                    self.pollAudio(generation: self.audioGeneration)
-                }
-                DispatchQueue.main.async { self.paused = !active }
+                try self.applySceneActive(active)
             } catch {
                 self.failSession(error, message: "Unable to pause or resume. Force-close and reopen the app to try again.")
             }
         }
+    }
+
+    private func applySceneActive(_ active: Bool) throws {
+        sceneActive = active
+        guard sessionStarted, monitorPaused == active else { return }
+        if !active {
+            audioGeneration += 1
+            audioSink?.pauseOutput()
+        }
+        let request = active ? "{\"paused\":false}" : "{\"paused\":true}"
+        _ = try PythonBridge.call("set_session_paused", argument: request)
+        monitorPaused = !active
+        NSLog("MSM5xEmu %@", active ? "resumed" : "paused")
+        if active {
+            if !audioInterrupted { audioSink?.resumeOutput() }
+            audioGeneration += 1
+            pollAudio(generation: audioGeneration)
+        }
+        DispatchQueue.main.async { self.paused = !active }
     }
 
     func setAudioInterrupted(_ interrupted: Bool) {
@@ -478,6 +497,7 @@ private final class MSM5xxxAudioSink {
     private var sequence: UInt64 = 0
     private var nextFrame: UInt64 = 0
     private var closed = false
+    private var suspended = false
     private var completedFrames: UInt64 = 0
 
     var consumedFrames: UInt64 {
@@ -504,19 +524,25 @@ private final class MSM5xxxAudioSink {
     }
 
     func pauseOutput() {
+        lock.lock()
+        suspended = true
         player.pause()
         engine.pause()
+        lock.unlock()
     }
 
     func resumeOutput() {
+        lock.lock()
+        defer { lock.unlock() }
         guard !closed else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
             try engine.start()
-            lock.lock()
-            let shouldPlay = playing && pendingFrames > 0
-            lock.unlock()
-            if shouldPlay { player.play() }
+            suspended = false
+            if pendingFrames > 0 {
+                playing = true
+                player.play()
+            }
         } catch {
             NSLog("MSM5xEmu audio resume failed: %@", String(describing: error))
         }
@@ -575,10 +601,10 @@ private final class MSM5xxxAudioSink {
             return
         }
         pendingFrames += frames
-        let shouldStart = !playing && pendingFrames >= Self.prebufferFrames
+        let shouldStart = !suspended && engine.isRunning && !playing && pendingFrames >= Self.prebufferFrames
         if shouldStart { playing = true }
         let scheduledGeneration = generation
-        let shouldScheduleFallback = !playing
+        let shouldScheduleFallback = !suspended && !playing
         lock.unlock()
         player.scheduleBuffer(buffer) { [weak self] in
             guard let self else { return }
@@ -612,7 +638,7 @@ private final class MSM5xxxAudioSink {
 
     private func startIfQueued(generation expectedGeneration: UInt64) {
         lock.lock()
-        guard !closed, generation == expectedGeneration,
+        guard !closed, !suspended, engine.isRunning, generation == expectedGeneration,
               !playing, pendingFrames > 0 else {
             lock.unlock()
             return

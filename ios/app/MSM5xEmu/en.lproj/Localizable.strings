@@ -40,6 +40,7 @@
 "QEMU exited. Relaunch app for another session." = "Stopped. Reopen the app to run again.";
 "Reassign hint" = "Double tap to reassign this key";
 "Reboot emulator" = "Reboot";
+"Unable to reboot. Force-close and reopen the app to try again." = "Unable to reboot. Force-close and reopen the app to try again.";
 "Reboot unavailable — relaunch the app" = "Reboot unavailable — relaunch the app";
 "Relaunch app to run again" = "Relaunch app to run again";
 "Reopen the app to start the selected firmware." = "Reopen the app to start the selected firmware.";

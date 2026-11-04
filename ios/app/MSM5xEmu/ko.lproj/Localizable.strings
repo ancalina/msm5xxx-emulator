@@ -40,6 +40,7 @@
 "QEMU exited. Relaunch app for another session." = "종료되었습니다. 다시 실행하려면 앱을 여세요.";
 "Reassign hint" = "이 키를 변경하려면 두 번 탭하세요";
 "Reboot emulator" = "재부팅";
+"Unable to reboot. Force-close and reopen the app to try again." = "재부팅할 수 없습니다. 앱을 완전히 종료한 후 다시 여세요.";
 "Reboot unavailable — relaunch the app" = "재부팅할 수 없음 — 앱을 다시 실행하세요";
 "Relaunch app to run again" = "다시 실행하려면 앱을 재시작하세요";
 "Reopen the app to start the selected firmware." = "선택한 펌웨어를 실행하려면 앱을 다시 여세요.";

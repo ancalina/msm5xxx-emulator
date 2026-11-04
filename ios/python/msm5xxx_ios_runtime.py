@@ -209,6 +209,13 @@ def set_session_paused(request_json):
     return shared._json({"schema": 1, "paused": request["paused"]})
 
 
+def reset_session():
+    if shared._session is None or _control is None or shared._session.process.poll() is not None:
+        raise RuntimeError("session is not running")
+    _control.command("system_reset")
+    return shared._json({"schema": 1, "reset": True})
+
+
 def stop_session():
     """Keep resources owned if a worker cannot stop; never close beneath replay."""
     global _control

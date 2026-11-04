@@ -75,6 +75,10 @@ struct ContentView: View {
                     preparing: preparingFirmware,
                     close: { showingLibrary = false },
                     boot: { entry in
+                        if engine.running && entry.id == runningLibraryID {
+                            showingLibrary = false
+                            return
+                        }
                         library.ensureEntry(entry)
                         library.pauseScanning()
                         let found = library.withSource(entry) { url in
@@ -180,7 +184,7 @@ struct ContentView: View {
                     }))
                 Button(text("Start")) { run() }.disabled(engine.running || engine.used || firmware == nil)
                 Button(text("Stop emulator")) { engine.stop() }.disabled(!engine.running)
-                Button(text("Reboot emulator")) { restartOnNextLaunchIfRunning() }.disabled(!engine.running)
+                Button(text("Reboot emulator")) { engine.reboot() }.disabled(!engine.running)
                 Button(text("Choose firmware…")) { showingLibrary = true }
                 Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
                 Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)

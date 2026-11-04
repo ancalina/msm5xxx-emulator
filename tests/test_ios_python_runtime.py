@@ -141,7 +141,7 @@ class IOSRuntimeTests(unittest.TestCase):
                 with socket.create_connection(("127.0.0.1", port), timeout=2) as peer:
                     peer.sendall(b'{"QMP":{}}\n')
                     with peer.makefile("rb") as stream:
-                        for _ in range(3):
+                        for _ in range(4):
                             request = json.loads(stream.readline())
                             seen.append(request["execute"])
                             peer.sendall((json.dumps({"event": "STATUS"}) + "\n" +
@@ -157,12 +157,17 @@ class IOSRuntimeTests(unittest.TestCase):
         self.runtime._control = control
         self.assertTrue(json.loads(self.runtime.set_session_paused('{"paused":true}'))["paused"])
         self.assertFalse(json.loads(self.runtime.set_session_paused('{"paused":false}'))["paused"])
+        self.assertTrue(json.loads(self.runtime.reset_session())["reset"])
         reader[0].join(2)
         self.assertFalse(reader[0].is_alive())
-        self.assertEqual(seen, ["qmp_capabilities", "stop", "cont"])
+        self.assertEqual(seen, ["qmp_capabilities", "stop", "cont", "system_reset"])
         for invalid in ('{}', '{"paused":1}', '{"paused":true,"extra":0}'):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 self.runtime.set_session_paused(invalid)
+
+    def test_reset_requires_a_running_session(self):
+        with self.assertRaisesRegex(RuntimeError, "session is not running"):
+            self.runtime.reset_session()
 
     def test_stop_retains_resources_when_replay_still_alive(self):
         transport = self.shared._session = Mock()
