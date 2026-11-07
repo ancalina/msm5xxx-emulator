@@ -25,7 +25,7 @@ MSM_END = MSM_BASE + 0xFFFFFF
 class GPIOAliasMachineMapTests(unittest.TestCase):
     @contextmanager
     def _session(self, machine_options: str = "", seed_bit9: bool = False,
-                 ram_size: str = "32M"):
+                 ram_size: str = "32M", extra_args: tuple[str, ...] = ()):
         native = Path(os.environ[QEMU_ENV]).resolve(strict=True)
         temporary = tempfile.TemporaryDirectory(prefix="gpio-map-qemu-")
         root = Path(temporary.name)
@@ -34,8 +34,9 @@ class GPIOAliasMachineMapTests(unittest.TestCase):
         command = [
             str(native), "-M", machine, "-cpu", "ti925t", "-m", ram_size,
             "-S", "-display", "none", "-serial", "none", "-monitor", "none",
-            "-qmp", f"unix:{qmp_path},server=on,wait=off",
         ]
+        command.extend(extra_args)
+        command.extend(("-qmp", f"unix:{qmp_path},server=on,wait=off"))
         if seed_bit9:
             command.extend(("-device", "loader,addr=0x03000721,data=2,data-len=1"))
         process = subprocess.Popen(command, stdout=subprocess.DEVNULL,
@@ -186,6 +187,83 @@ class GPIOAliasMachineMapTests(unittest.TestCase):
                                  GPIO_BASE <= row[1] for row in rows))
             value = self._hmp(connection, reader, f"xp /1wx 0x{GPIO_BASE:x}")
             self.assertIn(f"0x{expected:08x}", value)
+
+    def test_serial_gpio_has_one_owner(self):
+        with self._session("experimental-contract-gpio-pmic-serial=on") as session:
+            _process, connection, reader = session
+            rows = self._mtree_rows(self._hmp(connection, reader, "info mtree"))
+            self.assertTrue(any(
+                start == MSM_BASE + 0x6e8 and end == MSM_BASE + 0x723
+                and "i/o" in kind and name == "msm5xxx-poc.gpio-bank"
+                for start, end, _prio, kind, name in rows))
+            self.assertFalse(any(
+                "ram" in kind and start <= MSM_BASE + 0x720 <= end
+                for start, end, _prio, kind, _name in rows))
+
+    def test_serial_gpio_rejects_late_watchdog_owner(self):
+        native = Path(os.environ[QEMU_ENV]).resolve(strict=True)
+        result = subprocess.run([
+            str(native), "-M", "msm5xxx-poc,"
+            "memory-profile=1000000:1000000:17ffffc,"
+            "experimental-contract-gpio-pmic-serial=on,"
+            "watchdog-register=0x030006e8,watchdog-mask=1,"
+            "watchdog-timeout-ms=1000", "-cpu", "ti925t", "-m", "8M",
+            "-S", "-display", "none", "-serial", "none", "-monitor", "none"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            text=True, timeout=180)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GPIO serial contract conflicts with the final memory map",
+                      result.stderr)
+
+    def test_board_and_nand_inputs_share_disjoint_bits_without_gpio_flag(self):
+        with tempfile.TemporaryDirectory(prefix="raw-nand-ready-qemu-") as directory:
+            nand = Path(directory) / "nand.raw"
+            with nand.open("wb") as stream:
+                stream.truncate(0x2000000)
+            options = (
+                "memory-profile=1000000:1000000:17ffffc,"
+                "board-status-input=3000720:4:4,"
+                "raw-nand-main=1800000:1900000:1a00000:2000000:200:20:2,"
+                "raw-nand-ready=3000720:2"
+            )
+            drive = ("-drive", f"file={nand},if=none,format=raw,"
+                     "id=msm5xxx-raw-nand-main")
+            loader = ("-device", "loader,addr=0x03000721,data=0xa5,data-len=1")
+            with self._session(options, ram_size="8M",
+                               extra_args=drive + loader) as session:
+                _process, connection, reader = session
+                value = self._hmp(connection, reader, "xp /2bx 0x03000720")
+                self.assertIn("0x06", value.lower())
+                self.assertIn("0xa5", value.lower())
+                rows = self._mtree_rows(
+                    self._hmp(connection, reader, "info mtree"))
+                self.assertTrue(any(
+                    start == GPIO_BASE and end == GPIO_BASE and
+                    name == "msm5xxx-poc.board-status-input"
+                    for start, end, _prio, _kind, name in rows))
+
+    def test_overlapping_board_and_nand_input_bits_are_rejected(self):
+        native = Path(os.environ[QEMU_ENV]).resolve(strict=True)
+        with tempfile.TemporaryDirectory(prefix="raw-nand-conflict-qemu-") as directory:
+            nand = Path(directory) / "nand.raw"
+            with nand.open("wb") as stream:
+                stream.truncate(0x2000000)
+            machine = (
+                "msm5xxx-poc,memory-profile=1000000:1000000:17ffffc,"
+                "board-status-input=3000720:2:2,"
+                "raw-nand-main=1800000:1900000:1a00000:2000000:200:20:2,"
+                "raw-nand-ready=3000720:2"
+            )
+            result = subprocess.run([
+                str(native), "-M", machine, "-cpu", "ti925t", "-m", "8M",
+                "-S", "-display", "none", "-serial", "none", "-monitor", "none",
+                "-drive", f"file={nand},if=none,format=raw,"
+                "id=msm5xxx-raw-nand-main",
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+               text=True, timeout=180)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("middle raw NAND requires an exclusive source-declared ready input",
+                          result.stderr)
 
     def test_bit21_read_and_ram_hole(self):
         self._assert_carved_gpio_aperture("gpio-ready-bit21=on", 1 << 21)

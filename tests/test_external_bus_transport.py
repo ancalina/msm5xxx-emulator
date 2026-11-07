@@ -84,7 +84,7 @@ class ExternalBusTransportTests(unittest.TestCase):
         self.assertFalse(ready_properties["external-lcd-1c"])
 
     def test_ram_reset_halt_does_not_veto_independent_device_consumers(self) -> None:
-        image = bytearray(_ram_readback_image(halt_last_page=True))
+        image = bytearray(_ram_readback_image(independent_terminal_helper=True))
         image[0x400:0x412] = chip_select_only_image()[0x20:0x32]
         put16(image, 0x400, ldr_literal(1, 0x400, 0x480))
         put16(image, 0x40A, ldr_literal(1, 0x40A, 0x480))
@@ -94,8 +94,8 @@ class ExternalBusTransportTests(unittest.TestCase):
         put32(image, 0x584, 0x09000010)
         plan, reason = detect_external_bus(bytes(image))
         self.assertEqual(reason, "accepted")
-        self.assertNotIn("external-ram-base", plan["machine_properties"])
-        self.assertIn("last-page-halt", plan["rejections"]["external_ram"])
+        self.assertEqual(plan["machine_properties"]["external-ram-base"], 0x14000000)
+        self.assertNotIn("external_ram", plan["rejections"])
         self.assertTrue(plan["machine_properties"]["external-cs0a"])
         self.assertTrue(plan["machine_properties"]["external-cs09"])
         self.assertTrue(plan["machine_properties"]["external-lcd-1c"])
@@ -139,6 +139,44 @@ class ExternalBusTransportTests(unittest.TestCase):
                 qemu_external_bus_property(plan, image, base, size, reserved_ram=reservation),
                 (None, "memory-context-mismatch"),
             )
+
+    def test_serial_plan_is_exported_and_all_referents_are_guarded(self) -> None:
+        from test_gpio_pmic import _synthetic_image
+        image, _writer, _reader = _synthetic_image()
+        plan, reason = detect_external_bus(image)
+        self.assertEqual(reason, "accepted")
+        prop = "experimental-contract-gpio-pmic-serial"
+        self.assertTrue(plan["machine_properties"][prop])
+        wire, reason = qemu_external_bus_property(plan, image, None, None)
+        self.assertIsNone(reason)
+        self.assertIn(prop + "=on", wire)
+        invalid = copy.deepcopy(plan)
+        invalid["capabilities"]["gpio_pmic_serial"]["parameters"]["ports"][0] += 4
+        self.assertEqual(qemu_external_bus_property(invalid, image, None, None),
+                         (None, "serial-contract-parameter-mismatch"))
+        evidence = plan["capabilities"]["gpio_pmic_serial"]["evidence"]
+        roles = {item.get("role") for item in evidence}
+        self.assertIn("irq-pair", roles)
+        self.assertIn("writer-literal", roles)
+        for item in evidence:
+            start, _length = item["span"]
+            altered = bytearray(image)
+            altered[start] ^= 1
+            self.assertEqual(qemu_external_bus_property(
+                plan, image, None, None, bytes(altered)),
+                (None, "loaded-source-guard-mismatch"))
+
+    def test_selector_protocol_requires_its_lcd_binding(self) -> None:
+        image = chip_select_only_image()
+        plan, _ = detect_external_bus(image)
+        prop = "experimental-contract-lcd-1c-selector"
+        plan["machine_properties"][prop] = True
+        plan["capabilities"]["lcd_1c_selector"] = copy.deepcopy(
+            plan["capabilities"]["external_cs0a"])
+        plan["capabilities"]["lcd_1c_selector"]["parameters"] = {
+            "mode": "selector-data"}
+        self.assertEqual(qemu_external_bus_property(plan, image, None, None),
+                         (None, "selector-without-lcd"))
 
     def test_zero_strap_and_uart_logging_without_uart_are_rejected(self) -> None:
         image = chip_select_only_image()
@@ -267,7 +305,7 @@ class ExternalBusTransportTests(unittest.TestCase):
         self.assertEqual(ram["allocation"], [0x14000000, 0x3000])
 
     def test_readback_bank_allocation_is_exported_before_transport(self) -> None:
-        image = _ram_readback_image(halt_last_page=False)
+        image = _ram_readback_image(independent_terminal_helper=False)
         plan, _ = detect_external_bus(image, ram_base=0x14000000, ram_size=0x400000)
         self.assertEqual(plan["machine_properties"]["external-ram-base"], 0x14400000)
         wire, reason = qemu_external_bus_property(plan, image, 0x14000000, 0x400000)

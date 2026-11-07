@@ -31,7 +31,7 @@ class MiddleNandNativeTests(unittest.TestCase):
                 end += 1
             return source[start:end] + source[end]
 
-        constants = '\n'.join(re.findall(r'^#define MSM5XXX_POC_(?:RAW_NAND_.*|MSM_BASE .*)$', source, re.M))
+        constants = '\n'.join(re.findall(r'^#define MSM5XXX_POC_(?:RAW_NAND_.*|MSM_BASE .*|EEPROM_GPIO_SIZE .*)$', source, re.M))
         enum = source[source.index('typedef enum MSM5xxxPOCRawNandMode {'):
                       source.index('} MSM5xxxPOCRawNandMode;') + len('} MSM5xxxPOCRawNandMode;')]
         fields = source[source.index('    bool raw_nand_main_enabled;'):
@@ -62,13 +62,26 @@ static void *memory_region_get_ram_ptr(MemoryRegion *region) { return region->by
 ''' + constants + '\n' + enum + '\ntypedef struct {\n' + fields + r'''
     bool gpio_ready_bit21;
     bool experimental_contract_gpio_bit9_low;
+    bool board_status_input_enabled, eeprom_gpio_enabled;
+    uint32_t board_status_input_address, board_status_input_descriptor;
+    uint32_t eeprom_gpio_base;
+    uint8_t board_status_input_mask, board_status_input_backing;
 } MSM5xxxPOCMachineState;
 typedef MSM5xxxPOCMachineState Object;
 #define MSM5XXX_POC_MACHINE(obj) (obj)
+static uint64_t msm5xxx_poc_eeprom_gpio_read(
+    MSM5xxxPOCMachineState *s, hwaddr offset, unsigned size)
+{
+    (void)s;
+    (void)offset;
+    (void)size;
+    return 0;
+}
 ''' + '\n'.join(function(name) for name in (
             'msm5xxx_poc_backing_read', 'msm5xxx_poc_backing_write',
             'msm5xxx_poc_set_raw_nand_main', 'msm5xxx_poc_set_raw_nand_ready',
             'msm5xxx_poc_raw_nand_latch_cursor',
+            'msm5xxx_poc_board_status_input_read',
             'msm5xxx_poc_gpio_input_merge',
             'msm5xxx_poc_raw_nand_ready_read',
             'msm5xxx_poc_raw_nand_ready_write')) + '\n' + '\n'.join((
@@ -146,6 +159,24 @@ int main(void) {
     assert(s.msm.bytes[0x720] == 0x34 && s.msm.bytes[0x721] == 0x12);
     s.raw_nand_status = 0x80;
     assert(msm5xxx_poc_raw_nand_ready_read(&s, 0, 2) == 0x1224);
+
+    /* Distinct board and NAND inputs share this byte. */
+    s = (MSM5xxxPOCMachineState){0};
+    s.board_status_input_enabled = true;
+    s.board_status_input_address = 0x03000720;
+    s.board_status_input_mask = 4;
+    s.board_status_input_backing = 4;
+    s.raw_nand_main_enabled = true;
+    s.raw_nand_ready_address = 0x03000720;
+    s.raw_nand_ready_mask = 2;
+    s.raw_nand_status = 0x40;
+    assert(!s.gpio_ready_bit21 && !s.experimental_contract_gpio_bit9_low);
+    assert(msm5xxx_poc_board_status_input_read(&s, 0, 1) == 6);
+    s.raw_nand_status = 0;
+    assert(msm5xxx_poc_board_status_input_read(&s, 0, 1) == 4);
+    s.board_status_input_backing = 0;
+    s.raw_nand_status = 0x40;
+    assert(msm5xxx_poc_board_status_input_read(&s, 0, 1) == 2);
 
     s = (MSM5xxxPOCMachineState){0}; error = NULL;
     msm5xxx_poc_set_raw_nand_main(&s, "1800000:1900000:1a00000:2000000:200:20:2", &error);

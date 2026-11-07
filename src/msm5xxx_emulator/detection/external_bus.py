@@ -16,6 +16,8 @@ from .external_devices import (
     _thumb_literal,
 )
 from .memory_map import detect_linker_memory_map
+from .gpio_pmic import find_gpio_pmic_profile
+from .selector_lcd import find_selector_lcd_profile
 
 
 def _capability(evidence: list[dict], **parameters: object) -> dict:
@@ -207,7 +209,7 @@ def detect_external_bus(
     ]
     linked_ram = bool(linker_windows)
     ram = None
-    if linked_ram and not ram_reason.startswith("external-ram-last-page-halt@"):
+    if linked_ram:
         start = 0x14000000
         end = max(window["base"] + window["size"] for window in linker_windows)
         if ram_test is not None:
@@ -263,6 +265,8 @@ def detect_external_bus(
             elif available[1]:
                 ram_allocation = available
 
+    selector_lcd, _ = find_selector_lcd_profile(image)
+    pmic, _ = find_gpio_pmic_profile(image)
     cs0a, _ = detect_external_cs0a(image)
     cs09, _ = detect_external_cs09(image)
     uart, _ = detect_boot_uart(image)
@@ -349,6 +353,15 @@ def detect_external_bus(
             capabilities[f"window_{name}"] = _capability(
                 evidence, base=address, initial_value=0, write_policy="readback",
                 hardware_semantics="unknown")
+    if selector_lcd is not None and lcd is not None and any(
+            item["address"] == 0x1c000000 for item in lcd["writers"]):
+        capabilities["lcd_1c_selector"] = _capability(
+            selector_lcd["evidence"], mode="selector-data",
+            width=selector_lcd["width"], height=selector_lcd["height"])
+    if pmic is not None:
+        capabilities["gpio_pmic_serial"] = _capability(
+            pmic["evidence"] + pmic.get("extra_spans", []), ports=[0x030006e8, 0x03000720, 0x030006f4],
+            register_count=64, reset_value=0, write_policy="readback")
     if gpio_boot is not None:
         capabilities["boot_gpio_bit9"] = _capability(
             gpio_boot["sites"], gpio=0x03000720, bit=9, read_value=0)
@@ -458,6 +471,12 @@ def detect_external_bus(
     props["gpio-ready-bit21"] = bool(lcd and lcd["bit21"])
     props["experimental-contract-gpio-bit9-low"] = gpio_boot is not None
 
+    if pmic is not None:
+        props["experimental-contract-gpio-pmic-serial"] = True
+
+    if "lcd_1c_selector" in capabilities:
+        props["experimental-contract-lcd-1c-selector"] = True
+
     window_rejections = {}
     if ram_base is not None and ram_size is not None:
         window_properties = (
@@ -499,6 +518,10 @@ def detect_external_bus(
             return None, reason
         return None, (ram_reason if ram is None else "external-device-mapping-not-required")
 
+    if (props.get("experimental-contract-lcd-1c-selector")
+            and not props.get("external-lcd-1c")):
+        del props["experimental-contract-lcd-1c-selector"]
+
     property_roles = {
         "external-ram-base": "external_ram", "external-ram-size": "external_ram",
         "external-cs09": "external_cs09", "external-cs0a": "external_cs0a",
@@ -512,6 +535,8 @@ def detect_external_bus(
         "external-lcd-1c": "lcd_trace_1c", "external-uart": "boot_uart",
         "gpio-ready-bit21": "gpio_ready_bit21",
         "experimental-contract-gpio-bit9-low": "boot_gpio_bit9",
+        "experimental-contract-gpio-pmic-serial": "gpio_pmic_serial",
+        "experimental-contract-lcd-1c-selector": "lcd_1c_selector",
     }
     selected_roles = {property_roles[name] for name, value in props.items() if value}
     guards = []

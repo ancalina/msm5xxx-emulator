@@ -66,14 +66,14 @@ def _external_status_image() -> bytearray:
     return image
 
 
-def _ram_readback_image(*, halt_last_page: bool,
+def _ram_readback_image(*, independent_terminal_helper: bool,
                         extent: int = 0x7FFFFF) -> bytes:
     image = bytearray(0x4000)
     put32(image, 0, 0xEA000006)  # Reset branch to 0x20.
     body = 0x1000
     table = body - 28
     _reset_helper(image, 0x20, body, 0x200)
-    if halt_last_page:
+    if independent_terminal_helper:
         push = 0x3000
         _reset_helper(image, 0x40, push | 1, 0x220)
         size = (extent + 0x1000) & ~0xFFF
@@ -350,8 +350,8 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
                 put16(image, 0x3008, instruction)
                 self.assertIsNone(detect_boot_gpio_bit9(bytes(image))[0])
 
-    def test_reset_linked_ram_readback_and_last_page_halt(self) -> None:
-        image = _ram_readback_image(halt_last_page=False)
+    def test_reset_linked_ram_readback_is_independent_of_terminal_helper(self) -> None:
+        image = _ram_readback_image(independent_terminal_helper=False)
         profile, reason = detect_external_ram(image)
         self.assertEqual(reason, "accepted")
         self.assertEqual(profile["ram_test"]["base"], 0x14000000)
@@ -360,13 +360,17 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
             image, ram_base=0x01000000, ram_size=0x800000)
         self.assertEqual(reason, "accepted")
         self.assertEqual(plan["machine_properties"]["external-ram-base"], 0x14000000)
-        rejected, reason = detect_external_ram(_ram_readback_image(halt_last_page=True))
-        self.assertIsNone(rejected)
-        self.assertIn("last-page-halt", reason)
+        for extent, expected_size in ((0x3FFDFF, 0x00400000),
+                                      (0x001FFFFF, 0x00200000)):
+            with self.subTest(extent=extent):
+                profile, reason = detect_external_ram(_ram_readback_image(
+                    independent_terminal_helper=True, extent=extent))
+                self.assertEqual(reason, "accepted")
+                self.assertEqual(profile["ram_test"]["size"], expected_size)
 
     def test_reset_linked_two_mib_readback_extent(self) -> None:
         image = _ram_readback_image(
-            halt_last_page=False, extent=0x001FFFFF)
+            independent_terminal_helper=False, extent=0x001FFFFF)
         profile, reason = detect_external_ram(image)
         self.assertEqual(reason, "accepted")
         self.assertEqual(profile["ram_test"]["extent"], 0x001FFFFF)
@@ -376,31 +380,26 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
         self.assertEqual(reason, "accepted")
         self.assertEqual(
             plan["machine_properties"]["external-ram-size"], 0x00200000)
-        rejected, reason = detect_external_ram(_ram_readback_image(
-            halt_last_page=True, extent=0x001FFFFF))
-        self.assertIsNone(rejected)
-        self.assertIn("last-page-halt", reason)
-
-    def test_two_mib_extent_rejects_wrong_body_table_or_link(self) -> None:
+    def test_two_mib_extent_rejects_unclosed_body_table_link_or_extent(self) -> None:
         image = bytearray(_ram_readback_image(
-            halt_last_page=False, extent=0x001FFFFF))
+            independent_terminal_helper=False, extent=0x001FFFFF))
         put32(image, 0x1000 + 8, 0xE3A01002)  # Walking bit no longer starts at one.
         self.assertIsNone(detect_external_ram(bytes(image))[0])
 
         image = bytearray(_ram_readback_image(
-            halt_last_page=False, extent=0x001FFFFF))
+            independent_terminal_helper=False, extent=0x001FFFFF))
         put32(image, 0x1000 - 28, 0x14001000)  # Table base disagrees with the test.
         self.assertIsNone(detect_external_ram(bytes(image))[0])
 
         image = bytearray(_ram_readback_image(
-            halt_last_page=False, extent=0x001FFFFF))
+            independent_terminal_helper=False, extent=0x001FFFFF))
         put32(image, 0x200, 0x1004)  # Reset no longer calls the body.
         self.assertIsNone(detect_external_ram(bytes(image))[0])
 
         for extent in (0x001FFFFE, 0x001FEFFF, 0x00200000):
             with self.subTest(extent=extent):
                 image = _ram_readback_image(
-                    halt_last_page=False, extent=extent)
+                    independent_terminal_helper=False, extent=extent)
                 self.assertIsNone(detect_external_ram(image)[0])
 
     def test_ram_chip_select_program_shape(self) -> None:
@@ -605,11 +604,11 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
         self.assertFalse(accesses[0]["thumb"])
         self.assertEqual(accesses[0]["literal"], literal)
 
-    def test_last_page_clear_or_unlinked_halt_does_not_exclude_ram(self) -> None:
-        image = bytearray(_ram_readback_image(halt_last_page=True))
+    def test_terminal_helper_cannot_override_ram_probe_evidence(self) -> None:
+        image = bytearray(_ram_readback_image(independent_terminal_helper=True))
         put16(image, 0x3008, 0x4388)  # BICS clears the flag.
         self.assertIsNotNone(detect_external_ram(bytes(image))[0])
-        image = bytearray(_ram_readback_image(halt_last_page=True))
+        image = bytearray(_ram_readback_image(independent_terminal_helper=True))
         put32(image, 0x220, 0x3201)  # Reset calls a different Thumb entry.
         self.assertIsNotNone(detect_external_ram(bytes(image))[0])
 

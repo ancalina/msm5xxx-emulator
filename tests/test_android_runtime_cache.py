@@ -27,6 +27,7 @@ class AndroidRuntimeCacheTests(unittest.TestCase):
                      tree / 'qemu-10.2.1-icount-advance.patch',
                      tree / 'qemu-10.2.1-cfi02-write-while-suspended.patch',
              tree / 'qemu-10.2.1-dsound-playback-only.patch',
+                          tree / 'qemu-10.2.1-arm-legacy-alignment.patch',
                      tree / 'qemu-10.2.1-android-host.patch', tree / 'msm5xxx-poc.c',
                      assets / 'os.py']
             files += [jni / name for name in ('libqemu-system-arm.so', 'libglib-2.0.so',
@@ -47,6 +48,7 @@ class AndroidRuntimeCacheTests(unittest.TestCase):
                 cache.main('verify')
                 for p in (cache.ROOT / 'build_glib_android.sh', tree / 'msm5xxx-poc.c',
                           tree / 'qemu-10.2.1-dsound-playback-only.patch',
+                          tree / 'qemu-10.2.1-arm-legacy-alignment.patch',
                           jni / 'libqemu-system-arm.so',
                           assets / 'os.py'):
                     p.write_bytes(b'mutated')

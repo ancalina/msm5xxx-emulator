@@ -455,17 +455,6 @@ def detect_external_ram(image: bytes) -> tuple[dict | None, str]:
             })
     if len(ram_hits) > 1:
         return None, "external-ram-ram-test-ambiguous"
-    # The behaviour installs one window. A reset-called probe that ORs a
-    # flag in that window's last page and then executes `b .` only reaches
-    # the spin once the load succeeds, so the window must stay absent.
-    pages = []
-    if len(ram_hits) == 1:
-        hit = ram_hits[0]
-        pages.append(hit["base"] + hit["size"] - PAGE)
-    for page in pages:
-        spin = _last_page_halt(image, page, called)
-        if spin is not None:
-            return None, f"external-ram-last-page-halt@{spin:#x}"
     if len(ram_hits) == 1:
         return {
             "behaviour": "external_ram",
@@ -842,49 +831,6 @@ def _reset_push(image: bytes, at: int, called: set[int]) -> int | None:
         if word & 0xFE00 == 0xB400 and word & 0x0100:
             if pc in called or (pc | 1) in called:
                 return pc
-    return None
-
-
-def _last_page_halt(image: bytes, page: int, called: set[int] | None) -> int | None:
-    """``b .`` after a reset-called OR of bit 3 at ``[page+0x10]``.
-
-    Shape: ``LDR r0, =page``; ``LDR r0,
-    [r0, #0x10]``; ``MOVS r1, #8``; ``ORRS r0, r1``; ``LDR r1, =page``;
-    ``STR r0, [r1, #0x10]``; then ``b .`` within 0x20 bytes. The sibling
-    that ``BICS`` the same bit and continues does not match.
-    A continuing byte comparison loop does not match.
-    """
-    if not called:
-        return None
-    needle = bytes.fromhex("08210843")  # movs r1, #8; orrs r0, r1
-    for at in _find_all(image, needle, 0x10000):
-        if at < 4 or at & 1 or at + 8 > len(image):
-            continue
-        if _u16(image, at - 2) != 0x6900:  # ldr r0, [r0, #0x10]
-            continue
-        load = at - 4
-        if _thumb_literal(image, load, 0) != page:
-            continue
-        store = None
-        for pc in range(at + 4, min(at + 12, len(image) - 4), 2):
-            word = _u16(image, pc)
-            if word & 0xF800 != 0x4800 or (word >> 8) & 7 != 1:
-                continue
-            if _thumb_literal(image, pc, 1) != page:
-                continue
-            if _u16(image, pc + 2) == 0x6108:  # str r0, [r1, #0x10]
-                store = pc
-                break
-        if store is None:
-            continue
-        spin = None
-        for pc in range(store, min(store + 0x20, len(image) - 2), 2):
-            if _u16(image, pc) == 0xE7FE:
-                spin = pc
-                break
-        if spin is None or _reset_push(image, load, called) is None:
-            continue
-        return spin
     return None
 
 

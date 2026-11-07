@@ -130,3 +130,22 @@ the entire halfword on the passive MSM RAM underlay. Operations in this existing
 main-area bridge complete synchronously. Original NAND contents, spare/OOB
 storage and physical timing are not supplied; an erased virtual main area can
 legitimately lead firmware to a missing-data error screen.
+
+ARMv4/v5 word transfers honor the alignment-check control bit. With checks
+disabled, word loads rotate an aligned word and word stores align the address
+down; explicit alignment requirements and ARMv6+ behavior are preserved.
+
+The default-off `experimental-contract-gpio-pmic-serial` property supplies a
+64-register readback device on GPIO output `030006e8` (data 9, clock 10),
+direction `030006f4` bit 9, and input `03000720` bit 9. The seven-bit command
+contains a six-bit register address and read/write bit; data transfers are eight
+bits, most significant first. Registers reset to zero and acquire values only
+from guest writes. GPIO backing and unrelated input bits are preserved. The
+selected GPIO bank must have exclusive ownership throughout machine setup.
+
+`experimental-contract-lcd-1c-selector` requires `external-lcd-1c=on`. It binds
+writes at offset 0 as a command/data selector (0/1) and offset 2 as the payload.
+Only payload writes enter the LCD trace. Other offsets retain backing values.
+Automatic selection requires paired serial routines with register-readback
+consumers, and a separate selector/window/pixel-clear grammar for the display.
+The clear extent supplies display dimensions when no explicit geometry exists.

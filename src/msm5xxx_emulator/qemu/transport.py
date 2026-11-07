@@ -2935,6 +2935,8 @@ EXTERNAL_BUS_BOOLEAN_PROPERTIES = frozenset((
     "external-uart", "external-uart-tx-log", "external-lcd-18",
     "external-lcd-1a", "external-lcd-1c", "gpio-ready-bit21",
     "experimental-contract-gpio-bit9-low",
+    "experimental-contract-gpio-pmic-serial",
+    "experimental-contract-lcd-1c-selector",
 ))
 EXTERNAL_BUS_INTEGER_PROPERTIES = frozenset((
     "external-ram-base", "external-ram-size", "external-strap-value",
@@ -2975,6 +2977,8 @@ def qemu_external_bus_property(profile: object, image: bytes,
         "external-lcd-18": "lcd_trace_18", "external-lcd-1a": "lcd_trace_1a",
         "external-lcd-1c": "lcd_trace_1c", "gpio-ready-bit21": "gpio_ready_bit21",
         "experimental-contract-gpio-bit9-low": "boot_gpio_bit9",
+        "experimental-contract-gpio-pmic-serial": "gpio_pmic_serial",
+        "experimental-contract-lcd-1c-selector": "lcd_1c_selector",
         "external-ram-base": "external_ram", "external-ram-size": "external_ram",
         "external-strap-value": "strap_bit2",
     }
@@ -3002,6 +3006,14 @@ def qemu_external_bus_property(profile: object, image: bytes,
             parameters = capability.get("parameters")
             if not isinstance(parameters, dict):
                 return None, "invalid-capability-parameters"
+            if name == "experimental-contract-gpio-pmic-serial" and parameters != {
+                    "ports": [0x030006e8, 0x03000720, 0x030006f4],
+                    "register_count": 64, "reset_value": 0,
+                    "write_policy": "readback"}:
+                return None, "serial-contract-parameter-mismatch"
+            if (name == "experimental-contract-lcd-1c-selector"
+                    and parameters.get("mode") != "selector-data"):
+                return None, "selector-contract-parameter-mismatch"
             if name in ("external-ram-base", "external-ram-size"):
                 allocation = parameters.get("allocation")
                 if (not isinstance(allocation, (list, tuple)) or len(allocation) != 2
@@ -3013,6 +3025,9 @@ def qemu_external_bus_property(profile: object, image: bytes,
     if (bool(base) != bool(size) or (base | size) & 0xfff
             or base + size > 0x100000000):
         return None, "invalid-external-ram-allocation"
+    if (properties.get("experimental-contract-lcd-1c-selector")
+            and not properties.get("external-lcd-1c")):
+        return None, "selector-without-lcd"
     if properties.get("external-uart-tx-log") and not properties.get("external-uart"):
         return None, "uart-log-without-uart"
     if "external-strap-value" in properties and not 0 < properties["external-strap-value"] <= 0xff:

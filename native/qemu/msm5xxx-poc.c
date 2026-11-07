@@ -258,8 +258,15 @@ struct MSM5xxxPOCMachineState {
     bool experimental_contract_window_18, experimental_contract_window_1c;
     bool external_uart, external_uart_tx_log;
     bool external_lcd_18, external_lcd_1a, external_lcd_1c;
+    bool experimental_contract_lcd_1c_selector;
     bool gpio_ready_bit21;
     bool experimental_contract_gpio_bit9_low;
+    bool experimental_contract_gpio_pmic_serial;
+    uint8_t gpio_pmic_serial_registers[64];
+    uint8_t gpio_pmic_serial_command, gpio_pmic_serial_data;
+    uint8_t gpio_pmic_serial_command_bits, gpio_pmic_serial_data_bits;
+    uint8_t gpio_pmic_serial_register, gpio_pmic_serial_read_bits;
+    bool gpio_pmic_serial_read, gpio_pmic_serial_read_started;
     MemoryRegion gpio_bank_region;
     MemoryRegion msm_gpio_low_alias, msm_gpio_high_alias;
     MemoryRegion external_ram, external_cs09, external_cs0a;
@@ -14523,12 +14530,30 @@ static void msm5xxx_poc_external_lcd_write(void *opaque, hwaddr offset,
 {
     typeof(((MSM5xxxPOCMachineState *)0)->external_lcd_context[0]) *lcd = opaque;
     hwaddr traced;
+    uint8_t *backing = lcd->machine->external_lcd_backing[lcd->index];
 
     if (offset >= 0x1000 || size > 0x1000 - offset || size > 4) {
         return;
     }
-    msm5xxx_poc_backing_write(
-        lcd->machine->external_lcd_backing[lcd->index], offset, value, size);
+    msm5xxx_poc_backing_write(backing, offset, value, size);
+    if (lcd->index == 1 &&
+        lcd->machine->experimental_contract_lcd_1c_selector) {
+        uint64_t selector;
+
+        if (offset == 0 && (size == 1 || size == 2)) {
+            return;
+        }
+        if (offset != 2 || (size != 1 && size != 2)) {
+            return;
+        }
+        selector = msm5xxx_poc_backing_read(backing, 0, 2);
+        if (selector > 1) {
+            return;
+        }
+        traced = selector == 0 ? 0x02000000 : 0x02000002;
+        msm5xxx_poc_lcd_trace_write(lcd->machine, traced, value, size);
+        return;
+    }
     if (size > 2 || !(offset <= 4 ||
                       offset == 0x78 || offset == 0x80 ||
                       offset == 0x82 || offset == 0xfa)) {
@@ -14574,45 +14599,157 @@ static uint64_t msm5xxx_poc_gpio_input_merge(MSM5xxxPOCMachineState *s,
     return value;
 }
 
+static void msm5xxx_poc_gpio_pmic_serial_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    memset(s->gpio_pmic_serial_registers, 0,
+           sizeof(s->gpio_pmic_serial_registers));
+    s->gpio_pmic_serial_command = 0;
+    s->gpio_pmic_serial_data = 0;
+    s->gpio_pmic_serial_command_bits = 0;
+    s->gpio_pmic_serial_data_bits = 0;
+    s->gpio_pmic_serial_register = 0;
+    s->gpio_pmic_serial_read_bits = 0;
+    s->gpio_pmic_serial_read = false;
+    s->gpio_pmic_serial_read_started = false;
+}
+
+static void msm5xxx_poc_gpio_pmic_serial_abort_frame(
+    MSM5xxxPOCMachineState *s)
+{
+    s->gpio_pmic_serial_command = 0;
+    s->gpio_pmic_serial_data = 0;
+    s->gpio_pmic_serial_command_bits = 0;
+    s->gpio_pmic_serial_data_bits = 0;
+    s->gpio_pmic_serial_read_bits = 0;
+    s->gpio_pmic_serial_read = false;
+    s->gpio_pmic_serial_read_started = false;
+}
+
+static void msm5xxx_poc_gpio_pmic_serial_edge(MSM5xxxPOCMachineState *s,
+                                               uint32_t previous,
+                                               uint32_t current,
+                                               uint32_t previous_direction,
+                                               uint32_t direction)
+{
+    bool old_clock = (previous & (1u << 10)) != 0;
+    bool clock = (current & (1u << 10)) != 0;
+    bool input = (direction & (1u << 9)) == 0;
+
+    if (((previous_direction ^ direction) & (1u << 9)) &&
+        s->gpio_pmic_serial_command_bits &&
+        (s->gpio_pmic_serial_command_bits < 7 ||
+         !s->gpio_pmic_serial_read || !input)) {
+        msm5xxx_poc_gpio_pmic_serial_abort_frame(s);
+    }
+    if (!old_clock && clock) {
+        if (s->gpio_pmic_serial_read) {
+            if (!input) {
+                msm5xxx_poc_gpio_pmic_serial_abort_frame(s);
+            }
+        } else if (input) {
+            if (s->gpio_pmic_serial_command_bits) {
+                msm5xxx_poc_gpio_pmic_serial_abort_frame(s);
+            }
+        } else if (s->gpio_pmic_serial_command_bits < 7) {
+            s->gpio_pmic_serial_command =
+                ((s->gpio_pmic_serial_command << 1) |
+                 ((current >> 9) & 1)) & 0x7f;
+            s->gpio_pmic_serial_command_bits++;
+            if (s->gpio_pmic_serial_command_bits == 7) {
+                s->gpio_pmic_serial_register =
+                    s->gpio_pmic_serial_command >> 1;
+                s->gpio_pmic_serial_read =
+                    (s->gpio_pmic_serial_command & 1) != 0;
+                s->gpio_pmic_serial_data = 0;
+                s->gpio_pmic_serial_data_bits = 0;
+                s->gpio_pmic_serial_read_bits = 0;
+                s->gpio_pmic_serial_read_started =
+                    s->gpio_pmic_serial_read;
+            }
+        } else if (!s->gpio_pmic_serial_read) {
+            s->gpio_pmic_serial_data =
+                (s->gpio_pmic_serial_data << 1) | ((current >> 9) & 1);
+            s->gpio_pmic_serial_data_bits++;
+            if (s->gpio_pmic_serial_data_bits == 8) {
+                s->gpio_pmic_serial_registers[
+                    s->gpio_pmic_serial_register] = s->gpio_pmic_serial_data;
+                s->gpio_pmic_serial_command = 0;
+                s->gpio_pmic_serial_data = 0;
+                s->gpio_pmic_serial_command_bits = 0;
+                s->gpio_pmic_serial_data_bits = 0;
+                s->gpio_pmic_serial_read = false;
+                s->gpio_pmic_serial_read_bits = 0;
+            }
+        }
+    } else if (old_clock && !clock && s->gpio_pmic_serial_read) {
+        if (s->gpio_pmic_serial_read_started) {
+            s->gpio_pmic_serial_read_started = false;
+        } else if (!input) {
+            msm5xxx_poc_gpio_pmic_serial_abort_frame(s);
+        } else if (++s->gpio_pmic_serial_read_bits == 8) {
+            msm5xxx_poc_gpio_pmic_serial_abort_frame(s);
+        }
+    }
+}
+
 static uint64_t msm5xxx_poc_gpio_bank_read(void *opaque, hwaddr offset,
                                            unsigned size)
 {
     MSM5xxxPOCMachineState *s = opaque;
     uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
-    hwaddr address = MSM5XXX_POC_MSM_BASE + 0x720 + offset;
+    hwaddr bank = s->experimental_contract_gpio_pmic_serial ? 0x6e8 : 0x720;
+    hwaddr bank_size = s->experimental_contract_gpio_pmic_serial ? 0x3c : 4;
+    hwaddr address = MSM5XXX_POC_MSM_BASE + bank + offset;
     uint64_t value, mask;
 
-    if (offset >= 4 || size == 0 || size > 4 - offset) {
+    if (offset >= bank_size || size == 0 || size > bank_size - offset) {
         return 0;
     }
-    if (s->small_nand_enabled &&
+    if (!s->experimental_contract_gpio_pmic_serial && s->small_nand_enabled &&
         s->small_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
         uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
         msm5xxx_poc_small_nand_sync(s, now);
         msm5xxx_poc_small_nand_arm(s);
     }
-    value = msm5xxx_poc_backing_read(msm, 0x720 + offset, size);
+    value = msm5xxx_poc_backing_read(msm, bank + offset, size);
     mask = size == 8 ? UINT64_MAX : (UINT64_C(1) << (size * 8)) - 1;
-    if (s->board_status_input_enabled &&
-        s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
-        !s->board_status_input_descriptor && !offset && size) {
-        value = (value & ~s->board_status_input_mask) |
-                (s->board_status_input_backing & s->board_status_input_mask);
-    }
-    if (s->raw_nand_main_enabled &&
-        s->raw_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
-        uint32_t ready_mask = s->raw_nand_ready_mask >> (offset * 8);
-        value = (value & ~ready_mask) |
-            ((s->raw_nand_status & 0x40) ? ready_mask : 0);
-    }
-    if (s->small_nand_enabled &&
-        s->small_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
-        uint32_t ready_mask = s->small_nand_ready_mask >> (offset * 8);
-        value = (value & ~ready_mask) |
-            (msm5xxx_nand_ready(&s->small_nand) ? ready_mask : 0);
+    if (!s->experimental_contract_gpio_pmic_serial) {
+        if (s->board_status_input_enabled &&
+            s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
+            !s->board_status_input_descriptor && !offset && size) {
+            value = (value & ~s->board_status_input_mask) |
+                    (s->board_status_input_backing &
+                     s->board_status_input_mask);
+        }
+        if (s->raw_nand_main_enabled &&
+            s->raw_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
+            uint32_t ready_mask = s->raw_nand_ready_mask >> (offset * 8);
+            value = (value & ~ready_mask) |
+                ((s->raw_nand_status & 0x40) ? ready_mask : 0);
+        }
+        if (s->small_nand_enabled &&
+            s->small_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
+            uint32_t ready_mask = s->small_nand_ready_mask >> (offset * 8);
+            value = (value & ~ready_mask) |
+                (msm5xxx_nand_ready(&s->small_nand) ? ready_mask : 0);
+        }
     }
     value &= mask;
+    if (s->experimental_contract_gpio_pmic_serial &&
+        !(msm5xxx_poc_backing_read(msm, 0x6f4, 4) & (1u << 9)) &&
+        s->gpio_pmic_serial_read &&
+        address <= MSM5XXX_POC_MSM_BASE + 0x721 &&
+        address + size > MSM5XXX_POC_MSM_BASE + 0x721) {
+        unsigned bit = (MSM5XXX_POC_MSM_BASE + 0x721 - address) * 8 + 1;
+        uint64_t serial_mask = UINT64_C(1) << bit;
+        bool high = ((s->gpio_pmic_serial_registers[
+                          s->gpio_pmic_serial_register] >>
+                      (7 - s->gpio_pmic_serial_read_bits)) & 1) != 0;
+        value = high ? value | serial_mask : value & ~serial_mask;
+    }
     return msm5xxx_poc_gpio_input_merge(s, address, value, size);
 }
 
@@ -14621,9 +14758,21 @@ static void msm5xxx_poc_gpio_bank_write(void *opaque, hwaddr offset,
 {
     MSM5xxxPOCMachineState *s = opaque;
     uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    hwaddr bank = s->experimental_contract_gpio_pmic_serial ? 0x6e8 : 0x720;
+    hwaddr bank_size = s->experimental_contract_gpio_pmic_serial ? 0x3c : 4;
     uint64_t writable, all;
 
-    if (offset >= 4 || size == 0 || size > 4 - offset) {
+    if (offset >= bank_size || size == 0 || size > bank_size - offset) {
+        return;
+    }
+    if (s->experimental_contract_gpio_pmic_serial) {
+        uint32_t old_lines = msm5xxx_poc_backing_read(msm, 0x6e8, 4);
+        uint32_t old_direction = msm5xxx_poc_backing_read(msm, 0x6f4, 4);
+        msm5xxx_poc_backing_write(msm, bank + offset, value, size);
+        msm5xxx_poc_gpio_pmic_serial_edge(
+            s, old_lines, msm5xxx_poc_backing_read(msm, 0x6e8, 4),
+            old_direction,
+            msm5xxx_poc_backing_read(msm, 0x6f4, 4));
         return;
     }
     all = (UINT64_C(1) << (size * 8)) - 1;
@@ -14751,9 +14900,13 @@ EXTERNAL_BOOL_PROPERTY(external_uart_tx_log, external_uart_tx_log)
 EXTERNAL_BOOL_PROPERTY(external_lcd_18, external_lcd_18)
 EXTERNAL_BOOL_PROPERTY(external_lcd_1a, external_lcd_1a)
 EXTERNAL_BOOL_PROPERTY(external_lcd_1c, external_lcd_1c)
+EXTERNAL_BOOL_PROPERTY(experimental_contract_lcd_1c_selector,
+                       experimental_contract_lcd_1c_selector)
 EXTERNAL_BOOL_PROPERTY(gpio_ready_bit21, gpio_ready_bit21)
 EXTERNAL_BOOL_PROPERTY(experimental_contract_gpio_bit9_low,
                        experimental_contract_gpio_bit9_low)
+EXTERNAL_BOOL_PROPERTY(experimental_contract_gpio_pmic_serial,
+                       experimental_contract_gpio_pmic_serial)
 
 static bool msm5xxx_poc_external_ram_overlaps(MSM5xxxPOCMachineState *s,
                                                uint32_t base,
@@ -15718,6 +15871,10 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("external UART TX logging requires external-uart=on");
         exit(EXIT_FAILURE);
     }
+    if (s->experimental_contract_lcd_1c_selector && !s->external_lcd_1c) {
+        error_report("experimental-contract-lcd-1c-selector requires external-lcd-1c=on");
+        exit(EXIT_FAILURE);
+    }
     if (!msm5xxx_poc_external_uart_configuration_valid(s)) {
         error_report("external UART aperture conflicts with uart-console");
         exit(EXIT_FAILURE);
@@ -15748,6 +15905,27 @@ static void msm5xxx_poc_init(MachineState *machine)
                 memory_region_add_subregion_overlap(get_system_memory(), bases[i],
                                                     &s->external_lcd_region[i], 50);
             }
+        }
+    }
+    if (s->experimental_contract_gpio_pmic_serial) {
+        unsigned offset;
+        bool conflict = s->gpio_ready_bit21 ||
+                        s->experimental_contract_gpio_bit9_low ||
+                        s->board_status_input_enabled ||
+                        s->raw_nand_main_enabled || s->small_nand_enabled ||
+                        s->board_revision_enabled || s->eeprom_gpio_enabled ||
+                        s->matrix_input_enabled || s->ready_poll_enabled;
+
+        for (offset = 0; offset < 0x3c && !conflict; offset++) {
+            MemoryRegionSection section = memory_region_find(
+                get_system_memory(), MSM5XXX_POC_MSM_BASE + 0x6e8 + offset, 1);
+            conflict = section.mr != &s->msm ||
+                       !int128_eq(section.size, int128_make64(1));
+            memory_region_unref(section.mr);
+        }
+        if (conflict) {
+            error_report("GPIO serial contract conflicts with another GPIO owner");
+            exit(EXIT_FAILURE);
         }
     }
     if (s->gpio_ready_bit21 || s->experimental_contract_gpio_bit9_low) {
@@ -16252,7 +16430,8 @@ static void msm5xxx_poc_init(MachineState *machine)
             &s->board_status_input, 2
         );
     }
-    if ((s->gpio_ready_bit21 || s->experimental_contract_gpio_bit9_low) &&
+    if ((s->gpio_ready_bit21 || s->experimental_contract_gpio_bit9_low ||
+         s->experimental_contract_gpio_pmic_serial) &&
         !(s->board_status_input_enabled &&
           s->board_status_input_address == 0x03000720 &&
           !s->board_status_input_descriptor) &&
@@ -16277,9 +16456,12 @@ static void msm5xxx_poc_init(MachineState *machine)
         memory_region_transaction_begin();
         /* Keep RAM direct outside the selected GPIO input aperture. */
         memory_region_del_subregion(get_system_memory(), &s->msm);
+        uint32_t gpio_bank = s->experimental_contract_gpio_pmic_serial ?
+                             0x6e8 : 0x720;
+
         memory_region_init_alias(&s->msm_gpio_low_alias, OBJECT(machine),
                                  "msm5xxx-poc.msm-gpio-low", &s->msm,
-                                 0, 0x720);
+                                 0, gpio_bank);
         memory_region_init_alias(&s->msm_gpio_high_alias, OBJECT(machine),
                                  "msm5xxx-poc.msm-gpio-high", &s->msm,
                                  0x724, MSM5XXX_POC_MSM_SIZE - 0x724);
@@ -16292,10 +16474,18 @@ static void msm5xxx_poc_init(MachineState *machine)
                                             &s->msm_gpio_high_alias, -1);
         memory_region_init_io(&s->gpio_bank_region, OBJECT(machine),
                               &msm5xxx_poc_gpio_bank_ops, s,
-                              "msm5xxx-poc.gpio-bank", 4);
+                              "msm5xxx-poc.gpio-bank",
+                              s->experimental_contract_gpio_pmic_serial ?
+                                  0x3c : 4);
         memory_region_add_subregion(get_system_memory(),
-                                    MSM5XXX_POC_MSM_BASE + 0x720,
+                                    MSM5XXX_POC_MSM_BASE +
+                                      (s->experimental_contract_gpio_pmic_serial ?
+                                       0x6e8 : 0x720),
                                     &s->gpio_bank_region);
+        if (s->experimental_contract_gpio_pmic_serial) {
+            qemu_register_reset(msm5xxx_poc_gpio_pmic_serial_reset, s);
+            msm5xxx_poc_gpio_pmic_serial_reset(s);
+        }
         memory_region_transaction_commit();
     }
     if (s->board_status_input_enabled &&
@@ -16989,7 +17179,7 @@ static void msm5xxx_poc_init(MachineState *machine)
         bool conflict;
         bool gpio_bank_owner = s->gpio_ready_bit21 ||
                                s->experimental_contract_gpio_bit9_low;
-        bool shared_board_input = gpio_bank_owner &&
+        bool shared_board_input =
             s->board_status_input_enabled &&
             !s->board_status_input_descriptor &&
             ((s->board_status_input_address == 0x03000720 &&
@@ -17063,6 +17253,20 @@ static void msm5xxx_poc_init(MachineState *machine)
             "msm5xxx-poc.board-status-input-peer", 1);
         memory_region_add_subregion_overlap(get_system_memory(),
             s->board_status_peer_address, &s->board_status_input_peer, 2);
+    }
+    if (s->experimental_contract_gpio_pmic_serial) {
+        for (unsigned offset = 0; offset < 0x3c; offset++) {
+            MemoryRegionSection section = memory_region_find(
+                get_system_memory(), MSM5XXX_POC_MSM_BASE + 0x6e8 + offset, 1);
+            bool conflict = section.mr != &s->gpio_bank_region ||
+                            !int128_eq(section.size, int128_make64(1));
+
+            memory_region_unref(section.mr);
+            if (conflict) {
+                error_report("GPIO serial contract conflicts with the final memory map");
+                exit(EXIT_FAILURE);
+            }
+        }
     }
     if (s->memory_profile_enabled) {
         qemu_register_reset(msm5xxx_poc_reset, s);
@@ -21164,6 +21368,12 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         msm5xxx_poc_get_external_lcd_1c, msm5xxx_poc_set_external_lcd_1c);
     object_class_property_set_description(oc, "external-lcd-1c",
         "Experimental contract: route the 0x1c000000 panel bus into the existing LCD trace stream");
+    object_class_property_add_bool(oc, "experimental-contract-lcd-1c-selector",
+        msm5xxx_poc_get_experimental_contract_lcd_1c_selector,
+        msm5xxx_poc_set_experimental_contract_lcd_1c_selector);
+    object_class_property_set_description(oc,
+        "experimental-contract-lcd-1c-selector",
+        "Experimental contract: route selector-controlled writes at 0x1c000000 to command or data LCD trace addresses");
     object_class_property_add_bool(oc, "gpio-ready-bit21",
         msm5xxx_poc_get_gpio_ready_bit21,
         msm5xxx_poc_set_gpio_ready_bit21);
@@ -21175,6 +21385,12 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc,
         "experimental-contract-gpio-bit9-low",
         "Experimental contract: read GPIO 0x03000720 bit 9 low through its existing owner; guest writes and backing are preserved");
+    object_class_property_add_bool(oc, "experimental-contract-gpio-pmic-serial",
+        msm5xxx_poc_get_experimental_contract_gpio_pmic_serial,
+        msm5xxx_poc_set_experimental_contract_gpio_pmic_serial);
+    object_class_property_set_description(oc,
+        "experimental-contract-gpio-pmic-serial",
+        "Experimental contract: serial GPIO register readback through the existing GPIO bank");
     object_class_property_add_bool(oc, "direct-lcd",
                                   msm5xxx_poc_get_direct_lcd,
                                   msm5xxx_poc_set_direct_lcd);

@@ -12,6 +12,7 @@ import struct
 from ..core.config import FirmwareConfig
 
 from .external_bus import detect_external_bus
+from .selector_lcd import find_selector_lcd_profile
 from .arm import arm_vector_score
 from .audio import find_audio_transport
 from .tone import tone_admission
@@ -1445,6 +1446,11 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         reserved_external = (() if config.ram_bootstrap_profile is None else
                              ((config.ram_bootstrap_profile["reserved_base"],
                                config.ram_bootstrap_profile["reserved_size"]),))
+        selector_panel, _ = find_selector_lcd_profile(image)
+        if selector_panel is not None and config.display_geometry_source == "auto-default":
+            config.width = selector_panel["width"]
+            config.height = selector_panel["height"]
+            config.display_geometry_source = "source-selector-window-clear"
         config.external_bus, external_reason = detect_external_bus(
             watchdog_image, ram_base=config.ram_base, ram_size=config.ram_size,
             reserved_ram=reserved_external,

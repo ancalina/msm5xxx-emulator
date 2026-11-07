@@ -21,6 +21,7 @@ def native():
     names = ['stage_qemu_source.sh', 'qemu-10.2.1-icount-advance.patch',
              'qemu-10.2.1-cfi02-write-while-suspended.patch',
              'qemu-10.2.1-dsound-playback-only.patch',
+             'qemu-10.2.1-arm-legacy-alignment.patch',
              'qemu-10.2.1-android-host.patch']
     paths = [tree / name for name in names]
     paths += sorted(tree.glob('msm5xxx-*.c')) + sorted(tree.glob('msm5xxx-*.h'))

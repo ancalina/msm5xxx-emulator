@@ -1,0 +1,56 @@
+--- a/target/arm/tcg/hflags.c
++++ b/target/arm/tcg/hflags.c
+@@ -39,6 +39,11 @@
+     /* Check the alignment enable bit. */
+     if (sctlr & SCTLR_A) {
+         return true;
++    }
++
++    /* Pre-v6 accesses use the legacy unaligned word behavior. */
++    if (!arm_feature(env, ARM_FEATURE_V6)) {
++        return false;
+     }
+ 
+     /*
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ -969,13 +969,37 @@
+ void gen_aa32_ld_i32(DisasContext *s, TCGv_i32 val, TCGv_i32 a32,
+                      int index, MemOp opc)
+ {
+-    gen_aa32_ld_internal_i32(s, val, a32, index, finalize_memop(s, opc));
++    if (!ENABLE_ARCH_6 && !s->align_mem &&
++        (opc & MO_SIZE) == MO_32 && !(opc & MO_AMASK)) {
++        TCGv_i32 addr = tcg_temp_new_i32();
++        TCGv_i32 shift = tcg_temp_new_i32();
++
++        tcg_gen_andi_i32(addr, a32, ~3);
++        tcg_gen_andi_i32(shift, a32, 3);
++        tcg_gen_shli_i32(shift, shift, 3);
++        gen_aa32_ld_internal_i32(s, val, addr, index,
++                                 finalize_memop(s, opc));
++        tcg_gen_rotr_i32(val, val, shift);
++    } else {
++        gen_aa32_ld_internal_i32(s, val, a32, index,
++                                 finalize_memop(s, opc));
++    }
+ }
+ 
+ void gen_aa32_st_i32(DisasContext *s, TCGv_i32 val, TCGv_i32 a32,
+                      int index, MemOp opc)
+ {
+-    gen_aa32_st_internal_i32(s, val, a32, index, finalize_memop(s, opc));
++    if (!ENABLE_ARCH_6 && !s->align_mem &&
++        (opc & MO_SIZE) == MO_32 && !(opc & MO_AMASK)) {
++        TCGv_i32 addr = tcg_temp_new_i32();
++
++        tcg_gen_andi_i32(addr, a32, ~3);
++        gen_aa32_st_internal_i32(s, val, addr, index,
++                                 finalize_memop(s, opc));
++    } else {
++        gen_aa32_st_internal_i32(s, val, a32, index,
++                                 finalize_memop(s, opc));
++    }
+ }
+ 
+ void gen_aa32_ld_i64(DisasContext *s, TCGv_i64 val, TCGv_i32 a32,
