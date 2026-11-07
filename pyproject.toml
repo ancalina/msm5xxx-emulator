@@ -16,6 +16,7 @@ classifiers = [
 dependencies = [
     "Pillow>=10,<13",
     "numpy>=1.26,<3",
+    "capstone>=5,<6",
 ]
 
 [project.scripts]

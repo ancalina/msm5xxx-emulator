@@ -249,6 +249,29 @@ static const hwaddr dmd5100_ports[] = {
 
 struct MSM5xxxPOCMachineState {
     MachineState parent_obj;
+    uint32_t external_ram_base, external_ram_size;
+    uint32_t external_strap_value;
+    bool external_cs09_enabled, external_cs0a_enabled;
+    bool external_window_08c, external_window_1a;
+    bool experimental_contract_status_0b408;
+    bool experimental_contract_window_0b;
+    bool experimental_contract_window_18, experimental_contract_window_1c;
+    bool external_uart, external_uart_tx_log;
+    bool external_lcd_18, external_lcd_1a, external_lcd_1c;
+    bool gpio_ready_bit21;
+    bool experimental_contract_gpio_bit9_low;
+    MemoryRegion gpio_bank_region;
+    MemoryRegion msm_gpio_low_alias, msm_gpio_high_alias;
+    MemoryRegion external_ram, external_cs09, external_cs0a;
+    MemoryRegion external_strap_region;
+    MemoryRegion external_window_region_08c, external_window_region_1a;
+    MemoryRegion experimental_contract_status_0b408_region;
+    MemoryRegion experimental_contract_region_0b;
+    MemoryRegion experimental_contract_region_18, experimental_contract_region_1c;
+    MemoryRegion external_uart_region, external_lcd_region[3];
+    struct { MSM5xxxPOCMachineState *machine; unsigned index; } external_lcd_context[3];
+    uint8_t external_lcd_backing[3][0x1000];
+    uint8_t experimental_contract_status_0b408_backing[2];
 
     ARMCPU *cpu;
     uint32_t reset_callbacks;
@@ -941,6 +964,7 @@ struct MSM5xxxPOCMachineState {
     bool protected_nor_source_enabled;
     uint32_t protected_nor_source[6], protected_nor_source_reason;
     uint64_t protected_nor_source_checks, protected_nor_source_rejections;
+
 };
 
 static bool msm5xxx_24lcxx_flush(MSM5xxx24LCxxState *s)
@@ -1131,6 +1155,7 @@ static gboolean msm5xxx_poc_input_stream_flush(void *unused,
                                                 void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    (void)s;
     int written;
 
     s->matrix_input_ack_watch = 0;
@@ -3394,9 +3419,9 @@ static const MemoryRegionOps msm5xxx_poc_dmd_5500_start_ops = {
     .write = msm5xxx_poc_dmd_5500_start_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
-    .valid.max_access_size = 2,
+    .valid.max_access_size = 4,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 2,
+    .impl.max_access_size = 4,
 };
 
 static const MemoryRegionOps msm5xxx_poc_dmd_5500_completion_ops = {
@@ -10756,6 +10781,10 @@ static uint64_t msm5xxx_poc_raw_nand_control_read(
  * bits retain their output/backing state; stores cannot drive the NAND input.
  * This main-area model completes operations synchronously, so its ready bit
  * follows the same device status returned by command 0x70. */
+static uint64_t msm5xxx_poc_gpio_input_merge(MSM5xxxPOCMachineState *s,
+                                              hwaddr address, uint64_t value,
+                                              unsigned size);
+
 static uint64_t msm5xxx_poc_raw_nand_ready_read(
     void *opaque, hwaddr offset, unsigned size)
 {
@@ -10766,7 +10795,9 @@ static uint64_t msm5xxx_poc_raw_nand_ready_read(
         s->raw_nand_ready_address - MSM5XXX_POC_MSM_BASE + offset, size);
     uint32_t mask = s->raw_nand_ready_mask >> (offset * 8);
 
-    return (value & ~mask) | ((s->raw_nand_status & 0x40) ? mask : 0);
+    value = (value & ~mask) | ((s->raw_nand_status & 0x40) ? mask : 0);
+    return msm5xxx_poc_gpio_input_merge(s,
+        s->raw_nand_ready_address + offset, value, size);
 }
 
 static void msm5xxx_poc_raw_nand_ready_write(
@@ -10774,9 +10805,23 @@ static void msm5xxx_poc_raw_nand_ready_write(
 {
     MSM5xxxPOCMachineState *s = opaque;
     uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    hwaddr address = s->raw_nand_ready_address + offset;
+    uint64_t writable = size >= 8 ? UINT64_MAX :
+                        (UINT64_C(1) << (size * 8)) - 1;
+    uint64_t current;
+
+    if (s->gpio_ready_bit21) {
+        const hwaddr ready_bit = MSM5XXX_POC_MSM_BASE + 0x722;
+        if (address <= ready_bit && address + size > ready_bit) {
+            writable &= ~(UINT64_C(1) << ((ready_bit - address) * 8 + 5));
+        }
+    }
+    current = msm5xxx_poc_backing_read(msm,
+        s->raw_nand_ready_address - MSM5XXX_POC_MSM_BASE + offset, size);
 
     msm5xxx_poc_backing_write(msm,
-        s->raw_nand_ready_address - MSM5XXX_POC_MSM_BASE + offset, value, size);
+        s->raw_nand_ready_address - MSM5XXX_POC_MSM_BASE + offset,
+        (current & ~writable) | (value & writable), size);
 }
 
 static const MemoryRegionOps msm5xxx_poc_raw_nand_ready_ops = {
@@ -10788,6 +10833,25 @@ static const MemoryRegionOps msm5xxx_poc_raw_nand_ready_ops = {
     .impl.min_access_size = 1,
     .impl.max_access_size = 2,
 };
+
+static const MemoryRegionOps msm5xxx_poc_raw_nand_ready_gpio_ops = {
+    .read = msm5xxx_poc_raw_nand_ready_read,
+    .write = msm5xxx_poc_raw_nand_ready_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static const MemoryRegionOps *msm5xxx_poc_raw_nand_ready_ops_for(
+    const MSM5xxxPOCMachineState *s)
+{
+    return s->gpio_ready_bit21 &&
+           s->raw_nand_ready_address == 0x03000720 ?
+           &msm5xxx_poc_raw_nand_ready_gpio_ops :
+           &msm5xxx_poc_raw_nand_ready_ops;
+}
 
 static void msm5xxx_poc_raw_nand_command_write(
     void *opaque, hwaddr offset, uint64_t value, unsigned size)
@@ -12506,19 +12570,22 @@ static MemTxResult msm5xxx_poc_small_nand_ready_read(
     MSM5xxxPOCMachineState *s = opaque;
     uint8_t *backing = memory_region_get_ram_ptr(&s->msm);
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    uint16_t word;
+    uint32_t word;
 
     (void)attrs;
-    if (!size || size > 2 || offset > 2 - size) {
+    if (!size || size > 4 || offset > 4 - size) {
         return MEMTX_ERROR;
     }
     msm5xxx_poc_small_nand_sync(s, now);
     msm5xxx_poc_small_nand_arm(s);
     word = msm5xxx_poc_backing_read(backing,
-        s->small_nand_ready_address - MSM5XXX_POC_MSM_BASE, 2);
+        s->small_nand_ready_address - MSM5XXX_POC_MSM_BASE, 4);
     word = (word & ~s->small_nand_ready_mask) |
            (msm5xxx_nand_ready(&s->small_nand) ? s->small_nand_ready_mask : 0);
-    *value = (word >> (offset * 8)) & (size == 1 ? 0xff : 0xffff);
+    *value = (word >> (offset * 8)) & (size == 4 ? UINT32_MAX :
+        ((UINT32_C(1) << (size * 8)) - 1));
+    *value = msm5xxx_poc_gpio_input_merge(s,
+        s->small_nand_ready_address + offset, *value, size);
     if (s->small_nand_ready_trace_count < 64) {
         s->small_nand_ready_trace_count++;
         msm5xxx_poc_small_nand_trace(s, "ready-read", now,
@@ -12534,20 +12601,24 @@ static MemTxResult msm5xxx_poc_small_nand_ready_write(
     MSM5xxxPOCMachineState *s = opaque;
     uint8_t *backing = memory_region_get_ram_ptr(&s->msm);
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    uint16_t word, writable;
+    uint32_t word, writable;
     hwaddr address = s->small_nand_ready_address - MSM5XXX_POC_MSM_BASE;
 
     (void)attrs;
-    if (!size || size > 2 || offset > 2 - size) {
+    if (!size || size > 4 || offset > 4 - size) {
         return MEMTX_ERROR;
     }
     msm5xxx_poc_small_nand_sync(s, now);
     msm5xxx_poc_small_nand_arm(s);
-    word = msm5xxx_poc_backing_read(backing, address, 2);
-    writable = ((size == 1 ? 0xffu : 0xffffu) << (offset * 8)) &
+    word = msm5xxx_poc_backing_read(backing, address, 4);
+    writable = ((size == 4 ? UINT32_MAX :
+                 (UINT32_C(1) << (size * 8)) - 1) << (offset * 8)) &
                ~s->small_nand_ready_mask;
+    if (s->gpio_ready_bit21) {
+        writable &= ~(UINT32_C(1) << 21);
+    }
     word = (word & ~writable) | ((value << (offset * 8)) & writable);
-    msm5xxx_poc_backing_write(backing, address, word, 2);
+    msm5xxx_poc_backing_write(backing, address, word, 4);
     return MEMTX_OK;
 }
 
@@ -12565,14 +12636,25 @@ static bool msm5xxx_poc_small_nand_conflict(MSM5xxxPOCMachineState *s)
         get_system_memory(), s->small_nand_data, MSM5XXX_SMALL_NAND_WINDOW);
     MemoryRegionSection ready = memory_region_find(
         get_system_memory(), s->small_nand_ready_address, 2);
+    bool gpio_bank_owner = s->gpio_ready_bit21 ||
+                           s->experimental_contract_gpio_bit9_low;
+    bool shared_board_input = gpio_bank_owner &&
+        s->board_status_input_enabled && !s->board_status_input_descriptor &&
+        s->board_status_input_address == 0x03000720 &&
+        s->small_nand_ready_address == 0x03000720;
     bool conflict = s->raw_nand_main_enabled || !s->ram_reserved_size ||
         s->small_nand_data < s->ram_reserved_base ||
         (uint64_t)s->small_nand_data + MSM5XXX_SMALL_NAND_WINDOW >
             (uint64_t)s->ram_reserved_base + s->ram_reserved_size ||
-        data.mr || ready.mr != &s->msm ||
-        !int128_eq(ready.size, int128_make64(2));
+        data.mr ||
+        (shared_board_input ?
+            (ready.mr != &s->board_status_input ||
+             !int128_eq(ready.size, int128_make64(2))) :
+            (ready.mr != &s->msm ||
+             !int128_eq(ready.size, int128_make64(2))));
 
-    /* Require an actual hole and the whole unclaimed GPIO word, not a hidden alias. */
+    /* The data aperture must be a real reserved hole; ready may share the
+     * existing GPIO bank only when its selected input bits are disjoint. */
     memory_region_unref(data.mr);
     memory_region_unref(ready.mr);
     return conflict;
@@ -12652,12 +12734,21 @@ static void msm5xxx_poc_small_nand_init(MachineState *machine,
                           MSM5XXX_SMALL_NAND_WINDOW);
     memory_region_add_subregion_overlap(get_system_memory(), s->small_nand_data,
                                         &s->small_nand_io, 2);
-    memory_region_init_io(&s->small_nand_ready_io, OBJECT(machine),
-                          &msm5xxx_poc_small_nand_ready_ops, s,
-                          "msm5xxx-poc.experimental-small-page-nand-ready", 2);
-    memory_region_add_subregion_overlap(get_system_memory(),
-                                        s->small_nand_ready_address,
-                                        &s->small_nand_ready_io, 2);
+    if (!((s->gpio_ready_bit21 ||
+           s->experimental_contract_gpio_bit9_low) &&
+          s->board_status_input_enabled &&
+          !s->board_status_input_descriptor &&
+          s->board_status_input_address == 0x03000720 &&
+          s->small_nand_ready_address == 0x03000720)) {
+        memory_region_init_io(&s->small_nand_ready_io, OBJECT(machine),
+                              &msm5xxx_poc_small_nand_ready_ops, s,
+                              "msm5xxx-poc.experimental-small-page-nand-ready",
+                              s->gpio_ready_bit21 &&
+                                  s->small_nand_ready_address == 0x03000720 ? 4 : 2);
+        memory_region_add_subregion_overlap(get_system_memory(),
+                                            s->small_nand_ready_address,
+                                            &s->small_nand_ready_io, 2);
+    }
     /* Initial VM reset owns the first FF; avoid a second FF while reset is busy. */
     qemu_register_reset(msm5xxx_poc_small_nand_reset, s);
     warn_report("experimental small-page NAND: virtual x16 512+16-byte pages, "
@@ -14364,6 +14455,317 @@ static bool msm5xxx_poc_configure_whole_primary(MSM5xxxPOCMachineState *s,
     return true;
 }
 
+static uint64_t msm5xxx_poc_external_uart_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    (void)s;
+
+    switch (offset) {
+    case 4: return 1u << 3;          /* transmitter empty, no RX-ready bit */
+    case 16: return 1;               /* transmit-level interrupt */
+    default: return 0;
+    }
+}
+
+static bool msm5xxx_poc_external_uart_configuration_valid(
+    MSM5xxxPOCMachineState *s)
+{
+    const uint64_t external_start = 0x03000b10;
+    const uint64_t external_end = external_start + 0x14;
+    uint64_t console_start = s->uart_console_base;
+    uint64_t console_end = console_start + 0x24;
+
+    if (s->external_uart_tx_log && !s->external_uart) {
+        return false;
+    }
+    return !s->external_uart || !s->uart_console_enabled ||
+           console_start >= external_end || external_start >= console_end;
+}
+
+static void msm5xxx_poc_external_uart_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t byte = value;
+
+    if (offset == 8 && s->external_uart_tx_log) {
+        if (byte >= 0x20 && byte <= 0x7e) {
+            qemu_log_mask(LOG_GUEST_ERROR, "external-uart tx '%c'\n", byte);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "external-uart tx \\x%02x\n", byte);
+        }
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_external_uart_ops = {
+    .read = msm5xxx_poc_external_uart_read,
+    .write = msm5xxx_poc_external_uart_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 1 },
+};
+
+static uint64_t msm5xxx_poc_external_lcd_read(void *opaque, hwaddr offset,
+                                              unsigned size)
+{
+    typeof(((MSM5xxxPOCMachineState *)0)->external_lcd_context[0]) *lcd = opaque;
+
+    if (offset >= 0x1000 || size > 0x1000 - offset) {
+        return 0;
+    }
+    return msm5xxx_poc_backing_read(
+        lcd->machine->external_lcd_backing[lcd->index], offset, size);
+}
+
+static void msm5xxx_poc_external_lcd_write(void *opaque, hwaddr offset,
+                                           uint64_t value, unsigned size)
+{
+    typeof(((MSM5xxxPOCMachineState *)0)->external_lcd_context[0]) *lcd = opaque;
+    hwaddr traced;
+
+    if (offset >= 0x1000 || size > 0x1000 - offset || size > 4) {
+        return;
+    }
+    msm5xxx_poc_backing_write(
+        lcd->machine->external_lcd_backing[lcd->index], offset, value, size);
+    if (size > 2 || !(offset <= 4 ||
+                      offset == 0x78 || offset == 0x80 ||
+                      offset == 0x82 || offset == 0xfa)) {
+        return;
+    }
+    traced = 0x02000000 + offset;
+    if (offset == 0x78) {
+        traced = 0x02000000;
+    } else if (offset == 0x80 || offset == 0x82 || offset == 0xfa) {
+        traced = 0x02000002;
+    }
+    msm5xxx_poc_lcd_trace_write(lcd->machine, traced, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_external_lcd_ops = {
+    .read = msm5xxx_poc_external_lcd_read,
+    .write = msm5xxx_poc_external_lcd_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static uint64_t msm5xxx_poc_gpio_input_merge(MSM5xxxPOCMachineState *s,
+                                              hwaddr address, uint64_t value,
+                                              unsigned size)
+{
+    const hwaddr ready_address = MSM5XXX_POC_MSM_BASE + 0x722;
+    const hwaddr input_address = MSM5XXX_POC_MSM_BASE + 0x721;
+    unsigned bit;
+
+    if (size && size <= 8) {
+        if (s->gpio_ready_bit21 && address <= ready_address &&
+            address + size > ready_address) {
+            bit = (ready_address - address) * 8 + 5;
+            value |= UINT64_C(1) << bit;
+        }
+        if (s->experimental_contract_gpio_bit9_low &&
+            address <= input_address && address + size > input_address) {
+            bit = (input_address - address) * 8 + 1;
+            value &= ~(UINT64_C(1) << bit);
+        }
+    }
+    return value;
+}
+
+static uint64_t msm5xxx_poc_gpio_bank_read(void *opaque, hwaddr offset,
+                                           unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    hwaddr address = MSM5XXX_POC_MSM_BASE + 0x720 + offset;
+    uint64_t value, mask;
+
+    if (offset >= 4 || size == 0 || size > 4 - offset) {
+        return 0;
+    }
+    if (s->small_nand_enabled &&
+        s->small_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
+        uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+        msm5xxx_poc_small_nand_sync(s, now);
+        msm5xxx_poc_small_nand_arm(s);
+    }
+    value = msm5xxx_poc_backing_read(msm, 0x720 + offset, size);
+    mask = size == 8 ? UINT64_MAX : (UINT64_C(1) << (size * 8)) - 1;
+    if (s->board_status_input_enabled &&
+        s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
+        !s->board_status_input_descriptor && !offset && size) {
+        value = (value & ~s->board_status_input_mask) |
+                (s->board_status_input_backing & s->board_status_input_mask);
+    }
+    if (s->raw_nand_main_enabled &&
+        s->raw_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
+        uint32_t ready_mask = s->raw_nand_ready_mask >> (offset * 8);
+        value = (value & ~ready_mask) |
+            ((s->raw_nand_status & 0x40) ? ready_mask : 0);
+    }
+    if (s->small_nand_enabled &&
+        s->small_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
+        uint32_t ready_mask = s->small_nand_ready_mask >> (offset * 8);
+        value = (value & ~ready_mask) |
+            (msm5xxx_nand_ready(&s->small_nand) ? ready_mask : 0);
+    }
+    value &= mask;
+    return msm5xxx_poc_gpio_input_merge(s, address, value, size);
+}
+
+static void msm5xxx_poc_gpio_bank_write(void *opaque, hwaddr offset,
+                                        uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint8_t *msm = memory_region_get_ram_ptr(&s->msm);
+    uint64_t writable, all;
+
+    if (offset >= 4 || size == 0 || size > 4 - offset) {
+        return;
+    }
+    all = (UINT64_C(1) << (size * 8)) - 1;
+    writable = all;
+    if (s->board_status_input_enabled &&
+        s->board_status_input_address == MSM5XXX_POC_MSM_BASE + 0x720 &&
+        !s->board_status_input_descriptor && !offset) {
+        writable &= ~s->board_status_input_mask;
+    }
+    if (s->raw_nand_main_enabled &&
+        s->raw_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
+        writable &= ~((uint64_t)s->raw_nand_ready_mask >> (offset * 8));
+    }
+    if (s->small_nand_enabled &&
+        s->small_nand_ready_address == MSM5XXX_POC_MSM_BASE + 0x720) {
+        writable &= ~((uint64_t)s->small_nand_ready_mask >> (offset * 8));
+    }
+    if (s->gpio_ready_bit21) {
+        const hwaddr ready_byte = MSM5XXX_POC_MSM_BASE + 0x722;
+        hwaddr address = MSM5XXX_POC_MSM_BASE + 0x720 + offset;
+        if (address <= ready_byte && address + size > ready_byte) {
+            writable &= ~(UINT64_C(1) << ((ready_byte - address) * 8 + 5));
+        }
+    }
+    msm5xxx_poc_backing_write(msm, 0x720 + offset,
+        (msm5xxx_poc_backing_read(msm, 0x720 + offset, size) & ~writable) |
+        (value & writable), size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_gpio_bank_ops = {
+    .read = msm5xxx_poc_gpio_bank_read,
+    .write = msm5xxx_poc_gpio_bank_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static uint64_t msm5xxx_poc_experimental_status_read(void *opaque,
+                                                      hwaddr offset,
+                                                      unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset > sizeof(s->experimental_contract_status_0b408_backing) ||
+        size > sizeof(s->experimental_contract_status_0b408_backing) - offset) {
+        return 0;
+    }
+    return msm5xxx_poc_backing_read(
+        s->experimental_contract_status_0b408_backing, offset, size);
+}
+
+static void msm5xxx_poc_experimental_status_write(void *opaque, hwaddr offset,
+                                                  uint64_t value,
+                                                  unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset > sizeof(s->experimental_contract_status_0b408_backing) ||
+        size > sizeof(s->experimental_contract_status_0b408_backing) - offset) {
+        return;
+    }
+    msm5xxx_poc_backing_write(s->experimental_contract_status_0b408_backing,
+                              offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_experimental_status_ops = {
+    .read = msm5xxx_poc_experimental_status_read,
+    .write = msm5xxx_poc_experimental_status_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 2, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 2, .unaligned = true },
+};
+
+#define EXTERNAL_U32_PROPERTY(suffix, field, limit, message) \
+static void msm5xxx_poc_get_##suffix(Object *obj, Visitor *v, \
+    const char *propname, void *opaque, Error **errp) \
+{ \
+    uint32_t value = MSM5XXX_POC_MACHINE(obj)->field; \
+    visit_type_uint32(v, propname, &value, errp); \
+} \
+static void msm5xxx_poc_set_##suffix(Object *obj, Visitor *v, \
+    const char *propname, void *opaque, Error **errp) \
+{ \
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj); \
+    uint32_t value; \
+    if (!visit_type_uint32(v, propname, &value, errp)) { return; } \
+    if (s->msm.name || ((limit) && value > (limit))) { \
+        error_setg(errp, message); \
+        return; \
+    } \
+    s->field = value; \
+}
+
+EXTERNAL_U32_PROPERTY(external_ram_base, external_ram_base, 0,
+                      "external-ram-base must be set before realization")
+EXTERNAL_U32_PROPERTY(external_ram_size, external_ram_size, UINT32_MAX,
+                      "external-ram-size must be set before realization")
+EXTERNAL_U32_PROPERTY(external_strap_value, external_strap_value, UINT8_MAX,
+                      "external-strap-value must be a byte set before realization")
+
+#define EXTERNAL_BOOL_PROPERTY(suffix, field) \
+static bool msm5xxx_poc_get_##suffix(Object *obj, Error **errp) \
+{ return MSM5XXX_POC_MACHINE(obj)->field; } \
+static void msm5xxx_poc_set_##suffix(Object *obj, bool value, Error **errp) \
+{ \
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj); \
+    if (s->msm.name) { error_setg(errp, #suffix " must be set before realization"); return; } \
+    s->field = value; \
+}
+
+EXTERNAL_BOOL_PROPERTY(external_cs09, external_cs09_enabled)
+EXTERNAL_BOOL_PROPERTY(external_cs0a, external_cs0a_enabled)
+EXTERNAL_BOOL_PROPERTY(external_window_08c, external_window_08c)
+EXTERNAL_BOOL_PROPERTY(external_window_1a, external_window_1a)
+EXTERNAL_BOOL_PROPERTY(experimental_contract_status_0b408,
+                       experimental_contract_status_0b408)
+EXTERNAL_BOOL_PROPERTY(experimental_contract_window_0b,
+                       experimental_contract_window_0b)
+EXTERNAL_BOOL_PROPERTY(experimental_contract_window_18,
+                       experimental_contract_window_18)
+EXTERNAL_BOOL_PROPERTY(experimental_contract_window_1c,
+                       experimental_contract_window_1c)
+EXTERNAL_BOOL_PROPERTY(external_uart, external_uart)
+EXTERNAL_BOOL_PROPERTY(external_uart_tx_log, external_uart_tx_log)
+EXTERNAL_BOOL_PROPERTY(external_lcd_18, external_lcd_18)
+EXTERNAL_BOOL_PROPERTY(external_lcd_1a, external_lcd_1a)
+EXTERNAL_BOOL_PROPERTY(external_lcd_1c, external_lcd_1c)
+EXTERNAL_BOOL_PROPERTY(gpio_ready_bit21, gpio_ready_bit21)
+EXTERNAL_BOOL_PROPERTY(experimental_contract_gpio_bit9_low,
+                       experimental_contract_gpio_bit9_low)
+
+static bool msm5xxx_poc_external_ram_overlaps(MSM5xxxPOCMachineState *s,
+                                               uint32_t base,
+                                               uint32_t size)
+{
+    uint64_t ram_end = (uint64_t)s->external_ram_base + s->external_ram_size;
+    uint64_t window_end = (uint64_t)base + size;
+
+    return s->external_ram_size && s->external_ram_base < window_end &&
+           base < ram_end;
+}
+
 static void msm5xxx_poc_init(MachineState *machine)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(machine);
@@ -15187,6 +15589,218 @@ static void msm5xxx_poc_init(MachineState *machine)
                            MSM5XXX_POC_MSM_SIZE, &error_fatal);
     memory_region_add_subregion(get_system_memory(), MSM5XXX_POC_MSM_BASE,
                                 &s->msm);
+    if (!!s->external_ram_base != !!s->external_ram_size ||
+        (s->external_ram_size &&
+         ((uint64_t)s->external_ram_base + s->external_ram_size >
+          (UINT64_C(1) << 32) || (s->external_ram_base & 0xfff) ||
+          (s->external_ram_size & 0xfff)))) {
+        error_report("external RAM requires aligned nonzero base and size within the 32-bit bus");
+        exit(EXIT_FAILURE);
+    }
+    if (s->external_ram_size) {
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), s->external_ram_base, s->external_ram_size);
+        bool conflict = section.mr != NULL;
+
+        memory_region_unref(section.mr);
+        if (conflict) {
+            error_report("external RAM overlaps a machine or external-device window");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_ram(&s->external_ram, NULL,
+            "msm5xxx-poc.external-ram", s->external_ram_size, &error_fatal);
+        memory_region_add_subregion(get_system_memory(), s->external_ram_base,
+                                    &s->external_ram);
+    }
+    {
+        const struct { hwaddr base; uint64_t size; bool enabled; } windows[] = {
+            { 0x09000000, 0x1000, s->external_cs09_enabled },
+            { 0x0a000000, 0x1000, s->external_cs0a_enabled },
+            { 0x09000070, 1, s->external_strap_value && !s->external_cs09_enabled },
+            { 0x08c00000, 0x1000, s->external_window_08c },
+            { 0x1a000000, 0x1000, s->external_window_1a || s->external_lcd_1a },
+            { 0x0b000408, 2, s->experimental_contract_status_0b408 },
+            { 0x0b000000, 0x1000, s->experimental_contract_window_0b },
+            { 0x18000000, 0x1000, s->experimental_contract_window_18 || s->external_lcd_18 },
+            { 0x1c000000, 0x1000, s->experimental_contract_window_1c || s->external_lcd_1c },
+        };
+
+        for (i = 0; i < ARRAY_SIZE(windows); i++) {
+            MemoryRegionSection section;
+            bool conflict;
+
+            if (!windows[i].enabled) {
+                continue;
+            }
+            section = memory_region_find(get_system_memory(), windows[i].base,
+                                         windows[i].size);
+            conflict = section.mr != NULL;
+            memory_region_unref(section.mr);
+            if (conflict) {
+                error_report("external window at 0x%08" HWADDR_PRIx
+                             " conflicts with another memory owner",
+                             windows[i].base);
+                exit(EXIT_FAILURE);
+            }
+            if (msm5xxx_poc_external_ram_overlaps(s, windows[i].base,
+                                                  windows[i].size)) {
+                error_report("external RAM overlaps an external window");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    if (s->external_cs09_enabled) {
+        memory_region_init_ram(&s->external_cs09, NULL,
+            "msm5xxx-poc.external-cs09", 0x1000, &error_fatal);
+        memory_region_add_subregion(get_system_memory(), 0x09000000,
+                                    &s->external_cs09);
+    }
+    if (s->external_cs0a_enabled) {
+        memory_region_init_ram(&s->external_cs0a, NULL,
+            "msm5xxx-poc.external-cs0a", 0x1000, &error_fatal);
+        memory_region_add_subregion(get_system_memory(), 0x0a000000,
+                                    &s->external_cs0a);
+    }
+    if (s->external_strap_value) {
+        if (s->external_cs09_enabled) {
+            ((uint8_t *)memory_region_get_ram_ptr(&s->external_cs09))[0x70] =
+                s->external_strap_value;
+        } else {
+            memory_region_init_ram(&s->external_strap_region, NULL,
+                "msm5xxx-poc.external-strap", 1, &error_fatal);
+            *(uint8_t *)memory_region_get_ram_ptr(&s->external_strap_region) =
+                s->external_strap_value;
+            memory_region_add_subregion(get_system_memory(), 0x09000070,
+                                        &s->external_strap_region);
+        }
+    }
+    if (s->external_window_08c) {
+        memory_region_init_ram(&s->external_window_region_08c, NULL,
+            "msm5xxx-poc.external-window-08c", 0x1000, &error_fatal);
+        memory_region_add_subregion(get_system_memory(), 0x08c00000,
+                                    &s->external_window_region_08c);
+    }
+    if (s->external_window_1a) {
+        memory_region_init_ram(&s->external_window_region_1a, NULL,
+            "msm5xxx-poc.external-window-1a", 0x1000, &error_fatal);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x1a000000,
+                                            &s->external_window_region_1a, -100);
+    }
+    if (s->experimental_contract_window_0b) {
+        memory_region_init_ram(&s->experimental_contract_region_0b, NULL,
+            "msm5xxx-poc.experimental-contract-window-0b", 0x1000,
+            &error_fatal);
+        memory_region_add_subregion(get_system_memory(), 0x0b000000,
+                                    &s->experimental_contract_region_0b);
+    }
+    if (s->experimental_contract_status_0b408) {
+        memory_region_init_io(&s->experimental_contract_status_0b408_region,
+            OBJECT(machine), &msm5xxx_poc_experimental_status_ops, s,
+            "msm5xxx-poc.experimental-contract-status-0b408", 2);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x0b000408,
+            &s->experimental_contract_status_0b408_region, 50);
+    }
+    if (s->experimental_contract_window_18) {
+        memory_region_init_ram(&s->experimental_contract_region_18, NULL,
+            "msm5xxx-poc.experimental-contract-window-18", 0x1000,
+            &error_fatal);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x18000000,
+                                            &s->experimental_contract_region_18, -100);
+    }
+    if (s->experimental_contract_window_1c) {
+        memory_region_init_ram(&s->experimental_contract_region_1c, NULL,
+            "msm5xxx-poc.experimental-contract-window-1c", 0x1000,
+            &error_fatal);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x1c000000,
+                                            &s->experimental_contract_region_1c, -100);
+    }
+    if (s->external_uart_tx_log && !s->external_uart) {
+        error_report("external UART TX logging requires external-uart=on");
+        exit(EXIT_FAILURE);
+    }
+    if (!msm5xxx_poc_external_uart_configuration_valid(s)) {
+        error_report("external UART aperture conflicts with uart-console");
+        exit(EXIT_FAILURE);
+    }
+    if (s->external_uart) {
+        memory_region_init_io(&s->external_uart_region, OBJECT(machine),
+            &msm5xxx_poc_external_uart_ops, s,
+            "msm5xxx-poc.external-uart", 0x14);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x03000b10,
+                                            &s->external_uart_region, 50);
+    }
+    {
+        static const uint32_t bases[] = { 0x18000000, 0x1c000000, 0x1a000000 };
+        static const char *names[] = {
+            "msm5xxx-poc.external-lcd-18",
+            "msm5xxx-poc.external-lcd-1c",
+            "msm5xxx-poc.external-lcd-1a"
+        };
+        const bool enabled[] = { s->external_lcd_18, s->external_lcd_1c,
+                                 s->external_lcd_1a };
+        for (i = 0; i < ARRAY_SIZE(bases); i++) {
+            if (enabled[i]) {
+                s->external_lcd_context[i].machine = s;
+                s->external_lcd_context[i].index = i;
+                memory_region_init_io(&s->external_lcd_region[i], OBJECT(machine),
+                    &msm5xxx_poc_external_lcd_ops,
+                    &s->external_lcd_context[i], names[i], 0x1000);
+                memory_region_add_subregion_overlap(get_system_memory(), bases[i],
+                                                    &s->external_lcd_region[i], 50);
+            }
+        }
+    }
+    if (s->gpio_ready_bit21 || s->experimental_contract_gpio_bit9_low) {
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), 0x03000720, 4);
+        uint64_t board_status_size = s->board_status_input_descriptor ? 2 : 1;
+        bool board_status_overlap = s->board_status_input_enabled &&
+            s->board_status_input_address < 0x03000724 &&
+            (uint64_t)s->board_status_input_address + board_status_size >
+                0x03000720;
+        bool conflict = section.mr != &s->msm ||
+                        !int128_eq(section.size, int128_make64(4)) ||
+            (s->raw_nand_ready_address &&
+             s->raw_nand_ready_address < 0x03000724 &&
+             (uint64_t)s->raw_nand_ready_address + 2 > 0x03000720 &&
+             s->raw_nand_ready_address != 0x03000720) ||
+            (s->small_nand_ready_address &&
+             s->small_nand_ready_address < 0x03000724 &&
+             (uint64_t)s->small_nand_ready_address + 2 > 0x03000720 &&
+             s->small_nand_ready_address != 0x03000720) ||
+            (board_status_overlap &&
+             (s->board_status_input_address != 0x03000720 ||
+              s->board_status_input_descriptor)) ||
+            (s->experimental_contract_gpio_bit9_low &&
+             s->small_nand_enabled &&
+             s->small_nand_ready_address == 0x03000720 &&
+             (s->small_nand_ready_mask & 0x200)) ||
+            (s->experimental_contract_gpio_bit9_low &&
+             s->board_status_input_enabled &&
+             s->board_status_input_address == 0x03000721 &&
+             (s->board_status_input_mask & 2)) ||
+            (s->experimental_contract_gpio_bit9_low &&
+             s->board_status_input_enabled &&
+             s->board_status_input_address == 0x03000720 &&
+             (s->board_status_input_mask & 0x200)) ||
+            (s->board_revision_enabled && s->board_revision_address < 0x03000724 &&
+             (uint64_t)s->board_revision_address + 4 > 0x03000720) ||
+            (s->eeprom_gpio_enabled && s->eeprom_gpio_base < 0x03000724 &&
+             (uint64_t)s->eeprom_gpio_base + MSM5XXX_POC_EEPROM_GPIO_SIZE >
+                0x03000720) ||
+            s->matrix_input_loop || s->matrix_input_kp_low5 ||
+            s->matrix_input_sv130_low5 || s->matrix_input_row734 ||
+            (s->ready_poll_enabled &&
+             (s->ready_status_address == 0x03000720 ||
+              s->ready_pulse_address == 0x03000720 ||
+              (s->ready_poll_control_enabled &&
+               s->ready_control_address == 0x03000720)));
+        memory_region_unref(section.mr);
+        if (conflict) {
+            error_report("GPIO input contract conflicts with another GPIO owner");
+            exit(EXIT_FAILURE);
+        }
+    }
     if (s->ma5_irq_configured) {
         /* Target-rate clocks qualify only after guest PLL writes infer CLKI. */
         if (!s->ma5_byte_ns || (!s->ma5_clki_hz && !s->ma5_target_rate_hz) ||
@@ -15619,15 +16233,70 @@ static void msm5xxx_poc_init(MachineState *machine)
         s->board_status_input_backing =
             s->board_status_input_level & s->board_status_input_mask;
         memory_region_init_io(&s->board_status_input, OBJECT(machine),
+                              ((s->gpio_ready_bit21 ||
+                                s->experimental_contract_gpio_bit9_low) &&
+                               s->board_status_input_address ==
+                                   MSM5XXX_POC_MSM_BASE + 0x720) ?
+                                  &msm5xxx_poc_gpio_bank_ops :
                               s->board_status_input_descriptor ?
                                   &msm5xxx_poc_board_status_halfword_ops :
                                   &msm5xxx_poc_board_status_input_ops, s,
                               "msm5xxx-poc.board-status-input",
+                              ((s->gpio_ready_bit21 ||
+                                s->experimental_contract_gpio_bit9_low) &&
+                               s->board_status_input_address ==
+                                   MSM5XXX_POC_MSM_BASE + 0x720) ? 4 :
                               s->board_status_input_descriptor ? 2 : 1);
         memory_region_add_subregion_overlap(
             get_system_memory(), s->board_status_input_address,
             &s->board_status_input, 2
         );
+    }
+    if ((s->gpio_ready_bit21 || s->experimental_contract_gpio_bit9_low) &&
+        !(s->board_status_input_enabled &&
+          s->board_status_input_address == 0x03000720 &&
+          !s->board_status_input_descriptor) &&
+        !(s->raw_nand_main_enabled &&
+          s->raw_nand_ready_address == 0x03000720) &&
+        !(s->small_nand_enabled &&
+          s->small_nand_ready_address == 0x03000720)) {
+        uint64_t primary_start = s->ram_base;
+        bool primary_ram_overlaps_msm = machine->ram_size &&
+            primary_start < (uint64_t)MSM5XXX_POC_MSM_BASE +
+                            MSM5XXX_POC_MSM_SIZE &&
+            (primary_start >= MSM5XXX_POC_MSM_BASE ||
+             machine->ram_size >
+                 (uint64_t)MSM5XXX_POC_MSM_BASE - primary_start);
+
+        /* Unprofiled overlapping RAM would outrank the late MSM aliases. */
+        if (!s->memory_profile_enabled && primary_ram_overlaps_msm) {
+            error_report("generic GPIO inputs require non-overlapping primary RAM "
+                         "without memory-profile");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_transaction_begin();
+        /* Keep RAM direct outside the selected GPIO input aperture. */
+        memory_region_del_subregion(get_system_memory(), &s->msm);
+        memory_region_init_alias(&s->msm_gpio_low_alias, OBJECT(machine),
+                                 "msm5xxx-poc.msm-gpio-low", &s->msm,
+                                 0, 0x720);
+        memory_region_init_alias(&s->msm_gpio_high_alias, OBJECT(machine),
+                                 "msm5xxx-poc.msm-gpio-high", &s->msm,
+                                 0x724, MSM5XXX_POC_MSM_SIZE - 0x724);
+        /* Keep late RAM aliases below earlier MMIO owners in priority. */
+        memory_region_add_subregion_overlap(
+            get_system_memory(), MSM5XXX_POC_MSM_BASE,
+            &s->msm_gpio_low_alias, -1);
+        memory_region_add_subregion_overlap(get_system_memory(),
+                                            MSM5XXX_POC_MSM_BASE + 0x724,
+                                            &s->msm_gpio_high_alias, -1);
+        memory_region_init_io(&s->gpio_bank_region, OBJECT(machine),
+                              &msm5xxx_poc_gpio_bank_ops, s,
+                              "msm5xxx-poc.gpio-bank", 4);
+        memory_region_add_subregion(get_system_memory(),
+                                    MSM5XXX_POC_MSM_BASE + 0x720,
+                                    &s->gpio_bank_region);
+        memory_region_transaction_commit();
     }
     if (s->board_status_input_enabled &&
         (!s->matrix_input_enabled || s->matrix_input_low5) &&
@@ -16318,7 +16987,10 @@ static void msm5xxx_poc_init(MachineState *machine)
         s->raw_nand_data_address == MSM5XXX_POC_RAW_NAND_MIDDLE_DATA_BASE) {
         MemoryRegionSection section;
         bool conflict;
-        bool shared_board_input = s->board_status_input_enabled &&
+        bool gpio_bank_owner = s->gpio_ready_bit21 ||
+                               s->experimental_contract_gpio_bit9_low;
+        bool shared_board_input = gpio_bank_owner &&
+            s->board_status_input_enabled &&
             !s->board_status_input_descriptor &&
             ((s->board_status_input_address == 0x03000720 &&
               s->board_status_input_mask == 4 &&
@@ -16345,14 +17017,17 @@ static void msm5xxx_poc_init(MachineState *machine)
                                      s->raw_nand_ready_address, 2);
         conflict = shared_board_input ?
             (section.mr != &s->board_status_input ||
-             !int128_eq(section.size, int128_make64(1))) :
+             !int128_eq(section.size, int128_make64(
+                 gpio_bank_owner && s->raw_nand_ready_address == 0x03000720 ?
+                     2 : 1))) :
             (section.mr != &s->msm ||
              !int128_eq(section.size, int128_make64(2)));
         memory_region_unref(section.mr);
         if (!conflict && shared_board_input) {
             section = memory_region_find(get_system_memory(),
                                          s->raw_nand_ready_address + 1, 1);
-            conflict = section.mr != &s->msm ||
+            conflict = section.mr != (gpio_bank_owner ?
+                                       &s->board_status_input : &s->msm) ||
                        !int128_eq(section.size, int128_make64(1));
             memory_region_unref(section.mr);
         }
@@ -16360,11 +17035,16 @@ static void msm5xxx_poc_init(MachineState *machine)
             error_report("middle raw NAND ready input conflicts with another GPIO owner");
             exit(EXIT_FAILURE);
         }
-        memory_region_init_io(&s->raw_nand_ready, OBJECT(machine),
-                              &msm5xxx_poc_raw_nand_ready_ops, s,
-                              "msm5xxx-poc.raw-nand-ready", 2);
-        memory_region_add_subregion_overlap(get_system_memory(),
-            s->raw_nand_ready_address, &s->raw_nand_ready, 1);
+        if (!(gpio_bank_owner && shared_board_input &&
+              s->raw_nand_ready_address == 0x03000720)) {
+            memory_region_init_io(&s->raw_nand_ready, OBJECT(machine),
+                                  msm5xxx_poc_raw_nand_ready_ops_for(s), s,
+                                  "msm5xxx-poc.raw-nand-ready",
+                                  s->gpio_ready_bit21 &&
+                                      s->raw_nand_ready_address == 0x03000720 ? 4 : 2);
+            memory_region_add_subregion_overlap(get_system_memory(),
+                s->raw_nand_ready_address, &s->raw_nand_ready, 1);
+        }
     }
     if (s->board_status_peer_address) {
         MemoryRegionSection section = memory_region_find(
@@ -20410,6 +21090,91 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                  msm5xxx_poc_set_uart2_tx_ready);
     object_class_property_set_description(oc, "uart2-tx-ready",
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add(oc, "external-ram-base", "uint32",
+        msm5xxx_poc_get_external_ram_base,
+        msm5xxx_poc_set_external_ram_base, NULL, NULL);
+    object_class_property_set_description(oc, "external-ram-base",
+        "Base address of optional detector-selected external RAM");
+    object_class_property_add(oc, "external-ram-size", "uint32",
+        msm5xxx_poc_get_external_ram_size,
+        msm5xxx_poc_set_external_ram_size, NULL, NULL);
+    object_class_property_set_description(oc, "external-ram-size",
+        "Byte size of optional external RAM; zero disables the bank");
+    object_class_property_add(oc, "external-strap-value", "uint32",
+        msm5xxx_poc_get_external_strap_value,
+        msm5xxx_poc_set_external_strap_value, NULL, NULL);
+    object_class_property_set_description(oc, "external-strap-value",
+        "Experimental contract: initial value at 0x09000070; maps only that byte unless external-cs09 is selected");
+    object_class_property_add_bool(oc, "external-cs09",
+        msm5xxx_poc_get_external_cs09, msm5xxx_poc_set_external_cs09);
+    object_class_property_set_description(oc, "external-cs09",
+        "Experimental contract: enable the 4 KiB 0x09000000 chip-select RAM window");
+    object_class_property_add_bool(oc, "external-cs0a",
+        msm5xxx_poc_get_external_cs0a, msm5xxx_poc_set_external_cs0a);
+    object_class_property_set_description(oc, "external-cs0a",
+        "Experimental contract: enable the 4 KiB 0x0a000000 chip-select RAM window");
+    object_class_property_add_bool(oc, "external-window-08c",
+        msm5xxx_poc_get_external_window_08c,
+        msm5xxx_poc_set_external_window_08c);
+    object_class_property_set_description(oc, "external-window-08c",
+        "Experimental contract: zero-initialized 4 KiB read/write storage at 0x08c00000");
+    object_class_property_add_bool(oc, "external-window-1a",
+        msm5xxx_poc_get_external_window_1a,
+        msm5xxx_poc_set_external_window_1a);
+    object_class_property_set_description(oc, "external-window-1a",
+        "Experimental contract: enable the 4 KiB 0x1a000000 chip-select RAM window");
+    object_class_property_add_bool(oc, "experimental-contract-status-0b408",
+        msm5xxx_poc_get_experimental_contract_status_0b408,
+        msm5xxx_poc_set_experimental_contract_status_0b408);
+    object_class_property_set_description(oc, "experimental-contract-status-0b408",
+        "Experimental contract: zero-initialized 2-byte read/write storage at 0x0b000408");
+    object_class_property_add_bool(oc, "experimental-contract-window-0b",
+        msm5xxx_poc_get_experimental_contract_window_0b,
+        msm5xxx_poc_set_experimental_contract_window_0b);
+    object_class_property_set_description(oc, "experimental-contract-window-0b",
+        "Experimental contract: enable 4 KiB read/write RAM at 0x0b000000");
+    object_class_property_add_bool(oc, "experimental-contract-window-18",
+        msm5xxx_poc_get_experimental_contract_window_18,
+        msm5xxx_poc_set_experimental_contract_window_18);
+    object_class_property_set_description(oc, "experimental-contract-window-18",
+        "Experimental contract: enable 4 KiB read/write RAM at 0x18000000");
+    object_class_property_add_bool(oc, "experimental-contract-window-1c",
+        msm5xxx_poc_get_experimental_contract_window_1c,
+        msm5xxx_poc_set_experimental_contract_window_1c);
+    object_class_property_set_description(oc, "experimental-contract-window-1c",
+        "Experimental contract: enable 4 KiB read/write RAM at 0x1c000000");
+    object_class_property_add_bool(oc, "external-uart",
+        msm5xxx_poc_get_external_uart, msm5xxx_poc_set_external_uart);
+    object_class_property_set_description(oc, "external-uart",
+        "Experimental UART contract at 0x03000b10: RX empty, TX empty, TX level");
+    object_class_property_add_bool(oc, "external-uart-tx-log",
+        msm5xxx_poc_get_external_uart_tx_log,
+        msm5xxx_poc_set_external_uart_tx_log);
+    object_class_property_set_description(oc, "external-uart-tx-log",
+        "Log UART transmit bytes using printable characters or escaped hex");
+    object_class_property_add_bool(oc, "external-lcd-18",
+        msm5xxx_poc_get_external_lcd_18, msm5xxx_poc_set_external_lcd_18);
+    object_class_property_set_description(oc, "external-lcd-18",
+        "Experimental contract: route the 0x18000000 panel bus into the existing LCD trace stream");
+    object_class_property_add_bool(oc, "external-lcd-1a",
+        msm5xxx_poc_get_external_lcd_1a, msm5xxx_poc_set_external_lcd_1a);
+    object_class_property_set_description(oc, "external-lcd-1a",
+        "Experimental contract: route the 0x1a000000 panel bus into the existing LCD trace stream");
+    object_class_property_add_bool(oc, "external-lcd-1c",
+        msm5xxx_poc_get_external_lcd_1c, msm5xxx_poc_set_external_lcd_1c);
+    object_class_property_set_description(oc, "external-lcd-1c",
+        "Experimental contract: route the 0x1c000000 panel bus into the existing LCD trace stream");
+    object_class_property_add_bool(oc, "gpio-ready-bit21",
+        msm5xxx_poc_get_gpio_ready_bit21,
+        msm5xxx_poc_set_gpio_ready_bit21);
+    object_class_property_set_description(oc, "gpio-ready-bit21",
+        "Experimental contract: supply GPIO bit 21 at 0x03000720 through the existing GPIO bank owner");
+    object_class_property_add_bool(oc, "experimental-contract-gpio-bit9-low",
+        msm5xxx_poc_get_experimental_contract_gpio_bit9_low,
+        msm5xxx_poc_set_experimental_contract_gpio_bit9_low);
+    object_class_property_set_description(oc,
+        "experimental-contract-gpio-bit9-low",
+        "Experimental contract: read GPIO 0x03000720 bit 9 low through its existing owner; guest writes and backing are preserved");
     object_class_property_add_bool(oc, "direct-lcd",
                                   msm5xxx_poc_get_direct_lcd,
                                   msm5xxx_poc_set_direct_lcd);

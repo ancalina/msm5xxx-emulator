@@ -2928,6 +2928,116 @@ def qemu_loaded_uart_console_property(
     return wire, None
 
 
+EXTERNAL_BUS_BOOLEAN_PROPERTIES = frozenset((
+    "external-cs09", "external-cs0a", "external-window-08c", "external-window-1a",
+    "experimental-contract-status-0b408", "experimental-contract-window-0b",
+    "experimental-contract-window-18", "experimental-contract-window-1c",
+    "external-uart", "external-uart-tx-log", "external-lcd-18",
+    "external-lcd-1a", "external-lcd-1c", "gpio-ready-bit21",
+    "experimental-contract-gpio-bit9-low",
+))
+EXTERNAL_BUS_INTEGER_PROPERTIES = frozenset((
+    "external-ram-base", "external-ram-size", "external-strap-value",
+))
+
+
+def qemu_external_bus_property(profile: object, image: bytes,
+                               ram_base: int, ram_size: int,
+                               loaded_image: bytes | None = None,
+                               reserved_ram: tuple[int, int] | None = None
+                               ) -> tuple[str | None, str | None]:
+    """Validate and serialize the detector's final plan without selecting devices."""
+    if profile is None:
+        return None, None
+    if not isinstance(profile, dict) or type(profile.get("version")) is not int or profile["version"] != 1:
+        return None, "invalid-plan-version"
+    reservations = [] if reserved_ram is None else [list(reserved_ram)]
+    context = {"ram_base": ram_base, "ram_size": ram_size,
+               "reserved_ram": reservations}
+    if profile.get("memory_context") != context:
+        return None, "memory-context-mismatch"
+    properties = profile.get("machine_properties")
+    if not isinstance(properties, dict):
+        return None, "invalid-machine-properties"
+    if not all(isinstance(name, str) for name in properties):
+        return None, "invalid-machine-properties"
+    capabilities = profile.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return None, "invalid-capabilities"
+    claims = {
+        "external-cs09": "external_cs09", "external-cs0a": "external_cs0a",
+        "external-window-08c": "window_08c", "external-window-1a": "window_1a",
+        "experimental-contract-status-0b408": "status_0b000408",
+        "experimental-contract-window-0b": "window_0b",
+        "experimental-contract-window-18": "window_18",
+        "experimental-contract-window-1c": "window_1c",
+        "external-uart": "boot_uart", "external-uart-tx-log": "boot_uart",
+        "external-lcd-18": "lcd_trace_18", "external-lcd-1a": "lcd_trace_1a",
+        "external-lcd-1c": "lcd_trace_1c", "gpio-ready-bit21": "gpio_ready_bit21",
+        "experimental-contract-gpio-bit9-low": "boot_gpio_bit9",
+        "external-ram-base": "external_ram", "external-ram-size": "external_ram",
+        "external-strap-value": "strap_bit2",
+    }
+    rendered = []
+    for name, value in sorted(properties.items()):
+        if name in EXTERNAL_BUS_BOOLEAN_PROPERTIES:
+            if type(value) is not bool:
+                return None, "invalid-boolean-property"
+            if value:
+                rendered.append(f"{name}=on")
+        elif name in EXTERNAL_BUS_INTEGER_PROPERTIES:
+            if type(value) is not int or not 0 <= value <= 0xffffffff:
+                return None, "invalid-integer-property"
+            rendered.append(f"{name}={value}")
+        else:
+            return None, "unknown-machine-property"
+        if value:
+            capability = capabilities.get(claims[name])
+            if (not isinstance(capability, dict)
+                    or capability.get("status") != "experimental-contract"
+                    or not isinstance(capability.get("evidence"), list)
+                    or not capability["evidence"]
+                    or not all(isinstance(item, dict) for item in capability["evidence"])):
+                return None, "missing-property-capability"
+            parameters = capability.get("parameters")
+            if not isinstance(parameters, dict):
+                return None, "invalid-capability-parameters"
+            if name in ("external-ram-base", "external-ram-size"):
+                allocation = parameters.get("allocation")
+                if (not isinstance(allocation, (list, tuple)) or len(allocation) != 2
+                        or value != allocation[name == "external-ram-size"]):
+                    return None, "ram-allocation-mismatch"
+            elif name == "external-strap-value" and value != parameters.get("value"):
+                return None, "strap-value-mismatch"
+    base, size = properties.get("external-ram-base", 0), properties.get("external-ram-size", 0)
+    if (bool(base) != bool(size) or (base | size) & 0xfff
+            or base + size > 0x100000000):
+        return None, "invalid-external-ram-allocation"
+    if properties.get("external-uart-tx-log") and not properties.get("external-uart"):
+        return None, "uart-log-without-uart"
+    if "external-strap-value" in properties and not 0 < properties["external-strap-value"] <= 0xff:
+        return None, "invalid-strap-value"
+    guards = profile.get("source_guards")
+    if not isinstance(guards, list) or not guards:
+        return None, "missing-source-guards"
+    for guard in guards:
+        if not isinstance(guard, dict):
+            return None, "invalid-source-guard"
+        start, end, expected = guard.get("start"), guard.get("end"), guard.get("expected")
+        if (type(start) is not int or type(end) is not int or not isinstance(expected, str)
+                or not 0 <= start < end <= len(image)):
+            return None, "invalid-source-guard"
+        try:
+            expected = bytes.fromhex(expected)
+        except ValueError:
+            return None, "invalid-source-guard"
+        if len(expected) != end - start or image[start:end] != expected:
+            return None, "source-guard-mismatch"
+        if loaded_image is not None and loaded_image[start:end] != expected:
+            return None, "loaded-source-guard-mismatch"
+    return ",".join(rendered) or None, None
+
+
 def qemu_watchdog_property(profile: object, image: bytes) -> tuple[str | None, str | None]:
     """Emit only a profile independently reproduced from the loaded firmware."""
     if profile is None:
@@ -5892,6 +6002,25 @@ class Transport:
                 f"QEMU DMD5500 bridge rejected: {dmd_5500_reject}; "
                 "native fallback retained"
             )
+        external_image = detector_image[:self.config.flash_size]
+        external_property, external_reject = qemu_external_bus_property(
+            self.config.external_bus, external_image,
+            self.config.ram_base, self.config.ram_size,
+            primary_seed[:len(external_image)],
+            ((self.config.ram_bootstrap_profile['reserved_base'],
+              self.config.ram_bootstrap_profile['reserved_size'])
+             if ram_reserved is not None else None),
+        )
+        if external_property is not None:
+            machine += "," + external_property
+        elif external_reject is not None:
+            for channel in (lcd_listener, input_listener, gdb_listener,
+                            audio_listener, audio_host_socket, audio_qemu_socket):
+                if channel is not None:
+                    channel.close()
+            self.decoder.close()
+            self.temporary.cleanup()
+            raise ValueError(f"QEMU external bus plan rejected: {external_reject}")
         watchdog_property, watchdog_reject = qemu_watchdog_property(
             getattr(self.config, "watchdog", None), primary_seed
         )

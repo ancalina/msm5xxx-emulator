@@ -12,14 +12,24 @@ class MiddleNandNativeTests(unittest.TestCase):
         source = (root / 'native/qemu/msm5xxx-poc.c').read_text()
 
         def function(name):
-            match = re.search(r'^static [^\n]*(?:\n[^\n]*)?\b' + name + r'\(', source, re.M)
+            match = re.search(r'^static [^;{}]*\b' + name +
+                              r'\([^;{}]*\)\s*\{', source, re.M | re.S)
             self.assertIsNotNone(match, name)
-            at = source.index('{', match.end())
+            at = match.end() - 1
             depth, end = 1, at + 1
             while depth:
                 depth += (source[end] == '{') - (source[end] == '}')
                 end += 1
             return source[match.start():end]
+
+        def ops(name):
+            start = source.index(f'static const MemoryRegionOps {name} =')
+            at = source.index('{', start)
+            depth, end = 1, at + 1
+            while depth:
+                depth += (source[end] == '{') - (source[end] == '}')
+                end += 1
+            return source[start:end] + source[end]
 
         constants = '\n'.join(re.findall(r'^#define MSM5XXX_POC_(?:RAW_NAND_.*|MSM_BASE .*)$', source, re.M))
         enum = source[source.index('typedef enum MSM5xxxPOCRawNandMode {'):
@@ -35,6 +45,13 @@ class MiddleNandNativeTests(unittest.TestCase):
 #define MiB (1024 * 1024)
 typedef uint64_t hwaddr;
 typedef struct { const char *name; uint8_t bytes[4096]; } MemoryRegion;
+typedef uint64_t (*ReadFn)(void *, hwaddr, unsigned);
+typedef void (*WriteFn)(void *, hwaddr, uint64_t, unsigned);
+typedef struct {
+    ReadFn read; WriteFn write; int endianness;
+    struct { unsigned min_access_size, max_access_size; } valid, impl;
+} MemoryRegionOps;
+#define DEVICE_LITTLE_ENDIAN 0
 typedef void BlockBackend;
 typedef int Error;
 static Error failed;
@@ -43,6 +60,8 @@ static void error_setg(Error **error, const char *format, ...) {
 }
 static void *memory_region_get_ram_ptr(MemoryRegion *region) { return region->bytes; }
 ''' + constants + '\n' + enum + '\ntypedef struct {\n' + fields + r'''
+    bool gpio_ready_bit21;
+    bool experimental_contract_gpio_bit9_low;
 } MSM5xxxPOCMachineState;
 typedef MSM5xxxPOCMachineState Object;
 #define MSM5XXX_POC_MACHINE(obj) (obj)
@@ -50,11 +69,39 @@ typedef MSM5xxxPOCMachineState Object;
             'msm5xxx_poc_backing_read', 'msm5xxx_poc_backing_write',
             'msm5xxx_poc_set_raw_nand_main', 'msm5xxx_poc_set_raw_nand_ready',
             'msm5xxx_poc_raw_nand_latch_cursor',
+            'msm5xxx_poc_gpio_input_merge',
             'msm5xxx_poc_raw_nand_ready_read',
-            'msm5xxx_poc_raw_nand_ready_write')) + r'''
+            'msm5xxx_poc_raw_nand_ready_write')) + '\n' + '\n'.join((
+                ops('msm5xxx_poc_raw_nand_ready_ops'),
+                ops('msm5xxx_poc_raw_nand_ready_gpio_ops'),
+                function('msm5xxx_poc_raw_nand_ready_ops_for'))) + r'''
 int main(void) {
     MSM5xxxPOCMachineState s = {0};
     Error *error = NULL;
+    assert(msm5xxx_poc_raw_nand_ready_ops.valid.max_access_size == 2);
+    assert(msm5xxx_poc_raw_nand_ready_ops.impl.max_access_size == 2);
+    assert(msm5xxx_poc_raw_nand_ready_gpio_ops.valid.max_access_size == 4);
+    assert(msm5xxx_poc_raw_nand_ready_gpio_ops.impl.max_access_size == 4);
+    s.raw_nand_ready_address = 0x03000720;
+    assert(msm5xxx_poc_raw_nand_ready_ops_for(&s) ==
+           &msm5xxx_poc_raw_nand_ready_ops);
+    s.gpio_ready_bit21 = true;
+    assert(msm5xxx_poc_raw_nand_ready_ops_for(&s) ==
+           &msm5xxx_poc_raw_nand_ready_gpio_ops);
+    s.raw_nand_ready_address = 0x03000728;
+    assert(msm5xxx_poc_raw_nand_ready_ops_for(&s) ==
+           &msm5xxx_poc_raw_nand_ready_ops);
+    s.gpio_ready_bit21 = false;
+    s.experimental_contract_gpio_bit9_low = true;
+    s.raw_nand_ready_address = 0x03000720;
+    s.raw_nand_ready_mask = 2;
+    s.raw_nand_status = 0x40;
+    s.msm.bytes[0x720] = 2;
+    s.msm.bytes[0x721] = 2;
+    assert(msm5xxx_poc_raw_nand_ready_read(&s, 0, 2) == 2);
+    assert(s.msm.bytes[0x721] == 2);
+    s.experimental_contract_gpio_bit9_low = false;
+    s.raw_nand_ready_address = 0;
     msm5xxx_poc_set_raw_nand_main(&s, "1800000:1900000:1a00000:1000000:200:20:2", &error);
     assert(!error && s.raw_nand_main_enabled && s.raw_nand_data_size == 16 * MiB);
     msm5xxx_poc_set_raw_nand_ready(&s, "3000728:1", &error);
@@ -78,6 +125,16 @@ int main(void) {
     assert(msm5xxx_poc_raw_nand_ready_read(&s, 0, 1) == 0x42);
     s.raw_nand_status = 0xC1; /* Failed operations can still be ready. */
     assert(msm5xxx_poc_raw_nand_ready_read(&s, 0, 1) == 0x43);
+
+    s.gpio_ready_bit21 = true;
+    s.raw_nand_ready_address = 0x03000720;
+    s.raw_nand_ready_mask = 2;
+    s.msm.bytes[0x722] = 0x20;
+    assert((msm5xxx_poc_raw_nand_ready_read(&s, 0, 4) & (1u << 21)) != 0);
+    msm5xxx_poc_raw_nand_ready_write(&s, 0, 0, 4);
+    assert((s.msm.bytes[0x722] & 0x20) != 0);
+    assert((msm5xxx_poc_raw_nand_ready_read(&s, 0, 4) & (1u << 21)) != 0);
+
     s.raw_nand_ready_address = 0;
     msm5xxx_poc_set_raw_nand_ready(&s, "3000720:10", &error);
     assert(!error && s.raw_nand_ready_mask == 0x10);

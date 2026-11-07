@@ -131,6 +131,7 @@ class FirmwareConfig:
     watchdog: dict[str, object] | None = None
     ready_poll: dict[str, object] | None = None
     uart_console: dict[str, object] | None = None
+    external_bus: dict[str, object] | None = None
     dc0_board_adc_profile: dict[str, object] | None = None
     sbi_bootstrap_profile: dict[str, object] | None = None
     ram_bootstrap_profile: dict[str, object] | None = None

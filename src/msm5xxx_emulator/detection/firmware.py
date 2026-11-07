@@ -11,6 +11,7 @@ import struct
 
 from ..core.config import FirmwareConfig
 
+from .external_bus import detect_external_bus
 from .arm import arm_vector_score
 from .audio import find_audio_transport
 from .tone import tone_admission
@@ -1440,4 +1441,18 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             if config.watchdog is not None
             else f"watchdog rejected: {watchdog_reason}"
         )
+    if config.load_address == 0 and config.image_kind == "firmware":
+        reserved_external = (() if config.ram_bootstrap_profile is None else
+                             ((config.ram_bootstrap_profile["reserved_base"],
+                               config.ram_bootstrap_profile["reserved_size"]),))
+        config.external_bus, external_reason = detect_external_bus(
+            watchdog_image, ram_base=config.ram_base, ram_size=config.ram_size,
+            reserved_ram=reserved_external,
+        )
+        if config.external_bus is not None:
+            config.detection_notes.append(
+                "external bus admitted from linked device consumers and linker extents"
+            )
+        elif "halt" in external_reason or "ambiguous" in external_reason:
+            config.detection_notes.append(f"external RAM rejected: {external_reason}")
     return config
