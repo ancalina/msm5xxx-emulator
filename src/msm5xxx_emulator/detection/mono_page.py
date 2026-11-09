@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import struct
 
-from .arm import thumb_bl_target, thumb_literal_value
+from .contracts import BodySpec
+from .facts import facts_for
 
 _RASTER = bytes.fromhex('ffb5d54501daabf049fd171c1c1c81b0002800da00200299072901dd07210291002f00da00277f2c00dd7f2414490a69002a01d1134a0a62096a0091051c02998d4219dc01e00135f9e700984619b0202843012252065070381c00f088f8381c01225206a04206dc01e00130fae7c100715cd170f9e7e6e701b004b0f0bd')
 _RASTER_CALLS = (6, 90)
@@ -24,32 +25,28 @@ _DELAY = bytes.fromhex('15220921c905322802dd0a843238fae7002807dd1b2358432d300028
 _STACK = bytes.fromhex('7847000001e08ee30d00a0e10e10a0e100200fe10aa02ae054309fe5010013e350e09f1550e09f0513ff2fe178470000feffffea')
 
 
+_BODIES = {
+    (pattern, calls, literals): BodySpec.thumb_body(pattern, calls, literals)
+    for pattern, calls, literals in (
+        (_RASTER, _RASTER_CALLS, _RASTER_LITERALS),
+        (_COLUMN, (), ()), (_CLEAR, _CLEAR_CALLS, _CLEAR_LITERALS),
+        (_ICON_CLEAR, _ICON_CLEAR_CALLS, ()), (_ICONS, _ICONS_CALLS, ()),
+        (_INIT, _INIT_CALLS, _INIT_LITERALS), (_FILL, (), ()), (_DELAY, (), ()),
+    )
+}
+
+
 def _shape(image: bytes, at: int, pattern: bytes, calls=(), literals=()):
-    if at < 0 or at & 1 or at+len(pattern) > len(image):
-        return None
-    holes = {offset+n for offset in calls for n in range(4)}
-    holes.update(offset+n for offset, _register in literals for n in (0, 1))
-    if any(image[at+i] != value for i,value in enumerate(pattern) if i not in holes):
-        return None
-    targets = {offset:thumb_bl_target(image,at+offset) for offset in calls}
-    values = {offset:thumb_literal_value(image,at+offset,register)
-              for offset,register in literals}
-    if (any(v is None or v & 1 or not 0 <= v <= len(image)-2 for v in targets.values())
-            or any(v is None for v in values.values())):
-        return None
-    return targets, values
+    spec = _BODIES.get((pattern, calls, literals))
+    if spec is None:
+        spec = BodySpec.thumb_body(pattern, calls, literals)
+    result = spec.match(facts_for(image), at)
+    return (result.targets, result.values) if result is not None else None
 
 
 def _hits(image: bytes, pattern: bytes, calls=(), literals=()):
-    start = 0
-    while True:
-        at = image.find(pattern[:6],start)
-        if at < 0:
-            return
-        start = at+1
-        result = _shape(image,at,pattern,calls,literals)
-        if result is not None:
-            yield at, result
+    for result in _BODIES[pattern, calls, literals].find(facts_for(image)):
+        yield result.entry, (result.targets, result.values)
 
 
 def _stack(image: bytes, at: int) -> bool:

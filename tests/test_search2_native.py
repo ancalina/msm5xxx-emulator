@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from corpus import FIRMWARE_ROOT
+from native_sanitizers import native_sanitizers
 
 
 class Search2NativeTests(unittest.TestCase):
@@ -1202,7 +1203,7 @@ int main(int argc,char**argv){assert(argc==3);unsigned mutations=0;
             path = Path(temporary)
             (path / "check.c").write_text(harness)
             subprocess.run(["cc", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
-                            "-Wno-misleading-indentation", "-fsanitize=address,undefined",
+                            "-Wno-misleading-indentation", native_sanitizers(),
                             str(path / "check.c"), "-o", str(path / "check")], check=True)
             subprocess.run([str(path / "check"), *(str(fixtures / name) for name, _ in cases)],
                            check=True, timeout=10)

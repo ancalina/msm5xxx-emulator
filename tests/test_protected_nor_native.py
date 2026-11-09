@@ -4,6 +4,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from native_sanitizers import native_sanitizers
 
 
 def function(source, name):
@@ -260,7 +261,7 @@ int main(void) {
             path = Path(directory)
             (path / "check.c").write_text(code)
             subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                            "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
+                            native_sanitizers(), "-fno-sanitize-recover=all",
                             "-I", str(native), str(path / "check.c"),
                             str(native / "msm5xxx-protected-nor.c"), "-o", str(path / "check")], check=True)
             subprocess.run([str(path / "check")], check=True)

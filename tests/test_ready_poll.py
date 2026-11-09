@@ -3,11 +3,15 @@ from __future__ import annotations
 import struct
 import random
 import unittest
+from unittest.mock import patch
 from corpus import snippet
 
-from msm5xxx_emulator.detection.ready_poll import (
-    find_ready_poll_profile, _UART_RX_EMPTY_READ,
+from msm5xxx_emulator.detection.devices.ready_poll import (
+    find_ready_poll_profile, _UART_RX_EMPTY_READ, _called_mmio_candidates,
 )
+from msm5xxx_emulator.detection.facts import facts_for
+from msm5xxx_emulator.detection.fact_context import FirmwareFacts
+from msm5xxx_emulator.detection.devices.ready_poll import semantic
 
 
 def fixture(status_base: int = 0x030007B0,
@@ -18,11 +22,87 @@ def fixture(status_base: int = 0x030007B0,
     return bytes(code)
 
 
+def semantic_register_fixture(status_base: int = 0x030007B0,
+                              pulse: int = 0x03000600) -> bytes:
+    """Generated Thumb loop with relocated registers and fact-derived ports."""
+    code = bytearray(0x28)
+    struct.pack_into("<2H", code, 0, 0xF000, 0xF802)  # BL entry at 8.
+    struct.pack_into("<H", code, 4, 0x4770)
+    struct.pack_into("<10H", code, 8,
+                     0x4A05,       # LDR r2, status base
+                     0x7913,       # LDRB r3, [r2, #4]
+                     0x091B,       # LSRS r3, r3, #4
+                     0xD205,       # BHS return
+                     0x2401,       # MOVS r4, #1
+                     0x4D04,       # LDR r5, pulse address
+                     0x702C,       # STRB r4, [r5]
+                     0x2400,       # MOVS r4, #0
+                     0x702C,       # STRB r4, [r5]
+                     0xE7F5)       # B loop
+    struct.pack_into("<H", code, 0x1C, 0x4770)
+    struct.pack_into("<2I", code, 0x20, status_base, pulse)
+    return bytes(code)
+
+
+def called_mmio_noise_fixture(count: int = 24) -> bytes:
+    """Many called MMIO readers with no required branch/return contract."""
+    code = bytearray(semantic_register_fixture())
+    entries = [0x100 + index * 0x20 for index in range(count)]
+    call_base = 0x100 + count * 0x20
+    code.extend(b"\x00" * (call_base + count * 4 + 4 - len(code)))
+    for index, entry in enumerate(entries):
+        struct.pack_into("<3H", code, entry,
+                         0x4802,  # LDR r0, literal at entry+12
+                         0x7801,  # LDRB r1,[r0]
+                         0x4770)  # no required conditional branch
+        struct.pack_into("<I", code, entry + 12,
+                         0x03000100 + 4 * index)
+        site = call_base + 4 * index
+        displacement = entry - site - 4
+        struct.pack_into("<2H", code, site,
+                         0xF000 | (displacement >> 12 & 0x7FF),
+                         0xF800 | (displacement >> 1 & 0x7FF))
+    return bytes(code)
+
+
 def control_fixture(status_base: int = 0x03000F10,
                     pulse: int = 0x03000700) -> bytes:
     code = bytearray.fromhex("00f002f800000000")
     code.extend(snippet("test_ready_poll", "control_fixture_code"))
     code.extend(struct.pack("<2I", status_base, pulse))
+    return bytes(code)
+
+
+def independent_control_fixture(status_base: int = 0x03000F14,
+                                pulse: int = 0x03000700,
+                                control: int = 0x03000F1C) -> bytes:
+    """Small independent Thumb control-loop fixture, without snippet bytes."""
+    code = bytearray(0x68)
+    struct.pack_into("<2H", code, 0, 0xF000, 0xF802)  # BL entry at 8
+    struct.pack_into("<H", code, 4, 0x4770)
+    struct.pack_into("<20H", code, 8,
+                     0xBF00,  # NOP
+                     0x4811,  # LDR r0, status
+                     0x7801,  # LDRB r1,[r0]
+                     0x0909,  # LSRS r1,r1,#4
+                     0xD20D,  # BHS return at entry+38
+                     0x4A10,  # LDR r2, pulse
+                     0x4B10,  # LDR r3, one
+                     0x4C11,  # LDR r4, zero
+                     0x4E11,  # LDR r6, 0x20
+                     0xD1F6,  # BNE entry+2
+                     0x4D11,  # LDR r5, control
+                     0xBF00,
+                     0x7013,  # STRB r3,[r2]
+                     0xBF00,
+                     0x7014,  # STRB r4,[r2]
+                     0xBF00,
+                     0xBF00,
+                     0x702E,  # STRB r6,[r5]
+                     0xD1ED,  # BNE entry+2
+                     0x4770)  # BX LR
+    struct.pack_into("<6I", code, 0x50,
+                     status_base, pulse, 1, 0, 0x20, control)
     return bytes(code)
 
 
@@ -202,6 +282,78 @@ class ReadyPollDetectionTests(unittest.TestCase):
             "pulse_address": 0x03000600,
             "entries": [8],
         })
+
+    def test_semantic_loop_accepts_relocated_registers(self) -> None:
+        self.assertEqual(find_ready_poll_profile(semantic_register_fixture()), {
+            "signature": "thumb-lsrs-bhs-pulse-v1",
+            "status_address": 0x030007B4,
+            "mask": 0x08,
+            "pulse_address": 0x03000600,
+            "entries": [8],
+        })
+
+    def test_candidate_discovery_skips_unrelated_call_targets(self) -> None:
+        image = bytearray(semantic_register_fixture())
+        image.extend(b"\0" * (0x5000 - len(image)))
+        for target in range(0x1000, 0x5000, 0x400):
+            call = target - 4
+            displacement = target - call - 4
+            struct.pack_into("<2H", image, call,
+                             0xF000 | (displacement >> 12 & 0x7FF),
+                             0xF800 | (displacement >> 1 & 0x7FF))
+            struct.pack_into("<H", image, target, 0x4770)
+        self.assertEqual(_called_mmio_candidates(facts_for(bytes(image)), 'thumb'),
+                         (8,))
+
+    def test_semantic_precheck_avoids_analyzing_unqualified_mmio_owners(self) -> None:
+        image = called_mmio_noise_fixture()
+        facts = FirmwareFacts(image)
+        with patch.object(semantic, "facts_for", return_value=facts):
+            members = semantic._semantic_pulse_members(image)
+        self.assertEqual(members, [{
+            "signature": "thumb-lsrs-bhs-pulse-v1",
+            "status_address": 0x030007B4,
+            "mask": 0x08,
+            "pulse_address": 0x03000600,
+            "entries": [8],
+        }])
+        self.assertEqual(len(facts._functions), 1)
+
+    def test_control_precheck_avoids_unqualified_mmio_owners(self) -> None:
+        image = bytearray(independent_control_fixture())
+        count = 24
+        entries = [0x200 + index * 0x20 for index in range(count)]
+        call_base = 0x200 + count * 0x20
+        image.extend(b"\x00" * (call_base + count * 4 + 4 - len(image)))
+        for index, entry in enumerate(entries):
+            struct.pack_into("<3H", image, entry,
+                             0x4802, 0x7801, 0x4770)
+            struct.pack_into("<I", image, entry + 12,
+                             0x03000200 + 4 * index)
+            site = call_base + 4 * index
+            displacement = entry - site - 4
+            struct.pack_into("<2H", image, site,
+                             0xF000 | (displacement >> 12 & 0x7FF),
+                             0xF800 | (displacement >> 1 & 0x7FF))
+        image = bytes(image)
+        facts = FirmwareFacts(image)
+        with patch.object(semantic, "facts_for", return_value=facts):
+            profile = semantic._find_control_ready_poll_profile(image)
+        self.assertEqual(profile, {
+            "signature": "thumb-byte-ready-pulse-control-v1",
+            "admission": "temporary-evidence-gated",
+            "status_address": 0x03000F14,
+            "mask": 0x08,
+            "pulse_address": 0x03000700,
+            "control_address": 0x03000F1C,
+            "control_value": 0x20,
+            "status_read_pc_offset": 4,
+            "pulse_set_pc_offset": 0x18,
+            "pulse_clear_pc_offset": 0x1C,
+            "control_pc_offset": 0x22,
+            "entries": [8],
+        })
+        self.assertEqual(len(facts._functions), 1)
 
     def test_near_miss_and_conflicting_contract_fail_closed(self) -> None:
         near = bytearray(fixture())

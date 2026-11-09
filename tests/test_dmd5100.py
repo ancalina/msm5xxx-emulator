@@ -5,7 +5,7 @@ import struct
 import unittest
 
 from msm5xxx_emulator.detection.boot import DMD_DOWNLOAD_SIGNATURE
-from msm5xxx_emulator.detection.dmd5100 import find_dmd5100_profile
+from msm5xxx_emulator.detection.devices.dmd import find_dmd5100_profile
 from corpus import FIRMWARE_ROOT
 
 _FIRMWARE_ROOT = FIRMWARE_ROOT

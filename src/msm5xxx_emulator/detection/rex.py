@@ -1,6 +1,8 @@
 """Firmware REX timer, IRQ, and idle detection."""
 from __future__ import annotations
 
+from .contracts import _normalized_thumb_sha256
+
 import hashlib
 import re
 import struct
@@ -353,21 +355,6 @@ def _controller_callback_advance(
             advances.append(advance)
     return advances[0] if len(advances) == 1 else None
 
-
-def _normalized_thumb_sha256(
-        image: bytes, position: int, length: int,
-) -> tuple[str, tuple[int, ...]] | None:
-    """Hash one exact Thumb body while ignoring relocated BL immediates."""
-    if position < 0 or position + length > len(image):
-        return None
-    normalized = bytearray(image[position:position + length])
-    calls: list[int] = []
-    for offset in range(0, length - 3, 2):
-        if thumb_bl_target(image, position + offset) is None:
-            continue
-        calls.append(offset)
-        normalized[offset:offset + 4] = b"\0" * 4
-    return hashlib.sha256(normalized).hexdigest(), tuple(calls)
 
 
 def _c80_full_handler_span(image: bytes, handler: int, masks: int,

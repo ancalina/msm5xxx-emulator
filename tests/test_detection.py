@@ -19,35 +19,21 @@ from msm5xxx_emulator.detection.memory_layout import (
     has_dual_sdram_bootstrap, has_high_bank_reader_bootstrap, infer_ram_base,
     referenced_flash_extent,
 )
+from msm5xxx_emulator.detection.devices.dmd import (DMD_DOWNLOAD_5500_LITERALS, DMD_DOWNLOAD_5500_SIZE, detect_dmd_download_5500)
 from msm5xxx_emulator.detection.boot import (
     DIRECT_INTEL_X16_PROBE_SIGNATURE,
     DMD_DOWNLOAD_SIGNATURE,
-    DMD_DOWNLOAD_5500_LITERALS,
-    DMD_DOWNLOAD_5500_SIZE,
     PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE,
     PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE,
     PRIMARY_FLASH_PROBE_SIGNATURE,
-    detect_dmd_download_5500,
 )
-from msm5xxx_emulator.detection.storage import (
-    DIRECT_AMD_X16_CALLER_PREFIX,
-    DIRECT_AMD_X16_PROBE_SIGNATURE,
+from msm5xxx_emulator.detection.storage import DIRECT_AMD_X16_CALLER_PREFIX, DIRECT_AMD_X16_PROBE_SIGNATURE, MAPPED_PRIMARY_INTEL_X16_SIGNATURES, direct_amd_x16_nor_profile, direct_intel_x16_nor_profile, find_adjacent_amd_x16_nor, find_adjacent_fujitsu_x16_nor, find_catalog_amd_x16_nor, find_embedded_fujitsu_x16_nor, find_primary_fsd_amd_x16_nor, find_record_amd_x16_nor, mapped_primary_intel_x16_nor_profile, primary_probe_x16_nor_profile
+from msm5xxx_emulator.detection.devices.eeprom import (
     EEPROM_24LC64_CLASS_B_BOUND,
     EEPROM_24LC64_CLASS_B_READ_PREFIX,
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
     EEPROM_24LCXX_F6F7_WRITE_PREFIX,
-    MAPPED_PRIMARY_INTEL_X16_SIGNATURES,
-    direct_amd_x16_nor_profile,
-    direct_intel_x16_nor_profile,
     find_24lc64_class_b_driver,
-    find_adjacent_amd_x16_nor,
-    find_adjacent_fujitsu_x16_nor,
-    find_catalog_amd_x16_nor,
-    find_embedded_fujitsu_x16_nor,
-    find_primary_fsd_amd_x16_nor,
-    find_record_amd_x16_nor,
-    mapped_primary_intel_x16_nor_profile,
-    primary_probe_x16_nor_profile,
 )
 
 
@@ -61,7 +47,8 @@ from msm5xxx_emulator.detection.boot import (
     busy_delay_addresses,
 )
 from msm5xxx_emulator.core.config import CopyLayout
-from msm5xxx_emulator.detection.storage import (
+from msm5xxx_emulator.detection.storage import find_compound_fujitsu_layout, find_fujitsu_x16_bulk_write, fujitsu_x16_flash_ids
+from msm5xxx_emulator.detection.devices.eeprom import (
     EEPROM_24LC64_CLASS_A_READ_PREFIX,
     EEPROM_24LC64_CLASS_A_SENTINEL,
     EEPROM_24LC64_CLASS_A_WRITE_PREFIX,
@@ -77,9 +64,6 @@ from msm5xxx_emulator.detection.storage import (
     EEPROM_24LCXX_X7700_READ_PREFIX,
     EEPROM_24LCXX_X7700_WRITE_PREFIX,
     find_24lcxx_driver,
-    find_compound_fujitsu_layout,
-    find_fujitsu_x16_bulk_write,
-    fujitsu_x16_flash_ids,
 )
 from corpus import FIRMWARE_ROOT
 from msm5xxx_emulator.detection.chipset import chipset_confidence, detect_chipset
@@ -255,6 +239,8 @@ class DetectionTests(unittest.TestCase):
         image[0x20:0x20 + len(DMD_DOWNLOAD_SIGNATURE)] = DMD_DOWNLOAD_SIGNATURE
         image[0x100:0x100 + len(routine)] = routine
         image[0x300:0x310] = b"dmddown_5500.c\0"
+        self.assertEqual(detect_dmd_download_5500(bytes(image)), 0x100)
+        image[0x300:0x310] = bytes(0x10)
         self.assertEqual(detect_dmd_download_5500(bytes(image)), 0x100)
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "dmd-collision.bin"

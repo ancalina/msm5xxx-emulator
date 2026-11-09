@@ -146,7 +146,7 @@ class SourceClassTransportTests(unittest.TestCase):
         for values in ([0xff, 0xdd], [0xff, 0x99, 0xcc], [0xff, 0xcc], []):
             self.assertEqual(qemu_uart_console_property(dict(profile, csr_sequence=values), len(image)),
                              (None, 'unsupported-probe-register-wire'))
-        target = 'msm5xxx_emulator.detection.uart_console.find_uart_console_profile'
+        target = 'msm5xxx_emulator.detection.devices.uart_console.find_uart_console_profile'
         with patch(target, return_value=(profile, 'accepted')):
             self.assertEqual(qemu_loaded_uart_console_property(profile, image, image, config(len(image))),
                              expected)
@@ -165,7 +165,7 @@ class SourceClassTransportTests(unittest.TestCase):
         expected = ('uart-console-probe=3000f0c:ff:dd,'
                     'uart-console-rearm=104:106:10a:87:21b', None)
         self.assertEqual(qemu_uart_console_property(profile, len(image)), expected)
-        target = 'msm5xxx_emulator.detection.uart_console.find_uart_console_profile'
+        target = 'msm5xxx_emulator.detection.devices.uart_console.find_uart_console_profile'
         with patch(target, return_value=(profile, 'accepted')):
             self.assertEqual(qemu_loaded_uart_console_property(profile, image, image, config(len(image))),
                              expected)
@@ -211,7 +211,7 @@ class SourceClassTransportTests(unittest.TestCase):
     def test_finite_console_loaded_guards_allow_only_proven_no_iram_layout(self):
         image, profile = probe_console_fixture()
         c = config(len(image))
-        target = 'msm5xxx_emulator.detection.uart_console.find_uart_console_profile'
+        target = 'msm5xxx_emulator.detection.devices.uart_console.find_uart_console_profile'
         with patch(target, return_value=(profile, 'accepted')):
             expected = ('uart-console-probe=3000f0c:ff:dd', None)
             self.assertEqual(qemu_loaded_uart_console_property(profile, image, image, c), expected)
@@ -289,7 +289,7 @@ class SourceClassTransportTests(unittest.TestCase):
                        boot_guard_intervals=[[0x20, 0x24]],
                        ram_intervals=[[0x01000000, 0x01002000]],
                        iram_intervals=[[0x03800000, 0x03800040]])
-        target = 'msm5xxx_emulator.detection.uart_console.find_uart_console_profile'
+        target = 'msm5xxx_emulator.detection.devices.uart_console.find_uart_console_profile'
         with patch(target, return_value=(profile, 'accepted')):
             expected = ('uart-console=3000f0c:2:ff', None)
             self.assertEqual(qemu_loaded_uart_console_property(profile, image, image, c), expected)
@@ -451,12 +451,14 @@ class DMDPaddedConsoleBindingTests(unittest.TestCase):
             source_intervals=((0x100,0x180),(0x200,0x240),(0x400,0x408)))
 
     def bind(self,loaded=None,console='uart-console-probe=3000f0c:ff:cc:99',**kwargs):
-        with patch('msm5xxx_emulator.detection.dmd5100.find_dmd5100_profile',
+        with patch('msm5xxx_emulator.detection.devices.dmd.find_dmd5100_profile',
                    return_value=(self.profile,'typed-source')):
-            with patch('msm5xxx_emulator.qemu.transport.qemu_loaded_uart_console_property',
-                       return_value=(console,None)):
-                return qemu_dmd5100_property(self.original,self.loaded if loaded is None else loaded,
-                                             self.cfg,**kwargs)
+            with patch('msm5xxx_emulator.detection.devices.dmd.projection.find_dmd5100_profile',
+                       return_value=(self.profile,'typed-source')):
+                with patch('msm5xxx_emulator.qemu.transport.qemu_loaded_uart_console_property',
+                           return_value=(console,None)):
+                    return qemu_dmd5100_property(self.original,self.loaded if loaded is None else loaded,
+                                                 self.cfg,**kwargs)
 
     def test_native_transfer_requires_the_independent_loaded_console_contract(self):
         self.assertEqual(self.bind(),('dmd5100-program=100:400:200:a',None))
@@ -480,12 +482,14 @@ class DMDPaddedIndirectPageBindingTests(unittest.TestCase):
 
     def bind(self,loaded=None,parent=True,**kwargs):
         source=dict(ram_intervals=((0x01000000,0x01001000),)) if parent else None
-        with patch('msm5xxx_emulator.detection.dmd5100.find_dmd5100_profile',
+        with patch('msm5xxx_emulator.detection.devices.dmd.find_dmd5100_profile',
                    return_value=(self.profile,'typed-source')):
-            with patch('msm5xxx_emulator.detection.boot_page_indirect.find_indirect_boot_page_profile',
-                       return_value=(source,'indirect-parent')):
-                return qemu_dmd5100_property(self.original,self.loaded if loaded is None else loaded,
-                                             self.cfg,**kwargs)
+            with patch('msm5xxx_emulator.detection.devices.dmd.projection.find_dmd5100_profile',
+                       return_value=(self.profile,'typed-source')):
+                with patch('msm5xxx_emulator.detection.boot_page_indirect.find_indirect_boot_page_profile',
+                           return_value=(source,'indirect-parent')):
+                    return qemu_dmd5100_property(self.original,self.loaded if loaded is None else loaded,
+                                                 self.cfg,**kwargs)
 
     def test_native_bridge_requires_complete_indirect_parent_and_canonical_tail(self):
         self.assertEqual(self.bind(),('dmd5100-program=100:400:200:a',None))

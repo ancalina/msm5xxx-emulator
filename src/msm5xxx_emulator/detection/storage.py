@@ -6,6 +6,7 @@ import re
 import struct
 
 from .arm import arm_vector_score, thumb_bl_target, thumb_literal_value
+from .facts import CodeAddress, facts_for
 from .boot import (
     DIRECT_INTEL_X16_PROBE_SIGNATURE,
     FLASH_ID_SIGNATURE,
@@ -14,6 +15,14 @@ from .boot import (
     PRIMARY_FLASH_PROBE_SIGNATURE,
 )
 from .signatures import find_all
+from .storage_facts import (
+    parse_sector_table,
+    parse_x16_descriptor,
+    printable_name_end,
+    sector_regions,
+    sector_tables_before,
+    uniform_sector_size,
+)
 
 
 FUJITSU_MB84VD2219X_IDS = (0x0004, 0x005F)
@@ -225,95 +234,6 @@ FUJITSU_X16_BULK_WRITE_PATTERNS = (
 )
 
 
-EEPROM_24LCXX_WRITE_PREFIX = bytes.fromhex(
-    "f7b593b001267603149c171cb442f94902db8878012802d10020149c06e0"
-    "c878149c01235b03e21a1404240c0a880625b24202d089780229"
-)
-EEPROM_24LCXX_READ_SIGNATURE = bytes.fromhex(
-    "f0b5151c01225203071cfa48914202db8378012b02d100240e1c05e001235b03"
-    "c91ac4780e04360c0188914202d08078"
-)
-# Older ADS driver class proven across nine Samsung images.  This class uses
-# an inclusive 0x1FFF maximum (8 KiB), not the later 24LC256 descriptor.
-EEPROM_24LC64_CLASS_A_WRITE_PREFIX = bytes.fromhex(
-    "f7b5f9498cb0ca1d1932051c01230d9c5b039c4202db9078012802d100200d9c"
-    "05e0d0780d9cf14be3181c04240c0f8c"
-)
-EEPROM_24LC64_CLASS_A_READ_PREFIX = bytes.fromhex(
-    "f0b5151cf84a071cd01d193001235b03994202db8378012b02d100260c1c04e0"
-)
-EEPROM_24LC64_CLASS_A_SENTINEL = bytes.fromhex(
-    "0649aa200f396118c873f0bc08bc1847"
-)
-# Older 8 KiB transport with capacity encoded directly in both entry guards.
-EEPROM_24LC64_CLASS_B_WRITE_PREFIX = bytes.fromhex(
-    "f7b5151c01235b03994283b0f64e02dbb078012802d100200f1c04e0f34af078"
-)
-EEPROM_24LC64_CLASS_B_READ_PREFIX = bytes.fromhex(
-    "f0b5141c051c01235b039942f74a02db9078012802d100260f1c04e0f448d678"
-)
-EEPROM_24LC64_CLASS_B_BOUND = bytes.fromhex("01235b039942")
-# Exact ADS variant observed at the X430/VE21 24LC256 transport entries.  The
-# short prefixes alone are never enough to enable HLE; find_24lcxx_driver()
-# also requires the unique marker, initializer, and three matching literals.
-EEPROM_24LCXX_X430_WRITE_PREFIX = bytes.fromhex(
-    "f7b593b0161c012314995b039942f64f02db"
-)
-EEPROM_24LCXX_X430_READ_PREFIX = bytes.fromhex(
-    "f0b5041c151c01235b039942f64802db8278"
-)
-EEPROM_24LCXX_X430_INIT_SIGNATURE = bytes.fromhex(
-    "01200449c0030880012088700020c8707047"
-)
-# Exact compiler class shared by the X270/X730/X820 24LC256 transports.  As
-# with X430, discovery also requires the unique marker, initializer, and
-# paired geometry literals below.
-EEPROM_24LCXX_X270_WRITE_PREFIX = bytes.fromhex(
-    "f7b5161c93b0149901235b039942f74a02db"
-)
-EEPROM_24LCXX_X270_READ_PREFIX = bytes.fromhex(
-    "f0b5041c151c01235b039942f74802db8278012a02d100270e1c04e0f44ac778"
-    "89180e04360c011c0088f14bd84202d08978022909d1700b400703d17019400b"
-    "40071fd0eb49ec4816e001239b0398420ad1b00b800703d17019800b800711d0"
-    "e548e449083007e0300c02d27019000c08d3e148df490e30"
-)
-EEPROM_24LCXX_X270_INIT_SIGNATURE = bytes.fromhex(
-    "01200449c0030880012088700020c8707047"
-)
-# Same paired transport grammar with the writer geometry literal four bytes
-# earlier than the X270 class.  Admission still requires the common read,
-# initializer, marker, and one shared RAM geometry global.
-EEPROM_24LCXX_F6F7_WRITE_PREFIX = bytes.fromhex(
-    "f7b5161c93b0149901235b039942f64a02db9078012802d10020149c05e0d078"
-    "1499f24bc9180c04240c1188ef4bd94202d09278022a09d1610b490703d1a119"
-    "490b490716d0ea49ea481de001239b0399420ad1a10b890703d1a119890b8907"
-    "08d0e448e24908300ee0210c09d2a119090c06d20e231840a0210843129000f0"
-    "00fbdc48da490e30"
-)
-# SPH-X7700 has a separately compiled 24LC256 transport.  Its duplicated
-# source-name string is not a uniqueness signal, so discovery below requires
-# both full entry prefixes, one initializer, and both geometry literals.
-EEPROM_24LCXX_X7700_WRITE_PREFIX = bytes.fromhex(
-    "f7b593b0161c012314995b039942f74f02dbb878012802d10020149c05e0f878"
-    "1499f34a89180c04240c3a88f04bf149da4202d0bb78022b08d1620b520703d1"
-)
-EEPROM_24LCXX_X7700_READ_PREFIX = bytes.fromhex(
-    "f0b5051c141c01235b039942f64802db8278012a02d100260f1c04e0f34ac678"
-    "89180f043f0c011c0088f04bd84202d0897802290ad1780b400703d13819400b"
-)
-EEPROM_24LCXX_X7700_INIT_SIGNATURE = bytes.fromhex(
-    "01200449c0030880012088700020c8707047"
-)
-
-
-# Halfword GPIO compiler class: the read entry keeps the destination in r5
-# and length in r4. Geometry still comes from the common 24LC256 initializer.
-EEPROM_24LCXX_HALFWORD_READ_PREFIX = bytes.fromhex(
-    "f0b5051c141c01235b039942f64802db8278012a02d100260f1c04e0f34ac678"
-    "89180f043f0c011c0088f04bd84202d089780229"
-)
-
-
 FLASH_IDS_BY_SIZE = {
     0x200000: 0x222D0001,  # AMD AM29DL162BT
     0x400000: 0x22500001,  # AMD AM29DL323DT
@@ -376,13 +296,17 @@ def find_fs_device_flash_id(
             or struct.unpack_from("<2I", image, signature_site - 8)
             != (entry, 0)):
         return None
-    sector_count = struct.unpack_from("<I", image, entry + 4)[0]
-    if not 1 <= sector_count <= (0x80 - 8) // 4:
+    table = parse_sector_table(
+        lambda address, size: (image[address:address + size]
+                               if 0 <= address <= len(image) - size else None),
+        entry, max_count=(0x80 - 8) // 4,
+    )
+    if table is None:
         return None
-    sector_end = entry + 8 + sector_count * 4
+    sector_end = entry + 8 + table.count * 4
     if sector_end > descriptor:
         return None
-    sectors = struct.unpack_from(f"<{sector_count}I", image, entry + 8)
+    sectors = table.sectors
     device_id = struct.unpack_from("<I", image, descriptor + 8)[0]
     banks = struct.unpack_from("<I", image, descriptor + 0x10)[0]
     base_words = struct.unpack_from("<I", image, descriptor + 0x14)[0]
@@ -769,6 +693,10 @@ def direct_amd_x16_nor_profile(
             return offset
         return None
 
+    def read_primary(address: int, size: int) -> bytes | None:
+        offset = primary_offset(address, size)
+        return primary[offset:offset + size] if offset is not None else None
+
     probes = find_all(primary, DIRECT_AMD_X16_PROBE_SIGNATURE)
     if not probes:
         return None, None
@@ -817,60 +745,71 @@ def direct_amd_x16_nor_profile(
     if len(callers) != 1:
         return None, "probe-caller-mismatch"
 
-    candidates: list[tuple[int, tuple[int, ...]]] = []
-    for sector_count in range(1, 513):
-        entry = descriptor_view - sector_count * 4
-        entry_offset = primary_offset(entry, 8 + sector_count * 4)
-        if entry_offset is None:
-            continue
-        name_address, count = struct.unpack_from("<2I", primary, entry_offset)
-        if count != sector_count:
-            continue
-        descriptor = descriptor_view + 8
-        descriptor_offset = primary_offset(descriptor, 0x30)
-        name_offset = primary_offset(name_address, 4)
-        if (descriptor_offset is None or name_offset is None
-                or name_address != descriptor + 0x30):
-            continue
-        sectors = struct.unpack_from(
-            f"<{sector_count}I", primary, entry_offset + 8
-        )
-        candidates.append((descriptor_offset, sectors))
+    descriptor = descriptor_view + 8
+    descriptor_offset = primary_offset(descriptor, 0x30)
+    name_offset = primary_offset(descriptor + 0x30, 4)
+    profile, rejection = _direct_x16_descriptor_profile(
+        primary, descriptor, descriptor_offset, name_offset,
+        read_primary, name_bound=len(primary), load_address=load_address,
+        flash_end=flash_end, ram_base=ram_base, ram_end=ram_end,
+        base_at_ram_end=False, facts=facts_for(image),
+        cache_key=('amd-direct', load_address, image_offset, primary_end),
+    )
+    if profile is None:
+        return None, rejection
+    return profile, None
+
+
+def _direct_x16_descriptor_profile(
+        primary: bytes, descriptor: int,
+        descriptor_offset: int | None, name_offset: int | None,
+        read_primary, *, name_bound: int, load_address: int, flash_end: int,
+        ram_base: int, ram_end: int, base_at_ram_end: bool,
+        facts, cache_key: tuple,
+) -> tuple[tuple[int, int, int, int, int, int] | None, str | None]:
+    """Decode shared ordered-table and x16 descriptor constraints."""
+    if descriptor_offset is None or name_offset is None:
+        return None, "descriptor-shape-mismatch"
+    candidates = sector_tables_before(
+        read_primary, descriptor, expected_name=descriptor + 0x30,
+        facts=facts, cache_key=cache_key,
+    )
     if len(candidates) != 1:
         return None, "descriptor-shape-mismatch"
 
-    descriptor_offset, sectors = candidates[0]
-    (device_id, reserved, device_control_options, base_words, usable_words,
-     *functions) = struct.unpack_from("<12I", primary, descriptor_offset)
-    manufacturer, device = device_id & 0xFFFF, device_id >> 16
-    base_address = base_words * 2
-    size = usable_words * 2
-    name_offset = descriptor_offset + 0x30
-    name_end = primary.find(
-        b"\0", name_offset, min(name_offset + 64, len(primary))
+    table = candidates[0]
+    descriptor_facts = parse_x16_descriptor(
+        primary, descriptor_offset, callback_count=7, address=descriptor
     )
-    if (reserved != 0 or device_control_options != 1
-            or len(functions) != 7
+    assert descriptor_facts is not None
+    base_address = descriptor_facts.base_words * 2
+    size = descriptor_facts.usable_words * 2
+    name_end = printable_name_end(
+        primary, descriptor_offset + 0x30, name_bound
+    )
+    if (descriptor_facts.reserved != 0 or descriptor_facts.mode != 1
             or any(not (pointer & 1)
                    or not load_address <= (pointer & ~1) < flash_end
-                   for pointer in functions)
-            or name_end < name_offset + 4
-            or any(not 0x20 <= byte <= 0x7E
-                   for byte in primary[name_offset:name_end])
-            or manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)
-            or not ram_base <= base_address < ram_end or size <= 0
-            or base_address + size > ram_end
+                   for pointer in descriptor_facts.callbacks)
+            or name_end is None
+            or descriptor_facts.manufacturer in (0, 0xFFFF)
+            or descriptor_facts.device in (0, 0xFFFF)
+            or (base_at_ram_end and base_address != ram_end)
+            or (not base_at_ram_end
+                and not ram_base <= base_address < ram_end)
+            or size <= 0
+            or (not base_at_ram_end and base_address + size > ram_end)
             or base_address + size > 0x100000000
-            or sum(sectors) != size):
+            or sum(table.sectors) != size):
         return None, "descriptor-content-mismatch"
-    sector_size = sectors[0]
-    if (sector_size < PAGE or sector_size > 0x100000
-            or sector_size & (sector_size - 1)
-            or any(sector != sector_size for sector in sectors)
+    sector_size = uniform_sector_size(table.sectors, minimum=PAGE)
+    if (sector_size is None
             or base_address % sector_size or size % sector_size):
         return None, "geometry-sector-mismatch"
-    return (base_address, size, sector_size, manufacturer, device,
-            device_control_options), None
+    return (
+        base_address, size, sector_size, descriptor_facts.manufacturer,
+        descriptor_facts.device, descriptor_facts.mode,
+    ), None
 
 
 def direct_intel_x16_nor_profile(
@@ -890,6 +829,10 @@ def direct_intel_x16_nor_profile(
                 and image_offset <= offset <= primary_end - size):
             return offset
         return None
+
+    def read_primary(address: int, size: int) -> bytes | None:
+        offset = primary_offset(address, size)
+        return image[offset:offset + size] if offset is not None else None
 
     signature = DIRECT_INTEL_X16_PROBE_SIGNATURE
     probe = primary_offset(probe_address, len(signature) + 12)
@@ -932,56 +875,19 @@ def direct_intel_x16_nor_profile(
     if len(callers) != 1:
         return None, "probe-caller-mismatch"
 
-    candidates: list[tuple[int, tuple[int, ...]]] = []
-    for sector_count in range(1, 513):
-        entry = descriptor_view - sector_count * 4
-        entry_offset = primary_offset(entry, 8 + sector_count * 4)
-        if entry_offset is None:
-            continue
-        name_address, count = struct.unpack_from("<2I", image, entry_offset)
-        if count != sector_count:
-            continue
-        descriptor = descriptor_view + 8
-        descriptor_offset = primary_offset(descriptor, 0x30)
-        name_offset = primary_offset(name_address, 4)
-        if (descriptor_offset is None or name_offset is None
-                or name_address != descriptor + 0x30):
-            continue
-        sectors = struct.unpack_from(
-            f"<{sector_count}I", image, entry_offset + 8
-        )
-        candidates.append((descriptor_offset, sectors))
-    if len(candidates) != 1:
-        return None, "descriptor-shape-mismatch"
-
-    descriptor_offset, sectors = candidates[0]
-    (device_id, reserved, banks, base_words, usable_words,
-     *functions) = struct.unpack_from("<12I", image, descriptor_offset)
-    manufacturer, device = device_id & 0xFFFF, device_id >> 16
-    base_address = base_words * 2
-    size = usable_words * 2
-    name_offset = descriptor_offset + 0x30
-    name_end = image.find(b"\0", name_offset,
-                          min(name_offset + 64, primary_end))
-    if (reserved != 0 or banks != 1 or len(functions) != 7
-            or any(not (pointer & 1)
-                   or not load_address <= (pointer & ~1) < flash_end
-                   for pointer in functions)
-            or name_end < name_offset + 4
-            or any(not 0x20 <= byte <= 0x7E
-                   for byte in image[name_offset:name_end])
-            or manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)
-            or base_address != ram_end or size <= 0
-            or base_address + size > 0x100000000
-            or sum(sectors) != size):
-        return None, "descriptor-content-mismatch"
-    sector_size = sectors[0]
-    if (sector_size < PAGE or sector_size > 0x100000
-            or sector_size & (sector_size - 1)
-            or any(sector != sector_size for sector in sectors)
-            or base_address % sector_size or size % sector_size):
-        return None, "geometry-sector-mismatch"
-    return (base_address, size, sector_size, manufacturer, device), None
+    descriptor = descriptor_view + 8
+    descriptor_offset = primary_offset(descriptor, 0x30)
+    name_offset = primary_offset(descriptor + 0x30, 4)
+    profile, rejection = _direct_x16_descriptor_profile(
+        image, descriptor, descriptor_offset, name_offset,
+        read_primary, name_bound=primary_end, load_address=load_address,
+        flash_end=flash_end, ram_base=ram_base, ram_end=ram_end,
+        base_at_ram_end=True, facts=facts_for(image),
+        cache_key=('intel-direct', load_address, image_offset, primary_end),
+    )
+    if profile is None:
+        return None, rejection
+    return profile[:5], None
 
 
 def mapped_primary_intel_x16_nor_profile(
@@ -1038,6 +944,14 @@ def primary_probe_x16_nor_profile(
                 and image_offset <= offset <= len(image) - size):
             return offset
         return None
+
+    def read_sector_data(address: int, size: int) -> bytes | None:
+        # Legacy admission bounds the table header to the flash mapping, then
+        # bounds the sector payload to supplied bytes.
+        offset = primary_offset(address, 8)
+        if offset is None or offset < 0 or offset + size > len(image):
+            return None
+        return image[offset:offset + size]
 
     def ram_offset(address: int, size: int) -> int | None:
         relative = address - ram_base
@@ -1103,27 +1017,16 @@ def primary_probe_x16_nor_profile(
             usable_words = struct.unpack_from(
                 "<I", image, static_offset + 0x10
             )[0]
-            entries: list[int] = []
-            for sector_count in range(1, 513):
-                candidate_entry = descriptor_address - 8 - sector_count * 4
-                candidate_offset = primary_offset(candidate_entry, 8)
-                if candidate_offset is None:
-                    continue
-                name_address, count = struct.unpack_from(
-                    "<2I", image, candidate_offset
-                )
-                sectors_offset = candidate_offset + 8
-                if (count != sector_count
-                        or name_address != descriptor_address + 0x38
-                        or sectors_offset + sector_count * 4 > len(image)
-                        or sum(struct.unpack_from(
-                            f"<{sector_count}I", image, sectors_offset
-                        )) != usable_words * 2):
-                    continue
-                entries.append(candidate_entry)
-            if len(entries) != 1:
+            tables = tuple(table for table in sector_tables_before(
+                read_sector_data, descriptor_address,
+                expected_name=descriptor_address + 0x38,
+                facts=facts_for(image),
+                cache_key=('primary-probe-external', load_address,
+                           image_offset, primary_end),
+            ) if sum(table.sectors) == usable_words * 2)
+            if len(tables) != 1:
                 return None, "probe-external-descriptor-mismatch"
-            entry, terminator, flash_base = entries[0], 0, 0
+            entry, terminator, flash_base = tables[0].address, 0, 0
         else:
             wrapper = probe_position - 0x4C
             if (wrapper < 0
@@ -1275,12 +1178,10 @@ def primary_probe_x16_nor_profile(
     if (terminator != 0 or entry_offset is None
             or not load_address <= entry < flash_end):
         return None, "descriptor-table-mismatch"
-    name_address, sector_count = struct.unpack_from(
-        "<2I", image, entry_offset
-    )
-    if not 1 <= sector_count <= 512:
+    table = parse_sector_table(read_sector_data, entry)
+    if table is None:
         return None, "geometry-count-mismatch"
-    sectors_offset = entry_offset + 8
+    name_address, sector_count = table.name_address, table.count
     descriptor = entry + 8 + sector_count * 4
     descriptor_offset = primary_offset(descriptor, 0x38)
     name_offset = primary_offset(name_address, 4)
@@ -1288,18 +1189,17 @@ def primary_probe_x16_nor_profile(
             or descriptor_base != descriptor - (8 if static_descriptor else 0x24)
             or descriptor_offset is None or name_offset is None
             or name_address != descriptor + 0x38
-            or sectors_offset + sector_count * 4 > len(image)):
+            or entry_offset + 8 + sector_count * 4 > len(image)):
         return None, "descriptor-shape-mismatch"
-    sectors = struct.unpack_from(
-        f"<{sector_count}I", image, sectors_offset
+    descriptor_facts = parse_x16_descriptor(
+        image, descriptor_offset, callback_count=9, address=descriptor
     )
-    (device_id, reserved, device_control_options, base_words, usable_words,
-     *functions) = struct.unpack_from("<14I", image, descriptor_offset)
-    manufacturer, device = device_id & 0xFFFF, device_id >> 16
-    base_address = flash_base + base_words * 2
-    size = usable_words * 2
-    name_end = image.find(b"\0", name_offset,
-                          min(name_offset + 64, primary_end))
+    assert descriptor_facts is not None
+    reserved, device_control_options = descriptor_facts.reserved, descriptor_facts.mode
+    manufacturer, device = descriptor_facts.manufacturer, descriptor_facts.device
+    base_address = flash_base + descriptor_facts.base_words * 2
+    size = descriptor_facts.usable_words * 2
+    printable_end = printable_name_end(image, name_offset, primary_end)
     physical_end = base_address + size
     external_range = (
         load_address == 0
@@ -1321,33 +1221,20 @@ def primary_probe_x16_nor_profile(
     )
     range_valid = (external_range if external_static_descriptor
                    else contained_range or linked_tail_range)
-    if (reserved != 0 or device_control_options != 1 or len(functions) != 9
+    if (reserved != 0 or device_control_options != 1
             or any(not (pointer & 1)
                    or not load_address <= (pointer & ~1) < flash_end
-                   for pointer in functions)
-            or name_end < name_offset + 4
-            or any(not 0x20 <= byte <= 0x7E
-                   for byte in image[name_offset:name_end])
+                   for pointer in descriptor_facts.callbacks)
+            or printable_end is None
             or manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)
             or size <= 0
             or not range_valid
-            or sum(sectors) != size):
+            or sum(table.sectors) != size):
         return None, "descriptor-content-mismatch"
-    regions: list[tuple[int, int]] = []
-    offset = 0
-    for sector_size in sectors:
-        if (sector_size < PAGE or sector_size > 0x100000
-                or sector_size & (sector_size - 1)
-                or offset % sector_size):
-            return None, "geometry-sector-mismatch"
-        if regions and regions[-1][1] == sector_size:
-            count, _ = regions[-1]
-            regions[-1] = count + 1, sector_size
-        else:
-            regions.append((1, sector_size))
-        offset += sector_size
-    if not 1 <= len(regions) <= 4:
-        return None, "geometry-region-count-mismatch"
+    regions, geometry_error = sector_regions(table.sectors, minimum=PAGE)
+    if geometry_error is not None:
+        return None, geometry_error
+    assert regions is not None
     if (base_address - load_address) % regions[0][1]:
         return None, "geometry-base-alignment-mismatch"
     return (
@@ -1368,312 +1255,6 @@ def qualcomm_efs_seed(size: int, chipset: str) -> bytes:
     seed[0x1C:0x28] = b"\x0b$USER_DIRS\x00"
     seed[0x1FC:0x200] = bytes.fromhex("0000d586")
     return bytes(seed)
-
-
-def eeprom_24lcxx_write_at(image: bytes, position: int) -> bool:
-    """Match the common ADS 24LCxx writer while ignoring its literal reach."""
-    prefix = EEPROM_24LCXX_WRITE_PREFIX
-    return (position & 1 == 0
-            and 0 <= position <= len(image) - len(prefix)
-            and image[position:position + 14] == prefix[:14]
-            and image[position + 15:position + len(prefix)] == prefix[15:])
-
-
-def eeprom_24lc64_class_a_write_at(image: bytes, position: int) -> bool:
-    """Match both proven relocation variants of the old 8 KiB writer."""
-    return (position & 1 == 0
-            and 0 <= position <= len(image) - 48
-            and image[position:position + 2] == b"\xf7\xb5"
-            and image[position + 4:position + 6] == b"\x8c\xb0"
-            and image[position + 10:position + 22]
-            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[10:22]
-            and image[position + 23:position + 34]
-            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[23:34]
-            and image[position + 35:position + 46]
-            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[35:46]
-            and image[position + 47:position + 48]
-            == EEPROM_24LC64_CLASS_A_WRITE_PREFIX[47:48])
-
-
-def find_24lc64_class_a_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return the uniquely bound old 8 KiB read/write/max-literal class."""
-    if b"nv24lcxx.c\0" not in image.lower():
-        return None
-    writes = [position for position in find_all(image, b"\xf7\xb5")
-              if eeprom_24lc64_class_a_write_at(image, position)]
-    reads = find_all(image, EEPROM_24LC64_CLASS_A_READ_PREFIX)
-    if len(writes) != 1 or len(reads) != 1:
-        return None
-    write, read = writes[0], reads[0]
-    if read - write not in (0x764, 0x768, 0x784):
-        return None
-
-    bindings: list[int] = []
-    for delta in (0xAC8, 0xACC):
-        geometry = read + delta
-        if (geometry < 0x1A or geometry + 4 > len(image)
-                or struct.unpack_from("<I", image, geometry)[0] != 0x1FFF
-                or image[geometry - 0x1A:geometry - 0xA]
-                != EEPROM_24LC64_CLASS_A_SENTINEL):
-            continue
-        for call in range(geometry - 0x38, geometry - 0x27, 2):
-            if (call < 6 or call + 4 > len(image)
-                    or image[call - 6:call - 2] != b"\x00\x21\x20\x1c"
-                    or thumb_bl_target(image, call) != read):
-                continue
-            operation = struct.unpack_from("<H", image, call - 2)[0]
-            literal = (((call + 2) & ~3) + (operation & 0xFF) * 4)
-            if (operation & 0xF800 == 0x4800
-                    and operation >> 8 & 7 == 2
-                    and literal == geometry):
-                bindings.append(geometry)
-    return (read, write, bindings[0]) if len(bindings) == 1 else None
-
-
-def find_24lc64_class_b_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return the unique static-capacity 8 KiB transport class."""
-    writes = find_all(image, EEPROM_24LC64_CLASS_B_WRITE_PREFIX)
-    reads = find_all(image, EEPROM_24LC64_CLASS_B_READ_PREFIX)
-    if len(writes) != 1 or len(reads) != 1:
-        return None
-    if len(find_all(image.lower(), b"nv24lcxx.c\0")) != 1:
-        return None
-    write, read = writes[0], reads[0]
-    if (write & 1 or read & 1
-            or image[write + 4:write + 10] != EEPROM_24LC64_CLASS_B_BOUND
-            or image[read + 6:read + 12] != EEPROM_24LC64_CLASS_B_BOUND):
-        return None
-    return read, write, 0x2000
-
-
-def _eeprom_24lcxx_variant_geometry_at(image: bytes, position: int,
-                                        ldr_offset: int, literal_offset: int,
-                                        geometry: int) -> bool:
-    """Check one exact 24LCxx variant literal against its paired geometry."""
-    if position + ldr_offset + 2 > len(image):
-        return False
-    operation = struct.unpack_from("<H", image, position + ldr_offset)[0]
-    if operation & 0xF800 != 0x4800:
-        return False
-    literal = ((position + ldr_offset + 4) & ~3) + (operation & 0xFF) * 4
-    return (literal == position + literal_offset
-            and literal + 4 <= len(image)
-            and struct.unpack_from("<I", image, literal)[0] == geometry)
-
-
-def find_24lcxx_x430_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return the uniquely cross-checked X430/VE21 compiler variant."""
-    marker = b"nv24lcxx.c\0"
-    if len(find_all(image.lower(), marker)) != 1:
-        return None
-    writes = find_all(image, EEPROM_24LCXX_X430_WRITE_PREFIX)
-    reads = find_all(image, EEPROM_24LCXX_X430_READ_PREFIX)
-    initializers = find_all(image, EEPROM_24LCXX_X430_INIT_SIGNATURE)
-    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
-        return None
-    write, read, initializer = writes[0], reads[0], initializers[0]
-    literal = initializer + 0x14
-    if literal + 4 > len(image):
-        return None
-    geometry = struct.unpack_from("<I", image, literal)[0]
-    if geometry & 3 or not 0x00800000 <= geometry < 0x02000000:
-        return None
-    if not (_eeprom_24lcxx_variant_geometry_at(
-            image, write, 0xE, 0x3E8, geometry
-    ) and _eeprom_24lcxx_variant_geometry_at(
-            image, read, 0xC, 0x3E8, geometry
-    )):
-        return None
-    return read, write, geometry
-
-
-def find_24lcxx_x270_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return the uniquely cross-checked X270/X730/X820 compiler class."""
-    marker = b"nv24lcxx.c\0"
-    if len(find_all(image.lower(), marker)) != 1:
-        return None
-    writes = find_all(image, EEPROM_24LCXX_X270_WRITE_PREFIX)
-    reads = find_all(image, EEPROM_24LCXX_X270_READ_PREFIX)
-    initializers = find_all(image, EEPROM_24LCXX_X270_INIT_SIGNATURE)
-    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
-        return None
-    write, read, initializer = writes[0], reads[0], initializers[0]
-    literal = initializer + 0x14
-    if literal + 4 > len(image):
-        return None
-    geometry = struct.unpack_from("<I", image, literal)[0]
-    if geometry & 3 or not 0x00800000 <= geometry < 0x02000000:
-        return None
-    if not (_eeprom_24lcxx_variant_geometry_at(
-            image, write, 0xE, 0x3EC, geometry
-    ) and _eeprom_24lcxx_variant_geometry_at(
-            image, read, 0xC, 0x3EC, geometry
-    )):
-        return None
-    return read, write, geometry
-
-
-def find_24lcxx_f6f7_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return the uniquely paired F6-writer/F7-reader compiler class."""
-    marker = b"nv24lcxx.c\0"
-    if len(find_all(image.lower(), marker)) != 1:
-        return None
-    writes = find_all(image, EEPROM_24LCXX_F6F7_WRITE_PREFIX)
-    reads = find_all(image, EEPROM_24LCXX_X270_READ_PREFIX)
-    initializers = find_all(image, EEPROM_24LCXX_X270_INIT_SIGNATURE)
-    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
-        return None
-    write, read, initializer = writes[0], reads[0], initializers[0]
-    literal = initializer + 0x14
-    if literal + 4 > len(image):
-        return None
-    geometry = struct.unpack_from("<I", image, literal)[0]
-    if geometry & 3 or not 0x00800000 <= geometry < 0x02000000:
-        return None
-    if not (_eeprom_24lcxx_variant_geometry_at(
-            image, write, 0xE, 0x3E8, geometry
-    ) and _eeprom_24lcxx_variant_geometry_at(
-            image, read, 0xC, 0x3EC, geometry
-    ) and _eeprom_f6f7_gpio_shape(image, write, read)):
-        return None
-    return read, write, geometry
-
-
-def _eeprom_f6f7_gpio_shape(image: bytes, write: int, read: int) -> bool:
-    """Require the paired byte-level GPIO leaves and their local call shape."""
-    start = max(0, write - 0x400)
-    end = min(len(image) - 4, read + 0x1000)
-    calls: dict[int, int] = {}
-    for position in range(start, end, 2):
-        target = thumb_bl_target(image, position)
-        if target is not None and 0 <= target <= len(image) - 4:
-            calls[target] = calls.get(target, 0) + 1
-
-    def literals(target: int) -> set[int]:
-        values = set()
-        for position in range(target, min(len(image) - 2, target + 0x100), 2):
-            word = struct.unpack_from("<H", image, position)[0]
-            register = word >> 8 & 7
-            value = thumb_literal_value(image, position, register)
-            if word & 0xF800 == 0x4800 and value is not None:
-                values.add(value)
-        return values
-
-    writers = [target for target, count in calls.items()
-               if count == 16
-               and image[target:target + 4] == b"\xf0\xb5\x07\x1c"
-               and {0x03000660, 0x03000668} <= literals(target)]
-    readers = [target for target, count in calls.items()
-               if count == 2
-               and image[target:target + 4] == b"\xf0\xb5\x00\x27"
-               and 0x03000668 in literals(target)]
-    return len(writers) == len(readers) == 1
-
-
-def find_24lcxx_x7700_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return the uniquely paired X7700 24LC256 compiler variant."""
-    if b"nv24lcxx.c\0" not in image.lower():
-        return None
-    writes = find_all(image, EEPROM_24LCXX_X7700_WRITE_PREFIX)
-    reads = find_all(image, EEPROM_24LCXX_X7700_READ_PREFIX)
-    initializers = find_all(image, EEPROM_24LCXX_X7700_INIT_SIGNATURE)
-    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
-        return None
-    write, read, initializer = writes[0], reads[0], initializers[0]
-    literal = initializer + 0x14
-    if literal + 4 > len(image):
-        return None
-    geometry = struct.unpack_from("<I", image, literal)[0]
-    if geometry & 3 or not 0x00800000 <= geometry < 0x02000000:
-        return None
-    if not (_eeprom_24lcxx_variant_geometry_at(
-            image, write, 0xE, 0x3EC, geometry
-    ) and _eeprom_24lcxx_variant_geometry_at(
-            image, read, 0xC, 0x3E8, geometry
-    )):
-        return None
-    return read, write, geometry
-
-
-def find_24lcxx_f7f6_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return the cross-linked F7-writer/F6-reader compiler class."""
-    marker = b"nv24lcxx.c\0"
-    if len(find_all(image.lower(), marker)) != 1:
-        return None
-    writes = find_all(image, EEPROM_24LCXX_X7700_WRITE_PREFIX)
-    reads = find_all(image, EEPROM_24LCXX_X430_READ_PREFIX)
-    initializers = find_all(image, EEPROM_24LCXX_X7700_INIT_SIGNATURE)
-    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
-        return None
-    write, read, initializer = writes[0], reads[0], initializers[0]
-    literal = initializer + 0x14
-    if literal + 4 > len(image):
-        return None
-    geometry = struct.unpack_from("<I", image, literal)[0]
-    if geometry & 3 or not 0x00800000 <= geometry < 0x02000000:
-        return None
-    if not (_eeprom_24lcxx_variant_geometry_at(
-            image, write, 0xE, 0x3EC, geometry
-    ) and _eeprom_24lcxx_variant_geometry_at(
-            image, read, 0xC, 0x3E8, geometry
-    )):
-        return None
-    return read, write, geometry
-
-
-def find_24lcxx_halfword_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Pair the halfword compiler's entries with one 32 KiB initializer."""
-    if b"nv24lcxx.c\0" not in image.lower():
-        return None
-    writes = find_all(image, EEPROM_24LCXX_X430_WRITE_PREFIX)
-    reads = find_all(image, EEPROM_24LCXX_HALFWORD_READ_PREFIX)
-    initializers = find_all(image, EEPROM_24LCXX_X430_INIT_SIGNATURE)
-    if not all(len(matches) == 1 for matches in (writes, reads, initializers)):
-        return None
-    write, read, initializer = writes[0], reads[0], initializers[0]
-    geometry = thumb_literal_value(image, initializer + 2, 1)
-    if (geometry is None or geometry & 3
-            or not 0x00800000 <= geometry < 0x02000000
-            or not _eeprom_24lcxx_variant_geometry_at(
-                image, write, 0xE, 0x3E8, geometry)
-            or not _eeprom_24lcxx_variant_geometry_at(
-                image, read, 0xC, 0x3E8, geometry)):
-        return None
-    return read, write, geometry
-
-
-def find_24lcxx_driver(image: bytes) -> tuple[int, int, int] | None:
-    """Return unique read/write offsets and the firmware geometry global."""
-    if b"nv24lcxx.c\0" not in image.lower():
-        return None
-    writes = [position for position in find_all(image, EEPROM_24LCXX_WRITE_PREFIX[:14])
-              if eeprom_24lcxx_write_at(image, position)]
-    reads = find_all(image, EEPROM_24LCXX_READ_SIGNATURE)
-    if len(writes) == 1 and len(reads) == 1:
-        write = writes[0]
-        operation = struct.unpack_from("<H", image, write + 14)[0]
-        if operation & 0xF800 == 0x4800 and (operation >> 8) & 7 == 1:
-            literal = ((write + 18) & ~3) + (operation & 0xFF) * 4
-            if literal + 4 <= len(image):
-                geometry = struct.unpack_from("<I", image, literal)[0]
-                read_operation = struct.unpack_from("<H", image, reads[0] + 10)[0]
-                read_literal = (((reads[0] + 14) & ~3)
-                                + (read_operation & 0xFF) * 4)
-                if (not geometry & 3
-                        and 0x00800000 <= geometry < 0x02000000
-                        and read_operation & 0xF800 == 0x4800
-                        and (read_operation >> 8) & 7 == 0
-                        and read_literal + 4 <= len(image)
-                        and struct.unpack_from("<I", image, read_literal)[0]
-                        == geometry):
-                    return reads[0], write, geometry
-    return (find_24lc64_class_a_driver(image)
-            or find_24lcxx_x430_driver(image)
-            or find_24lcxx_x270_driver(image)
-            or find_24lcxx_f6f7_driver(image)
-            or find_24lcxx_x7700_driver(image)
-            or find_24lcxx_f7f6_driver(image)
-            or find_24lcxx_halfword_driver(image))
 
 
 def fujitsu_x16_bulk_write_mode_at(

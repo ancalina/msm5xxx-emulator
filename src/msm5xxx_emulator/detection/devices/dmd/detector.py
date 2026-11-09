@@ -4,8 +4,7 @@ from __future__ import annotations
 import re
 import struct
 
-from .arm import thumb_bl_target, thumb_literal_value, thumb_normalized_source_shape
-from .boot import DMD_DOWNLOAD_SIGNATURE
+from ...arm import thumb_bl_target, thumb_literal_value, thumb_normalized_source_shape
 
 _DRIVER_SIZE = 0xF4
 _PROFILE_SIGNATURE = "dmd5100-paired-program-readback-v1"
@@ -24,6 +23,7 @@ _DRIVER = bytes.fromhex(
     '02200870074901200873f0bc08bc1847000000000649002005f0b2fef5e70000'
     '000000005000000300000000e007000300000000'
 )
+_CANDIDATE_SIGNATURE = _DRIVER[:14]
 _MASK = bytearray(b"\xff" * _DRIVER_SIZE)
 for _start, _end in _HOLES:
     _MASK[_start:_end] = bytes(_end - _start)
@@ -197,13 +197,25 @@ def find_dmd5100_profile(image: bytes) -> tuple[dict | None, str]:
     if not isinstance(image, bytes):
         return None, "dmd5100-image-not-bytes"
     candidates = []
-    offset = image.find(DMD_DOWNLOAD_SIGNATURE)
+    offset = image.find(_CANDIDATE_SIGNATURE)
     while offset >= 0:
         if _driver_matches(image, offset) or _read_760_shape(image, offset) is not None:
             candidates.append(offset)
-        offset = image.find(DMD_DOWNLOAD_SIGNATURE, offset + 1)
+        offset = image.find(_CANDIDATE_SIGNATURE, offset + 1)
     if not candidates:
         return None, "dmd5100-typed-driver-not-found"
     if len(candidates) != 1:
         return None, "dmd5100-typed-driver-ambiguous"
     return _profile_at(image, candidates[0])
+
+
+_DMD_510X_SIGNATURE = bytes.fromhex("f0b539480027006801250024002800d060e0")
+
+
+def download_signature_position(image: bytes) -> int | None:
+    """Return the unique generic DMD entry signature in legacy priority order."""
+    for signature in (_CANDIDATE_SIGNATURE, _DMD_510X_SIGNATURE):
+        position = image.find(signature)
+        if position >= 0 and image.find(signature, position + 1) < 0:
+            return position
+    return None

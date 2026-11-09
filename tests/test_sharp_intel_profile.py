@@ -73,7 +73,7 @@ class LegacySharpPCRTests(unittest.TestCase):
         loaded = bytes(256)
         def detect_driver(image):
             return profile if len(image) >= 80 else None
-        with patch('msm5xxx_emulator.detection.dmd5000.find_dmd5000_profile',
+        with patch('msm5xxx_emulator.detection.devices.dmd.dual.find_dmd5000_profile',
                    side_effect=detect_driver):
             accepted, error = qemu_dmd5000_property(original, loaded, config,
                                                      immutable_limit=100)

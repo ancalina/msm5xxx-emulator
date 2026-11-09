@@ -6,10 +6,15 @@ recovered physical timeout or a bound on every interrupt-disabled operation.
 """
 from __future__ import annotations
 
-import re
 import struct
+from types import SimpleNamespace
 
-from .arm import thumb_bl_target, thumb_literal_value
+from .contracts import BodySpec, match_thumb_shape
+from .facts import facts_for, source_prefix
+from .capabilities import (
+    Capability, CapabilityPredicate, CapabilityRegistry, Decision, Evidence,
+    Resolution, ResourceClaim,
+)
 
 SIGNATURE = "thumb-shadow-pulse-dog-task-v1"
 DEFAULT_TIMEOUT_MS = 30_000
@@ -64,23 +69,14 @@ _TASK_REPORT_CALLS = (2, 0x16, 0x1C, 0x24, 0x30, 0x38, 0x60)
 _WAIT = {0: 0xB580, 2: 0x1C07, 4: 0x1C08, 6: 0x1C11,
          0xC: 0x1C38, 0x12: 0xBC80, 0x14: 0xBC08, 0x16: 0x4718}
 _WAIT_CALLS = (8, 0xE)
-
-
-def _shape(image: bytes, entry: int, size: int, fixed: dict[int, int],
-           literals: dict[int, int], calls: tuple[int, ...]):
-    if entry & 1 or not 0 <= entry <= len(image) - size:
-        return None
-    if any(struct.unpack_from("<H", image, entry + off)[0] != op
-           for off, op in fixed.items()):
-        return None
-    values = {off: thumb_literal_value(image, entry + off, reg)
-              for off, reg in literals.items()}
-    targets = {off: thumb_bl_target(image, entry + off) for off in calls}
-    if any(v is None for v in values.values()) or any(
-            v is None or v & 1 or not 0 <= v < len(image) - 2
-            for v in targets.values()):
-        return None
-    return values, targets
+_SERVICE_SPEC = BodySpec.thumb(0x4E, _SERVICE, _SERVICE_LITERALS, _SERVICE_CALLS)
+_TASK_SPEC = BodySpec.thumb(0x82, _TASK, _TASK_LITERALS, _TASK_CALLS)
+_TASK_REPORT_SPEC = BodySpec.thumb(
+    0x7A, _TASK_REPORT, _TASK_REPORT_LITERALS, _TASK_REPORT_CALLS,
+)
+_WAIT_SPEC = BodySpec.thumb(0x18, _WAIT, calls=_WAIT_CALLS)
+# Kept for existing callers while sharing the implementation with contracts.
+_shape = match_thumb_shape
 
 
 def _ram(value: int) -> bool:
@@ -93,15 +89,15 @@ def _find_shadow_watchdog_profile(image: bytes) -> tuple[dict[str, object] | Non
     All code and dog.c literals must be directly represented in this image;
     unresolved overlays or differing compiler/control-flow classes are rejected.
     """
+    facts = facts_for(image)
     services = {}
     # Anchor is PUSH {r4,r7,lr}; alignment and the entire routine are checked.
-    for match in re.finditer(re.escape(struct.pack("<H", 0xB590)), image):
-        entry = match.start() - 2
-        shape = _shape(image, entry, 0x4E, _SERVICE,
-                       _SERVICE_LITERALS, _SERVICE_CALLS)
-        if shape is None:
+    for anchor in facts.string_candidates(struct.pack("<H", 0xB590)):
+        entry = anchor - 2
+        body = _SERVICE_SPEC.match(facts, entry)
+        if body is None:
             continue
-        values, calls = shape
+        values, calls = body.values, body.targets
         op = struct.unpack_from("<H", image, entry + 0x1E)[0]
         mask = op & 0xFF
         if (op & 0xFF00 != 0x2200 or not mask or mask & (mask - 1)
@@ -119,20 +115,16 @@ def _find_shadow_watchdog_profile(image: bytes) -> tuple[dict[str, object] | Non
         return None, ("watchdog-service-grammar-unclosed" if b"dog.c\0" in image
                       else "no-watchdog-service")
     candidates = []
-    for match in re.finditer(re.escape(struct.pack("<H", 0xB5F0)), image):
-        task = match.start()
-        for report_tail, size, fixed, literals, offsets in (
-                (False, 0x82, _TASK, _TASK_LITERALS, _TASK_CALLS),
-                (True, 0x7A, _TASK_REPORT, _TASK_REPORT_LITERALS,
-                 _TASK_REPORT_CALLS)):
-            shape = _shape(image, task, size, fixed, literals, offsets)
-            if shape is None:
+    for task in facts.string_candidates(struct.pack("<H", 0xB5F0)):
+        for report_tail, spec in ((False, _TASK_SPEC), (True, _TASK_REPORT_SPEC)):
+            body = spec.match(facts, task)
+            if body is None:
                 continue
-            values, calls = shape
+            values, calls = body.values, body.targets
             if calls[0x1C] not in services:
                 continue
-            wait = _shape(image, calls[0x16], 0x18, _WAIT, {}, _WAIT_CALLS)
-            if wait is None or wait[1][8] == wait[1][0xE]:
+            wait = _WAIT_SPEC.match(facts, calls[0x16])
+            if wait is None or wait.targets[8] == wait.targets[0xE]:
                 continue
             dog = values[0x5C if report_tail else 0x54]
             if (not 0 <= dog <= len(image) - 6
@@ -183,3 +175,66 @@ def find_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
     if profile is None:
         return None, reason
     return profile, "watchdog-byte-pulse-periodic-and-rebuild-reset-owner-closed"
+
+
+def watchdog_pulse_claim(address: int, owner: str = 'watchdog-pulse') -> ResourceClaim:
+    """Claim the native byte port and its explicit ready-poll forwarding.
+
+    The backend owns byte readback, even when its watchdog uses one bit.
+    Disjoint pin masks alone cannot make another provider share that byte.
+    """
+    return ResourceClaim('address', owner, address, address + 1,
+                         shared_resource='watchdog-ready-pulse',
+                         semantics='byte-pulse-forwarding')
+
+
+def _watchdog_decision(context) -> Decision:
+    """Bind pulse ownership to the supplied image and requested timeout."""
+    profile, image = context.profile, context.image
+    if profile is None:
+        return Decision("missing")
+    if not isinstance(profile, dict):
+        return Decision("missing", reason="invalid profile")
+    size = profile.get("image_size")
+    if type(size) is not int or not 0 < size <= len(image):
+        return Decision("missing", reason="invalid source window")
+    current, reason = find_watchdog_profile(source_prefix(image, size))
+    if current is None:
+        return Decision("missing", reason=f"source not admitted ({reason})")
+    # Timeout is an explicit tunable, while every evidence field stays bound.
+    timeout = profile.get("timeout_ms")
+    if type(timeout) is not int or not 1000 <= timeout <= 3600000:
+        return Decision("missing", reason="invalid timeout")
+    if {**profile, "timeout_ms": current["timeout_ms"]} != current:
+        return Decision("missing", reason="source profile mismatch")
+    service, task = current['service_address'], current['task_address']
+    register, mask = current['register'], current['mask']
+    evidence = (
+        Evidence('watchdog-pulse', (register, mask), (service,)),
+        Evidence('watchdog-periodic-owner',
+                 (service, task, current['wait_argument']), (task,), 'linkage'),
+    )
+    return Decision('accepted', capability=Capability(
+        'watchdog', ('watchdog-pulse', 'watchdog-periodic-owner'), evidence,
+        properties=(('watchdog-register', register), ('watchdog-mask', mask),
+                    ('watchdog-timeout-ms', timeout)),
+        claims=(watchdog_pulse_claim(register),),
+    ))
+
+
+_WATCHDOG_REGISTRY = CapabilityRegistry()
+_WATCHDOG_REGISTRY.register(CapabilityPredicate('watchdog', (), _watchdog_decision))
+
+
+def watchdog_plan(profile: object, image: bytes) -> Resolution:
+    """Resolve source-proved watchdog parameters and native resource claims."""
+    return _WATCHDOG_REGISTRY.resolve(SimpleNamespace(profile=profile, image=image))
+
+
+def watchdog_property(profile: object, image: bytes) -> tuple[str | None, str | None]:
+    resolution = watchdog_plan(profile, image)
+    values = dict(resolution.plan.properties)
+    if not values:
+        return None, resolution.decisions[0].reason
+    fields = ('watchdog-register', 'watchdog-mask', 'watchdog-timeout-ms')
+    return ','.join(f'{field}={values[field]}' for field in fields), None

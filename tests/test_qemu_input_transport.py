@@ -15,8 +15,10 @@ import unittest
 from corpus import firmware_path, snippet
 from unittest import mock
 
+from msm5xxx_emulator.detection.registry import device_domain
+
+from msm5xxx_emulator.detection.devices.dmd import (DMD_DOWNLOAD_5500_LITERALS)
 from msm5xxx_emulator.detection.boot import (
-    DMD_DOWNLOAD_5500_LITERALS,
     PRIMARY_FLASH_PROBE_SIGNATURE,
 )
 
@@ -24,6 +26,128 @@ from msm5xxx_emulator.detection.boot import (
 NATIVE = Path(__file__).parents[1] / "native/qemu"
 TRANSPORT_SOURCE = Path(__file__).parents[1] / "src/msm5xxx_emulator/qemu/transport.py"
 MODULE = importlib.import_module("msm5xxx_emulator.qemu.live_display")
+EEPROM = device_domain("eeprom")
+
+
+def _thumb_bl_bytes(source: int, target: int) -> bytes:
+    displacement = (target - source - 4) & 0x7FFFFF
+    return struct.pack("<2H", 0xF000 | (displacement >> 12 & 0x7FF),
+                       0xF800 | (displacement >> 1 & 0x7FF))
+
+
+def _complete_byte_gpio_fixture(image: bytearray, writer: int, reader: int,
+                                ack: int) -> None:
+    """Emit complete, relocatable Thumb owners for the byte GPIO contract."""
+    helper_a, helper_b = 0x180, 0x190
+    image[helper_a:helper_a + 2] = struct.pack("<H", 0x4770)
+    image[helper_b:helper_b + 2] = struct.pack("<H", 0x4770)
+
+    def emit(entry: int, *, role: str) -> None:
+        words: list[int] = []
+        calls: list[tuple[int, int]] = []
+        literals: list[tuple[int, int, int]] = []
+
+        def call(target: int) -> None:
+            calls.append((entry + len(words) * 2, target))
+            words.extend((0xF000, 0xF800))
+
+        def ldr_port(reg: int, address: int) -> None:
+            literals.append((len(words), reg, address))
+            words.append(0x4800 | reg << 8)
+
+        def port_write(reg: int, mask: int, *, set_bits: bool) -> None:
+            words.extend((0x7800 | reg << 3, 0x2100 | mask,
+                          (0x4308 if set_bits else 0x4388),
+                          0x7000 | reg << 3))
+
+        words.append(0xB5F0)  # push {r4-r7, lr}
+        if role == "ack":
+            for _ in range(4):
+                call(helper_a)
+                call(helper_b)
+            ldr_port(4, 0x03000678)
+            port_write(4, 1, set_bits=False)  # release SDA direction
+            ldr_port(5, 0x03000660)
+            port_write(5, 0x20, set_bits=True)  # raise SCL
+            ldr_port(6, 0x03000664)
+            words.extend((0x7830, 0x2101, 0x4008, 0xD100, 0x46C0))
+            # Both branch outcomes reconverge before the SCL-low transition.
+            words.extend((0x7800 | 5 << 3, 0x2120, 0x4388, 0x7000 | 5 << 3))
+            ldr_port(4, 0x03000678)
+            port_write(4, 1, set_bits=True)
+        else:
+            words.append(0x2708)  # movs r7, #8
+            loop_call = len(words)
+            call(helper_a)
+            call(helper_b)
+            ldr_port(4, 0x03000664)
+            port_write(4, 1, set_bits=True)
+            port_write(4, 1, set_bits=False)
+            ldr_port(5, 0x03000660)
+            port_write(5, 0x20, set_bits=True)
+            port_write(5, 0x20, set_bits=False)
+            ldr_port(6, 0x03000678)
+            port_write(6, 1, set_bits=True)
+            call(ack)
+            words.append(0x3F01)  # subs r7, #1; the loop has a real exit
+            branch = len(words)
+            words.append(0xD100)  # bne loop_call; both paths remain represented
+            delta = loop_call * 2 - (branch * 2 + 4)
+            if delta & 1 or not -256 <= delta // 2 <= 255:
+                raise AssertionError("synthetic loop is outside Thumb branch range")
+            words[-1] |= delta // 2 & 0xFF
+
+        words.append(0xBDF0)  # pop {r4-r7, pc}
+        while (entry + len(words) * 2) & 3:
+            words.append(0x46C0)
+        pool = entry + len(words) * 2
+        code = bytearray(struct.pack("<" + "H" * len(words), *words))
+        for index, reg, value in literals:
+            pc = entry + index * 2
+            displacement = pool - ((pc + 4) & ~3)
+            if displacement < 0 or displacement & 3 or displacement > 0x3FC:
+                raise AssertionError("synthetic literal is out of range")
+            struct.pack_into("<H", code, index * 2,
+                             0x4800 | reg << 8 | displacement // 4)
+            code.extend(struct.pack("<I", value))
+            pool += 4
+        image[entry:entry + len(code)] = code
+        for source, target in calls:
+            image[source:source + 4] = _thumb_bl_bytes(source, target)
+
+    emit(ack, role="ack")
+    emit(writer, role="writer")
+    emit(reader, role="reader")
+
+
+def _assert_byte_gpio_owners_return(testcase, image: bytes,
+                                    entries: tuple[int, ...]) -> None:
+    from msm5xxx_emulator.detection.facts import CodeAddress, facts_for
+
+    facts = facts_for(image)
+    for entry in entries:
+        function = facts.function(CodeAddress(entry, "thumb"), budget=512,
+                                  symbolic_registers={})
+        testcase.assertTrue(function.complete)
+        frame = facts.stack_frame(function)
+        testcase.assertIsNotNone(frame)
+        testcase.assertTrue(frame.complete)
+        testcase.assertTrue(frame.balanced)
+    for entry in entries[:2]:
+        function = facts.function(CodeAddress(entry, "thumb"), budget=512,
+                                  symbolic_registers={})
+        branches = [(source, target) for source, target in function.back_edges]
+        testcase.assertEqual(len(branches), 1)
+        branch, loop = branches[0]
+        testcase.assertEqual(loop, entry + 4)  # push, then movs r7, #8
+        branch_ins = facts.decode(CodeAddress(branch, "thumb"))
+        setup_ins = facts.decode(CodeAddress(entry + 2, "thumb"))
+        decrement_ins = facts.decode(CodeAddress(branch - 2, "thumb"))
+        testcase.assertEqual((setup_ins.mnemonic, setup_ins.op_str),
+                             ("movs", "r7, #8"))
+        testcase.assertEqual((decrement_ins.mnemonic, decrement_ins.op_str),
+                             ("subs", "r7, #1"))
+        testcase.assertEqual(branch_ins.mnemonic, "bne")
 
 
 class QEMUInputTransportTests(unittest.TestCase):
@@ -1110,7 +1234,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             owned = SimpleNamespace(**dict(vars(config), board_status_input=lid))
             closed = deepcopy(profile)
             closed['scan_gates']['status_entry'] = 0x3c
-            with mock.patch('msm5xxx_emulator.detection.input_scanner_indirect.indirect_scanner_at',
+            with mock.patch('msm5xxx_emulator.detection.devices.board_contact.indirect_scanner_at',
                             return_value=(lid, '')) as prove:
                 self.assertEqual(helper(bytes(image), owned, closed, enabled=False),
                                  ('matrix-halfword=1000628:12:22:3b03,'
@@ -1122,7 +1246,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                 wrong = SimpleNamespace(**dict(vars(config),
                     board_status_input=BoardStatusInput(0x3000728, 2, 0)))
                 self.assertIsNone(helper(bytes(image), wrong, closed, enabled=False)[0])
-            with mock.patch('msm5xxx_emulator.detection.input_scanner_indirect.indirect_scanner_at',
+            with mock.patch('msm5xxx_emulator.detection.devices.board_contact.indirect_scanner_at',
                             return_value=(None, 'unclosed')):
                 self.assertIsNone(helper(bytes(image), owned, closed, enabled=False)[0])
             for changed in ({'scan_gates': None}, {'scan_gates': {}}, {'grammar': 'unknown'}):
@@ -1434,7 +1558,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                          (None, "unsupported-contract"))
 
     def test_sbi_raw_input_is_source_scoped_and_preserves_bootstrap_fallback(self) -> None:
-        from msm5xxx_emulator.detection.input import SBI_BOOTSTRAP, SBI_BOOTSTRAP_VALIDATION
+        from msm5xxx_emulator.detection.devices.sbi.bootstrap import (SBI_BOOTSTRAP, SBI_BOOTSTRAP_VALIDATION)
         raw = dict(signature="thumb-sbi-raw-sample-086a-v1",
                    admission="temporary-evidence-gated", accepted=True,
                    policy="configured-virtual-raw-byte-uncalibrated",
@@ -1457,16 +1581,20 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertEqual((config.chipset, config.confidence), ("MSM5xxx", "unknown"))
         for field, value in (("accepted", False), ("policy", "physical-voltage"),
                              ("control", 0x085F), ("selector_mask", True),
-                             ("clock_values", None), ("clock_values", (0x4A, 0xCA)),
-                             ("clock_values", [0x4A, 0xCB]),
-                             ("clock_values", [float(0x4A), 0xCA]),
                              ("source_selector", False), ("selector_value", 0x20),
-                             ("read_pc", 0x188), ("read_pc", True),
+                             ("read_pc", True),
                              ("entries", [True])):
             config.sbi_bootstrap_profile = {**base, "raw_input": {**raw, field: value}}
             prop, reject = MODULE.qemu_sbi_property(config)
             self.assertEqual(prop, "sbi=on,sbi-bootstrap-only=on")
             self.assertTrue(reject.startswith("raw-input-"))
+        config.sbi_bootstrap_profile = {**base, "raw_input": {**raw, "read_pc": 0x188}}
+        self.assertEqual(MODULE.qemu_sbi_property(config),
+                         ("sbi=on,sbi-raw-input-profile=188:60:40", None))
+        for value in (None, (0x4A, 0xCA), [0x4A, 0xCB], [float(0x4A), 0xCA]):
+            config.sbi_bootstrap_profile = {**base, "raw_input": {**raw, "clock_values": value}}
+            self.assertEqual(MODULE.qemu_sbi_property(config),
+                             ("sbi=on,sbi-raw-input-profile=186:60:40", None))
         config.sbi_bootstrap_profile = {**base, "raw_input": raw}
         config.load_address = 0x800000
         self.assertEqual(MODULE.qemu_sbi_property(config),
@@ -2355,36 +2483,14 @@ class QEMUInputTransportTests(unittest.TestCase):
         image = bytearray(b"\xff" * 0x1400)
         write, read = 0x800, 0xEB0
         writer, ack, reader = write - 0x12C, write - 0x1D2, read - 0x718
-        image[write:write + len(MODULE.EEPROM_24LCXX_X430_WRITE_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X430_WRITE_PREFIX
+        image[write:write + len(EEPROM.EEPROM_24LCXX_X430_WRITE_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X430_WRITE_PREFIX
         )
-        image[read:read + len(MODULE.EEPROM_24LCXX_X430_READ_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X430_READ_PREFIX
+        image[read:read + len(EEPROM.EEPROM_24LCXX_X430_READ_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X430_READ_PREFIX
         )
-        shapes = (
-            (writer, "f0b5071c8025"),
-            (writer + 0x16, "0122087810430870087826490871"),
-            (writer + 0x2E, "202108431070107821490870"),
-            (writer + 0x44, "202311789943117011781b4a1170"),
-            (writer + 0x5A, "0878400840000870087815490871"),
-            (writer + 0x72, "202108431070107810490870"),
-            (writer + 0x88, "202311789943117011780a4a1170"),
-            (ack, "f0b5"),
-            (ack + 0x06, "234a11784908490011701178214a1172"),
-            (ack + 0x24, "202229781c4c114329702978103c2170"),
-            (ack + 0x40, "21790126301c490800d2002007063f0e"),
-            (ack + 0x5A, "20239943297029782170"),
-            (ack + 0x78, "0a7832430a700978064a1172"),
-            (reader, "f0b50027164d"),
-            (reader + 0x10, "20220878104308700878114904390870"),
-            (reader + 0x28, "28783f0e400801d301200743"),
-            (reader + 0x36, "20230878984308700878074904390870"),
-        )
-        for position, value in shapes:
-            image[position:position + len(bytes.fromhex(value))] = bytes.fromhex(value)
-        MODULE.struct.pack_into("<I", image, writer + 0xBC, 0x03000660)
-        MODULE.struct.pack_into("<I", image, ack + 0x9A, 0x03000670)
-        MODULE.struct.pack_into("<I", image, reader + 0x60, 0x03000664)
+        _complete_byte_gpio_fixture(image, writer, reader, ack)
+        _assert_byte_gpio_owners_return(self, bytes(image), (writer, reader, ack))
         config = SimpleNamespace(
             eeprom_read_address=read, eeprom_write_address=write,
             eeprom_geometry_address=0x01001000, load_address=0,
@@ -2394,7 +2500,9 @@ class QEMUInputTransportTests(unittest.TestCase):
             MODULE.eeprom_gpio_profile(bytes(image), config),
             ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
         )
-        MODULE.struct.pack_into("<I", image, ack + 0x9A, 0x03000674)
+        # Change the SDA direction mask in executed code: the sample is no
+        # longer released from output mode, so the native GPIO tuple rejects.
+        MODULE.struct.pack_into("<H", image, ack + 0x24, 0x2102)
         self.assertEqual(
             MODULE.eeprom_gpio_profile(bytes(image), config),
             (None, "gpio-line-shape-mismatch"),
@@ -2405,11 +2513,11 @@ class QEMUInputTransportTests(unittest.TestCase):
         write, read, initializer = 0x1000, 0x16D0, 0x2400
         writer, reader = write - 0x2DC, read - 0x7F8
         geometry = 0x0119BA08
-        image[write:write + len(MODULE.EEPROM_24LCXX_X270_WRITE_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X270_WRITE_PREFIX
+        image[write:write + len(EEPROM.EEPROM_24LCXX_X270_WRITE_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X270_WRITE_PREFIX
         )
-        image[read:read + len(MODULE.EEPROM_24LCXX_X270_READ_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X270_READ_PREFIX
+        image[read:read + len(EEPROM.EEPROM_24LCXX_X270_READ_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X270_READ_PREFIX
         )
         image[initializer:initializer + 18] = bytes.fromhex(
             "01200449c0030880012088700020c8707047"
@@ -2473,11 +2581,11 @@ class QEMUInputTransportTests(unittest.TestCase):
         image = bytearray(b"\xff" * 0x4000)
         write, read, initializer = 0x1000, 0x16D0, 0x2400
         geometry = 0x0119BA08
-        image[write:write + len(MODULE.EEPROM_24LCXX_F6F7_WRITE_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_F6F7_WRITE_PREFIX
+        image[write:write + len(EEPROM.EEPROM_24LCXX_F6F7_WRITE_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_F6F7_WRITE_PREFIX
         )
-        image[read:read + len(MODULE.EEPROM_24LCXX_X270_READ_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X270_READ_PREFIX
+        image[read:read + len(EEPROM.EEPROM_24LCXX_X270_READ_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X270_READ_PREFIX
         )
         image[initializer:initializer + 18] = bytes.fromhex(
             "01200449c0030880012088700020c8707047"
@@ -2523,16 +2631,16 @@ class QEMUInputTransportTests(unittest.TestCase):
             (None, "transport-entry-signature-mismatch"),
         )
 
-    def test_eeprom_gpio_profile_accepts_x7700_protocol_class(self) -> None:
+    def test_eeprom_gpio_profile_rejects_incomplete_x7700_source(self) -> None:
         image = bytearray(b"\xff" * 0x5000)
         write, read, initializer = 0x1000, 0x16B0, 0x3000
         writer, reader = write - 0x160, read - 0x728
         geometry, descriptor = 0x01002000, 0x01000100
-        image[write:write + len(MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX
+        image[write:write + len(EEPROM.EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X7700_WRITE_PREFIX
         )
-        image[read:read + len(MODULE.EEPROM_24LCXX_X7700_READ_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X7700_READ_PREFIX
+        image[read:read + len(EEPROM.EEPROM_24LCXX_X7700_READ_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X7700_READ_PREFIX
         )
         image[initializer:initializer + 18] = bytes.fromhex(
             "01200449c0030880012088700020c8707047"
@@ -2571,9 +2679,11 @@ class QEMUInputTransportTests(unittest.TestCase):
             ),
         )
 
+        # The excerpt supplies entry and descriptor fragments but omits
+        # complete function control flow. It cannot authorize the GPIO owner.
         self.assertEqual(
             MODULE.eeprom_gpio_profile(bytes(image), config),
-            ((0x03000720, 0, 0x20, 0, 0x40, 0xC, 0x8000), None),
+            (None, "gpio-line-shape-mismatch"),
         )
         image[reader + 0x34] ^= 1
         self.assertEqual(
@@ -2586,11 +2696,11 @@ class QEMUInputTransportTests(unittest.TestCase):
         write, read, initializer = 0x400, 0xAD8, 0x1200
         writer, ack, reader = write - 0x16C, write - 0x216, read - 0x754
         geometry = 0x01208494
-        image[write:write + len(MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X7700_WRITE_PREFIX
+        image[write:write + len(EEPROM.EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X7700_WRITE_PREFIX
         )
-        image[read:read + len(MODULE.EEPROM_24LCXX_X430_READ_PREFIX)] = (
-            MODULE.EEPROM_24LCXX_X430_READ_PREFIX
+        image[read:read + len(EEPROM.EEPROM_24LCXX_X430_READ_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X430_READ_PREFIX
         )
         image[initializer:initializer + 18] = bytes.fromhex(
             "01200449c0030880012088700020c8707047"
@@ -2599,36 +2709,8 @@ class QEMUInputTransportTests(unittest.TestCase):
                          initializer + 0x14):
             MODULE.struct.pack_into("<I", image, position, geometry)
         image[0x1700:0x170B] = b"nv24lcxx.c\0"
-        shapes = (
-            (writer, "f0b5071c80260724"),
-            (writer + 0x1A, "01231178194311701178304a1171"),
-            (writer + 0x3C, "20231178194311701178"),
-            (writer + 0x5C, "20231178994311701178"),
-            (writer + 0x74, "1b4a11784908490011701178"),
-            (writer + 0x98, "20231178194311701178"),
-            (writer + 0xB8, "20231178994311701178"),
-            (ack, "f0b5"),
-            (ack + 0x06, "234a11784908490011701178214a1172"),
-            (ack + 0x24, "202229781c4c114329702978103c2170"),
-            (ack + 0x40, "21790126301c490800d2002007063f0e"),
-            (ack + 0x5C, "20239943297029782170"),
-            (ack + 0x7A, "0a7832430a700978054a1172"),
-            (reader, "f0b500271b4e0024"),
-            (reader + 0x12, "194a20231178194311701178154a043a1170"),
-            (reader + 0x30, "7800070630783f0e400801d301200743"),
-            (reader + 0x44, "0c4a20231178994311701178084a043a1170"),
-        )
-        for position, value in shapes:
-            raw = bytes.fromhex(value)
-            image[position:position + len(raw)] = raw
-        for position, operation in zip(
-                (writer + 0x46, writer + 0x66, writer + 0x80,
-                 writer + 0xA2, writer + 0xC2),
-                (0x4A28, 0x4A20, 0x4A19, 0x4A11, 0x4A09)):
-            MODULE.struct.pack_into("<H", image, position, operation)
-        MODULE.struct.pack_into("<I", image, writer + 0xE8, 0x03000660)
-        MODULE.struct.pack_into("<I", image, ack + 0x9A, 0x03000670)
-        MODULE.struct.pack_into("<I", image, reader + 0x74, 0x03000664)
+        _complete_byte_gpio_fixture(image, writer, reader, ack)
+        _assert_byte_gpio_owners_return(self, bytes(image), (writer, reader, ack))
         config = SimpleNamespace(
             eeprom_read_address=read, eeprom_write_address=write,
             eeprom_geometry_address=geometry, load_address=0,
@@ -2638,7 +2720,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             MODULE.eeprom_gpio_profile(bytes(image), config),
             ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
         )
-        image[reader + 0x32] ^= 1
+        MODULE.struct.pack_into("<H", image, ack + 0x24, 0x2102)
         self.assertEqual(
             MODULE.eeprom_gpio_profile(bytes(image), config),
             (None, "gpio-line-shape-mismatch"),

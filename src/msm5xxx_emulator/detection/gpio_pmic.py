@@ -8,26 +8,34 @@ from __future__ import annotations
 import struct
 import re
 
-try:
-    from capstone import CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_LITTLE_ENDIAN, CS_MODE_THUMB, Cs
-except ImportError:
-    CS_ARCH_ARM = CS_MODE_ARM = CS_MODE_LITTLE_ENDIAN = CS_MODE_THUMB = Cs = None
-
 from .arm import thumb_bl_target
+try:
+    from .facts import CodeAddress, facts_for
+    from capstone.arm import ARM_OP_MEM
+except ImportError:
+    CodeAddress = facts_for = ARM_OP_MEM = None
 
-_DECODER = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_LITTLE_ENDIAN) if Cs else None
-_ARM_DECODER = Cs(CS_ARCH_ARM, CS_MODE_ARM | CS_MODE_LITTLE_ENDIAN) if Cs else None
 _EPILOGUE = (('pop', '{r3}'), ('bx', 'r3'))
 _PORTS = (0x030006E8, 0x03000720, 0x030006F4)
 _SHADOW = 0x147FF000
 _MAX_FUNCTION = 0x600
-_BL_ENCODING = re.compile(rb'(?=(.[\xf0-\xf7].[\xf8-\xff]))', re.DOTALL)
 
 
-def _instructions(image: bytes, start: int, limit: int = _MAX_FUNCTION):
-    if _DECODER is None:
+def _instructions(image: bytes, start: int, limit: int = _MAX_FUNCTION,
+                  isa: str = 'thumb'):
+    if facts_for is None or CodeAddress is None:
         return ()
-    return tuple(_DECODER.disasm(image[start:min(len(image), start + limit)], start))
+    facts = facts_for(image)
+    end = min(len(image), start + limit)
+    instructions = []
+    pc = start
+    while pc < end:
+        insn = facts.decode(CodeAddress(pc, isa))
+        if insn is None or pc + insn.size > end:
+            break
+        instructions.append(insn)
+        pc += insn.size
+    return tuple(instructions)
 
 
 def _body_end(insns) -> int | None:
@@ -41,31 +49,32 @@ def _body_end(insns) -> int | None:
 
 
 def _literal(image: bytes, insn) -> tuple[int, int] | None:
-    if insn.mnemonic != 'ldr' or '[pc,' not in insn.op_str:
+    if (insn.mnemonic != 'ldr' or '[pc,' not in insn.op_str
+            or facts_for is None or CodeAddress is None):
         return None
-    raw = struct.unpack_from('<H', image, insn.address)[0]
-    pool = ((insn.address + 4) & ~3) + (raw & 0xff) * 4
-    if pool + 4 > len(image):
-        return None
-    return pool, struct.unpack_from('<I', image, pool)[0]
+    literal = facts_for(image).literal(CodeAddress(insn.address, 'thumb'))
+    return (literal.pool, literal.value) if literal is not None else None
 
 
 def _memory_base(insn) -> tuple[str, int] | None:
-    match = re.search(r'\[(r[0-7])(?:, #([^\]]+))?\]', insn.op_str)
-    if not match:
+    mem = next((operand.mem for operand in insn.operands
+                if operand.type == ARM_OP_MEM and not operand.mem.index), None)
+    if mem is None:
         return None
-    return match.group(1), int(match.group(2), 0) if match.group(2) else 0
+    register = insn.reg_name(mem.base)
+    return (register, mem.disp) if register in {f'r{i}' for i in range(8)} else None
 
 
 def _irq_pair_closed(image: bytes, target: int) -> bool:
-    if _ARM_DECODER is None or target < 0 or target + 0x1c > len(image):
+    if facts_for is None or CodeAddress is None or target < 0 or target + 0x1c > len(image):
         return False
+    facts = facts_for(image)
     for entry, operation in ((target, 'orr'), (target + 0x18, 'bic')):
-        if struct.unpack_from('<H', image, entry)[0] != 0x4778 or \
-                struct.unpack_from('<H', image, entry + 2)[0] != 0:
+        veneer = facts.view.read(entry, 4, phase='reset', bank='primary')
+        if veneer is None or struct.unpack('<2H', veneer) != (0x4778, 0):
             return False
         start = entry + 4
-        insns = tuple(_ARM_DECODER.disasm(image[start:min(len(image), start + 0x30)], start))
+        insns = _instructions(image, start, 0x30, isa='arm')
         end = next((n for n, insn in enumerate(insns)
                     if insn.mnemonic == 'bx' and insn.op_str == 'lr'), None)
         if end is None:
@@ -79,9 +88,10 @@ def _irq_pair_closed(image: bytes, target: int) -> bool:
 
 
 def _protocol_function(image: bytes, start: int, kind: str):
-    if _DECODER is None:
+    if facts_for is None or CodeAddress is None:
         return None
-    first = tuple(_DECODER.disasm(image[start:min(len(image), start + 12)], start, count=6))
+    facts = facts_for(image)
+    first = _instructions(image, start, 12)[:6]
     fast_ops = [(i.mnemonic, i.op_str) for i in first]
     prefix = ([('adds', 'r6, r1, #0'), ('lsls', 'r0, r0, #0x19'),
                ('lsrs', 'r4, r0, #0x18')] if kind == 'write' else
@@ -106,16 +116,20 @@ def _protocol_function(image: bytes, start: int, kind: str):
                   ('lsls', 'r4, r0, #0x18'), ('lsrs', 'r4, r4, #0x18')]
     if ops[1:1 + len(prefix)] != prefix:
         return None
-    literals = [(i.address, *_literal(image, i)) for i in body if _literal(image, i)]
+    literals = []
+    for insn in body:
+        literal = _literal(image, insn)
+        if literal is not None:
+            literals.append((insn.address, *literal))
     values = {value for _, _, value in literals}
     tables = []
     table_registers = set()
     shadow_registers = set()
     for literal_use, _, value in literals:
         use = next(i for i in body if i.address == literal_use)
-        if value + 12 <= len(image) and value % 4 == 0:
-            ports = struct.unpack_from('<3I', image, value)
-            if ports == _PORTS:
+        if value % 4 == 0:
+            raw_table = facts.view.read(value, 12, phase='reset', bank='primary')
+            if raw_table is not None and struct.unpack('<3I', raw_table) == _PORTS:
                 tables.append(value)
                 table_registers.add(use.op_str.split(',', 1)[0].strip())
         if value == _SHADOW:
@@ -125,14 +139,12 @@ def _protocol_function(image: bytes, start: int, kind: str):
     table_offsets = set()
     table_entries = {}
     for insn in body:
-        if insn.mnemonic != 'ldr':
-            continue
-        for register in table_registers:
-            match = re.search(rf'\[{register}(?:, #([^\]]+))?\]', insn.op_str)
-            if match:
-                offset = int(match.group(1), 0) if match.group(1) else 0
-                table_offsets.add(offset)
-                table_entries.setdefault(offset, set()).add(insn.op_str.split(',', 1)[0].strip())
+        access = _memory_base(insn) if insn.mnemonic == 'ldr' else None
+        if access is not None and access[0] in table_registers:
+            offset = access[1]
+            table_offsets.add(offset)
+            table_entries.setdefault(offset, set()).add(
+                insn.reg_name(insn.operands[0].reg))
     if not table_offsets:
         return None
     shadow_reads = {base for insn in body if insn.mnemonic == 'ldr' and
@@ -145,7 +157,7 @@ def _protocol_function(image: bytes, start: int, kind: str):
     calls = []
     for insn in body:
         if insn.mnemonic == 'bl':
-            target = thumb_bl_target(image, insn.address)
+            target = facts.thumb_call_target(insn.address)
             if target is not None:
                 calls.append((insn.address, target))
     from collections import Counter
@@ -174,7 +186,8 @@ def _protocol_function(image: bytes, start: int, kind: str):
             continue
         previous = body[index - 1]
         if previous.mnemonic == 'subs' and previous.op_str.endswith(', #1'):
-            back_edges.append((int(insn.op_str[1:], 16), previous.op_str.split(',', 1)[0].strip()))
+            back_edges.append((int(insn.op_str[1:], 16),
+                               previous.op_str.split(',', 1)[0].strip()))
     loops = {}
     for index, insn in enumerate(body):
         match = re.fullmatch(r'movs (r[0-7]), #(6|7)', insn.mnemonic + ' ' + insn.op_str)
@@ -235,11 +248,11 @@ def _find_functions(image: bytes, kind: str):
 
 def _candidate_callers(image: bytes, target: int):
     callers = {}
-    for match in _BL_ENCODING.finditer(image):
-        at = match.start()
-        if at & 1:
-            continue
-        if thumb_bl_target(image, at) != target:
+    if facts_for is None:
+        return callers
+    facts = facts_for(image)
+    for at, candidate_target in facts.call_candidates('thumb'):
+        if candidate_target != target:
             continue
         start = at & ~1
         floor = max(0, start - 0x300)
@@ -254,7 +267,7 @@ def _candidate_callers(image: bytes, target: int):
         if end is None or at >= end:
             continue
         body = tuple(i for i in insns if i.address < end)
-        calls = [(i.address, thumb_bl_target(image, i.address)) for i in body
+        calls = [(i.address, facts.thumb_call_target(i.address)) for i in body
                  if i.mnemonic == 'bl']
         callers[start] = (end, body, calls)
     return callers
@@ -264,7 +277,7 @@ def find_gpio_pmic_profile(image: bytes) -> tuple[dict | None, str]:
     """Return a register-readback profile and rejection reason, if closed."""
     if not isinstance(image, bytes) or len(image) < 0x100:
         return None, 'image-too-small'
-    if _DECODER is None or _ARM_DECODER is None:
+    if facts_for is None or CodeAddress is None:
         return None, 'capstone-unavailable'
     writers = _find_functions(image, 'write')
     readers = _find_functions(image, 'read')

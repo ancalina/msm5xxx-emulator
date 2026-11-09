@@ -7,6 +7,9 @@ import struct
 from ..core.config import CopyLayout, LinkerLayout
 
 from .arm import arm_vector_score, thumb_bl_target, thumb_literal_value
+from .layout_facts import (
+    layout_facts_for, _image_offset, _contiguous_address_length_array, find_linker_layout,
+)
 from .signatures import find_all
 
 
@@ -449,9 +452,16 @@ def normalised_flash_size(size: int, address_limit: int) -> int:
 
 def referenced_flash_extent(image: bytes, load_address: int = 0) -> int:
     """Infer NOR capacity from closed references into an absent dump tail."""
+    facts = layout_facts_for(image)
+    return facts.query(
+        "referenced-flash-extent", (load_address,),
+        lambda: _referenced_flash_extent(image, load_address, facts),
+    )
+
+
+def _referenced_flash_extent(image: bytes, load_address: int, facts) -> int:
     extent = 0
-    for offset in range(0, min(len(image) - 12, 0x20000) + 1, 4):
-        source_address, target, size = struct.unpack_from("<3I", image, offset)
+    for offset, source_address, target, size in facts.rows(3, 0x20000):
         if not (0x03800000 <= target < 0x03A00000
                 and target % PAGE == 0 and 0x100 <= size <= 0x200000):
             continue
@@ -491,112 +501,63 @@ def referenced_flash_extent(image: bytes, load_address: int = 0) -> int:
     return extent
 
 
-def _image_offset(address: int, image_size: int, load_address: int) -> int | None:
-    if load_address and load_address <= address < load_address + image_size:
-        return address - load_address
-    if 0 <= address < image_size:
-        return address
-    return None
 
 
-def _contiguous_address_length_array(image: bytes, offset: int) -> bool:
-    """Require nine page-aligned extents containing the candidate's three pairs."""
-    pair_start = offset-4
-    for first in range(pair_start-6*8, pair_start+1, 8):
-        if first < 0 or first+9*8 > len(image):
-            continue
-        pairs = tuple(struct.iter_unpack('<2I', image[first:first+9*8]))
-        if any(not length or address % PAGE or length % PAGE
-               or address+length > 0x100000000 for address,length in pairs):
-            continue
-        if all(address+length == following[0]
-               for (address,length),following in zip(pairs,pairs[1:])):
-            return True
-    return False
 
 
-def find_linker_layout(image: bytes, load_address: int = 0, *,
-                       required_span: tuple[int, int] | None = None) -> LinkerLayout | None:
-    """Find scatter-load metadata; a required data span must have one mapping."""
-    if required_span is not None:
-        if (not isinstance(required_span, tuple) or len(required_span) != 2
-                or any(type(value) is not int for value in required_span)
-                or required_span[0] < 0 or required_span[1] <= 0
-                or sum(required_span) > 0x100000000):
-            return None
-    matches = []
-    limit = min(len(image) - 20, 0x20000)
-    preferred = (0x10028,)
-    offsets = (*preferred, *(range(0, limit + 1, 4)))
-    seen: set[int] = set()
-    for offset in offsets:
-        if offset in seen or offset + 20 > len(image):
-            continue
-        seen.add(offset)
-        source_address, target, size, bss, bss_size = struct.unpack_from(
-            "<5I", image, offset
-        )
-        source = _image_offset(source_address, len(image), load_address)
-        valid = (
-            source is not None
-            and 0 < size <= 0x800000
-            and source + size <= len(image)
-            # The supported MSM5000/5100/5500 boards expose external SDRAM in
-            # the 0x01000000 or 0x01800000 8 MiB bank.  Repeated 0x00800000 /
-            # 0x00010000 tables in resources are not scatter-load metadata.
-            and 0x01000000 <= target < 0x02000000
-            and target + size == bss
-            and 0 < bss_size <= 0x2000000
-            and bss + bss_size <= 0x08000000
-        )
-        if valid and not _contiguous_address_length_array(image, offset):
-            layout = LinkerLayout(offset, source, target, size, bss, bss_size)
-            if required_span is None:
-                return layout
-            address, length = required_span
-            if length <= size and target <= address <= target + size - length:
-                matches.append(layout)
-                if len(matches) > 1:
-                    return None
-    return matches[0] if matches else None
 
 
 def find_overlays(image: bytes, load_address: int = 0) -> list[CopyLayout]:
     """Find boot tables that relocate MSM internal-RAM executable overlays."""
-    found: list[CopyLayout] = []
-    for offset in range(0, min(len(image) - 12, 0x20000) + 1, 4):
-        source_address, target, size = struct.unpack_from("<3I", image, offset)
+    facts = layout_facts_for(image)
+    seen: set[tuple[int, int]] = set()
+
+    def accept(row: tuple[int, ...]) -> bool:
+        offset, source_address, target, size = row
         source = _image_offset(source_address, len(image), load_address)
         internal_ram = 0x03800000 <= target < 0x03A00000 and target % PAGE == 0
         runtime_rom = (0x01400000 <= target < 0x01800000
                        and target % PAGE == 0 and source is not None
                        and 0 < source - offset <= 0x40)
+        key = (target, size)
         if (source is not None and 0x100 <= size <= 0x200000
-                and source + size <= len(image) and (internal_ram or runtime_rom)):
-            candidate = CopyLayout(offset, source, target, size)
-            if not any(item.target == target and item.size == size for item in found):
-                found.append(candidate)
-    return found
+                and source + size <= len(image) and (internal_ram or runtime_rom)
+                and key not in seen):
+            seen.add(key)
+            return True
+        return False
+
+    rows = facts.select_rows("overlays", 3, 0x20000, (load_address,), accept)
+    return [CopyLayout(row[0], _image_offset(row[1], len(image), load_address),
+                       row[2], row[3]) for row in rows]
 
 
 def find_missing_overlays(image: bytes, flash_size: int,
                           load_address: int = 0) -> list[CopyLayout]:
     """Find boot copy entries whose executable ROM source was not dumped."""
-    found: list[CopyLayout] = []
-    for offset in range(0, min(len(image) - 12, 0x20000) + 1, 4):
-        source_address, target, size = struct.unpack_from("<3I", image, offset)
+    facts = layout_facts_for(image)
+    seen: set[tuple[int, int, int, int]] = set()
+
+    def accept(row: tuple[int, ...]) -> bool:
+        offset, source_address, target, size = row
         source = source_address - load_address
+        candidate = (offset, source, target, size)
         if (0x1000 <= source < flash_size
                 and source > offset + 0x20
                 and 0x03800000 <= target < 0x03A00000
                 and target % PAGE == 0
                 and 0x100 <= size <= 0x200000
                 and source + size <= flash_size
-                and source + size > len(image)):
-            candidate = CopyLayout(offset, source, target, size)
-            if candidate not in found:
-                found.append(candidate)
-    return found
+                and source + size > len(image)
+                and candidate not in seen):
+            seen.add(candidate)
+            return True
+        return False
+
+    rows = facts.select_rows("missing-overlays", 3, 0x20000,
+                             (flash_size, load_address), accept)
+    return [CopyLayout(offset, source_address - load_address, target, size)
+            for offset, source_address, target, size in rows]
 
 
 def find_runtime_overlays(image: bytes, ram_base: int,
@@ -606,18 +567,25 @@ def find_runtime_overlays(image: bytes, ram_base: int,
     A tuple alone does not prove a NAND/partition loader: bootstrap code can
     also initialize its SDRAM source from supplied NOR or scratch memory.
     """
-    found: list[CopyLayout] = []
+    facts = layout_facts_for(image)
+    seen: set[tuple[int, int, int, int]] = set()
+
     ram_end = ram_base + ram_size
-    for offset in range(0, min(len(image) - 12, 0x40000) + 1, 4):
-        source, target, size = struct.unpack_from("<3I", image, offset)
+    def accept(row: tuple[int, ...]) -> bool:
+        offset, source, target, size = row
+        candidate = (offset, source, target, size)
         if (ram_base <= source < source + size <= ram_end
                 and 0x03800000 <= target < target + size <= 0x03A00000
                 and source & 1 == 0 and target & 1 == 0
-                and 0x100 <= size <= 0x200000):
-            candidate = CopyLayout(offset, source, target, size)
-            if candidate not in found:
-                found.append(candidate)
-    return found
+                and 0x100 <= size <= 0x200000
+                and candidate not in seen):
+            seen.add(candidate)
+            return True
+        return False
+
+    rows = facts.select_rows("runtime-overlays", 3, 0x40000,
+                             (ram_base, ram_size), accept)
+    return [CopyLayout(*row) for row in rows]
 
 
 def find_arm_memory_copy_addresses(image: bytes, overlays: list[CopyLayout],

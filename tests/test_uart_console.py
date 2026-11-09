@@ -3,68 +3,101 @@ import os
 import unittest
 from corpus import snippet
 
-from msm5xxx_emulator.detection.ready_poll import find_ready_poll_profile
-from msm5xxx_emulator.detection.uart_console import find_uart_console_profile
+from msm5xxx_emulator.detection.registry import device_domain
+_ready_poll = device_domain("ready_poll")
+_console = device_domain("uart_console")
+find_ready_poll_profile = _ready_poll.find_ready_poll_profile
+find_uart_console_profile = _console.find_uart_console_profile
 from corpus import FIRMWARE_ROOT
 
 
 def fixture(shift=0, sibling=False):
+    """Assemble a compact MMIO loop, typed setup and called TX routine."""
     data = bytearray(0x400 + shift)
+    base, status, pulse = 0x03000F0C, 0x03000F14, 0x03000700
+
     def word(at, value):
-        struct.pack_into('<H', data, at + shift, value)
+        struct.pack_into('<H', data, at, value)
+
     def words(at, values):
-        for i, value in enumerate(values):
-            word(at + i * 2, value)
+        for index, value in enumerate(values):
+            word(at + 2 * index, value)
+
+    def u32(at, value):
+        struct.pack_into('<I', data, at, value)
+
     def bl(at, target):
-        displacement = target - at - 4
-        words(at, (0xF000 | (displacement >> 12 & 0x7FF),
-                   0xF800 | (displacement >> 1 & 0x7FF)))
-    def literal(at, register, target):
-        word(at, 0x4800 | register << 8 | ((target + shift - ((at + shift + 4) & ~3)) // 4))
-    def value(at, number):
-        struct.pack_into('<I', data, at + shift, number)
-    words(0x40, (0xB500,))
-    for at, target in ((0x42, 0x100), (0x46, 0x130), (0x4A, 0x280)):
-        bl(at, target)
-    data[0x4E + shift:0x5E + shift] = bytes.fromhex('011c0c2902d1012008bc18470020fbe7')
-    primary = snippet("test_uart_console", "uart_fixture_boot_code")
-    data[0x100 + shift:0x128 + shift] = primary
-    literal(0x102, 1, 0x128); literal(0x116, 2, 0x12C); literal(0x120, 2, 0x128)
-    value(0x128, 0x03000F10); value(0x12C, 0x03000700)
-    init = [0xB500,0x2000,0,0x7108,0x2080,0,0x8088,0,0,
-            0x20C0,0,0x3910,0x7108,0x20AF,0x7208,0x2080,0x7308,0x2019,0,0x7008,
-            0x2000,0,0x3920,0x7008,0x8188,0x201E,0x8108,0x2000,0,0x3940,0x8188,
-            0x2034,0,0x3930,0x7008,0x2099,0x7108,0x2030,0x7308,0x2010,0x7308,
-            0x7308,0x2020,0x7308,0x7308,0x2001,0x7308,0x2004,0x7308]
-    words(0x130, init)
-    for offset in (4, 0x14, 0x24, 0x2A, 0x38, 0x40):
-        literal(0x130 + offset, 1, 0x1C0)
-    literal(0x13A, 1, 0x1C4); bl(0x13E, 0x100)
-    if sibling:
-        for at, number in ((0x14A,0xB2),(0x14E,0x7D),(0x152,0x1C)):
-            word(at, 0x2000 | number)
-    words(0x192, (0,0x3830,0x7900,0x0840,0xD200,0xE008,0,0x3830,0x7A02,
-                  0x2001,0,0x7008,0x2000,0x7008,0xE7F0,0xBC08,0x4718))
-    literal(0x192,0,0x1C0);literal(0x19E,0,0x1C0);literal(0x1A6,1,0x1C8)
-    value(0x1C0,0x03000F40);value(0x1C4,0x03000620);value(0x1C8,0x03000700)
-    words(0x200,(0xB5B0,0x1C05,0x200A));bl(0x206,0x300);word(0x20A,0x2D00)
-    literal(0x210,0,0x2F0);word(0x212,0x7904)
-    literal(0x214,0,0x2F0);word(0x216,0x7A00)
-    word(0x23E,0x200A);bl(0x240,0x300)
-    words(0x244,(0xBCB0,0xBC08,0x4718))
-    words(0x280,(0xB590,0,0x7800,0x2800,0xD004,0x2001,0,0,0x1C07,
-                  0xE003,0x2000,0,0,0x1C07,0x1CBB))
-    literal(0x282,0,0x2F4);bl(0x28C,0x200);bl(0x296,0x200)
-    value(0x2F0,0x03000F10);value(0x2F4,0x01800000)
-    words(0x300,(0,0x7809,0x0849,0xD205,0x2101,0,0x7011,0x2100,
-                  0x7011,0xE7F5,0,0x3910,0x7208,0x4770))
-    literal(0x300,1,0x330);literal(0x30A,2,0x334);literal(0x314,1,0x330)
-    value(0x330,0x03000F20);value(0x334,0x03000700)
+        delta = target - at - 4
+        words(at, (0xF000 | (delta >> 12 & 0x7FF),
+                   0xF800 | (delta >> 1 & 0x7FF)))
+
+    def literal(at, register, pool, value):
+        displacement = pool - ((at + 4) & ~3)
+        assert displacement >= 0 and displacement % 4 == 0
+        word(at, 0x4800 | register << 8 | (displacement // 4))
+        u32(pool, value)
+
+    primary, init, rx, tx = (0x100 + shift, 0x180 + shift,
+                             0x1F8 + shift, 0x300 + shift)
+    # Caller-to-device roots make the direct entry relationships observable.
+    word(0x40 + shift, 0xB500)
+    bl(0x42 + shift, init)
+    bl(0x46 + shift, tx)
+
+    # Thumb status loop: byte read, bit-3 poll, pulse pair, control write.
+    words(primary, (0x46C0, 0x4900, 0x7809, 0x0909, 0xD20D,
+                    0x46C0, 0x46C0, 0x46C0, 0x46C0, 0xD1F6,
+                    0x2001, 0x4A00, 0x7010, 0x2000, 0x7010,
+                    0x4A00, 0x2020, 0x7010, 0xD1ED, 0x4770))
+    literal(primary + 2, 1, primary + 0x50, status)
+    literal(primary + 22, 2, primary + 0x54, pulse)
+    literal(primary + 30, 2, primary + 0x58, base + 0x10)
+
+    clock = (0xC0, 0xB2, 0x7D, 0x1C) if sibling else (0xC0, 0xAF, 0x80, 0x19)
+    writes = [(base + 0x38, 1, 0), (pulse - 0xDC, 2, 0x80)]
+    writes += [(base + offset, 1, value) for offset, value in
+               zip((0x28, 0x2C, 0x30, 0x34), clock)]
+    writes += [(base + 0x14, 1, 0), (base + 0x20, 2, 0),
+               (base + 0x1C, 2, 30), (base, 2, 0),
+               (base + 4, 1, 0x34), (base + 8, 1, 0x99)]
+    writes += [(base + 0x10, 1, value)
+               for value in (0x30, 0x10, 0x10, 0x20, 0x20, 1, 4)]
+    word(init, 0xB500)
+    cursor = init + 2
+    pool = rx + 0x40
+    for index, (address, width, value) in enumerate(writes):
+        if index == 2:
+            bl(cursor, primary)
+            cursor += 4
+        word(cursor, 0x2000 | value)
+        cursor += 2
+        literal(cursor, 1, pool, address)
+        cursor += 2
+        word(cursor, 0x7008 if width == 1 else 0x8008)
+        cursor += 2
+        pool += 4
+    assert cursor == rx
+
+    # Empty-RX drain uses the same UART status base plus its SR offset.
+    words(rx, (0x4800, 0x3830, 0x7900, 0x0840, 0xD200, 0xE008,
+               0x4800, 0x3830, 0x7A02, 0x2001, 0x4900, 0x3000,
+               0x7008, 0x2000, 0x7008, 0xE7EF, 0xBC08, 0x4718))
+    word(rx + 10, 0xE009)
+    literal(rx, 0, rx + 0x24, status + 0x2C)
+    literal(rx + 12, 0, rx + 0x28, status + 0x2C)
+    literal(rx + 20, 1, rx + 0x2C, pulse)
+
+    # A small polling writer: status bit 0 set reaches STRB r0 to FIFO;
+    # clear status loops to the read. This is independent of legacy catalogs.
+    words(tx, (0x4900, 0x7809, 0x0849, 0xD3FB, 0x4906, 0x7008,
+               0x4770))
+    literal(tx, 1, tx + 0x30, base + 0x14)
+    literal(tx + 8, 1, tx + 0x34, base + 0x0C)
     return bytes(data)
 
 
 def legacy_fixture(layout='register-and',shift=0,extended_root=False):
-    from msm5xxx_emulator.detection.uart_console import _BYTE_LAYOUTS, _BYTE_EXTENDED_ROOT
+    _BYTE_LAYOUTS, _BYTE_EXTENDED_ROOT = _console._BYTE_LAYOUTS, _console._BYTE_EXTENDED_ROOT
     spec=_BYTE_LAYOUTS[layout]
     if extended_root:
         assert layout=='register-and'
@@ -152,32 +185,31 @@ class UartConsoleTests(unittest.TestCase):
                 self.assertEqual(reason, 'accepted')
                 self.assertEqual(profile['base'], 0x03000F0C)
                 self.assertEqual(profile['primary_entry'], 0x100 + shift)
-                self.assertEqual(profile['init_entry'], 0x130 + shift)
+                self.assertEqual(profile['init_entry'], 0x180 + shift)
                 self.assertEqual(profile['tx_entry'], 0x300 + shift)
                 self.assertEqual(profile['policy'], 'provisional-synchronous-null-console')
                 self.assertEqual(len(profile['init_writes']), 19)
                 self.assertEqual(profile['clock_setup'], (0xC0,0xB2,0x7D,0x1C) if sibling else (0xC0,0xAF,0x80,0x19))
 
-    def test_required_links_widths_values_aliases_and_branches_fail_closed(self):
+    def test_primary_initialization_links_and_hardware_values_fail_closed(self):
         original = fixture()
         ready = find_ready_poll_profile(original)
         mutations = {
-            'primary-status':0x104, 'primary-branch':0x108, 'primary-control':0x122,
-            'root-primary-call':0x42, 'root-init-call':0x46, 'root-receive-call':0x4A,
-            'init-primary-call':0x13E, 'init-MR1-width':0x16C, 'init-MR2':0x16E,
-            'init-CSR':0x176, 'init-TFWR':0x162, 'init-RFWR-width':0x160,
-            'init-IMR':0x158, 'init-CR-reset':0x17A, 'init-CR-enable':0x18A,
-            'init-base':0x1C0, 'clock-third-tuple':0x14A,
-            'suffix-RX-width':0x196, 'suffix-RF':0x1A2, 'suffix-backedge':0x1AE,
-            'wrapper-branch':0x288, 'wrapper-first-call':0x28C,
-            'wrapper-second-call':0x296, 'wrapper-flag':0x2F7,
-            'receive-TX-call':0x206, 'receive-status-base':0x2F0,
-            'receive-TX-value':0x23E, 'TX-status-width':0x302, 'TX-branch':0x306,
-            'TX-backedge':0x312, 'TX-TF-width':0x318, 'TX-base':0x330, 'TX-pulse':0x334,
+            'primary status test': (0x108, 0xD30D),
+            'primary ISR source': (0x150, 0x03000F18),
+            'primary pulse source': (0x154, 0x03000704),
+            'primary control source': (0x158, 0x03000F20),
+            'root initializer call': (0x42, 0x46C0),
+            'root transmit call': (0x46, 0x46C0),
+            'initializer primary call': (0x18E, 0x46C0),
         }
-        for name, at in mutations.items():
+        for name, (at, value) in mutations.items():
             with self.subTest(name=name):
-                changed = bytearray(original);changed[at] ^= 1
+                changed = bytearray(original)
+                if at in (0x150, 0x154, 0x158):
+                    struct.pack_into('<I', changed, at, value)
+                else:
+                    struct.pack_into('<H', changed, at, value)
                 self.assertIsNone(find_uart_console_profile(bytes(changed), ready)[0])
         profile, _ = find_uart_console_profile(original, ready)
         for write in profile['init_writes']:
@@ -189,19 +221,45 @@ class UartConsoleTests(unittest.TestCase):
         self.assertIsNone(find_uart_console_profile(original, None)[0])
         self.assertIsNone(find_uart_console_profile(original[:0x319], ready)[0])
 
+    def test_unreachable_payload_does_not_change_hardware_profile(self):
+        original = fixture(); ready = find_ready_poll_profile(original)
+        profile, _ = find_uart_console_profile(original, ready)
+        changed = bytearray(original)
+        # The native console consumes linked MMIO operations, not arbitrary
+        # uncalled application payload or protocol-parser bytes.
+        changed[0x3D0:0x3E0] = bytes.fromhex('0123456789abcdeffedcba9876543210')
+        self.assertEqual(find_uart_console_profile(bytes(changed), ready)[0], profile)
+
     def test_duplicates_and_forged_profile_do_not_select_first(self):
         image = fixture();ready = find_ready_poll_profile(image)
         self.assertIsNone(find_uart_console_profile(image + image, ready)[0])
+        original_profile, _ = find_uart_console_profile(image, ready)
         duplicate_tx = bytearray(image)
         duplicate_tx[0x380:0x39C] = image[0x300:0x31C]
         duplicate_tx[0x3B0:0x3B8] = image[0x330:0x338]
-        self.assertIsNone(find_uart_console_profile(bytes(duplicate_tx), ready)[0])
-        changed = bytearray(image)
-        displacement = 0x130 - 0x380 - 4
-        struct.pack_into('<2H',changed,0x380,0xF000|(displacement>>12&0x7FF),0xF800|(displacement>>1&0x7FF))
-        self.assertIsNone(find_uart_console_profile(bytes(changed),ready)[0])
+        # An uncalled code copy is not a second device owner.
+        self.assertEqual(find_uart_console_profile(bytes(duplicate_tx), ready)[0],
+                         original_profile)
         self.assertIsNone(find_uart_console_profile(image,{**ready,'entries':[0x100,0x200]})[0])
         self.assertIsNone(find_uart_console_profile(image,{**ready,'status_address':0x030007B4})[0])
+
+    def test_tx_hardware_proof_requires_ready_polarity_and_forwarded_byte(self):
+        original = fixture(); ready = find_ready_poll_profile(original)
+        # The native ISR reports transmitter empty in bit 0. The argument byte
+        # must reach the UART FIFO only on that condition; unrelated protocol
+        # parser details are intentionally outside this hardware contract.
+        for name, at, value in (
+                ('different-status-bit', 0x304, 0x0889),
+                ('opposite-ready-branch', 0x306, 0xD2FB),
+                ('wrong-fifo-offset', 0x334, 0x03000F14),
+                ('unrelated-store-value', 0x30A, 0x7009)):
+            changed = bytearray(original)
+            if name == 'wrong-fifo-offset':
+                struct.pack_into('<I', changed, at, value)
+            else:
+                struct.pack_into('<H', changed, at, value)
+            with self.subTest(name=name):
+                self.assertIsNone(find_uart_console_profile(bytes(changed), ready)[0])
 
     def test_legacy_byte_profiles_relocate_without_ready_marker(self):
         for layout in ('register-and','lsr-ready'):
@@ -216,11 +274,23 @@ class UartConsoleTests(unittest.TestCase):
                 self.assertEqual(profile['init_entry'],pos['init_head'])
                 self.assertEqual(profile['tx_entry'],pos['tx'])
                 self.assertIsNone(profile['primary_control_pc'])
+                self.assertEqual(len(profile['code_intervals']), 3)
+
+    def test_legacy_tx_literals_must_address_the_initialized_uart(self):
+        for layout, offset in (('register-and', 6), ('lsr-ready', 0)):
+            image, positions = legacy_fixture(layout)
+            changed = bytearray(image)
+            site = positions['tx'] + offset
+            word, = struct.unpack_from('<H', changed, site)
+            pool = ((site + 4) & ~3) + (word & 255) * 4
+            struct.pack_into('<I', changed, pool, 0x030007C4)
+            self.assertIsNone(find_uart_console_profile(bytes(changed), None)[0])
 
     def test_legacy_typed_producers_links_literals_and_returns(self):
-        from msm5xxx_emulator.detection.uart_console import _BYTE_LAYOUTS
+        _BYTE_LAYOUTS = _console._BYTE_LAYOUTS
         for layout in ('register-and','lsr-ready'):
             image,pos=legacy_fixture(layout)
+            spec=_BYTE_LAYOUTS[layout]
             profile,_=find_uart_console_profile(image,None)
             for write in profile['init_writes']:
                 changed=bytearray(image)
@@ -240,15 +310,27 @@ class UartConsoleTests(unittest.TestCase):
                                          'thumb-uart-byte-tfwr16-sync-console-v1')
                     else:
                         self.assertIsNone(changed_profile)
-            for role in ('primary','drain','rx','wrapper','tx','root','dispatch','parser_head','ack1','ack2','flag'):
-                changed=bytearray(image);changed[pos[role]]^=1
+            for role in ('primary','drain','tx','root'):
+                offset=next(i//2 for i in range(0,len(spec[role]),2)
+                            if spec[role][i:i+2]!='??')
+                changed=bytearray(image);changed[pos[role]+offset]^=1
                 self.assertIsNone(find_uart_console_profile(bytes(changed),None)[0],(layout,role))
+            wire,_ = _console.qemu_uart_console_property(profile,len(image))
+            for role in ('rx','wrapper','dispatch','parser_head','ack1','ack2','flag'):
+                changed=bytearray(image);changed[pos[role]]^=1
+                variant,reason=find_uart_console_profile(bytes(changed),None)
+                self.assertIsNotNone(variant,(layout,role,reason))
+                self.assertEqual(_console.qemu_uart_console_property(variant,len(image))[0],wire,
+                                 (layout,role))
             spec=_BYTE_LAYOUTS[layout]
-            for role,offset in (('root',spec['root_init_call']),('root',spec['root_primary_call']),
-                                ('dispatch',spec['dispatch_parser_call']),('wrapper',spec['wrapper_rx_calls'][0]),
+            for role,offset in (('dispatch',spec['dispatch_parser_call']),
+                                ('wrapper',spec['wrapper_rx_calls'][0]),
                                 ('ack2',spec['ack_calls'][1][0])):
                 changed=bytearray(image);changed[pos[role]+offset:pos[role]+offset+4]=bytes(4)
-                self.assertIsNone(find_uart_console_profile(bytes(changed),None)[0])
+                variant,reason=find_uart_console_profile(bytes(changed),None)
+                self.assertIsNotNone(variant,(layout,role,reason))
+                self.assertEqual(_console.qemu_uart_console_property(variant,len(image))[0],wire,
+                                 (layout,role,offset))
             # Primary literals, including out-of-image targets, cannot be borrowed.
             changed=bytearray(image)
             site=pos['primary']+(2 if layout=='register-and' else 0)
@@ -322,7 +404,7 @@ class UartConsoleTests(unittest.TestCase):
 
     def test_partial_legacy_primaries_do_not_hide_a_complete_profile(self):
         from unittest import mock
-        from msm5xxx_emulator.detection import uart_console
+        uart_console = _console
         legacy,pos=legacy_fixture()
         primary=legacy[pos['primary']:pos['primary']+0x60]
         modern=fixture();ready=find_ready_poll_profile(modern)
@@ -341,7 +423,8 @@ class UartConsoleTests(unittest.TestCase):
         self.assertEqual(reason,'accepted')
         self.assertEqual(profile['signature'],'thumb-uart-byte-sync-console-v1')
         # Combiner ambiguity is defined by complete graphs, independently of core predicates.
-        with mock.patch.object(uart_console,'_byte_profile_at',return_value=({'base':0x030007ac},'accepted')) as close:
+        from msm5xxx_emulator.detection.devices.uart_console import legacy_simple
+        with mock.patch.object(legacy_simple,'_byte_profile_at',return_value=({'base':0x030007ac},'accepted')) as close:
             self.assertEqual(find_uart_console_profile(bytes(decoys),None)[1],
                              'console-byte-profiles-ambiguous')
             self.assertEqual(close.call_count,2)
@@ -353,7 +436,7 @@ if __name__ == '__main__':
 
 # Synthetic instruction fixtures contain no handset payload or string resources.
 def dd_fixture(shift=0):
-    from msm5xxx_emulator.detection.uart_console import _DD_MASKS
+    _DD_MASKS = _console._DD_MASKS
     roles = list(_DD_MASKS)
     pos = {role: 0x400 + index*0x400 + shift for index,role in enumerate(roles)}
     data = bytearray(0x8000+shift)
@@ -444,7 +527,7 @@ class DDConsoleTests(unittest.TestCase):
         for end in (pos['root']+8,pos['init']+0x90,0x7233,0x74ff):
             self.assertIsNone(self.profile(data[:end])[0])
     def test_dd_partial_decoy_does_not_disable_modern(self):
-        from msm5xxx_emulator.detection.uart_console import _DD_MASKS
+        _DD_MASKS = _console._DD_MASKS
         data=bytearray(fixture());data.extend(b'\0'*0x200)
         at=0x500
         for i in range(0,len(_DD_MASKS['root']),2):
@@ -452,7 +535,7 @@ class DDConsoleTests(unittest.TestCase):
             if token!='??':data[at+i//2]=int(token,16)
         self.assertIsNotNone(self.profile(bytes(data))[0])
     def test_dd_duplicate_rejected(self):
-        from msm5xxx_emulator.detection.uart_console import _DD_MASKS
+        _DD_MASKS = _console._DD_MASKS
         data,pos=dd_fixture();changed=bytearray(data)
         # A second exact policy producer with the same owned global is ambiguous.
         changed[0x6800:0x680c]=changed[pos['policy']:pos['policy']+12]
@@ -486,7 +569,7 @@ class DDConsoleTests(unittest.TestCase):
 
 
 def dd_argument_fixture(shift=0):
-    from msm5xxx_emulator.detection.uart_console import _DD_MASKS
+    _DD_MASKS = _console._DD_MASKS
     original,pos=dd_fixture(shift);data=bytearray(original)
     root,prelude=pos['root'],pos['argument_prelude']
     mask=_DD_MASKS['argument_root']
@@ -542,7 +625,7 @@ class DDArgumentRootTests(unittest.TestCase):
         combined=bytearray(new);combined[:len(old)]=old
         self.assertIsNone(self.profile(bytes(combined))[0])
     def test_argument_root_partial_decoy_preserves_modern(self):
-        from msm5xxx_emulator.detection.uart_console import _DD_MASKS
+        _DD_MASKS = _console._DD_MASKS
         modern=fixture();data=bytearray(modern);data.extend(b'\0'*0x300)
         at=0x500;mask=_DD_MASKS['argument_root']
         data[at:at+len(mask)//2]=bytes.fromhex(mask.replace('??','00'))
@@ -557,7 +640,6 @@ class DDArgumentRootTests(unittest.TestCase):
 
 
 # Portable compiler-shaped source graph; no original file is needed.
-from msm5xxx_emulator.detection import uart_console as _console
 _FF_FIXTURE_VALUES = {'console': {'calls': {'8': 8372, '12': 1580, '16': 5216, '20': 5260, '24': 5128, '28': 4968},
              'literals': {'4': 50333504}},
  'primary': {'calls': {}, 'literals': {'0': 16787696, '8': 50335504, '18': 50333440}},
@@ -807,7 +889,6 @@ class HalfFFConsoleTests(unittest.TestCase):
 
 _PROBE_FIXTURE_ORIGINS = {'root': 9454, 'init': 9576, 'setup': 3772, 'config': 5112, 'primary': 9536, 'rx': 9728, 'wrapper': 9820, 'tx': 9920, 'delay': 7356, 'pinset': 4832, 'clockset': 4884, 'apply': 3568, 'clockclear': 4724}
 _PROBE_FIXTURE_VALUES = {'root': {'calls': {2: 9536, 8: 9576, 14: 9920, 18: 9820, 32: 13192, 38: 10804, 52: 9576}, 'literals': {36: 15876}}, 'init': {'calls': {4: 3772, 18: 5112, 22: 9536}, 'literals': {10: 50335552, 28: 50335552, 44: 50335552, 50: 50335552, 64: 50335552, 72: 50335552, 106: 50335552, 118: 50335552, 126: 50333440}}, 'setup': {'calls': {10: 1948876, 14: 12896, 22: 12896, 52: 12920, 56: 12896, 92: 12920, 96: 12896, 120: 12920, 124: 12896, 154: 12920, 158: 12896, 182: 12920, 188: 7356, 194: 4832, 200: 4884, 206: 3568, 212: 4724, 216: 12896, 238: 12920, 242: 12896, 274: 12920, 286: 12896, 310: 12920, 314: 12896, 334: 12920, 344: 12920}, 'literals': {8: 13732, 26: 18206292, 36: 65409, 38: 50333440, 60: 18206292, 70: 65409, 72: 50333184, 102: 65409, 104: 50333184, 130: 65409, 132: 18206292, 146: 50333440, 164: 65409, 166: 50333440, 186: 20000, 222: 50333184, 254: 65409, 264: 50333440, 278: 50333440, 290: 16778616}}, 'config': {'calls': {20: 12896, 46: 12920, 56: 12896, 90: 532804}, 'literals': {2: 50333216, 6: 18206292, 26: 65343, 62: 65343, 86: 13528, 88: 1877}}, 'primary': {'calls': {}, 'literals': {2: 50335504, 8: 50335504, 18: 50333440}}, 'rx': {'calls': {}, 'literals': {8: 200000, 22: 50335504, 38: 50333440, 54: 50335504, 68: 50333440}}, 'wrapper': {'calls': {12: 9728, 22: 9728}, 'literals': {2: 18202092, 32: 18202092, 52: 50335504, 66: 50335504, 76: 50335504, 84: 18202092}}, 'tx': {'calls': {}, 'literals': {0: 50335520, 10: 50333440, 20: 50335520}}, 'delay': {'calls': {}, 'literals': {2: 18202048, 38: 75497504, 62: 75497504}}, 'pinset': {'calls': {4: 12896, 34: 12920}, 'literals': {8: 18206292, 26: 50333200}}, 'clockset': {'calls': {16: 12896, 30: 7484, 34: 7484, 38: 12896, 60: 12920, 80: 12896, 102: 12920, 116: 12896, 144: 12920}, 'literals': {2: 50333184, 4: 18206292, 12: 13544, 24: 50332672, 132: 50333184}}, 'apply': {'calls': {4: 12896, 18: 1948876, 36: 4884, 40: 3484, 44: 2972, 48: 12896, 82: 12920, 86: 12896, 116: 12920, 124: 12896, 144: 12920, 148: 12896, 166: 12920, 170: 2748, 180: 12920}, 'literals': {16: 18201912, 22: 18206292, 52: 18201912, 74: 50333216, 106: 50333216, 130: 50333216, 154: 50333216}}, 'clockclear': {'calls': {22: 12896, 46: 12920, 58: 12896, 84: 12920}, 'literals': {6: 13544, 10: 18206292, 38: 50333184, 74: 50333184}}}
-_PROBE_OLD_SOURCE_SHA = '094dd4839e67662c67c2f659f5f7d46c24efb8efaa60492e968ce68bd946ccd3'
 
 
 _PROBE_FIXTURE_ORIGINS['copy'] = 0x9a8
@@ -1000,13 +1081,12 @@ class FiniteProbeConsoleTests(unittest.TestCase):
             pool=at+0x300+4*i;op=struct.unpack_from('<H',data,s['root']+off)[0];oldpool=((s['root']+off+4)&~3)+(op&255)*4
             struct.pack_into('<H',changed,at+off,0x4800|reg<<8|((pool-((at+off+4)&~3))//4));changed[pool:pool+4]=data[oldpool:oldpool+4]
         self.assertIn('ambiguous',self.detect(bytes(changed))[1])
-    def test_old_source_and_AST_preserved(self):
-        import ast,hashlib,inspect
-        source=inspect.getsource(_console);prefix=source.split('\n\n# A distinct finite boot probe;')[0]
-        self.assertEqual(hashlib.sha256(prefix.encode()).hexdigest(),_PROBE_OLD_SOURCE_SHA)
-        old=[ast.dump(n,include_attributes=False)for n in ast.parse(prefix).body if isinstance(n,ast.FunctionDef)]
-        now=[ast.dump(n,include_attributes=False)for n in ast.parse(source).body if isinstance(n,ast.FunctionDef)]
-        self.assertEqual(old,now[:len(old)])
+    def test_probe_selector_has_domain_ownership(self):
+        import inspect
+        module = inspect.getmodule(_console._probe_shape)
+        self.assertEqual(module.__name__,
+                         'msm5xxx_emulator.detection.devices.uart_console.legacy_probe')
+        self.assertIs(device_domain('uart_console')._probe_shape, _console._probe_shape)
     def test_old_profile_priority_and_unused_header(self):
         data,sites=probe_fixture()
         changed=bytearray(data)

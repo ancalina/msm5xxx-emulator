@@ -10,15 +10,17 @@ from __future__ import annotations
 import hashlib
 import struct
 
-from .arm import arm_b_target, thumb_bl_target, thumb_literal_value
+from .arm import thumb_bl_target, thumb_literal_value
 from .memory_layout import find_linker_layout
 from .signatures import find_all
+from .facts import CodeAddress, facts_for, source_prefix
+from .storage_facts import parse_u32_array, uniform_sector_size
+from .startup_entry import startup_copy_contexts
 
 # (instruction span, relocation-normalized instruction SHA256).
 _GRAMMAR = {
     'efs_init': (140, '44aec14afc8a3c8259e69d4eff75abfdb2a7562409e77780e6bf516be09f5267'),
     'efs_wrapper': (78, '7e9b201f45877c4c044de89da1b172c361c4fd35657f09e0ec50d81c0db46232'),
-    'copy': (204, '1b53f8a93c4b70daa5933a89f6f51021942212309382e207b2da6f36bc9c0731'),
     'init': (20, '0d1aeef03426ad7a5ab261c49d96436367fe2f3fd5b98c15a243f96f0c025b8e'),
     'read': (88, '57582d5c991207cb5597a51a0b74c65224e43407c58718a1e04ddac96b8bb41b'),
     'program': (458, '5fc1638f0ab597fe81d778feb43d8170cec77738293d272fc455a386a15adb67'),
@@ -31,9 +33,6 @@ _GRAMMAR = {
     'resume_command': (136, '4a292c6b9195b8e1c66dc924f504b92c6aef7772bb8c21258023494a26be9aac'),
     'poll': (112, 'bb412afad81a1f68ff290d743e46ad242fa7e9e5c02aba289724b913c342bb55'),
 }
-_ROOT_HASH = '181a7be7a562772b6e10c7f594033fc3c6f4888eee66ab8d5611dbcfaa1f59ea'
-
-
 class _Unclosed(ValueError):
     pass
 
@@ -83,48 +82,23 @@ def _body(image, at, role, guards):
 
 
 def _reset_copy(image, ram_base, ram_size, guards):
-    root = arm_b_target(image, 0)
-    _need(root is not None and not root & 3 and 0 <= root <= len(image) - 0xb4, 'reset-owner')
-    body = bytearray(image[root:root + 0xb4])
-    literals = {}
-    for off in range(0, len(body), 4):
-        op = _word(image, root + off)
-        if op & 0x0f7f0000 == 0x051f0000:
-            pool = root + off + 8 + (op & 4095)
-            literals[off] = _word(image, pool)
-            guards.append((pool, pool + 4))
-            struct.pack_into('<I', body, off, op & 0xfffff000)
-    _need(hashlib.sha256(body).hexdigest() == _ROOT_HASH, 'reset-grammar')
-    guards.extend([(0, 4), (root, root + len(body))])
-    for off in (0, 0x18, 0x30, 0x60, 0x78, 0x9c):
-        _need(literals[off] & 1 and literals[off] < len(image)
-              and literals[off + 8] == root + off + 21
-              and literals[off + 12] == root + off + (25 if off == 0x9c else 24), 'reset-call-return')
-    for off in (0x4c, 0x54, 0x5c):
-        _need(ram_base < literals[off] <= ram_base + ram_size and not literals[off] & 3, 'reset-stack')
-    copy = literals[0x60] - 1
-    _, values = _body(image, copy, 'copy', guards)
-    _need(values[0] == 0x03000700, 'copy-watchdog')
-    copies, zeros = [], []
-    for source_off, target_off, size_off, zero_offs in (
-            (0x16, 0xc, 0xe, (0x38, 0x3a)),
-            (0x60, 0x56, 0x58, (0x7c, 0x7e)),
-            (0xac, 0xa2, 0xa4, None)):
-        table = values[source_off]
-        _need(not table & 3 and values[target_off] == table + 4
-              and values[size_off] == table + 8, 'copy-tuple')
-        source, target, size = (_word(image, table + off) for off in (0, 4, 8))
-        _need(size > 0 and not (source | target | size) & 3 and source + size <= len(image)
-              and (ram_base <= target < target + size <= ram_base + ram_size
-                   or 0x03800000 <= target < target + size <= 0x03a00000), 'copy-span')
-        copies.append((source, target, size))
-        guards.extend([(table, table + (20 if zero_offs else 12)), (source, source + size)])
-        if zero_offs:
-            _need(values[zero_offs[0]] == table + 12 and values[zero_offs[1]] == table + 16, 'zero-tuple')
-            begin, length = _word(image, table + 12), _word(image, table + 16)
-            _need(target + size == begin and length > 0 and not (begin | length) & 3
-                  and ram_base <= begin < begin + length <= ram_base + ram_size, 'zero-span')
-            zeros.append((begin, begin + length))
+    facts = facts_for(image)
+    contexts = startup_copy_contexts(
+        facts,
+        target_ranges=((ram_base, ram_base + ram_size), (0x03800000, 0x03A00000)),
+        zero_ranges=((ram_base, ram_base + ram_size),),
+        extra_write_ranges=((0x03000600, 0x03000780),))
+    matched = []
+    for context in contexts:
+        rows = context.rows
+        copies = [(row.source, row.target, row.size) for row, _ in rows]
+        zeros = [(row.zero_target, row.zero_target + row.zero_size)
+                 for row, _ in rows if row.zero_row is not None]
+        if len(copies) == 3 and len(zeros) == 2:
+            matched.append((context, copies, zeros))
+    _need(len(matched) == 1, 'copy-entry-ambiguous' if matched else 'copy-layout')
+    context, copies, zeros = matched[0]
+    guards.extend(context.source_spans)
     destinations = [(target, target + size) for _, target, size in copies] + zeros
     _need(all(not (a < d and c < b) for i, (a, b) in enumerate(destinations)
               for c, d in destinations[i + 1:]), 'copy-zero-conflict')
@@ -173,10 +147,10 @@ def _profile(image, init, load, flash, ram, ram_size):
     # Compare those accesses with the parsed array end rather than trusting count.
     metadata = descriptor + 0x124
     _need(not any(image[descriptor + 8 + count * 4:metadata]), 'geometry-padding')
-    sectors = [_word(image, descriptor + 8 + i * 4) for i in range(count)]
-    sector = sectors[0]
-    _need(sector >= 0x1000 and not sector & (sector - 1)
-          and all(size == sector for size in sectors), 'geometry-uniform')
+    sectors = parse_u32_array(image, descriptor + 8, count, max_count=71)
+    _need(sectors is not None, 'geometry-count')
+    sector = uniform_sector_size(sectors, minimum=0x1000)
+    _need(sector is not None, 'geometry-uniform')
     id0, id1, reserved, banks = struct.unpack_from('<HHII', image, metadata)
     _need(reserved == 0 and banks == 1, 'descriptor-mode')
     base, size = _word(image, metadata + 0xc), _word(image, metadata + 0x10)
@@ -251,7 +225,7 @@ def find_inline_efs_nor_profile(image: bytes, load_address: int, flash_size: int
     """Admit one complete source graph, rejecting all ambiguous init candidates."""
     # str r0,[r1]; str r0,[r2]; adds r0,r2,#4; str r0,[r2].
     anchor = struct.pack('<4H', 0x6008, 0x6010, 0x1d10, 0x6010)
-    view = image[:flash_size] if type(flash_size) is int and flash_size > 0 else image
+    view = source_prefix(image, flash_size) if type(flash_size) is int and flash_size > 0 else image
     # The selection initializer is shared with older fixed-unlock drivers.
     # Classify this bank-relative compiler before emitting candidate notes:
     # lsls r1,#16; adds r0,r1,r0; lsls r0,#1 forms a bank-relative
@@ -271,6 +245,6 @@ def find_inline_efs_nor_profile(image: bytes, load_address: int, flash_size: int
     if len(candidates) != 1:
         return None, 'inline-efs-initializers-ambiguous'
     try:
-        return _profile(image[:flash_size], candidates[0], load_address, flash_size, ram_base, ram_size), None
+        return _profile(source_prefix(image, flash_size), candidates[0], load_address, flash_size, ram_base, ram_size), None
     except (_Unclosed, KeyError, struct.error) as error:
         return None, 'inline-efs-' + str(error)

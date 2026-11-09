@@ -271,7 +271,7 @@ class Row734Tests(unittest.TestCase):
                 pool=p['literal_pools']['copy',off]
                 struct.pack_into('<I',changed,pool,value)
             profile,reason=self.detect(bytes(changed))
-            self.assertIsNone(profile);self.assertIn('zero-tuple',reason)
+        self.assertIsNone(profile);self.assertIn('copy-startup-context',reason)
 
     def test_actual_two_originals(self):
         root=FIRMWARE_ROOT / 'incoming-20260719-r1/MSM5100'

@@ -6,54 +6,29 @@ import struct
 
 from ..core.config import BoardStatusInput
 from .arm import thumb_bl_target, thumb_literal_value
-from .input_scanner import _periodic_caller
+from .registry import device_domain
+from .facts import CodeAddress, facts_for
+from capstone import arm as a
 
 
 def _gate_frame(image: bytes, entry: int, guard: int, end: int) -> bool:
-    """Prove a forward path from a saved frame to the gate, without stack edits."""
-    pending = [entry + 2]
-    seen = set()
-    reached = False
-    while pending:
-        pc = pending.pop()
-        if pc == guard:
-            reached = True
-            continue
-        if pc == end or pc in seen:
-            continue
-        if not entry < pc < guard or pc & 1:
-            return False
-        seen.add(pc)
-        word = struct.unpack_from('<H', image, pc)[0]
-        if word & 0xF800 == 0xF000:
-            target = thumb_bl_target(image, pc)
-            if target is None or not 0 <= target < len(image) or pc + 4 > guard:
-                return False
-            pending.append(pc + 4)
-            continue
-        if word & 0xF000 == 0xD000 and (word >> 8) & 15 < 14:
-            if word & 128:
-                return False
-            target = pc + 4 + (word & 255) * 2
-            if target != end and not pc < target <= guard:
-                return False
-            pending.extend((pc + 2, target))
-            continue
-        if word & 0xF800 == 0xE000:
-            if word & 1024:
-                return False
-            target = pc + 4 + (word & 2047) * 2
-            if target != end and not pc < target <= guard:
-                return False
-            pending.append(target)
-            continue
-        # Low-register shifts/arithmetic, immediate operations, literals, and
-        # ordinary word/byte loads cannot alter the saved register stack frame.
-        if not (word & 0xE000 in (0, 0x2000)
-                or word & 0xF800 in (0x4800, 0x6800, 0x7800)):
-            return False
-        pending.append(pc + 2)
-    return reached
+    """Close the prefix and preserve its saved frame on every normal exit."""
+    facts = facts_for(image)
+    region = facts.function_region(CodeAddress(entry + 2),
+                                   stop_before=(CodeAddress(guard), CodeAddress(end)),
+                                   budget=512, symbolic_registers={})
+    if (not region.complete or CodeAddress(guard) not in region.scope_exits
+            or region.back_edges or facts.unmodelled_memory(region) != ()
+            or any(pc.address != end and not entry < pc.address <= guard
+                   for pc in region.instructions)
+            or any(access.operation == 'write' for access in region.symbolic_accesses)
+            or any(not facts.view.covers(target.address, 2 if target.isa == 'thumb' else 4,
+                                         phase=target.phase, bank=target.bank)
+                   for _, target in region.calls)):
+        return False
+    return all(facts.reaching_definitions(region, site, a.ARM_REG_SP,
+                                          include_entry=True) == (None,)
+               for site in region.scope_exits)
 
 
 def _refresh_gate(image: bytes, inhibit: int) -> bool:
@@ -134,7 +109,7 @@ def direct_scanner_at(image: bytes, start: int) -> tuple[BoardStatusInput | None
         return None, 'event-call-invalid'
     if not _refresh_gate(image, state + 8):
         return None, 'display-inhibit-guard-mismatch'
-    if not _periodic_caller(image, start):
+    if not device_domain('board_contact').periodic_caller(image, start):
         return None, 'periodic-callback-unproven'
     mask = 1 << bit
     return BoardStatusInput(address, mask, mask), ''

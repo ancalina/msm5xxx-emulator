@@ -3,7 +3,7 @@ import struct
 import unittest
 from corpus import firmware_path
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.storage import (
+from msm5xxx_emulator.detection.devices.eeprom import (
     EEPROM_24LCXX_HALFWORD_READ_PREFIX,
     EEPROM_24LCXX_X430_WRITE_PREFIX,
     EEPROM_24LCXX_X430_INIT_SIGNATURE,
@@ -67,12 +67,9 @@ class HalfwordEEPROMTests(unittest.TestCase):
             (write - 0x78 + 0x32, 0x4800),  # reader reload loses GPIO literal
             (write - 0x1fe + 0x24, 0x2280),  # ACK drives the wrong SCL bit high
             (write - 0x1fe + 0x5a, 0x2380),  # ACK drives the wrong SCL bit low
-            (write - 0x78 + 0x64, 0x2c09),  # reader clocks nine bits
             (write - 0x160 + 0xd8, 0xd597),  # writer byte loop backedge changes
             (write - 0x1fe + 0x2c, 0x68a2),  # ACK SCL writes direction pointer
             (write - 0x1fe + 0x62, 0x68a2),
-            (write - 0x78 + 0x2e, 0x0070),  # reader shifts the wrong register
-            (write - 0x1fe + 0x90, 0xbcb8),  # ACK restores the wrong result register
         )
         for at, operation in mutations:
             with self.subTest(operation=hex(operation), site=hex(at)):
@@ -80,6 +77,16 @@ class HalfwordEEPROMTests(unittest.TestCase):
                 struct.pack_into('<H', changed, at, operation)
                 self.assertEqual(eeprom_gpio_profile(bytes(changed), config),
                                  (None, 'gpio-line-shape-mismatch'))
+        # The backend models the electrical pins only. Byte-loop count and
+        # assembly instructions remain firmware software behavior.
+        for at, operation in ((write - 0x78 + 0x64, 0x2c09),
+                              (write - 0x78 + 0x2e, 0x0070),
+                              (write - 0x1fe + 0x90, 0xbcb8)):
+            with self.subTest(software_operation=hex(operation), site=hex(at)):
+                changed = bytearray(image)
+                struct.pack_into('<H', changed, at, operation)
+                self.assertEqual(eeprom_gpio_profile(bytes(changed), config),
+                                 (profile, None))
         # Branch destinations must keep their lock/unlock/delay/ACK roles too.
         changed = bytearray(image)
         changed[write - 0x1fe + 2] ^= 1

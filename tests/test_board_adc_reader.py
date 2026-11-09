@@ -8,18 +8,10 @@ import unittest
 from unittest.mock import patch
 
 
-from msm5xxx_emulator.detection.input import BOARD_ADC_READER_DATA_ADDRESS, find_board_adc_reader
-from msm5xxx_emulator.detection.boot import BOARD_ADC_READER_READ_OFFSET
+from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_DATA_ADDRESS, find_board_adc_reader)
+from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_READ_OFFSET)
 from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.input import (
-    BOARD_ADC_READER_EXTENDED_FIXED,
-    BOARD_ADC_READER_EXTENDED_SIZE,
-    BOARD_ADC_READER_LITERAL,
-    BOARD_ADC_READER_REORDERED_FIXED,
-    BOARD_ADC_READER_VARIANT_SIZE,
-    board_adc_reader_read_offset_at,
-    find_dc0_board_adc_profile,
-)
+from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_EXTENDED_FIXED, BOARD_ADC_READER_EXTENDED_SIZE, BOARD_ADC_READER_LITERAL, BOARD_ADC_READER_REORDERED_FIXED, BOARD_ADC_READER_VARIANT_SIZE, board_adc_reader_read_offset_at, find_dc0_board_adc_profile)
 from corpus import FIRMWARE_ROOT
 
 

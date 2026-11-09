@@ -6,7 +6,10 @@ They return a profile and an acceptance reason, or None and a rejection reason.
 from __future__ import annotations
 
 import struct
-import re
+
+from capstone import arm as a
+
+from .facts import CodeAddress, facts_for, source_prefix
 
 PAGE = 0x1000
 _HIGH_RAM_TEST_PREFIX = bytes.fromhex("54019fe5000090e50110a0e30020a0e3")
@@ -16,17 +19,7 @@ _UART_BASE = 0x03000B10
 _DOG = 0x030006D0
 _GPIO720 = 0x03000720
 _STATUS_BASE = 0x0B000400
-_THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(
-    rb"(?=(.[\x48-\x4f]..))", re.DOTALL
-)
-_ARM_LITERAL_ACCESS_CANDIDATE = re.compile(
-    rb"(?=(..(?:\x1f|\x9f)"
-    rb"(?:\x05|\x15|\x25|\x35|\x45|\x55|\x65|\x75"
-    rb"|\x85|\x95|\xa5|\xb5|\xc5|\xd5|\xe5)))", re.DOTALL
-)
-_THUMB_BL_CANDIDATE = re.compile(
-    rb"(?=(.[\xf0-\xf7].[\xf8-\xff]))", re.DOTALL
-)
+
 
 
 def _u16(image: bytes, at: int) -> int:
@@ -38,29 +31,18 @@ def _u32(image: bytes, at: int) -> int:
 
 
 def _find_all(image: bytes, needle: bytes, limit: int | None = None) -> list[int]:
-    found: list[int] = []
     end = len(image) if limit is None else min(len(image), limit)
-    offset = 0
-    while offset < end:
-        at = image.find(needle, offset, end)
-        if at < 0:
-            break
-        found.append(at)
-        offset = at + 1
-    return found
+    if not needle:
+        return list(range(max(0, end)))
+    facts = facts_for(image)
+    return [at - facts.base for at in facts.string_candidates(needle)
+            if facts.base <= at and at + len(needle) <= facts.base + end]
 
 
 def _thumb_literal(image: bytes, at: int, register: int) -> int | None:
-    """Value loaded by Thumb ``LDR Rd, [PC, #imm]`` at ``at``."""
     if at < 0 or at + 2 > len(image) or at & 1:
         return None
-    word = _u16(image, at)
-    if word & 0xF800 != 0x4800 or (word >> 8) & 7 != register:
-        return None
-    pool = ((at + 4) & ~3) + (word & 0xFF) * 4
-    if pool < 0 or pool + 4 > len(image):
-        return None
-    return _u32(image, pool)
+    return facts_for(image).thumb_literal_value(at, register)
 
 
 def _thumb_b_target(word: int, at: int) -> int | None:
@@ -75,13 +57,7 @@ def _thumb_b_target(word: int, at: int) -> int | None:
 def _thumb_bl_target(image: bytes, at: int) -> int | None:
     if at < 0 or at + 4 > len(image) or at & 1:
         return None
-    high, low = struct.unpack_from("<2H", image, at)
-    if high & 0xF800 != 0xF000 or low & 0xF800 != 0xF800:
-        return None
-    displacement = ((high & 0x7FF) << 12) | ((low & 0x7FF) << 1)
-    if displacement & (1 << 22):
-        displacement -= 1 << 23
-    return at + 4 + displacement
+    return facts_for(image).thumb_call_target(at)
 
 
 def _movs_imm(word: int, immediate: int) -> int | None:
@@ -403,7 +379,7 @@ def detect_external_ram(image: bytes) -> tuple[dict | None, str]:
         return None, "external-ram-image-not-bytes"
     ram_hits = []
     called = _reset_called(image)
-    for position in _find_all(image[:0x10000], _HIGH_RAM_TEST_PREFIX):
+    for position in _find_all(source_prefix(image, 0x10000), _HIGH_RAM_TEST_PREFIX):
         if position + 0x178 > len(image) or position & 3:
             continue
         if not _ram_test_body_shape(image, position):
@@ -475,7 +451,7 @@ def detect_external_cs0a(image: bytes) -> tuple[dict | None, str]:
     reset_called = _reset_called(image)
     if reset_called:
         accesses = _literal_window_accesses_many(
-            image[:min(len(image), 0x10000)], (0x0A000000,)
+            source_prefix(image, 0x10000), (0x0A000000,)
         )[0x0A000000]
         wanted = {0x0A0000A0, 0x0A0000B0}
         linked: dict[int, list[dict]] = {}
@@ -514,92 +490,27 @@ def _literal_window_accesses_many(
     """Find narrow literal-linked accesses for all windows in one scan."""
     result = {base: [] for base in bases}
     ranges = tuple((base, base + size) for base in bases)
-
-    thumb_pcs = {match.start() for match in _THUMB_LITERAL_ACCESS_CANDIDATE.finditer(image)}
-    arm_pcs = {match.start() for match in _ARM_LITERAL_ACCESS_CANDIDATE.finditer(image)}
-    for pc in sorted(thumb_pcs | arm_pcs):
-        if pc in thumb_pcs and not pc & 1 and pc + 4 <= len(image):
-            first = _u16(image, pc)
-            if first & 0xF800 == 0x4800:
-                register = (first >> 8) & 7
-                pointer = _thumb_literal(image, pc, register)
-                selected = next((base for base, end in ranges
-                                 if pointer is not None and base <= pointer < end), None)
-                if selected is not None:
-                    use = pc + 2
-                    word = _u16(image, use)
-                    opcode = word & 0xF800
-                    if ((word >> 3) & 7) == register and opcode in (
-                            0x6000, 0x6800, 0x7000, 0x7800, 0x8000, 0x8800):
-                        scale = (4 if opcode in (0x6000, 0x6800) else
-                                 2 if opcode in (0x8000, 0x8800) else 1)
-                        address = pointer + (((word >> 6) & 31) * scale)
-                        access_size = (4 if opcode in (0x6000, 0x6800) else
-                                       2 if opcode in (0x8000, 0x8800) else 1)
-                        if selected <= address and address + access_size <= selected + size:
-                            literal = ((pc + 4) & ~3) + (first & 0xFF) * 4
-                            result[selected].append({
-                                "load": pc, "use": use, "literal": literal,
-                                "thumb": True, "instruction_width": 2,
-                                "address": address,
-                                "access_size": access_size,
-                                "operation": "read" if opcode in (0x6800, 0x7800, 0x8800) else "write",
-                            })
-
-        if pc not in arm_pcs:
+    facts = facts_for(bytes(image))
+    candidates = facts.literal_access_candidates(ranges, limit=len(image))
+    for candidate in candidates:
+        literal = facts.literal(candidate.load)
+        if literal is None:
             continue
-        if pc & 3 or pc + 8 > len(image):
-            continue
-        instruction = _u32(image, pc)
-        condition = instruction >> 28
-        # Immediate, pre-indexed, non-writeback word LDR from PC. U selects
-        # the signed literal displacement; condition 0xf is reserved.
-        if (condition == 0xF
-                or instruction & 0x0E000000 != 0x04000000
-                or instruction & (1 << 25)
-                or not instruction & (1 << 24)
-                or instruction & (1 << 22)
-                or instruction & (1 << 21)
-                or not instruction & (1 << 20)
-                or (instruction >> 16) & 0xF != 0xF):
-            continue
-        register = (instruction >> 12) & 0xF
-        if register == 0xF:
-            continue
-        displacement = instruction & 0xFFF
-        literal = pc + 8 + (displacement if instruction & (1 << 23) else -displacement)
-        if literal < 0 or literal > len(image) - 4:
-            continue
-        pointer = _u32(image, literal)
+        pointer = literal.value
         selected = next((base for base, end in ranges if base <= pointer < end), None)
-        if selected is None:
-            continue
-
-        use = pc + 4
-        word = _u32(image, use)
-        use_condition = word >> 28
-        destination = (word >> 12) & 0xF
-        # Immediate, pre-indexed accesses only. Register-offset and post-index
-        # forms have different effective-address rules than the immediate below.
-        if (use_condition == 0xF
-                or word & 0x0C000000 != 0x04000000
-                or word & (1 << 25)
-                or not word & (1 << 24)
-                or word & (1 << 21)
-                or (word >> 16) & 0xF != register
-                or destination == 0xF
-                or (condition != 0xE and use_condition != condition)):
-            continue
-        offset = word & 0xFFF
-        address = pointer + (offset if word & (1 << 23) else -offset)
-        access_size = 1 if word & (1 << 22) else 4
-        if not (selected <= address and address + access_size <= selected + size):
+        if (selected is None
+                or not selected <= candidate.address
+                or candidate.address + candidate.width > selected + size):
             continue
         result[selected].append({
-            "load": pc, "use": use, "literal": literal, "thumb": False,
-            "instruction_width": 4, "address": address,
-            "access_size": access_size,
-            "operation": "read" if word & (1 << 20) else "write",
+            "load": candidate.load.address,
+            "use": candidate.use.address,
+            "literal": candidate.literal,
+            "thumb": candidate.load.isa == "thumb",
+            "instruction_width": 2 if candidate.load.isa == "thumb" else 4,
+            "address": candidate.address,
+            "access_size": candidate.width,
+            "operation": candidate.operation,
         })
     for accesses in result.values():
         accesses.sort(key=lambda item: (item["load"], item["use"], item["instruction_width"]))
@@ -895,27 +806,23 @@ def _thumb_cond_b_target(word: int, at: int) -> int | None:
 def _thumb_literal_pool(image: bytes, at: int, register: int) -> int | None:
     if at < 0 or at + 2 > len(image) or at & 1:
         return None
-    word = _u16(image, at)
-    if word & 0xF800 != 0x4800 or (word >> 8) & 7 != register:
-        return None
-    pool = ((at + 4) & ~3) + (word & 0xFF) * 4
-    return pool if pool <= len(image) - 4 else None
+    facts = facts_for(image)
+    literal = facts.literal(CodeAddress(facts.base + at))
+    return (literal.pool - facts.base if literal is not None
+            and literal.register == a.ARM_REG_R0 + register and 0 <= register <= 7 else None)
 
 
 def _thumb_literal_loads_of(image: bytes, value: int, register: int,
                             code_limit: int = 0x100000) -> list[int]:
-    """Find Thumb LDR literal instructions that load one value."""
-    limit = min(len(image), code_limit)
-    loads = []
-    for pool in _find_all(image[:limit], struct.pack("<I", value)):
-        if pool & 3:
-            continue
-        for pc in range(max(0, pool - 0x400), pool, 2):
-            word = _u16(image, pc)
-            if (word & 0xF800 == 0x4800 and (word >> 8) & 7 == register
-                    and _thumb_literal_pool(image, pc, register) == pool):
-                loads.append(pc)
-    return loads
+    facts = facts_for(image)
+    limit = facts.base + min(len(image), code_limit)
+    references = (item for item in facts.literal_references(value)
+                  if item.instruction.isa == 'thumb'
+                  and item.register == a.ARM_REG_R0 + register and 0 <= register <= 7
+                  and facts.base <= item.pool <= limit - 4
+                  and max(facts.base, item.pool - 0x400) <= item.instruction.address < item.pool)
+    return [item.instruction.address - facts.base
+            for item in sorted(references, key=lambda item: (item.pool, item.instruction.address))]
 
 
 def _thumb_writes_register(word: int, register: int) -> bool | None:
@@ -1021,9 +928,9 @@ def _thumb_nearest_push_lr(image: bytes, at: int, distance: int = 0x800) -> int 
 
 
 def _thumb_calls_to(image: bytes, target: int) -> list[int]:
-    return [match.start() for match in _THUMB_BL_CANDIDATE.finditer(image)
-            if not match.start() & 1
-            and _thumb_bl_target(image, match.start()) == target]
+    facts = facts_for(image)
+    return [site - facts.base for site, destination in facts.call_candidates('thumb')
+            if destination == facts.base + target]
 
 
 def _status_zero_branch(image: bytes, entry: int, status_address: int) -> dict | None:
@@ -1441,50 +1348,33 @@ def _shift_stores(image: bytes, immediate: int, shift: int) -> list[dict]:
 
 
 def _bit21_spins(image: bytes) -> list[dict]:
-    """Load ``[struct+4]``, shift left 10, and ``B .`` while bit 21 is clear.
-
-    ``struct+4`` in the image is the literal 0x03000720. ``BMI`` skips a
-    one-instruction spin (``B .``).
-    """
+    """Observe a descriptor-linked bit-21 test that skips a terminal spin."""
+    facts = facts_for(image)
     hits = []
-    marker = bytes.fromhex("00d4fee7")
-    for branch in _find_all(image, marker):
-        if branch < 8 or branch & 1:
+    for branch in _find_all(image, bytes.fromhex("00d4fee7")):
+        start = branch - 8
+        if start < 0 or start & 1:
             continue
-        # ... LDR rV, [rB, #4]; LDR rV, [rV]; LSLS rV, rV, #10; BMI; B .
-        shift = _u16(image, branch - 2)
-        second = _u16(image, branch - 4)
-        first = _u16(image, branch - 6)
-        load = _u16(image, branch - 8)
-        value = None
-        base = None
-        for reg in range(8):
-            if shift != ((10 << 6) | (reg << 3) | reg):
+        entry = CodeAddress(start)
+        literal = facts.literal(entry)
+        if literal is None or literal.value & 3:
+            continue
+        pointer = literal.value
+        if not 0 <= pointer <= len(image) - 8:
+            continue
+        function = facts.function(entry, budget=6)
+        for test in facts.bit_tests(function):
+            if (test.branch.address != branch or test.target != branch + 4
+                    or not test.when_set or test.mask != 1 << 21
+                    or test.read.address != _GPIO720 or test.read.width != 4
+                    or test.read.instruction.address != branch - 4):
                 continue
-            if second != (0x6800 | (reg << 3) | reg):
+            if not any(access.instruction.address == start + 2
+                       and access.operation == 'read' and access.width == 4
+                       and access.address == pointer + 4 for access in function.accesses):
                 continue
-            value = reg
-            break
-        if value is None:
-            continue
-        for reg in range(8):
-            # LDR rV, [rB, #4]: imm5 = 1.
-            if first == (0x6800 | (1 << 6) | (reg << 3) | value):
-                base = reg
-                break
-        if base is None or load & 0xF800 != 0x4800 or (load >> 8) & 7 != base:
-            continue
-        pointer = _thumb_literal(image, branch - 8, base)
-        if pointer is None or pointer & 3 or not 0 <= pointer <= len(image) - 8:
-            continue
-        if _u32(image, pointer + 4) != _GPIO720:
-            continue
-        hits.append({
-            "at": branch - 8,
-            "struct": pointer,
-            "gpio": _GPIO720,
-            "spin": branch + 2,
-        })
+            hits.append({"at": start, "struct": pointer,
+                         "gpio": _GPIO720, "spin": branch + 2})
     return hits
 
 

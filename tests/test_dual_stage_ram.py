@@ -8,6 +8,7 @@ import struct
 import unittest
 from msm5xxx_emulator.core.config import LinkerLayout
 from msm5xxx_emulator.detection.memory_layout import dual_stage_ram_profile
+from msm5xxx_emulator.detection.registry import device_domain
 
 def chunks():
     return (
@@ -127,7 +128,8 @@ class DualStageRamTests(unittest.TestCase):
             path = Path(directory) / "source-shaped.bin"
             path.write_bytes(image)
             with patch.object(firmware, "dual_stage_ram_profile", side_effect=observe_leaf), patch.object(
-                    firmware, "find_ready_poll_profile", wraps=firmware.find_ready_poll_profile) as downstream:
+                    device_domain('ready_poll'), "find_ready_poll_profile",
+                    wraps=device_domain('ready_poll').find_ready_poll_profile) as downstream:
                 config = firmware.detect(path, argparse.Namespace(flash_size=0x100000, image_offset=0))
                 self.assertTrue(any(profile is not None for profile in accepted))
                 self.assertEqual((config.ram_base, config.ram_size), (0x01000000, 0x01000000))

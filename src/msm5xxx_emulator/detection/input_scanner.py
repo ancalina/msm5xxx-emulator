@@ -6,104 +6,37 @@ import struct
 
 from ..core.config import BoardStatusInput
 from .arm import thumb_bl_target, thumb_literal_value
+from capstone import arm as a
+from .facts import CodeAddress, SymbolicValue, facts_for
+from .registry import device_domain
 
 
 def _words(*values: int) -> bytes:
     return struct.pack('<' + 'H' * len(values), *values)
 
 
+def _selector_at_join(image: bytes, entry: int, join: int,
+                      initial: SymbolicValue | None = None) -> SymbolicValue | None:
+    """Query the selector over a closed, forward setup region."""
+    if not 0 <= entry <= join < len(image) or (entry | join) & 1:
+        return None
+    facts = facts_for(image)
+    region = facts.function_region(
+        CodeAddress(entry), stop_before=CodeAddress(join), budget=512,
+        symbolic_registers={a.ARM_REG_R7: initial} if initial is not None else {})
+    if (not region.complete or region.back_edges
+            or any(not entry <= pc.address <= join for pc in region.instructions)
+            or any(not facts.view.covers(target.address, 2 if target.isa == 'thumb' else 4,
+                                         phase=target.phase, bank=target.bank)
+                   for _, target in region.calls)):
+        return None
+    return facts.register_value(region, CodeAddress(join), a.ARM_REG_R7)
+
+
 def _selector_paths(image: bytes, entry: int, join: int) -> set[int | None]:
-    """Explore forward setup branches; calls preserve the callee-saved selector r7.
+    value = _selector_at_join(image, entry, join)
+    return {value.value} if value is not None and value.kind == 'const' else {None}
 
-    Only the small Thumb setup instruction vocabulary is admitted. Unknown writes,
-    loops, exits, and malformed calls reject rather than guessing a selector.
-    """
-    pending = [(entry, None)]
-    seen = set()
-    results = set()
-    while pending:
-        pc, value = pending.pop()
-        if pc == join:
-            results.add(value)
-            continue
-        if not entry <= pc < join:
-            return {None}
-        if (pc, value) in seen:
-            continue
-        seen.add((pc, value))
-        w = struct.unpack_from('<H', image, pc)[0]
-        if w & 0xF800 == 0xF000:
-            target = thumb_bl_target(image, pc)
-            if target is None or not 0 <= target < len(image):
-                return {None}
-            pending.append((pc + 4, value))
-            continue
-        if w & 0xF000 == 0xD000 and (w >> 8) & 15 < 14:
-            delta = w & 255
-            if delta & 128:
-                delta -= 256
-            dest = pc + 4 + delta * 2
-            if dest <= pc:
-                return {None}
-            pending.extend(((dest, value), (pc + 2, value)))
-            continue
-        if w & 0xF800 == 0xE000:
-            delta = w & 2047
-            if delta & 1024:
-                delta -= 2048
-            dest = pc + 4 + delta * 2
-            if dest <= pc:
-                return {None}
-            pending.append((dest, value))
-            continue
-        if w & 0xF800 == 0x2000:  # MOVS immediate
-            if (w >> 8) & 7 == 7:
-                value = w & 255
-        elif w & 0xF800 == 0x4800:  # literal load
-            if (w >> 8) & 7 == 7:
-                value = None
-        elif w & 0xF800 == 0x2800 or w & 0xF800 == 0x7000:
-            pass  # compare or byte store
-        elif w & 0xF800 == 0x7800 or w & 0xE000 == 0:
-            if w & 7 == 7:
-                value = None
-        elif w & 0xFC00 == 0x4000:
-            if w & 7 == 7:
-                value = None
-        else:
-            return {None}
-        pending.append((pc + 2, value))
-    return results
-
-
-def _periodic_caller(image: bytes, scanner: int) -> bool:
-    """Tie a direct caller to a repeating clock-registration argument grammar."""
-    callbacks = set()
-    for call in re.finditer(rb"(?=.[\xf0-\xf7].[\xf8-\xff])", image, re.S):
-        pc = call.start()
-        if pc & 1 or thumb_bl_target(image, pc) != scanner:
-            continue
-        # A callback invokes the scanner near its entry (guards may return early).
-        for entry in range(pc - 2, max(-1, pc - 0x40), -2):
-            w = struct.unpack_from('<H', image, entry)[0]
-            if w & 0xFF00 == 0xB500:
-                callbacks.add(entry | 1)
-                break
-    if not callbacks:
-        return False
-    # repeat=1 on stack; equal nonzero initial/repeat periods in r2/r3;
-    # timer object in r0; callback literal in r1; direct clock-service call.
-    registration = re.compile(
-        rb"\x01\x22\x00\x92(.)\x22(.)\x23[\x20\x28]\x1c.\x49", re.S)
-    for match in registration.finditer(image):
-        pc = match.start()
-        if pc & 1 or match[1] != match[2] or match[1] == b'\x00':
-            continue
-        callback = thumb_literal_value(image, pc + 10, 1)
-        service = thumb_bl_target(image, pc + 12)
-        if callback in callbacks and service is not None and 0 <= service < len(image):
-            return True
-    return False
 
 
 def scanner_at(image: bytes, start: int) -> tuple[BoardStatusInput | None, str]:
@@ -209,6 +142,6 @@ def scanner_at(image: bytes, start: int) -> tuple[BoardStatusInput | None, str]:
     if not any(matches(pc, 0x1C20) and thumb_bl_target(image, pc + 2) == event
                for pc in range(opened + 22, closed - 8, 2)):
         return None, 'open-event-call-missing'
-    if not _periodic_caller(image, start):
+    if not device_domain('board_contact').periodic_caller(image, start):
         return None, 'periodic-callback-unproven'
     return BoardStatusInput(address, mask, mask), ''

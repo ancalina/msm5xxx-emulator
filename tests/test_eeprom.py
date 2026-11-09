@@ -4,8 +4,10 @@ from tempfile import TemporaryDirectory
 import unittest
 import struct
 from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.storage import (
-    EEPROM_24LC64_CLASS_B_WRITE_PREFIX, EEPROM_24LC64_CLASS_B_READ_PREFIX)
+from msm5xxx_emulator.detection.devices.eeprom import (
+    EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
+    EEPROM_24LC64_CLASS_B_READ_PREFIX,
+)
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 
 from msm5xxx_emulator.devices.storage.eeprom import EepromMixin

@@ -14,8 +14,10 @@ import zipfile
 import msm5xxx_emulator.detection.firmware_image as firmware_image
 from msm5xxx_emulator.core.device_state import DeviceStateMixin
 from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.facts import fact_scope, facts_for
 from msm5xxx_emulator.detection.firmware_image import (
-    MAX_LOGICAL_IMAGE_SIZE, decode_intel_hex, load_firmware_image,
+    MAX_LOGICAL_IMAGE_SIZE, decode_intel_hex, decode_intel_hex_view,
+    load_firmware_image,
 )
 from msm5xxx_emulator.gui.settings import (
     parse_settings_values, settings_values, validate_settings_values,
@@ -37,6 +39,45 @@ def _hex_image(image: bytes, *, address: int = 0) -> bytes:
 
 
 class FirmwareImageTests(unittest.TestCase):
+    def test_detector_keeps_supplied_coverage_after_header_removal(self) -> None:
+        vectors = struct.pack('<8I', *([0xEA000000] * 8))
+        encoded = b''.join((
+            _record(0, 4, b'\x00\x01'),
+            _record(0, 0, b'\xff' * 32),
+            _record(32, 0, vectors),
+            _record(0x100, 0, b'\xff' * 16),
+            _record(0, 1),
+        ))
+        observed = []
+
+        def inspect(image):
+            view = facts_for(image).view
+            observed.append((view.read(0, 32), view.read(0x40, 4)))
+            return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'coverage.hex'
+            path.write_bytes(encoded)
+            with mock.patch('msm5xxx_emulator.detection.devices.ready_poll.find_ready_poll_profile',
+                            side_effect=inspect):
+                cfg = detect(path)
+        self.assertEqual(cfg.image_offset, 32)
+        self.assertEqual(observed, [(vectors, None)])
+
+    def test_transport_normalization_binds_supplied_view(self) -> None:
+        from msm5xxx_emulator.qemu.transport import detector_firmware_image
+        decoded = decode_intel_hex_view(b''.join((
+            _record(0x1000, 0, b'abcdefgh'),
+            _record(0x1010, 0, b'ijklmnop'),
+            _record(0, 1),
+        )))
+        dense = b'abcdefgh' + b'\xff' * 8 + b'ijklmnop'
+        with fact_scope():
+            image = detector_firmware_image(dense, 4, supplied=decoded.image_view)
+            self.assertEqual(image, dense[4:])
+            self.assertEqual(facts_for(image).view.read(0, 4), b'efgh')
+            self.assertIsNone(facts_for(image).view.read(4, 8))
+
     def test_raw_source_is_unchanged(self) -> None:
         raw = b"\x00\x01\xFE\xFF"
         with tempfile.TemporaryDirectory() as directory:
@@ -65,6 +106,85 @@ class FirmwareImageTests(unittest.TestCase):
             _record(0, 1),
         ))
         self.assertEqual(decode_intel_hex(segmented), b"\xAA")
+
+    def test_hex_view_preserves_supplied_addresses_holes_and_start_records(self) -> None:
+        encoded = b"".join((
+            _record(0, 4, b"\x00\x01"),
+            _record(0x10, 0, b"\x01\x02"),
+            _record(0x14, 0, b"\x03"),
+            _record(0, 3, b"\x12\x34\x00\x56"),
+            _record(0, 5, b"\x00\x01\x00\x14"),
+            _record(0, 1),
+        ))
+
+        decoded = decode_intel_hex_view(encoded)
+        view = decoded.image_view
+        self.assertEqual(view.origin, 0x10010)
+        self.assertEqual(view.read(0x10010, 2), b"\x01\x02")
+        self.assertIsNone(view.read(0x10012, 2))
+        self.assertEqual(view.read(0x10014, 1), b"\x03")
+        self.assertIsNone(view.read(0x10010, 5))
+        self.assertEqual(
+            [(item.record_type, item.address, item.segment, item.offset)
+             for item in decoded.start_addresses],
+            [(3, 0x12396, 0x1234, 0x56), (5, 0x10014, None, None)],
+        )
+        self.assertEqual(decode_intel_hex(encoded), b"\x01\x02\xFF\xFF\x03")
+
+    def test_adjacent_hex_records_share_supplied_spans(self) -> None:
+        payload = bytes(range(256)) * 8
+        decoded = decode_intel_hex_view(_hex_image(payload, address=0x100))
+        self.assertEqual(decoded.image_view.read(0x100, len(payload)), payload)
+        self.assertEqual(len(decoded.image_view.mappings), 1)
+        self.assertEqual(len(decoded.image_view.segments), 1)
+        self.assertIsNone(decoded.image_view.read(0x100 + len(payload), 1))
+
+    def test_loaded_hex_retains_sparse_view_and_entry_metadata(self) -> None:
+        encoded = b"".join((
+            _record(0, 4, b"\x00\x01"),
+            _record(0x10, 0, b"\x01\x02"),
+            _record(0x14, 0, b"\x03"),
+            _record(0, 5, b"\x00\x01\x00\x14"),
+            _record(0, 1),
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phone.hex"
+            path.write_bytes(encoded)
+            loaded = load_firmware_image(path)
+
+        self.assertEqual(loaded.image, b"\x01\x02\xFF\xFF\x03")
+        self.assertIsNotNone(loaded.image_view)
+        assert loaded.image_view is not None
+        self.assertEqual(loaded.image_view.origin, 0x10010)
+        self.assertEqual(loaded.image_view.read(0x10010, 2), b"\x01\x02")
+        self.assertIsNone(loaded.image_view.read(0x10012, 2))
+        self.assertEqual(loaded.start_addresses, (
+            firmware_image.IntelHexStartAddress(5, 0x10014),
+        ))
+
+    def test_loaded_hxb_retains_hex_view_and_entry_metadata(self) -> None:
+        encoded = b"".join((
+            _record(0, 4, b"\x00\x02"),
+            _record(0x20, 0, b"\xAA"),
+            _record(0, 3, b"\x12\x34\x00\x56"),
+            _record(0, 1),
+        ))
+        archive_bytes = BytesIO()
+        with zipfile.ZipFile(archive_bytes, "w") as archive:
+            archive.writestr("PHONE.hex", encoded)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phone.hxb"
+            path.write_bytes(archive_bytes.getvalue())
+            loaded = load_firmware_image(path)
+
+        self.assertEqual(loaded.image, b"\xAA")
+        self.assertIsNotNone(loaded.image_view)
+        assert loaded.image_view is not None
+        self.assertEqual(loaded.image_view.origin, 0x20020)
+        self.assertEqual(loaded.image_view.read(0x20020, 1), b"\xAA")
+        self.assertEqual(loaded.start_addresses, (
+            firmware_image.IntelHexStartAddress(3, 0x12396, 0x1234, 0x56),
+        ))
 
     def test_hex_rejects_ambiguous_or_malformed_streams(self) -> None:
         data = _record(0, 0, b"\x01")
@@ -168,7 +288,7 @@ class FirmwareImageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "이미지 오프셋"):
                 validate_settings_values(
                     path, config, overrides, {"image_offset"},
-                    raw_settings["flash_state"],
+                    raw_settings["flash_state"], language="ko",
                 )
 
             path.write_bytes(_hex_image(bytes(image[:-1]) + b"\x00"))

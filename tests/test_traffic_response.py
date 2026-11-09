@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from native_sanitizers import native_sanitizers
 
 class TrafficResponseTests(unittest.TestCase):
     def test_ack_sequence_and_reset_lifecycle(self):
@@ -10,7 +11,7 @@ class TrafficResponseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             p=Path(directory);(p/'test.c').write_text(harness)
             subprocess.run(['cc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror',
-                            '-fsanitize=address,undefined','-I',str(native),str(p/'test.c'),
+                            native_sanitizers(),'-I',str(native),str(p/'test.c'),
                             str(native/'msm5xxx-search2.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True,timeout=20)
 
@@ -20,6 +21,6 @@ class TrafficResponseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             p=Path(directory);(p/'test.c').write_text(harness)
             subprocess.run(['cc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror',
-                            '-fsanitize=address,undefined','-I',str(native),str(p/'test.c'),
+                            native_sanitizers(),'-I',str(native),str(p/'test.c'),
                             str(native/'msm5xxx-search2.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True,timeout=20)

@@ -13,6 +13,8 @@ from msm5xxx_emulator.detection.external_devices import (
     detect_boot_gpio_bit9,
 )
 from msm5xxx_emulator.detection.external_bus import detect_external_bus
+from msm5xxx_emulator.detection.facts import bind_facts, fact_scope, source_prefix
+from msm5xxx_emulator.detection.image_view import ImageView
 
 
 def put16(image: bytearray, offset: int, *words: int) -> None:
@@ -603,6 +605,37 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
         self.assertEqual(len(accesses), 1)
         self.assertFalse(accesses[0]["thumb"])
         self.assertEqual(accesses[0]["literal"], literal)
+
+    def test_literal_window_query_observes_mutated_bytearray(self) -> None:
+        base = 0x08C00000
+        image = bytearray(0x100)
+        put16(image, 0x20, ldr_literal(1, 0x20, 0x80), 0x700A)
+        put32(image, 0x80, base)
+
+        self.assertEqual(len(_literal_window_accesses_many(image, (base,))[base]), 1)
+        put32(image, 0x80, 0x09000000)
+        self.assertEqual(_literal_window_accesses_many(image, (base,))[base], [])
+
+    def test_cs0a_prefix_keeps_sparse_instruction_and_pool_holes(self) -> None:
+        base = 0x0A000000
+        image = bytearray(0x10020)
+        put16(image, 0x20, ldr_literal(1, 0x20, 0x80), 0x700A)
+        put32(image, 0x80, base)
+        source = bytes(image)
+        self.assertEqual(len(_literal_window_accesses_many(source, (base,))[base]), 1)
+
+        for missing in ((0x22, 0x24), (0x80, 0x84)):
+            with self.subTest(missing=missing), fact_scope():
+                first, last = missing
+                view = ImageView.sparse((
+                    (0, source[:first]),
+                    (last, source[last:]),
+                ))
+                self.assertIsNotNone(bind_facts(source, view))
+                prefix = source_prefix(source, 0x10000)
+                self.assertEqual(
+                    _literal_window_accesses_many(prefix, (base,))[base], []
+                )
 
     def test_terminal_helper_cannot_override_ram_probe_evidence(self) -> None:
         image = bytearray(_ram_readback_image(independent_terminal_helper=True))

@@ -83,10 +83,6 @@ REGISTER_RAMP_PREFIX = bytes.fromhex(
     "32234b439d1822237b43341ceb1a9b1100d41c1c0f4f3c80"
     "32234b4332389b189b1101d41c1c00e0341c2404240c01e0"
 )
-BOARD_ADC_SIGNATURE = bytes.fromhex(
-    "f1b584b00027049a002521492e1c009700200024895cd2000392ca1f033a0a31"
-)
-BOARD_ADC_READER_READ_OFFSET = 0x7E
 FLASH_ID_SIGNATURE = bytes.fromhex(
     "30b50e4b011ccc18084d094b258023800b4bca18074b1380074b238008884b88"
     "00041b04000c"
@@ -119,10 +115,6 @@ DMD_DOWNLOAD_SIGNATURE = bytes.fromhex("f0b5002701250024354901200870")
 DMD_DOWNLOAD_510X_SIGNATURE = bytes.fromhex(
     "f0b539480027006801250024002800d060e0"
 )
-DMD_DOWNLOAD_5500_LITERALS = struct.pack(
-    "<5I", 0x030E0000, 0x030F0120, 0x00001388, 0x030E01A0, 0x0000FFFF
-)
-DMD_DOWNLOAD_5500_SIZE = 0x54
 PRIMARY_FLASH_PROBE_SIGNATURE = bytes.fromhex(
     "16481749006b096840004018aa221101411881b04a81552215239b01c3189a82"
     "90224a81018800ab198041885980f02101800c480ce000abff3121311a888b88"
@@ -145,39 +137,8 @@ DIRECT_INTEL_X16_PROBE_SIGNATURE = bytes.fromhex(
 )
 
 
-def is_dmd_download_5500(image: bytes, entry: int = 0) -> bool:
-    """Match complete MSM5500 DMD start/wait/ack grammar at one entry."""
-    fixed = {
-        0: bytes.fromhex("b0b50020"),
-        8: bytes.fromhex("002803d10c480088"),
-        17: bytes.fromhex("2803d00020b0bc08bc1847094800248480"),
-        38: bytes.fromhex("084f084d02e0381c"),
-        50: bytes.fromhex("e889064b9842f8d1ec810120eae7"),
-        64: DMD_DOWNLOAD_5500_LITERALS,
-    }
-    if not 0 <= entry <= len(image) - DMD_DOWNLOAD_5500_SIZE:
-        return False
-    if not all(
-        image[entry + offset:entry + offset + len(value)] == value
-        for offset, value in fixed.items()
-    ):
-        return False
-    return all(
-        thumb_bl_target(image, entry + offset) is not None
-        for offset in (4, 34, 46)
-    )
 
 
-def detect_dmd_download_5500(image: bytes) -> int | None:
-    """Find one source-backed MSM5500 DMD download completion routine."""
-    if b"dmddown_5500.c" not in image:
-        return None
-    entries = [
-        literal - 64
-        for literal in find_all(image, DMD_DOWNLOAD_5500_LITERALS)
-        if is_dmd_download_5500(image, literal - 64)
-    ]
-    return entries[0] if len(entries) == 1 else None
 GUEST_OWNED_STATUS_72C_CONSUMER = bytes.fromhex(
     "0d48007b400907d3201c013c002803da0020f0bc08bc1847"
 )

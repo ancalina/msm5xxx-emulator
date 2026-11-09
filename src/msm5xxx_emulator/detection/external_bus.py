@@ -15,6 +15,7 @@ from .external_devices import (
     detect_external_windows,
     _thumb_literal,
 )
+from .external_plan import EXTERNAL_BUS_CONTRACTS, _resolve_external_claims
 from .memory_map import detect_linker_memory_map
 from .gpio_pmic import find_gpio_pmic_profile
 from .selector_lcd import find_selector_lcd_profile
@@ -479,20 +480,9 @@ def detect_external_bus(
 
     window_rejections = {}
     if ram_base is not None and ram_size is not None:
-        window_properties = (
-            ("external-cs09", "external_cs09", 0x09000000),
-            ("external-cs0a", "external_cs0a", 0x0A000000),
-            ("external-strap-value", "strap_bit2", 0x09000000),
-            ("external-window-08c", "window_08c", 0x08C00000),
-            ("external-window-1a", "window_1a", 0x1A000000),
-            ("experimental-contract-status-0b408", "status_0b000408", 0x0B000000),
-            ("experimental-contract-window-0b", "window_0b", 0x0B000000),
-            ("experimental-contract-window-18", "window_18", 0x18000000),
-            ("experimental-contract-window-1c", "window_1c", 0x1C000000),
-            ("external-lcd-18", "lcd_trace_18", 0x18000000),
-            ("external-lcd-1a", "lcd_trace_1a", 0x1A000000),
-            ("external-lcd-1c", "lcd_trace_1c", 0x1C000000),
-        )
+        window_properties = ((prop, contract.capability, contract.allocation_base)
+                             for prop, contract in EXTERNAL_BUS_CONTRACTS.items()
+                             if contract.allocation_base is not None)
         for prop, name, base in window_properties:
             if not props.get(prop):
                 continue
@@ -522,27 +512,14 @@ def detect_external_bus(
             and not props.get("external-lcd-1c")):
         del props["experimental-contract-lcd-1c-selector"]
 
-    property_roles = {
-        "external-ram-base": "external_ram", "external-ram-size": "external_ram",
-        "external-cs09": "external_cs09", "external-cs0a": "external_cs0a",
-        "external-strap-value": "strap_bit2",
-        "external-window-08c": "window_08c", "external-window-1a": "window_1a",
-        "experimental-contract-status-0b408": "status_0b000408",
-        "experimental-contract-window-0b": "window_0b",
-        "experimental-contract-window-18": "window_18",
-        "experimental-contract-window-1c": "window_1c",
-        "external-lcd-18": "lcd_trace_18", "external-lcd-1a": "lcd_trace_1a",
-        "external-lcd-1c": "lcd_trace_1c", "external-uart": "boot_uart",
-        "gpio-ready-bit21": "gpio_ready_bit21",
-        "experimental-contract-gpio-bit9-low": "boot_gpio_bit9",
-        "experimental-contract-gpio-pmic-serial": "gpio_pmic_serial",
-        "experimental-contract-lcd-1c-selector": "lcd_1c_selector",
-    }
-    selected_roles = {property_roles[name] for name, value in props.items() if value}
-    guards = []
-    for name in sorted(selected_roles):
-        guards.extend(_guards_for(image, capabilities[name], name))
-    unique = {(item["start"], item["end"], item["expected"]): item for item in guards}
+    def source_guards():
+        selected_roles = {EXTERNAL_BUS_CONTRACTS[name].capability
+                          for name, value in props.items() if value}
+        guards = [guard for name in sorted(selected_roles)
+                  for guard in _guards_for(image, capabilities[name], name)]
+        unique = {(item["start"], item["end"], item["expected"]): item for item in guards}
+        return sorted(unique.values(), key=lambda item: (item["start"], item["end"]))
+
     plan = {
         "version": 1,
         "memory_context": {
@@ -552,9 +529,29 @@ def detect_external_bus(
         },
         "capabilities": capabilities,
         "machine_properties": props,
-        "source_guards": sorted(unique.values(), key=lambda item: (item["start"], item["end"])),
+        "source_guards": source_guards(),
         "rejections": ({"external_ram": ram_reason} if ram is None else
                        {"external_ram": allocation_rejection} if allocation_rejection else {}),
     }
     plan["rejections"].update(window_rejections)
+    if not plan["source_guards"]:
+        return None, "external-device-source-unclosed"
+    resolution = _resolve_external_claims(plan)
+    conflicts = [item for item in resolution.decisions if item.status == "conflict"]
+    if conflicts:
+        surviving = dict(resolution.plan.properties)
+        for name in tuple(props):
+            if props[name] and name not in surviving:
+                if type(props[name]) is bool:
+                    props[name] = False
+                else:
+                    del props[name]
+        for decision in conflicts:
+            role = decision.capability.name.removeprefix("external:")
+            capabilities[role]["status"] = "unknown"
+            capabilities[role]["parameters"]["mapping_rejection"] = decision.reason
+            plan["rejections"][role] = decision.reason
+        plan["source_guards"] = source_guards()
+        if not any(props.values()):
+            return None, "external-device-resource-conflict"
     return plan, "accepted"

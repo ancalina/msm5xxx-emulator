@@ -5,11 +5,14 @@ readback ID, storage mutation or RAM initialization is supplied by this module.
 """
 from __future__ import annotations
 from dataclasses import asdict
-import re
 import struct
+from capstone import arm as a
 from ..core.config import CopyLayout, LinkerLayout
-from .arm import arm_b_target, thumb_bl_target, thumb_literal_value
+from .arm import arm_b_target
+from .contracts import BodySpec
+from .facts import CodeAddress, facts_for
 from .memory_layout import find_linker_layout
+from .startup_facts import proven_startup_rows
 
 _MASKS = {
     'copy': (
@@ -93,9 +96,36 @@ _MASKS = {
     'irq_save': '7847000000000fe1c01080e301f021e1c00000e21eff2fe1',
     'irq_restore': '7847000000000fe1c010c0e301f021e1c00000e21eff2fe1',
 }
-_PATTERNS = {role: re.compile(b''.join(b'.' if mask[i:i+2] == '??' else
-    re.escape(bytes([int(mask[i:i+2],16)])) for i in range(0,len(mask),2)),re.DOTALL)
-    for role,mask in _MASKS.items()}
+def _body_spec(mask):
+    """Compile one masked Thumb body into shared instruction contracts."""
+    size = len(mask) // 2
+    calls, literals, words = [], [], []
+    offset = 0
+    while offset < size:
+        if mask[offset * 2:offset * 2 + 8] == '????????':
+            calls.append(offset)
+            offset += 4
+            continue
+        first = mask[offset * 2:offset * 2 + 2]
+        second = mask[offset * 2 + 2:offset * 2 + 4]
+        if first == '??' and second in {f'{value:02x}' for value in range(0x48, 0x50)}:
+            literals.append((offset, int(second, 16) - 0x48))
+            offset += 2
+            continue
+        expected = value_mask = 0
+        for byte_index, token in enumerate((first, second)):
+            if token == '??':
+                continue
+            shift = byte_index * 8
+            expected |= int(token, 16) << shift
+            value_mask |= 0xff << shift
+        if value_mask:
+            words.append((offset, expected, value_mask))
+        offset += 2
+    return BodySpec(size, tuple(words), tuple(literals), tuple(calls))
+
+
+_BODY_SPECS = {role: _body_spec(mask) for role, mask in _MASKS.items()}
 
 class _Unclosed(ValueError):
     pass
@@ -109,54 +139,34 @@ def _word(image, at, size=4):
     return int.from_bytes(image[at:at+size], 'little')
 
 def _literal(image, at, reg):
-    value = thumb_literal_value(image, at, reg)
+    value = facts_for(image).thumb_literal_value(at, reg)
     _need(value is not None, 'literal-source')
     return value
 
 def _call(image, at):
-    target = thumb_bl_target(image, at)
+    target = facts_for(image).thumb_call_target(at)
     _need(target is not None and 0 <= target < len(image)-1, 'call-source')
     return target
 
+def _body(image, at, role):
+    if type(at) is not int or at & 1:
+        return None
+    return _BODY_SPECS[role].match(facts_for(image), at)
+
 def _code(image, at, role):
-    if type(at) is not int or at & 1 or not 0 <= at <= len(image)-len(_MASKS[role])//2:
-        return False
-    if _PATTERNS[role].match(image, at) is None:
-        return False
-    mask = _MASKS[role]
-    try:
-        off = 0
-        while off < len(mask)//2:
-            if mask[off*2:off*2+8] == '????????':
-                _call(image,at+off);off += 4;continue
-            word = _word(image,at+off,2)
-            if word & 0xf800 == 0x4800:
-                _literal(image,at+off,word>>8&7)
-            off += 2
-    except _Unclosed:
-        return False
-    return True
+    return _body(image, at, role) is not None
 
 def _hits(image, role):
-    # A literal-first function still needs a nonempty anchor; never scan per byte in Python.
-    mask = _MASKS[role]
-    runs = [(match.start()//2,bytes.fromhex(match.group()))
-            for match in re.finditer(r'(?:[0-9a-f]{2})+',mask)]
-    offset,prefix = max(runs,key=lambda pair:len(pair[1]))
-    start = 0
-    while True:
-        hit = image.find(prefix,start)
-        if hit < 0:
-            return
-        start = hit+1
-        at = hit-offset
-        if _code(image,at,role):
-            yield at
+    for body in _BODY_SPECS[role].find(facts_for(image)):
+        yield body.entry
+
 
 def _arm_literal(image, pc, expected):
-    word = _word(image,pc)
+    word = _word(image, pc)
     _need(word & 0xfffff000 == expected, 'arm-literal-producer')
-    return _word(image,pc+8+(word&4095))
+    literal = facts_for(image).literal(CodeAddress(pc, 'arm'))
+    _need(literal is not None, 'arm-literal-source')
+    return literal.value
 
 def _in_ram(address, size, ram_base, ram_size):
     return type(address) is int and ram_base <= address and size <= ram_base+ram_size-address
@@ -174,10 +184,12 @@ def _normal_copy(image, ram_base, ram_size):
     pc = root
     for _ in range(3):
         group(pc);pc += 24
+    mode_stacks = {}
     for mode in (0xe321f0d7,0xe321f0db,0xe321f0d3):
         _need(_word(image,pc)==mode,'reset-stack')
         sp = _arm_literal(image,pc+4,0xe59fd000)
         _need(not sp & 3 and ram_base < sp <= ram_base+ram_size,'stack-outside-ram')
+        mode_stacks[mode] = sp
         pc += 8
     count = 0
     while count < 4 and _word(image,pc)!=0xe3500000:
@@ -192,49 +204,81 @@ def _normal_copy(image, ram_base, ram_size):
     for off in (4,12,24):
         sp = _arm_literal(image,normal+off,0xe59fd000)
         _need(not sp & 3 and ram_base < sp <= ram_base+ram_size,'normal-stack')
-    copy = _arm_literal(image,normal+32,0xe59f0000)
-    _need(copy & 1,'copy-isa');copy &= ~1
+    copy_value = _arm_literal(image,normal+32,0xe59f0000)
+    _need(copy_value & 1,'copy-isa')
+    copy = copy_value & ~1
     _need(_arm_literal(image,normal+40,0x159fe000)==normal+53
           and _arm_literal(image,normal+44,0x059fe000)==normal+56,'copy-return')
-    main = _arm_literal(image,normal+56,0xe59f2000)
-    _need(main & 1 and main < len(image) and _code(image,copy,'copy'),'copy-body')
     _need(_literal(image,copy,1)==0x03000700
           and _literal(image,copy+0xd6,3)==0x048000a0,'copy-io-domain')
-    source_at = _literal(image,copy+0x16,2)
-    _need(_literal(image,copy+0xc,0)==source_at+4
-          and _literal(image,copy+0xe,7)==source_at+8,'copy-tuple')
-    _need(_literal(image,copy+0x38,3)==source_at+12
-          and _literal(image,copy+0x3a,4)==source_at+16,'zero-tuple')
-    source,target,size,zero,zero_size = (_word(image,source_at+i) for i in (0,4,8,12,16))
-    _need(size > 0 and zero_size > 0 and not (source|target|size|zero|zero_size)&3
-          and source+size <= len(image) and target+size==zero
-          and zero+zero_size <= 0x100000000,'copy-span')
-    _need(_in_ram(target,size,ram_base,ram_size)
-          and _in_ram(zero,zero_size,ram_base,ram_size),'copy-outside-ram')
-    layout = LinkerLayout(source_at,source,target,size,zero,zero_size)
-    writes = [(zero,zero_size)]
-    copies = [CopyLayout(source_at,source,target,size)]
-    for toff,noff,soff in ((0x56,0x58,0x60),(0x96,0x98,0xa0),(0xda,0xdc,0xe4)):
-        dest,count,src = (_word(image,_literal(image,copy+off,reg))
-                          for off,reg in ((toff,3),(noff,4),(soff,7)))
-        _need(not (dest|count|src)&3 and src+count <= len(image)
-              and dest+count <= 0x100000000,'other-copy-span')
-        table_at = _literal(image,copy+soff,7)
-        _need(_literal(image,copy+toff,3)==table_at+4
-              and _literal(image,copy+noff,4)==table_at+8,'other-copy-tuple')
-        _need(_in_ram(dest,count,ram_base,ram_size)
-              or 0x03800000<=dest<=dest+count<=0x03a00000,'other-copy-owner')
-        copies.append(CopyLayout(table_at,src,dest,count))
-        writes.append((dest,count))
-    for layout_,(toff,noff) in zip(copies[1:3],((0x7c,0x7e),(0xbc,0xbe))):
-        target_at,count_at = _literal(image,copy+toff,3),_literal(image,copy+noff,4)
-        _need(target_at==layout_.table_offset+12
-              and count_at==layout_.table_offset+16,'zero-tuple')
-        dest,count = _word(image,target_at),_word(image,count_at)
-        _need(not (dest|count)&3 and dest+count<=0x100000000
-              and _in_ram(dest,count,ram_base,ram_size),'zero-span')
-        writes.append((dest,count))
-    return dict(root=root,decision=pc,normal=normal,copy=copy,layout=layout,copies=copies,writes=writes)
+    # Keep the bounded ARM route above as the existing reset/normal-mode
+    # contract, then bind its Thumb target and active SVC stack to the shared
+    # startup-copy consumer proof.
+    facts = facts_for(image)
+    target_ranges = ((ram_base, ram_base + ram_size),
+                     (0x03800000, 0x03a00000))
+    stack_pointer = mode_stacks[0xe321f0d3]
+    function = facts.function(
+        CodeAddress(copy, 'thumb'), budget=4096,
+        initial_registers={a.ARM_REG_SP: stack_pointer}, symbolic_registers={})
+    _need(function.complete and not function.truncated and not function.unresolved,
+          'copy-function-source')
+    # The descriptor and row tables are initialized before the first call.
+    # They describe this copy-complete epoch; the native consumers separately
+    # check the active object/descriptor at each guarded access.
+    calls = {site for site, _target in function.calls}
+    frontiers = {site for site in calls if all(
+        site == other or function.dominates(site, other) for other in calls)}
+    _need(not calls or len(frontiers) == 1, 'copy-completion-ambiguous')
+    completion = next(iter(frontiers), None)
+    rows_with_proofs = proven_startup_rows(
+        facts, CodeAddress(copy, 'thumb'), target_ranges=target_ranges,
+        zero_ranges=((ram_base, ram_base + ram_size),),
+        extra_write_ranges=((0x03000600, 0x03000780),
+                            (0x048000a4, 0x048000a6)),
+        initial_sp=stack_pointer, completion=completion)
+    _need(len(rows_with_proofs) == 4, 'copy-startup-context')
+    rows = [row for row, _proof in rows_with_proofs]
+    procedure = rows_with_proofs[0][1].procedure
+    _need(procedure is not None, 'copy-procedure-source')
+    side_effect_addresses = {write.address
+                             for write in procedure.side_effect_writes}
+    _need(0x03000700 in side_effect_addresses
+          and any(write.address == 0x048000a4 and write.width == 2
+                  for write in procedure.side_effect_writes),
+          'copy-io-domain')
+    _need(rows[0].zero_target is not None
+          and rows[1].zero_target is not None
+          and rows[2].zero_target is not None
+          and rows[3].zero_target is None, 'copy-zero-rows')
+    _need(_in_ram(rows[0].target, rows[0].size, ram_base, ram_size)
+          and _in_ram(rows[0].zero_target, rows[0].zero_size,
+                      ram_base, ram_size), 'copy-outside-ram')
+    copies = [CopyLayout(row.table, row.source, row.target, row.size)
+              for row in rows]
+    layout = LinkerLayout(rows[0].table, rows[0].source, rows[0].target,
+                          rows[0].size, rows[0].zero_target,
+                          rows[0].zero_size)
+    writes = [(rows[0].zero_target, rows[0].zero_size)]
+    writes.extend((row.target, row.size) for row in rows[1:])
+    writes.extend((row.zero_target, row.zero_size) for row in rows[1:3])
+    literal_spans = {(literal.pool, literal.pool + 4)
+                     for literal in function.literals}
+    copy_code_spans = []
+    for site in function.instructions:
+        instruction = facts.decode(site)
+        if instruction is None:
+            raise _Unclosed('copy-instruction-source')
+        copy_code_spans.append((site.address, site.address + instruction.size))
+    copy_code_spans.extend(procedure.helper_code_spans)
+    table_spans = [(row.table, row.table +
+                    (20 if row.zero_table is not None else 12))
+                   for row in rows]
+    return dict(root=root, decision=pc, normal=normal, copy=copy,
+                layout=layout, copies=copies, writes=writes,
+                startup_code_intervals=sorted(set(copy_code_spans)),
+                startup_literal_intervals=sorted(literal_spans),
+                startup_table_intervals=table_spans)
 
 def _profile_at(image, init, context, ram_base, ram_size):
     selected = _call(image,init+0xc)
@@ -314,9 +358,10 @@ def _profile_at(image, init, context, ram_base, ram_size):
     program_thunk=_call(image,extras['wrapper'][0]+0x38)
     _need(_word(image,program_thunk,2)==0x4718,'program-thunk')
     code=[(context['root'],context['decision']+12),
-          (context['normal'],context['normal']+0x40),(context['copy'],context['copy']+0x10c),
+          (context['normal'],context['normal']+0x40),
           (init,success+8),(selected,selected+0x34),(save,save+24),(restore,restore+24),
           (probe_source,probe_source+20),(protect,protect+0x28)]
+    code += context['startup_code_intervals']
     code += [(at,at+len(_MASKS[roles[role]])//2)for role,at in methods.items()]
     code += [(at,at+len(_MASKS[name])//2)for at,name in extras.values()]
     if getter is not None:code.append((getter,getter+0xe))
@@ -326,19 +371,15 @@ def _profile_at(image, init, context, ram_base, ram_size):
             op=_word(image,pc)
             if op&0x0fff0000==0x059f0000:
                 at=pc+8+(op&4095);_word(image,at);pools.append((at,at+4))
-    thumb_roles=[(context['copy'],'copy'),(init,'init'),(selected,'selector'),
+    thumb_roles=[(init,'init'),(selected,'selector'),
                  (protect,protection[0]),(probe_source,'probe')]
     thumb_roles += [(at,roles[role])for role,at in methods.items()]
     thumb_roles += list(extras.values())
     if getter is not None:thumb_roles.append((getter,'flag'))
     for at,name in thumb_roles:
-        mask=_MASKS[name];off=0
-        while off<len(mask)//2:
-            if mask[off*2:off*2+8]=='????????':off+=4;continue
-            op=_word(image,at+off,2)
-            if op&0xf800==0x4800:
-                pool=((at+off+4)&~3)+(op&255)*4;pools.append((pool,pool+4))
-            off+=2
+        body = _body(image, at, name)
+        _need(body is not None, 'body-source')
+        pools.extend((pool, pool + 4) for pool in body.pools)
     tables=[(copy.table_offset,copy.table_offset+(20 if i<3 else 12))
             for i,copy in enumerate(context['copies'])]
     protected=code+pools+tables+[(object_,object_+0xd0),(source(cell,4),source(cell,4)+4)]

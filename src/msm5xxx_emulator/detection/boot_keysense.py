@@ -4,6 +4,8 @@ from __future__ import annotations
 import struct
 
 from .arm import arm_b_target, thumb_bl_target, thumb_literal_value
+from .contracts import BodySpec
+from .facts import facts_for
 
 _LEAF = bytes.fromhex(
     '3f20164908750020144908701448007d0007000f1249097d0907090f88421ad1'
@@ -30,6 +32,14 @@ _PREFIXED_LITERALS = {10: (0, 50333312), 22: (1, 16778688), 26: (0, 16778688), 3
 _PREFIXED_CALLS = (6, 0x32, 0x3A, 0x3E, 0x52)
 _STACK_FAILURE = bytes.fromhex('7847000001e08ee30d00a0e10e10a0e100200fe10aa02ae054309fe5010013e350e09f1550e09f0513ff2fe178470000feffffea')
 _DELAY = bytes.fromhex('15220921c905322802dd0a843238fae7002807dd1b2358432d30002800da3f3080110884f746')
+_LEAF_SPEC = BodySpec.thumb_body(
+    _LEAF, literals=tuple((offset, register)
+                         for offset, (register, _value) in _LEAF_LITERALS.items()))
+_PREFIXED_SPEC = BodySpec.thumb_body(
+    _PREFIXED, calls=_PREFIXED_CALLS,
+    literals=tuple((offset, register)
+                   for offset, (register, _value) in _PREFIXED_LITERALS.items()))
+
 
 
 def _u32(image: bytes, at: int) -> int | None:
@@ -38,12 +48,15 @@ def _u32(image: bytes, at: int) -> int | None:
 
 def _shape(image: bytes, at: int, pattern: bytes,
            literals: dict[int, tuple[int, int]]) -> bool:
-    if at & 1 or at < 0 or at+len(pattern) > len(image):
-        return False
-    holes = {offset+n for offset in literals for n in (0, 1)}
-    return (all(image[at+i] == b for i, b in enumerate(pattern) if i not in holes)
-            and all(thumb_literal_value(image, at+offset, reg) == value
-                    for offset, (reg, value) in literals.items()))
+    spec = _LEAF_SPEC if pattern == _LEAF else _PREFIXED_SPEC if pattern == _PREFIXED else None
+    if spec is None:
+        spec = BodySpec.thumb_body(
+            pattern, literals=tuple((offset, register)
+                                    for offset, (register, _value) in literals.items()))
+    body = spec.match(facts_for(image), at)
+    expected = {offset: value for offset, (_register, value) in literals.items()}
+    return body is not None and all(body.values.get(offset) == value
+                                    for offset, value in expected.items())
 
 
 def _arm_literal(image: bytes, at: int) -> int | None:
@@ -54,7 +67,8 @@ def _arm_literal(image: bytes, at: int) -> int | None:
 
 
 def _prefix_helpers(image: bytes, entry: int) -> bool:
-    calls = {offset: thumb_bl_target(image, entry+offset) for offset in _PREFIXED_CALLS}
+    facts = facts_for(image)
+    calls = {offset: facts.thumb_call_target(entry+offset) for offset in _PREFIXED_CALLS}
     if any(at is None or at & 1 or not 0 <= at <= len(image)-2 for at in calls.values()):
         return False
     stack, noop, delay = calls[6], calls[0x32], calls[0x52]
@@ -71,11 +85,11 @@ def _prefix_helpers(image: bytes, entry: int) -> bool:
     diagnostic -= 1
     # Ordinary diagnostic ABI return reaches the local ARM self-loop.
     if (image[diagnostic:diagnostic+6] != bytes.fromhex('00b5d54501da')
-            or thumb_bl_target(image, diagnostic+6) != stack
+            or facts_for(image).thumb_call_target(diagnostic+6) != stack
             or image[diagnostic+0x16:diagnostic+0x18] != bytes.fromhex('00bd')):
         return False
     for offset in (0xA, 0x12):
-        target = thumb_bl_target(image, diagnostic+offset)
+        target = facts_for(image).thumb_call_target(diagnostic+offset)
         if target is None or target & 1 or not 0 <= target <= len(image)-2:
             return False
     return image[diagnostic+0xE:diagnostic+0x12] == bytes.fromhex('02a10348')
@@ -87,19 +101,13 @@ def find_boot_keysense_release(image: bytes) -> tuple[dict | None, str]:
     partial = False
     for pattern, literals, layout in ((_LEAF, _LEAF_LITERALS, 'leaf-low4-three-read'),
                                       (_PREFIXED, _PREFIXED_LITERALS, 'prefixed-low4-three-read')):
+        candidate_sites = facts_for(image).string_candidates(pattern[:2])
         start = 0
-        while True:
-            at = image.find(pattern[:2], start)
-            if at < 0:
-                break
-            start = at+1
+        while start < len(candidate_sites):
+            at = candidate_sites[start]
+            start += 1
             if layout.startswith('prefixed'):
-                holes = {offset+n for offset in _PREFIXED_CALLS for n in range(4)}
-                holes.update(offset+n for offset in literals for n in (0, 1))
-                shape = (not at & 1 and at+len(pattern) <= len(image)
-                         and all(image[at+i] == b for i, b in enumerate(pattern) if i not in holes)
-                         and all(thumb_literal_value(image, at+offset, reg) == value
-                                 for offset, (reg, value) in literals.items()))
+                shape = _shape(image, at, pattern, literals)
                 if shape and not _prefix_helpers(image, at):
                     partial = True
                     continue
@@ -145,13 +153,13 @@ def find_boot_keysense_release(image: bytes) -> tuple[dict | None, str]:
         return None, 'route-target-unclosed'
     helper_evidence = None
     if layout.startswith('prefixed'):
-        stack = thumb_bl_target(image, entry+6)
+        stack = facts_for(image).thumb_call_target(entry+6)
         helper_evidence = {
             'stack_failure_entry': stack,
             'stack_failure_terminal_pc': stack+0x30,
             'stack_failure_diagnostic_entry': _arm_literal(image, stack+0x18)-1,
-            'delay_entry': thumb_bl_target(image, entry+0x52),
-            'noop_entry': thumb_bl_target(image, entry+0x32),
+            'delay_entry': facts_for(image).thumb_call_target(entry+0x52),
+            'noop_entry': facts_for(image).thumb_call_target(entry+0x32),
             'unsupported_path': 'ordinary diagnostic ABI return reaches local self-loop; nonlocal diagnostic side effects unproved',
         }
     return {'signature': 'arm-thumb-boot-keysense-release-v1',

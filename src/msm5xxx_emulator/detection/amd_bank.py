@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import struct
-from .arm import arm_b_target, arm_b_word_target
-from .mono_page import _shape
+
+from .arm import arm_b_word_target
+from .contracts import BodySpec
+from .facts import CodeAddress, facts_for, source_prefix
+from .startup_entry import startup_copy_contexts, startup_load_operations
 
 _SPEC = {
     'copy': (bytes.fromhex('0120474908700020087046480068464909684018061c45480068051c41480068041cb44208d204e0281d051c201d041cf7e728682060f7e7012039490870002008703b4800683b4909684018061c38480068041cb44206d202e0201d041cf9e700202060f9e701202d4908700020087031480068314909684018061c30480068051c2d480068041cb44208d204e0281d051c201d041cf7e728682060f7e701201f4908700020087026480068264909684018061c23480068041cb4420dd202e0201d041cf9e700202060a003f8d101201349087000200870f2e70120104908700020087019480068194909684018061c18480068051c15480068041cb44208d204e0281d051c201d041cf7e728682060f7e7012002490870002008707047'), (), ((2, 1), (10, 0), (14, 1), (22, 0), (28, 0), (58, 1), (66, 0), (70, 1), (78, 0), (104, 1), (112, 0), (116, 1), (124, 0), (130, 0), (160, 1), (168, 0), (172, 1), (180, 0), (208, 1), (220, 1), (228, 0), (232, 1), (240, 0), (246, 0), (276, 1))),
@@ -22,7 +25,6 @@ _SPEC = {
     'irq_restore': (bytes.fromhex('7847000000000fe1c010c0e301f021e1c00000e21eff2fe1'), (), ()),
 }
 _STATE_REFS = {'read': {0: 'object', 20: 'base'}, 'program': {8: 'object', 26: 'mode', 40: 'base', 62: 'object', 68: 'base', 86: 'object', 92: 'base', 112: 'object', 118: 'base'}, 'erase': {2: 'mode', 40: 'object', 52: 'operation', 56: 'base'}, 'poll': {0: 'operation', 4: 'base', 28: 'mode'}, 'suspend': {2: 'operation', 4: 'base', 56: 'mode', 78: 'mode', 90: 'mode'}, 'resume': {0: 'operation', 2: 'base', 16: 'mode'}}
-_ROOT = bytes.fromhex('04429fe5010014e300e29f1500e29f0514ff2fe178470000f8419fe5010014e3f4e19f15f4e19f0514ff2fe178470000ec419fe5010014e3e8e19f15e8e19f0514ff2fe178470000e0419fe5010014e3dce19f15dce19f0514ff2fe178470000000050e31a00001ad7f021e378d19fe5dbf021e3c0d19fe5d3f021e3bcd19fe5bc419fe5010014e3b8e19f15b8e19f0514ff2fe178470000b0419fe5010014e3ace19f15ace19f0514ff2fe178470000')
 _MOVE = bytes.fromhex('78470000013040e0020053e1bafeff2a030010e3030011030d00000a020080e0021081e0012052e20130712501c071850130602501c06085022052e2f9ffff2a1eff2fe1')
 _FORWARD = bytes.fromhex('04f01fe590c1800304f01fe548c2800300c09fe51cff2fe1ed711e0000c09fe5')
 _ALIGNED = bytes.fromhex('10402de9021081e0020080e0030010e3013071150120421201306015faffff1a')
@@ -43,35 +45,20 @@ def _word(image, at):
 
 
 def _at(image, at, role):
-    result = _shape(image, at, *_SPEC[role])
+    body = _BODIES[role].match(facts_for(image), at)
+    result = (body.targets, body.values) if body is not None else None
     _need(result is not None, role + '-body')
     return result
 
 
+_BODIES = {role: BodySpec.thumb_body(pattern, calls, literals)
+           for role, (pattern, calls, literals) in _SPEC.items()
+           if role != 'copy'}
+
+
 def _hits(image, role):
-    pattern, calls, literals = _SPEC[role]
-    holes = {offset + n for offset in calls for n in range(4)}
-    holes.update(offset + n for offset, _ in literals for n in (0, 1))
-    runs = []
-    i = 0
-    while i < len(pattern):
-        if i in holes:
-            i += 1
-            continue
-        end = i + 1
-        while end < len(pattern) and end not in holes:
-            end += 1
-        runs.append((i, pattern[i:end]));i = end
-    offset, anchor = max(runs, key=lambda value: len(value[1]))
-    start = 0
-    while True:
-        hit = image.find(anchor, start)
-        if hit < 0:
-            return
-        start = hit + 1
-        result = _shape(image, hit - offset, pattern, calls, literals)
-        if result is not None:
-            yield hit - offset, result
+    for body in _BODIES[role].find(facts_for(image)):
+        yield body.entry, (body.targets, body.values)
 
 
 def _arm_literal(image, pc):
@@ -89,66 +76,57 @@ def _ram(address, size, base, extent):
 
 
 def _copy_context(image, ram_base, ram_size):
-    root = arm_b_target(image, 0)
-    _need(root is not None and root >= 4 and not root & 3 and root + len(_ROOT) <= len(image), 'reset-owner')
-    pools = []
-    for off in range(0, len(_ROOT), 4):
-        want = struct.unpack_from('<I', _ROOT, off)[0]
-        actual = _word(image, root + off)
-        mask = 0xfffff000 if want & 0x0f7f0000 == 0x051f0000 else 0xffffffff
-        _need(actual & mask == want & mask, 'reset-body')
-        if mask != 0xffffffff:
-            pool = root + off + 8 + (actual & 0xfff)
-            _word(image, pool);pools.append((pool, pool + 4))
-    for offset in (0, 0x18, 0x30, 0x48, 0x80, 0x98):
-        pc = root + offset
-        target = _arm_literal(image, pc)
-        _need((target & 1 or not target & 3) and target < len(image) and
-              _arm_literal(image, pc + 8) == pc + 21 and
-              _arm_literal(image, pc + 12) == pc + 24, 'reset-call-return')
-    for offset in (0x6c, 0x74, 0x7c):
-        sp = _arm_literal(image, root + offset)
-        _need(not sp & 3 and _ram(sp - 4, 4, ram_base, ram_size), 'reset-stack')
-    _need(_arm_literal(image, root + 0x80) & 1, 'copy-isa')
-    copy = _arm_literal(image, root + 0x80) - 1
-    _, values = _at(image, copy, 'copy')
-    _need(all(values[offset] == 0x03000700 for offset in (2,0x3a,0x68,0xa0,0xd0,0xdc,0x114)), 'copy-pulse')
-    tables = []
-    copies = []
-    zeros = []
-    for source_off, target_off, size_off, reload_off, zero_offsets in (
-            (0x16,0xa,0xe,0x1c,(0x42,0x46,0x4e)),
-            (0x7c,0x70,0x74,0x82,(0xa8,0xac,0xb4)),
-            (0xf0,0xe4,0xe8,0xf6,None)):
-        table = values[source_off]
-        _need(not table & 3 and values[target_off] == table + 4 and
-              values[size_off] == table + 8 and values[reload_off] == table + 4, 'copy-tuple')
-        source, target, size = (_word(image, table + n) for n in (0,4,8))
-        _need(size > 0 and not (source | target | size) & 3 and source + size <= len(image), 'copy-span')
-        _need(_ram(target, size, ram_base, ram_size) or
-              0x03800000 <= target < target + size <= 0x03a00000, 'copy-destination')
-        copies.append({'table_offset':table,'source':source,'target':target,'size':size})
-        if zero_offsets is not None:
-            a,b,c = zero_offsets
-            _need(values[a] == table + 12 and values[b] == table + 16 and values[c] == table + 12, 'zero-tuple')
-            begin, length = _word(image, table + 12), _word(image, table + 16)
-            _need(length > 0 and not (begin | length) & 3 and target + size == begin and
-                  _ram(begin, length, ram_base, ram_size), 'zero-span')
-            zeros.append((begin, begin + length));tables.append((table, table + 20))
-        else:
-            tables.append((table, table + 12))
+    facts = facts_for(image)
+    contexts = startup_copy_contexts(
+        facts,
+        target_ranges=((ram_base, ram_base + ram_size), (0x03800000, 0x03A00000)),
+        zero_ranges=((ram_base, ram_base + ram_size),),
+        extra_write_ranges=((0x03000600, 0x03000780),),
+    )
+    candidates = []
+    for context in contexts:
+        rows = context.rows
+        copies = [{'table_offset': row.table, 'source': row.source,
+                   'target': row.target, 'size': row.size}
+                  for row, _ in rows]
+        zeros = [(row.zero_target, row.zero_target + row.zero_size)
+                 for row, _ in rows if row.zero_row is not None]
+        if len(copies) == 3 and len(zeros) == 2:
+            candidates.append((context, copies, zeros))
+    _need(len(candidates) == 1,
+          'copy-entry-ambiguous' if candidates else 'copy-layout')
+    context, copies, zeros = candidates[0]
+    root = context.entry.reset_entry.address
+    copy = context.entry.target.address
+    copy_function = context.function
+    tables = [(row.table, row.table +
+               (20 if row.zero_table is not None else 12))
+              for row, _ in context.rows]
+    root_spans = list(context.entry.code_spans)
+    root_spans.extend(context.rows[0][1].procedure.helper_code_spans)
+    pools = list(context.entry.literal_spans)
+    copies.sort(key=lambda item: item['table_offset'])
+    tables.sort()
+    _need(len(copies) == 3 and len(zeros) == 2, 'copy-layout')
     destinations = [(item['target'], item['target'] + item['size']) for item in copies] + zeros
     _need(not any(_overlap(a,b) for i,a in enumerate(destinations) for b in destinations[i+1:]), 'copy-zero-overlap')
-    return root, copy, copies, zeros, pools, tables
+    return (root, copy, copies, zeros, pools, tables, root_spans,
+            copy_function, startup_load_operations(context.rows))
 
 
 def _profile(image, init, initial, context, ram_base, ram_size):
-    root, copy, copies, zeros, root_pools, tables = context
+    root, copy, copies, zeros, root_pools, tables, root_spans, copy_function, operations = context
     main = copies[1]
+    try:
+        loaded = facts_for(image).after_loads(operations)
+    except ValueError:
+        raise _Unclosed('copy-view-unclosed') from None
     def source(address, size):
         _need(_ram(address,size,ram_base,ram_size) and main['target'] <= address and
               address + size <= main['target'] + main['size'], 'copied-table-provenance')
-        return main['source'] + address - main['target']
+        original = loaded.view.original_address(address, size, phase='post-copy')
+        _need(original is not None, 'copied-table-provenance')
+        return original
     calls, values = initial
     base_global, object_global = values[2], values[6]
     _need(not (base_global | object_global) & 3 and
@@ -184,8 +162,7 @@ def _profile(image, init, initial, context, ram_base, ram_size):
     id0,id1 = struct.unpack_from('<HH',image,object_+0x84)
     methods = {'probe':probe}
     shapes = {'init':initial,'ramtest':ramtest_shape,'lookup':lookup_shape,'probe':probe_shape}
-    entries = {'init':init,'ramtest':ramtest,'lookup':lookup,'probe':probe,'copy':copy}
-    shapes['copy'] = _at(image,copy,'copy')
+    entries = {'init':init,'ramtest':ramtest,'lookup':lookup,'probe':probe}
     for role, offset in (('reset',0x98),('read',0x9c),('program',0xa0),('erase',0xa4),
                          ('poll',0xa8),('suspend',0xac),('resume',0xb0)):
         pointer = _word(image,object_+offset)
@@ -219,12 +196,18 @@ def _profile(image, init, initial, context, ram_base, ram_size):
         target=arm_b_word_target((op&0xffffff)|0xea000000,memmove+offset)
         _need(target is not None and 0 <= target <= len(image)-len(pattern) and image[target:target+len(pattern)]==pattern,'array-copy-target')
         lib.append((target,target+len(pattern)))
-    code=[(root,root+len(_ROOT)),(save,save+len(_SPEC['irq_save'][0])),
+    _need(copy_function.complete, 'copy-analysis')
+    copy_end = max(pc.address + (facts_for(image).decode(pc).size or 0)
+                   for pc in copy_function.instructions)
+    code=[*root_spans,(copy,copy_end),
+          (save,save+len(_SPEC['irq_save'][0])),
           (restore,restore+len(_SPEC['irq_restore'][0])),(calls[56],calls[56]+2),
           (memmove,memmove+len(_MOVE))]+lib
     code += [(at,at+len(_SPEC[role][0])) for role,at in entries.items()]
     _need(not any(_overlap(a,b) for i,a in enumerate(code) for b in code[i+1:]), 'code-owner-overlap')
     pools=list(root_pools)
+    pools.extend((literal.pool, literal.pool + 4)
+                 for literal in copy_function.literals)
     for role,at in entries.items():
         for off,_ in _SPEC[role][2]:
             instruction=struct.unpack_from('<H',image,at+off)[0]
@@ -255,7 +238,7 @@ def find_amd_bank_profile(image:bytes, load_address:int, flash_size:int,
             (load_address,flash_size,ram_base,ram_size)) or load_address!=0 or
             not 0<flash_size<=len(image) or ram_size<=0 or ram_base<flash_size or ram_base+ram_size>0x100000000):
         return None,'amd-bank-layout-unverified'
-    image=image[:flash_size]
+    image=source_prefix(image, flash_size)
     try:context=_copy_context(image,ram_base,ram_size)
     except _Unclosed as error:return None,'amd-bank-'+str(error)
     profiles=[];reasons=[]

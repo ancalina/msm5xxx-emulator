@@ -2,7 +2,7 @@
 import struct
 import unittest
 from msm5xxx_emulator.detection.amd_bank import (
-    _SPEC, _ROOT, _MOVE, _FORWARD, _ALIGNED, _STATE_REFS, find_amd_bank_profile,
+    _SPEC, _MOVE, _FORWARD, _ALIGNED, _STATE_REFS, find_amd_bank_profile,
 )
 
 
@@ -47,17 +47,23 @@ def fixture(shift=0, ram_shift=0, ids=(0x98,0x95), count=3, sector=0x10000):
         at=roles[role];image[at:at+len(pattern)]=pattern;pool=at+((len(pattern)+15)&~3)
         for off,reg in literals:literal(at+off,reg,pool,values[role][off]);pool+=4
         for off in calls:bl(at+off,links[role][off])
-    image[r:r+len(_ROOT)]=_ROOT;rootpool=r+0x300
-    for off in range(0,len(_ROOT),4):
-        op=struct.unpack_from('<I',_ROOT,off)[0]
-        if op&0x0f7f0000!=0x051f0000:continue
-        pc=r+off
-        if off in (0x6c,0x74,0x7c):value=ram+0xa100
-        else:
-            group=next(g for g in (0,0x18,0x30,0x48,0x80,0x98)if off in (g,g+8,g+12))
-            if off==group:value=roles['copy']|1 if group==0x80 else stub|1
-            else:value=r+group+(21 if off==group+8 else 24)
-        put(pc,(op&0xfffff000)|(rootpool-pc-8));put(rootpool,value);rootpool+=4
+    rootpool=r+0x300
+    reset_words=(
+        0xE321F0D3,                  # MSR CPSR_c,#SVC
+        0xE59FD2F4,                  # LDR SP,[PC,#rootpool]
+        0xE59F42F4,                  # LDR r4,[PC,#copy-target]
+        0xE3140001,                  # TST r4,#1
+        0x159FE2F0,                  # LDRNE LR,[PC,#Thumb-return]
+        0x059FE2F0,                  # LDREQ LR,[PC,#ARM-return]
+        0xE12FFF14,                  # BX r4
+    )
+    for index, word in enumerate(reset_words):put(r+4*index,word)
+    struct.pack_into('<H',image,r+0x1c,0x4778)  # Thumb BX PC return veneer
+    put(r+0x20,0xEAFFFFFE)          # ARM reset continuation
+    put(rootpool,ram+0xa100)
+    put(rootpool+4,roles['copy']|1)
+    put(rootpool+8,r+0x1d)
+    put(rootpool+12,r+0x20)
     put(0,0xea000000|((r-8)//4))
     tuples=((0x1a000+shift,ram+0xa000,8,ram+0xa008,0x100),
             (src,ram,0x2000,ram+0x2000,0x8000),(0x1a008+shift,0x03800000,0x100))
@@ -112,7 +118,7 @@ class AmdBankTests(unittest.TestCase):
         for role,off,value in changes:
             image,roles,_=fixture();struct.pack_into('<H',image,roles[role]+off,value)
             self.assertIsNone(self.detect(image)[0],(role,off))
-        image,_,data=fixture();image[data['root']+0x64]^=1;self.assertIsNone(self.detect(image)[0])
+        image,_,data=fixture();image[data['root']+0x18]^=1;self.assertIsNone(self.detect(image)[0])
 
     def test_copied_selection_globals_zero_and_geometry_rejects(self):
         for case in range(9):

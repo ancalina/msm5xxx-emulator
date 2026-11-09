@@ -25,9 +25,8 @@ from .low_port_nand import (find_low_port_nand_driver, find_middle_nand_driver_m
 from .input_table7 import find_table7_matrix
 from .guarded_middle_nand import find_guarded_middle_nand_profile
 from .boot import (
-    AUDIO_PLAY_SIGNATURE, BOARD_ADC_SIGNATURE, BUSY_DELAY_SIGNATURE,
-    CRC16_SIGNATURE, DELAY_SIGNATURE, DMD_DOWNLOAD_510X_SIGNATURE,
-    DMD_DOWNLOAD_SIGNATURE, FAST_BOOT_SIGNATURE, FLASH_ID_SIGNATURE,
+    AUDIO_PLAY_SIGNATURE, BUSY_DELAY_SIGNATURE,
+    CRC16_SIGNATURE, DELAY_SIGNATURE, FAST_BOOT_SIGNATURE, FLASH_ID_SIGNATURE,
     LEGACY_EFS_PAGE_READ_SIGNATURE, LEGACY_SECONDARY_FLASH_READ_SIGNATURE,
     LEGACY_SECONDARY_FLASH_WRITE_SIGNATURE, MEMORY_CLEAR_128_SIGNATURE,
     MEMORY_CLEAR_LOOP_SIGNATURE, MEMORY_COPY_LOOP_SIGNATURE,
@@ -40,16 +39,17 @@ from .boot import (
     PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE,
     PRIMARY_FLASH_PROBE_SIGNATURE, REGISTER_RAMP_PREFIX,
     SECONDARY_FLASH_WRAPPER_PATTERN, find_ma2_silent_boot_wait,
-    detect_dmd_download_5500, detect_guest_owned_status_72c,
+    detect_guest_owned_status_72c,
     detect_msm5500_revision_f025,
 )
 from .chipset import chipset_confidence, detect_chipset
 from .display import detect_lcd_width_hint, find_framebuffer_layout, find_page_plane_width
 from .paired_page128 import find_paired_page128
 from .firmware_image import load_firmware_image
+from .facts import bind_facts, with_fact_scope
 from .input_sd810 import sd810_gpio_board_status_profile
-from .input import (find_board_adc_reader, find_board_status_input,
-                    find_dc0_board_adc_profile, find_sbi_bootstrap_profile)
+from .input import find_board_status_input
+from .registry import device_domain
 from .memory_layout import (
     find_arm_memory_copy_addresses, find_arm_vector_offset, find_linker_layout,
     find_missing_overlays, find_overlays, find_runtime_overlays,
@@ -69,20 +69,12 @@ from .rex import (REX_TICK_SIGNATURE, find_rex_5ms_irq_arm,
                   find_rex_static_overlay_controller_callback_candidate,
                   find_rex_legacy_row0_profile)
 from .watchdog import find_watchdog_profile
-from .ready_poll import find_ready_poll_profile
-from .uart_console import find_uart_console_profile
-from .sbi_raw_input import find_sbi_raw_input_profile
 from .boot_keysense import find_boot_keysense_release
 from .spi_nv import find_spi_nv_profile
 from .signatures import find_all
 from .storage import (
-    EEPROM_24LC64_CLASS_B_READ_PREFIX, EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
-    EEPROM_24LCXX_HALFWORD_READ_PREFIX,
-    EEPROM_24LCXX_X430_WRITE_PREFIX,
-    find_24lc64_class_b_driver, find_24lcxx_driver,
     find_adjacent_amd_x16_nor, find_adjacent_fujitsu_x16_nor,
-    find_compound_fujitsu_layout,
-    find_fujitsu_x16_bulk_write,
+    find_compound_fujitsu_layout, find_fujitsu_x16_bulk_write,
     find_fs_device_flash_id, flash_id_for_size, primary_probe_x16_nor_profile,
 )
 from .efs_nor import find_inline_efs_nor_profile
@@ -440,6 +432,7 @@ def _finalize_dump_status(
         config.dump_status = "complete NOR image"
 
 
+@with_fact_scope
 def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareConfig:
     loaded = load_firmware_image(path)
     raw = loaded.image
@@ -454,6 +447,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
     # optional RAM seed.  Code/layout discovery must only inspect primary NOR:
     # full dumps commonly append a live RAM snapshot containing copied code.
     image, sparse_gap = restore_sparse_nor_gap(raw[image_offset:])
+    supplied = getattr(loaded, 'image_view', None)
+    if supplied is not None:
+        bind_facts(image, supplied.normalized(image_offset, size=len(image), gap=sparse_gap))
     requested_load_address = (getattr(overrides, "load_address", None)
                               if overrides else None)
     requested_load_address = 0 if requested_load_address is None else requested_load_address
@@ -531,6 +527,9 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             raise ValueError("flash size must be positive")
         scan_flash_size = requested_flash_size
     primary_image = image[:min(len(image), scan_flash_size)]
+    if supplied is not None:
+        bind_facts(primary_image, supplied.normalized(
+            image_offset, size=len(primary_image), gap=sparse_gap))
     linker = find_linker_layout(primary_image, requested_load_address)
     ram_base = infer_ram_base(linker, chipset, primary_image)
     if requested_ram_base is not None:
@@ -629,35 +628,14 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         detection_notes.append(
             f"serial NVM not applied: {_spi_nv_reason}; native fallback"
         )
-    ready_poll = find_ready_poll_profile(primary_image)
-    if ram_bootstrap_profile is not None and ready_poll is not None:
-        ready_poll = None
-        detection_notes.append(
-            "pulse-ready profile unverified for reset-linked SDRAM class; "
-            "native device behavior retained"
-        )
-    if ready_poll is not None:
-        detection_notes.append(
-            "exact firmware ready-poll class detected"
-        )
-    uart_console, uart_console_reason = find_uart_console_profile(
-        primary_image, ready_poll
-    )
-    if (uart_console is not None
-            and uart_console.get("clock_guard", {}).get("config_diagnostic") is not None
-            and chipset not in ("MSM5100", "MSM5105")):
-        uart_console, uart_console_reason = None, "console-probe-scope-unclosed"
-    if uart_console is not None:
-        detection_notes.append(
-            "bound UART console class: provisional synchronous TX sink, "
-            "empty RX; physical line timing and FIFO depth unverified"
-        )
-    elif (ready_poll is not None
-          or uart_console_reason.startswith("console-byte-")
-          or uart_console_reason == "console-protocol-ownership-ambiguous"):
-        detection_notes.append(
-            f"UART console class rejected: {uart_console_reason}; native fallback"
-        )
+    ready_poll, ready_notes = device_domain('ready_poll').capture_profile(
+        primary_image, unresolved_startup_mapping=ram_bootstrap_profile is not None)
+    detection_notes.extend(ready_notes)
+    uart_domain = device_domain("uart_console")
+    uart_console, uart_console_reason = uart_domain.find_uart_console_profile(
+        primary_image, ready_poll, chipset=chipset)
+    if note := uart_domain.detection_note(uart_console, uart_console_reason, ready_poll):
+        detection_notes.append(note)
     rex_static_controller_candidate = (
         find_rex_static_controller_callback_candidate(
             primary_image, ram_base=ram_base, ram_size=ram_size
@@ -779,41 +757,15 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
                     else None)
     if rex_5ms_pair is not None:
         rex_idle_address, rex_tick_address, rex_tick_ms = rex_5ms_pair
-    board_adc_address = direct_signature("board_adc_address", BOARD_ADC_SIGNATURE)
-    board_adc_reader_position = find_board_adc_reader(primary_image)
-    dc0_board_adc_profile = find_dc0_board_adc_profile(primary_image)
-    sbi_bootstrap_profile = find_sbi_bootstrap_profile(primary_image)
-    if (sbi_bootstrap_profile is not None
-            and sbi_bootstrap_profile.get("layout") == "thumb-sbi-bootstrap-carry-loop-v1"
-            and chipset not in ("MSM5100", "MSM5105")):
-        sbi_bootstrap_profile = None
-    if sbi_bootstrap_profile is not None:
-        raw_input, raw_reason = find_sbi_raw_input_profile(
-            primary_image, sbi_bootstrap_profile, ram_base, ram_size
-        )
-        if raw_input is not None:
-            sbi_bootstrap_profile["raw_input"] = raw_input
-            detection_notes.append(
-                "temporary source-bound SBI raw-byte consumer detected; "
-                "configured virtual input, physical channel and calibration unverified"
-            )
-        else:
-            sbi_bootstrap_profile["raw_input_reject_reason"] = raw_reason
-    if dc0_board_adc_profile is not None:
-        if dc0_board_adc_profile["accepted"]:
-            detection_notes.append(
-                "temporary selector-2 DC0 battery policy detected; "
-                "virtual full raw byte enabled"
-            )
-        else:
-            detection_notes.append(
-                "selector-2 DC0 battery policy rejected: "
-                f"{dc0_board_adc_profile['reject_reason']}"
-            )
-    if sbi_bootstrap_profile is not None:
-        detection_notes.append(
-            "temporary exact SBI bootstrap-only class detected"
-        )
+    sbi = device_domain('sbi')
+    sbi_source = sbi.detect_profiles(primary_image, ram_base, ram_size, chipset)
+    board_adc_address = sbi_source.board_adc_position
+    if board_adc_address is not None:
+        auto_relative.add('board_adc_address')
+    board_adc_reader_position = sbi_source.board_adc_reader_position
+    dc0_board_adc_profile = sbi_source.dc0_profile
+    sbi_bootstrap_profile = sbi_source.bootstrap_profile
+    detection_notes.extend(sbi_source.notes)
     overlays = find_overlays(primary_image, requested_load_address)
 
     def mapped_position(position: int) -> tuple[int | None, bool]:
@@ -940,9 +892,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         if board_adc_reader_position is not None else None
     )
     if board_adc_reader_address is not None:
-        detection_notes.append(
-            "Thumb ADC reader shape and channel-gated MMIO data path detected"
-        )
+        detection_notes.append(sbi.ADC_READER_NOTE)
 
     if rex_5ms_pair is not None:
         idle_position, tick_position, rex_tick_ms = rex_5ms_pair
@@ -1032,18 +982,15 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             "fs_dev descriptor/table/trampoline linkage"
         )
     crc16_address = runtime_signature("crc16_address", CRC16_SIGNATURE)
-    dmd_5500_position = detect_dmd_download_5500(primary_image)
+    dmd_5500_position = device_domain("dmd").detect_dmd_download_5500(primary_image)
     if dmd_5500_position is not None:
         dmd_download_address = runtime_position(
             "dmd_download_address", dmd_5500_position
         )
     else:
-        dmd_download_address = runtime_signature("dmd_download_address",
-                                                 DMD_DOWNLOAD_SIGNATURE)
-        if dmd_download_address is None:
-            dmd_download_address = runtime_signature(
-                "dmd_download_address", DMD_DOWNLOAD_510X_SIGNATURE
-            )
+        dmd_position = device_domain("dmd").download_signature_position(primary_image)
+        dmd_download_address = (runtime_position("dmd_download_address", dmd_position)
+                                if dmd_position is not None else None)
     primary_probe_positions = sorted({
         position
         for signature in (
@@ -1105,52 +1052,14 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
             detection_notes.append(
                 "Fujitsu x16 bulk writer proves adjacent secondary NOR command bus"
             )
-    eeprom_read_address = None
-    eeprom_write_address = None
-    eeprom_geometry_address = None
-    eeprom_static_capacity = None
-    eeprom_driver = find_24lcxx_driver(primary_image)
-    if eeprom_driver is not None:
-        eeprom_read, eeprom_write, eeprom_geometry_address = eeprom_driver
-        eeprom_read_address = runtime_position(
-            "eeprom_read_address", eeprom_read
-        )
-        eeprom_write_address = runtime_position(
-            "eeprom_write_address", eeprom_write
-        )
-        detection_notes.append(
-            "24LCxx EEPROM read/write driver and geometry descriptor detected"
-        )
-    else:
-        static_eeprom_driver = find_24lc64_class_b_driver(primary_image)
-        if static_eeprom_driver is not None:
-            eeprom_read, eeprom_write, eeprom_static_capacity = (
-                static_eeprom_driver
-            )
-            eeprom_read_address = runtime_position(
-                "eeprom_read_address", eeprom_read
-            )
-            eeprom_write_address = runtime_position(
-                "eeprom_write_address", eeprom_write
-            )
-            detection_notes.append(
-                "24LC64 EEPROM read/write driver and static 0x2000-byte "
-                "capacity guards detected"
-            )
-        elif ((EEPROM_24LC64_CLASS_B_READ_PREFIX[:6] in primary_image
-               or EEPROM_24LC64_CLASS_B_WRITE_PREFIX[:4] in primary_image)
-              and b"nv24lcxx.c\0" in primary_image.lower()):
-            detection_notes.append(
-                "24LC64 static-capacity EEPROM candidate rejected: "
-                "marker, read/write pair, or bound guards are incomplete"
-            )
-    if (eeprom_driver is None
-            and EEPROM_24LCXX_HALFWORD_READ_PREFIX in primary_image
-            and EEPROM_24LCXX_X430_WRITE_PREFIX in primary_image):
-        detection_notes.append(
-            "24LCxx halfword EEPROM candidate rejected: missing or ambiguous "
-            "paired read/write entries or initialized geometry"
-        )
+    eeprom_entries = device_domain('eeprom').capture_entries(primary_image)
+    eeprom_read_address = (runtime_position('eeprom_read_address', eeprom_entries.read)
+                           if eeprom_entries.read is not None else None)
+    eeprom_write_address = (runtime_position('eeprom_write_address', eeprom_entries.write)
+                            if eeprom_entries.write is not None else None)
+    eeprom_geometry_address = eeprom_entries.geometry
+    eeprom_static_capacity = eeprom_entries.capacity
+    detection_notes.extend(eeprom_entries.notes)
     clear_positions = [
         *find_all(primary_image, MEMORY_CLEAR_LOOP_SIGNATURE),
         *find_all(primary_image, MEMORY_CLEAR_128_SIGNATURE),
@@ -1337,7 +1246,7 @@ def detect(path: Path, overrides: argparse.Namespace | None = None) -> FirmwareC
         rex_tick_ms=rex_tick_ms,
         board_adc_address=board_adc_address,
         board_adc_reader_address=board_adc_reader_address,
-        board_adc_value=0xC2,
+        board_adc_value=sbi.DEFAULT_ADC_VALUE,
         flash_id_address=flash_id_address,
         flash_id_value=(
             descriptor_flash_id

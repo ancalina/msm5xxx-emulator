@@ -81,7 +81,7 @@ class LegacyKeypadTests(unittest.TestCase):
         image[0x180:0x194] = bytes.fromhex('08b5044800ab007b58700020187000a8008808bd')
         struct.pack_into('<I', image, 0x194, 0x03000750)
         with patch('msm5xxx_emulator.detection.sharp_intel._legacy_sharp_pcr_profile', return_value={}), \
-             patch('msm5xxx_emulator.detection.dmd5000.find_dmd5000_profile', return_value={'entry': 0x100}):
+             patch('msm5xxx_emulator.detection.devices.dmd.dual.find_dmd5000_profile', return_value={'entry': 0x100}):
             self.assertEqual(qemu_legacy_board_revision_property(image, 0x800000, {}),
                              'board-revision=300075c:60')
             self.assertIsNone(qemu_legacy_board_revision_property(image, 0x800000, None))

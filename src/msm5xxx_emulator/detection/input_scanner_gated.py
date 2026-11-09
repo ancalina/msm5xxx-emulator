@@ -1,73 +1,18 @@
 """Fail-closed gated byte scanner with paired event/display-state evidence."""
 from __future__ import annotations
 
-import re
 import struct
 
 from ..core.config import BoardStatusInput
 from .arm import thumb_bl_target, thumb_literal_value
+from .facts import SymbolicValue
+from .input_scanner import _selector_at_join
+from .registry import device_domain
 
 
 def _preserves_selector(image: bytes, entry: int, join: int) -> bool:
-    """All reachable setup paths arrive at join without writing callee-saved r7."""
-    pending, seen = [entry], set()
-    while pending:
-        pc = pending.pop()
-        if pc == join or pc in seen:
-            continue
-        if not entry <= pc < join or pc + 2 > len(image):
-            return False
-        seen.add(pc)
-        w = struct.unpack_from('<H', image, pc)[0]
-        if w & 0xF800 == 0xF000:
-            target = thumb_bl_target(image, pc)
-            if target is None or not 0 <= target < len(image):
-                return False
-            pending.append(pc + 4)
-            continue
-        if w & 0xF000 == 0xD000 and (w >> 8) & 15 < 14:
-            dest = pc + 4 + (w & 255) * 2
-            if w & 128 or dest <= pc:
-                return False
-            pending.extend((pc + 2, dest))
-            continue
-        if w & 0xF800 == 0xE000:
-            if w & 1024:
-                return False
-            pending.append(pc + 4 + (w & 2047) * 2)
-            continue
-        if w & 0xF800 in (0x2800, 0x7000):
-            pass  # CMP immediate / STRB, including STRB r7
-        elif w & 0xF800 in (0x2000, 0x3000, 0x3800, 0x4800):
-            if (w >> 8) & 7 == 7:
-                return False
-        elif w & 0xF800 == 0x7800 or w & 0xE000 == 0 or w & 0xFC00 == 0x4000:
-            if w & 7 == 7:
-                return False
-        else:
-            return False
-        pending.append(pc + 2)
-    return bool(seen)
-
-
-def _periodic(image: bytes, scanner: int) -> bool:
-    callbacks = set()
-    for m in re.finditer(rb'(?=.[\xf0-\xf7].[\xf8-\xff])', image, re.S):
-        pc = m.start()
-        if pc & 1 or thumb_bl_target(image, pc) != scanner:
-            continue
-        for entry in range(pc - 2, max(-1, pc - 0x80), -2):
-            if image[entry:entry + 2] == b'\xf0\xb5':
-                callbacks.add(entry | 1)
-                break
-    for m in re.finditer(rb'\x01\x22\x00\x92(.)\x22(.)\x23\x28\x1c.\x49', image, re.S):
-        pc = m.start()
-        service = thumb_bl_target(image, pc + 12)
-        if (not pc & 1 and m[1] == m[2] and m[1] != b'\x00'
-                and thumb_literal_value(image, pc + 10, 1) in callbacks
-                and service is not None and 0 <= service < len(image)):
-            return True
-    return False
+    selector = SymbolicValue.arg(7)
+    return _selector_at_join(image, entry, join, selector) == selector
 
 
 def gated_scanner_at(image: bytes, start: int) -> tuple[BoardStatusInput | None, str]:
@@ -182,6 +127,7 @@ def gated_scanner_at(image: bytes, start: int) -> tuple[BoardStatusInput | None,
             or not exact(event + 6, 0x79C1, 0x2900, 0xD101, 0x2F60)
             or not exact(event + 14, 0xD138)):
         return None, 'gated-event-consumer-mismatch'
-    if not _periodic(image, start):
+    if not device_domain('board_contact').periodic_caller(image, start, callback_window=0x80,
+                            callback_push=0xB5F0, timer_registers=(5,)):
         return None, 'gated-periodic-callback-unproven'
     return BoardStatusInput(address, mask, mask), ''

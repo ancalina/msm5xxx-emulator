@@ -4,9 +4,10 @@ import re
 import struct
 from .arm import (_thumb_function_start,_thumb_reachable,_thumb_path_preserves_register)
 from .boot_contact import find_boot_contact_profile,_thumb_shape
-from .protected_nor import (_normal_copy,_Unclosed,_need,_word,_literal,_call,_in_ram,_code,_MASKS as _COPY_MASKS)
+from .protected_nor import (_normal_copy,_Unclosed,_need,_word,_literal,_call,_in_ram,_code)
 from .input_descriptor import _descriptor_mmio_provenance
-from .ready_poll import _THUMB_BL
+from .registry import device_domain
+_THUMB_BL = device_domain('ready_poll')._THUMB_BL
 
 _SPECS = {'dispatch': ('00b569f00bfc002803d000f03df908bc184700f001f8fae7', {}, (2, 10, 18)),
  'single': ('fcb5954968460cc90cc094480421407a934a002809d010680b02184310608f4b00209872ef20587019708d480068020a0ad38a4a137a013b13721b0604d1884f8023984338601172844ca078002800d0ffe00421834897f22ffe834e002771681f200988c90807d27c4c6178752901d1752716e0512714e097f26cfdb18d9f239943b185b18d326a1180002801d197f26dfd706b0088c006c00e1f2801d06f4c677800251f2800d15fe0002497f252fdf18d9f239943694b62000c339a5a9f231a401143f185f18db26a1180002801d197f24cfd14205bf7fffd706b0088c006c00e1f2812d000216a46525c824204d001310906090e0529f6db06204843564924394018075d01352d062d0e01342406240e062ccadb97f21dfdb18d9f239943b185b18d326a1180002801d197f21efd97f210fdb18d9f239943b185b18d326a1180002801d197f211fd97f203fdf18d9f221143f185f18db26a1180002801d197f204fd012d00ddef273c4c01252078062800d364e002a31b5c5b009f4400006003311751586770002f08d00220344a2070106801239b02184310604fe03048012301689b029943016048d134e0002f0ed1002060702570ff20fef705f82848a5720068002803d10421264897f27afd6078874233d06770ff20fdf7f5ffa5722de0607887420dd11d48012301689b029943016003202070381cfdf7e5ff0020a0721ce06770002f19d125700020607013480068002812d10421124897f252fd0de000206168fff7bbfe0520207005e06078b84202d1002f00d12570677006e097f2fafc6520c0000849eef79ffb00206072fcbc08bc1847',
@@ -409,7 +410,8 @@ def _at(image,dispatch,context,boot,ram_base,ram_size):
     code += consumer['branch_intervals']
     code += [(bindings['save'],bindings['save']+24),(bindings['restore'],bindings['restore']+24),
              (context['root'],context['decision']+12),(context['normal'],context['normal']+0x40)]
-    code += [(context['copy'],context['copy']+0x10c),(timer['initialization_entry'],timer['initialization_end'])]
+    code += context['startup_code_intervals']
+    code += [(timer['initialization_entry'],timer['initialization_end'])]
     pools=[]
     for at,name in owned:
         for off in _SPECS[name][1]:
@@ -418,21 +420,14 @@ def _at(image,dispatch,context,boot,ram_base,ram_size):
             pools.append((pool,pool+4))
     for pc in timer['constructor_literal_pcs']:
         op=_word(image,pc,2);pool=((pc+4)&~3)+(op&255)*4;pools.append((pool,pool+4))
-    # Reuse the exact copier, but guard its dereferenced pools/tables as well.
-    mask=_COPY_MASKS['copy'];off=0
-    while off<len(mask)//2:
-        if mask[off*2:off*2+8]=='????????':off+=4;continue
-        op=_word(image,context['copy']+off,2)
-        if op&0xf800==0x4800:
-            pool=((context['copy']+off+4)&~3)+(op&255)*4;pools.append((pool,pool+4))
-        off+=2
+    # Guard pools and table rows from the shared startup-copy proof.
+    pools.extend(context['startup_literal_intervals'])
+    pools.extend(context['startup_table_intervals'])
     for lo,hi in ((context['root'],context['decision']+12),(context['normal'],context['normal']+0x40)):
         for pc in range(lo,hi,4):
             op=_word(image,pc)
             if op&0x0fff0000==0x059f0000:
                 pool=pc+8+(op&4095);_word(image,pool);pools.append((pool,pool+4))
-    for index,copy in enumerate(context['copies']):
-        pools.append((copy.table_offset,copy.table_offset+(20 if index<3 else 12)))
     _need(not any(lo<pool_end and pool<hi for pool,pool_end in pools for lo,hi in code),'guard-pool-code-overlap')
     data=[(dsrc,dsrc+0x38),(sense_table,sense_table+8),(event_table,event_table+30),
           (shifts,shifts+24),(consumer['press_map'],consumer['press_map']+124),

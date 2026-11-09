@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import struct
 
+from .contracts import BodySpec
+from .facts import facts_for
 from .mono_page import _shape
 
 # Complete typed compiler bodies; only literal loads and BL encodings relocate.
@@ -24,36 +26,18 @@ _SPEC = {
 _GLYPH_REFS = ((4, 0, 'context'), (128, 7, 'context'), (138, 7, 'context'), (236, 0, 'mask'), (258, 6, 'mask'), (282, 3, 'plane2'), (290, 6, 'mask'), (306, 3, 'plane2'), (314, 6, 'mask'), (372, 6, 'mask'), (398, 6, 'mask'), (428, 3, 'plane2'), (436, 6, 'mask'), (452, 3, 'plane2'), (460, 6, 'mask'))
 
 
+_BODIES = {role: BodySpec.thumb_body(pattern, calls, literals)
+           for role, (pattern, calls, literals) in _SPEC.items()}
+
+
 def _hits(image, role):
-    pattern, calls, literals = _SPEC[role]
-    holes = {offset + n for offset in calls for n in range(4)}
-    holes.update(offset + n for offset, _ in literals for n in (0, 1))
-    runs = []
-    start = 0
-    while start < len(pattern):
-        if start in holes:
-            start += 1
-            continue
-        end = start + 1
-        while end < len(pattern) and end not in holes:
-            end += 1
-        runs.append((start, pattern[start:end]))
-        start = end
-    offset, anchor = max(runs, key=lambda run: len(run[1]))
-    start = 0
-    while True:
-        hit = image.find(anchor, start)
-        if hit < 0:
-            return
-        start = hit + 1
-        at = hit - offset
-        result = _shape(image, at, pattern, calls, literals)
-        if result is not None:
-            yield at, result
+    for body in _BODIES[role].find(facts_for(image)):
+        yield body.entry, (body.targets, body.values)
 
 
 def _at(image, at, role):
-    return _shape(image, at, *_SPEC[role])
+    body = _BODIES[role].match(facts_for(image), at)
+    return (body.targets, body.values) if body is not None else None
 
 
 def _overlap(a, b):

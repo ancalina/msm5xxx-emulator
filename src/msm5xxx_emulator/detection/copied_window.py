@@ -2,7 +2,8 @@
 from __future__ import annotations
 import struct
 from .arm import arm_b_target
-from .mono_page import _shape
+from .contracts import BodySpec
+from .facts import facts_for
 
 # Exact typed compiler bodies; only source literal loads and call encodings relocate.
 _SPEC = {'init': ('00b52c2000f066f80a2000f000fc022000f060f8012000f05df80a2000f0f7fb202000f057f8052000f054f8222000f051f8112000f04ef8262000f04bf80f2000f048f8402000f045f8012000f042f8532000f03ff8002000f03cf8342000f039f8862000f036f8302000f033f8002000f030f82a2000f02df8cc2000f02af80a2000f0c4fb432000f024f8002000f021f87f2000f01ef8422000f01bf8002000f018f87f2000f015f8102000f012f8022000f00ff800200121490600224a80013001239b039842f9db512000f002f808bc1847', (4, 10, 16, 22, 28, 34, 40, 46, 52, 58, 64, 70, 76, 82, 88, 94, 100, 106, 112, 118, 124, 130, 136, 142, 148, 154, 160, 166, 172, 178, 204), ()), 'command': ('0121490608707047', (), ()), 'data': ('0121490648807047', (), ()), 'fill': ('00225300c852013201239b039a42f8db7047', (), ()), 'command_wrapper': ('00b5fff765fc08bc1847', (2,), ()), 'data_wrapper': ('00b5fff76efc08bc1847', (2,), ()), 'init_wrapper': ('00b5fff7e5fb08bc1847', (2,), ()), 'logo': ('8cb50a4f0b48796afff7abfb802280210192009100230022796a064800f0a9fe786a00f0a0fe8cbc08bc1847', (8, 28, 34), ((2, 7), (4, 0), (26, 0))), 'off': ('00b55020fff79aff2d20fff797ff08bc1847', (4, 10), ()), 'on': ('00b52c20fff791ff5120fff78eff08bc1847', (4, 10), ()), 'power': ('00b55020fff788ff2d20fff785ff2620fff782ff0020fff77fff0220fff77cff0020fff779ff08bc1847', (4, 10, 16, 22, 28, 34), ()), 'contrast': ('021c342000b5fff772ff101cfff76fff5120fff76cff08bc1847', (6, 12, 18), ()), 'copy': ('0120474908700020087046480068464909684018061c45480068051c41480068041cb44208d204e0281d051c201d041cf7e728682060f7e7012039490870002008703b4800683b4909684018061c38480068041cb44206d202e0201d041cf9e700202060f9e701202d4908700020087031480068314909684018061c30480068051c2d480068041cb44208d204e0281d051c201d041cf7e728682060f7e701201f4908700020087026480068264909684018061c23480068041cb4420dd202e0201d041cf9e700202060a003f8d101201349087000200870f2e70120104908700020087019480068194909684018061c18480068051c15480068041cb44208d204e0281d051c201d041cf7e728682060f7e7012002490870002008707047', (), ((2, 1), (10, 0), (14, 1), (22, 0), (28, 0), (58, 1), (66, 0), (70, 1), (78, 0), (104, 1), (112, 0), (116, 1), (124, 0), (130, 0), (160, 1), (168, 0), (172, 1), (180, 0), (208, 1), (220, 1), (228, 0), (232, 1), (240, 0), (246, 0), (276, 1)))}
@@ -32,29 +33,19 @@ def _overlap(a, b):
 
 
 def _at(image, at, role):
-    pattern, calls, literals = _SPEC[role]
-    found = _shape(image, at, bytes.fromhex(pattern), calls, literals)
+    body = _BODIES[role].match(facts_for(image), at)
+    found = (body.targets, body.values) if body is not None else None
     _need(found is not None, role + '-body')
     return found
 
 
+_BODIES = {role: BodySpec.thumb_body(bytes.fromhex(pattern), calls, literals)
+           for role, (pattern, calls, literals) in _SPEC.items()}
+
+
 def _hits(image, role):
-    text, calls, literals = _SPEC[role]
-    pattern = bytes.fromhex(text)
-    holes = {o+n for o in calls for n in range(4)}
-    holes.update(o+n for o, _ in literals for n in (0, 1))
-    runs=[];start=0
-    while start < len(pattern):
-        if start in holes:
-            start+=1;continue
-        end=start+1
-        while end < len(pattern) and end not in holes:end+=1
-        runs.append((start,pattern[start:end]));start=end
-    offset, anchor=max(runs,key=lambda pair:len(pair[1]));start=0
-    while (hit:=image.find(anchor,start)) >= 0:
-        start=hit+1;at=hit-offset
-        try:yield at,_at(image,at,role)
-        except _Unclosed:pass
+    for body in _BODIES[role].find(facts_for(image)):
+        yield body.entry, (body.targets, body.values)
 
 
 def _copy_owner(image):

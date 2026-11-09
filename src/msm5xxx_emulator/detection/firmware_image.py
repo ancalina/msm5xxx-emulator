@@ -1,13 +1,15 @@
 """Strict source-container normalization for firmware images."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import binascii
 import hashlib
 from io import BytesIO
 from pathlib import Path
 import struct
 import zipfile
+
+from .image_view import ImageView
 
 
 MAX_LOGICAL_IMAGE_SIZE = 64 * 1024 * 1024
@@ -23,14 +25,36 @@ class LoadedFirmwareImage:
     source_size: int
     source_sha256: str
     format: str
+    image_view: ImageView | None = field(default=None, repr=False, compare=False)
+    start_addresses: tuple[IntelHexStartAddress, ...] = field(
+        default=(), repr=False, compare=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class IntelHexStartAddress:
+    record_type: int
+    address: int
+    segment: int | None = None
+    offset: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IntelHexView:
+    image_view: ImageView
+    start_addresses: tuple[IntelHexStartAddress, ...]
+
+    @property
+    def origin(self) -> int:
+        return self.image_view.origin
 
 
 def _invalid_hex(reason: str) -> ValueError:
     return ValueError(f"invalid Intel HEX: {reason}")
 
 
-def decode_intel_hex(raw: bytes) -> bytes:
-    """Decode one bounded Intel HEX stream; reject every ambiguous shape."""
+def decode_intel_hex_view(raw: bytes) -> IntelHexView:
+    """Decode supplied records into an address-preserving sparse view."""
     if not raw or len(raw) > MAX_HEX_SOURCE_SIZE:
         raise _invalid_hex("source size")
 
@@ -40,6 +64,7 @@ def decode_intel_hex(raw: bytes) -> bytes:
     first_address = ADDRESS_SPACE
     last_address = 0
     payload_size = 0
+    start_addresses: list[IntelHexStartAddress] = []
 
     for source_line in BytesIO(raw):
         line = source_line.rstrip(b"\r\n")
@@ -90,6 +115,14 @@ def decode_intel_hex(raw: bytes) -> bytes:
         elif kind in (3, 5):
             if count != 4 or address:
                 raise _invalid_hex("start address shape")
+            value = int.from_bytes(payload, "big")
+            if kind == 3:
+                segment, offset = value >> 16, value & 0xFFFF
+                start_addresses.append(IntelHexStartAddress(
+                    kind, (segment << 4) + offset, segment, offset,
+                ))
+            else:
+                start_addresses.append(IntelHexStartAddress(kind, value))
         else:
             raise _invalid_hex("unsupported record type")
 
@@ -100,15 +133,35 @@ def decode_intel_hex(raw: bytes) -> bytes:
 
     segments.sort(key=lambda item: item[0])
     previous_end = segments[0][0]
+    supplied: list[tuple[int, bytearray]] = []
     for begin, payload in segments:
         if begin < previous_end:
             raise _invalid_hex("overlapping data")
+        if supplied and begin == previous_end:
+            supplied[-1][1].extend(payload)
+        else:
+            supplied.append((begin, bytearray(payload)))
         previous_end = begin + len(payload)
 
+    image_view = ImageView.sparse(supplied, origin=first_address)
+    return IntelHexView(image_view, tuple(start_addresses))
+
+
+def decode_intel_hex(raw: bytes) -> bytes:
+    """Decode Intel HEX to the legacy dense span padded with erased bytes."""
+    return _materialize_intel_hex_view(decode_intel_hex_view(raw).image_view)
+
+
+def _materialize_intel_hex_view(decoded: ImageView) -> bytes:
+    first_address = decoded.origin
+    last_address = max(mapping.guest_base + mapping.size
+                       for mapping in decoded.mappings)
     image = bytearray(b"\xFF" * (last_address - first_address))
-    for begin, payload in segments:
-        offset = begin - first_address
-        image[offset:offset + len(payload)] = payload
+    for mapping in decoded.mappings:
+        offset = mapping.guest_base - first_address
+        image[offset:offset + mapping.size] = decoded.segments[mapping.source_segment][
+            mapping.source_offset:mapping.source_offset + mapping.size
+        ]
     return bytes(image)
 
 
@@ -136,7 +189,7 @@ def _hxb_member_count(raw: bytes) -> int:
         cursor = position
 
 
-def _decode_hxb(path: Path, raw: bytes) -> bytes:
+def _decode_hxb_view(path: Path, raw: bytes) -> IntelHexView:
     _hxb_member_count(raw)
     try:
         with zipfile.ZipFile(BytesIO(raw)) as archive:
@@ -165,7 +218,12 @@ def _decode_hxb(path: Path, raw: bytes) -> bytes:
     except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError,
             RuntimeError) as error:
         raise ValueError(f"invalid HXB: {error}") from None
-    return decode_intel_hex(encoded)
+    return decode_intel_hex_view(encoded)
+
+
+def _decode_hxb(path: Path, raw: bytes) -> bytes:
+    """Decode HXB to the legacy dense span padded with erased bytes."""
+    return _materialize_intel_hex_view(_decode_hxb_view(path, raw).image_view)
 
 
 def load_firmware_image(path: Path) -> LoadedFirmwareImage:
@@ -182,17 +240,27 @@ def load_firmware_image(path: Path) -> LoadedFirmwareImage:
     if suffix == ".hxb" and len(raw) > MAX_HXB_SOURCE_SIZE:
         raise ValueError("invalid HXB: source too large")
     if suffix == ".hex":
-        image = decode_intel_hex(raw)
+        decoded = decode_intel_hex_view(raw)
+        image_view = decoded.image_view
+        start_addresses = decoded.start_addresses
+        image = _materialize_intel_hex_view(image_view)
         format_name = "intel-hex"
     elif suffix == ".hxb":
-        image = _decode_hxb(path, raw)
+        decoded = _decode_hxb_view(path, raw)
+        image_view = decoded.image_view
+        start_addresses = decoded.start_addresses
+        image = _materialize_intel_hex_view(image_view)
         format_name = "hxb-intel-hex"
     else:
         image = raw
+        image_view = ImageView.raw(raw, base=0)
+        start_addresses = ()
         format_name = "raw"
     return LoadedFirmwareImage(
         image=image,
         source_size=len(raw),
         source_sha256=hashlib.sha256(raw).hexdigest(),
         format=format_name,
+        image_view=image_view,
+        start_addresses=start_addresses,
     )

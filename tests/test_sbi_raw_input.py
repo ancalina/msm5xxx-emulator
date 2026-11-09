@@ -1,181 +1,454 @@
-"""Focused consumer/typed bus closure; no VM or firmware fixtures required."""
-from corpus import snippet
-import copy
+"""Synthetic checks for SBI raw-input source and wire boundaries."""
+from types import SimpleNamespace
 import struct
 import unittest
+from unittest.mock import patch
 
-import test_sbi_bootstrap_profile as bootstrap_fixture
-from msm5xxx_emulator.detection.input import find_sbi_bootstrap_profile
-from msm5xxx_emulator.detection.sbi_raw_input import find_sbi_raw_input_profile, _clock_pair
-
-_RAW = bytes.fromhex('b0b50406240e0000000005042d0c000000002a20000000000000387880231843387038789f2318403870402c04d138784023184338700de0602c04d1387860231843387006e0002c04d13878202318433870ffe739780a2000000000000000000000000038788023db431840387039780a2000000000000000000b2000000000000000000000808907063f0e002d01d100000000002c05d1000000680078002800d0ffe7381cb0bd')
-def _filter():
-    return snippet("test_sbi_raw_input", "filter_body")
+from msm5xxx_emulator.detection.devices.sbi.raw import (bootstrap_profile_matches, find_sbi_raw_input_profile, qemu_sbi_raw_input_property, qemu_sbi_raw_input_property_for_images, raw_input_profile_matches)
+from msm5xxx_emulator.detection.devices.sbi.projection import (bootstrap_property, runtime_properties)
 
 
-def fixture(selector=0x40, parameter=0x5A, shift=0, ram_base=0x01000000):
-    prefix, _ = bootstrap_fixture.SbiBootstrapProfileTest._image('direct')
-    image = bytearray(0x1800); image[:len(prefix)] = prefix
-    def words(at, values):
-        for offset, value in values.items():
-            struct.pack_into('<H', image, at + offset, value)
-    def bl(at, target):
-        delta = target - at - 4
-        struct.pack_into('<2H', image, at, 0xF000 | (delta >> 12 & 0x7FF),
-                         0xF800 | (delta >> 1 & 0x7FF))
-    def literal(at, register, pool, value):
-        pc = (at + 4) & ~3
-        struct.pack_into('<H', image, at, 0x4800 | register << 8 | (pool-pc)//4)
-        struct.pack_into('<I', image, pool, value)
-    raw, filt, cache = 0x500, 0x800, 0xC00
-    image[raw:raw+len(_RAW)] = _RAW
-    image[filt:filt+len(_filter())] = _filter()
-    links = {6:0x1000,0x0E:0x1100,0x14:0x1200,0x58:0x1240,0x5C:0x1280,
-             0x60:0x1140,0x72:0x1240,0x76:0x1140,0x7C:0x12C0,0x80:0x1180,0x90:0x1040}
-    for offset, target in links.items(): bl(raw+offset, target)
-    literal(raw+0x18,7,raw+0xB0,ram_base+0x100)
-    literal(raw+0x84,0,raw+0xB4,0x03000780)
-    literal(raw+0x98,0,raw+0xB8,ram_base+0x200)
-    for offset,target in ((0x42,raw),(0xA2,0x1320),(0xBC,0x1320)):bl(filt+offset,target)
-    words(cache,{0:0xB580,4:0x7839,6:0x2200|parameter,8:0x2000|selector,
-                 0x0E:0x7038,0x10:0xBD80})
-    literal(cache+2,7,cache+0x40,ram_base+0x300);bl(cache+0x0A,filt)
-    image[0x1000:0x101C] = snippet("test_sbi_raw_input", "interrupt_disable")
-    image[0x1040:0x105C] = snippet("test_sbi_raw_input", "interrupt_enable")
-    words(0x1200,{0:0x0680,2:0x0E80,4:0x2321,6:0x019B,8:0x4318,12:0x8088,14:0x46F7})
-    literal(0x120A,1,0x1210,0x03000780)
-    words(0x1240,{0:0x0600,2:0x0E00,4:0x0609,6:0x0E09,8:0x0700,10:0x0F00,
-                  12:0x0200,14:0x4308,18:0x8188,20:0x46F7})
-    literal(0x1250,1,0x1258,0x03000780)
-    words(0x1280,{0:0x2100,4:0x7401,6:0x2101,8:0x7401,10:0x46F7})
-    literal(0x1282,0,0x128C,0x03000780)
-    words(0x12C0,{0:0x0400,2:0x0C00,4:0x0640,6:0x0E40,8:0x0200,10:0x2301,
-                  12:0x03DB,14:0x4318,18:0x8188,20:0x46F7})
-    literal(0x12D0,1,0x12D8,0x03000780)
-    for at,busy in ((0x1100,True),(0x1140,False)):
-        words(at,{0:0xB590,2:0x2732,6:0x8820,8:0x2304 if busy else 0x07C0,
-                  10:0x4018 if busy else 0x0FC0,12:0x2804 if busy else 0x2801,
-                  14:0xD109,24:0x1C38,26:0x3F01,28:0x2800,30:0xD100,
-                  32:0xE000,34:0xE7F0,36:0xBD90})
-        literal(at+4,4,at+0x28,0x03000780);bl(at+16,0x1300);bl(at+20,0x1300)
-    words(0x1180,{0:0xB590,2:0x2732,6:0x8820,8:0x2302,10:0x4018,12:0xD109,
-                  22:0x1C38,24:0x3F01,26:0x2800,28:0xD100,30:0xE000,
-                  32:0xE7F1,34:0xBD90})
-    literal(0x1184,4,0x11A4,0x03000780);bl(0x118E,0x1300);bl(0x1192,0x1300)
-    clock = 0x1200 - 0x44
-    words(clock,{4:0x214A,8:0x7039,12:0x7021,14:0x2800,16:0xD101,
-                 26:0x1C01,28:0x20CA,30:0x7038,32:0x7020,34:0x2900,
-                 36:0xD101,42:0xBD90})
-    literal(clock+6,7,0x11F8,ram_base+0x80)
-    literal(clock+10,4,0x11FC,0x03000780)
-    for offset,target in ((0,0x1000),(18,0x1040),(22,0x1000),(38,0x1040)):
-        bl(clock+offset,target)
-    words(0x1300,{0:0x46F7});words(0x1320,{0:0x4770})
-    return bytes(shift)+image
+class _ThumbImage:
+    """Small assembler for independent, complete Thumb contract fixtures."""
+    def __init__(self, size=0x1800):
+        self.image = bytearray(size)
+        self.position = 0
+        self.labels = {}
+        self.calls = []
+        self.branches = []
+        self.unconditional_branches = []
+        self.literals = []
+
+    def at(self, address):
+        self.position = address
+
+    def label(self, name):
+        self.labels[name] = self.position
+
+    def h(self, value):
+        struct.pack_into('<H', self.image, self.position, value)
+        self.position += 2
+
+    def words(self, *values):
+        for value in values:
+            self.h(value)
+
+    def ldr(self, register, literal):
+        self.literals.append((self.position, register, literal))
+        self.h(0x4800 | register << 8)
+
+    def bl(self, target):
+        self.calls.append((self.position, target))
+        self.h(0xF000)
+        self.h(0xF800)
+
+    def bcond(self, condition, target):
+        self.branches.append((self.position, condition, target))
+        self.h(0xD000 | condition << 8)
+
+    def b(self, target):
+        self.unconditional_branches.append((self.position, target))
+        self.h(0xE000)
+
+    def pool(self, name, value):
+        if self.position & 3:
+            self.h(0x46C0)
+        self.labels[name] = self.position
+        struct.pack_into('<I', self.image, self.position, value)
+        self.position += 4
+
+    def finish(self):
+        for site, target_name in self.calls:
+            target = self.labels[target_name]
+            delta = target - site - 4
+            struct.pack_into('<2H', self.image, site,
+                             0xF000 | (delta >> 12 & 0x7FF),
+                             0xF800 | (delta >> 1 & 0x7FF))
+        for site, condition, target_name in self.branches:
+            delta = self.labels[target_name] - site - 4
+            self.image[site:site + 2] = struct.pack(
+                '<H', 0xD000 | condition << 8 | ((delta >> 1) & 0xFF))
+        for site, target_name in self.unconditional_branches:
+            delta = self.labels[target_name] - site - 4
+            self.image[site:site + 2] = struct.pack('<H', 0xE000 | (delta >> 1 & 0x7FF))
+        for site, register, literal_name in self.literals:
+            pool = self.labels[literal_name]
+            pc = (site + 4) & ~3
+            displacement = pool - pc
+            if displacement < 0 or displacement & 3 or displacement > 1020:
+                raise AssertionError('synthetic literal is outside Thumb reach')
+            struct.pack_into('<H', self.image, site,
+                             0x4800 | register << 8 | displacement // 4)
+        return bytes(self.image)
+
+
+def transaction_image(selector=0x40, *, reorder=False, skip_command=False,
+                      skip_poll=False, extra_cycle=False, poll_write=False,
+                      read_before_entry=False, wrong_forward=False,
+                      stack_forward=False, wrong_slot=False,
+                      loop_stack_rewrite=False):
+    assembler = _ThumbImage()
+    assembler.at(0x1000)
+    assembler.label('raw')
+    assembler.words(0xB500)  # PUSH {lr}
+    assembler.ldr(4, 'sbi')
+    assembler.ldr(7, 'shadow')
+    if skip_poll:
+        assembler.words(0x2B00)  # CMP r3, #0: both control paths are feasible
+        assembler.bcond(0, 'after_initial_poll')
+    if reorder:
+        assembler.words(0x206A, 0x2108, 0x0209, 0x4308, 0x80A0)  # control first
+    assembler.bl('poll_busy')
+    if skip_poll:
+        assembler.label('after_initial_poll')
+    if not reorder:
+        assembler.words(0x206A, 0x2108, 0x0209, 0x4308, 0x80A0)  # control 0x086a
+    wire_selector = {0: 0x20, 0x40: 0x40, 0x60: 0x60}[selector]
+    assembler.words(0x2100 | (0x80 | wire_selector), 0x7039, 0x7839,
+                    0x200A)
+    if skip_command:
+        assembler.words(0x46C0, 0x46C0)
+    else:
+        assembler.bl('command')
+    assembler.words(0x2100, 0x7421, 0x2101, 0x7421)
+    assembler.label('second_poll')
+    assembler.bl('poll_busy')
+    if extra_cycle:
+        assembler.words(0x2B00)
+        assembler.bcond(0, 'after_poll_cycle')
+        assembler.b('second_poll')
+        assembler.label('after_poll_cycle')
+    assembler.words(0x7839, 0x227F, 0x4011, 0x7039, 0x7839, 0x200A)
+    assembler.bl('command')
+    assembler.bl('poll_ready')
+    assembler.words(0x208B, 0x0200, 0x81A0)
+    assembler.bl('poll_full')
+    if read_before_entry:
+        assembler.b('data_read')
+        assembler.at(0x0F00)
+        assembler.label('data_read')
+        assembler.words(0x89A0, 0xBD00)
+    else:
+        assembler.words(0x89A0, 0xBD00)
+
+    assembler.at(0x1200)
+    assembler.label('command')
+    assembler.words(0x220A, 0x0212, 0x4311)  # OR in the 0x0a00 command prefix
+    assembler.ldr(2, 'command_address')
+    assembler.words(0x8011, 0x4770)
+
+    for label, pool, status, offset in (
+            ('poll_busy', 'poll_busy_base', 0x5F20, 0x1220),
+            ('poll_ready', 'poll_ready_base', 0x6A20, 0x1240),
+            ('poll_full', 'poll_full_base', 0x6A22, 0x1260)):
+        assembler.at(offset)
+        assembler.label(label)
+        assembler.ldr(1, pool)
+        assembler.label(label + '_read')
+        assembler.words(0x8808)
+        if poll_write and label == 'poll_busy':
+            assembler.words(0x8008)  # write the observed status back to the port
+        assembler.ldr(2, label + '_status')
+        assembler.words(0x4290)
+        assembler.bcond(1, label + '_read')
+        assembler.words(0x4770)
+
+    assembler.at(0x1300)
+    assembler.label('filter')
+    assembler.words(0xB500)
+    if loop_stack_rewrite:
+        assembler.words(0xB081)
+        assembler.label('filter_spill_loop')
+        assembler.words(0x9000, 0x2020, 0x2900)
+        assembler.bcond(1, 'filter_spill_loop')
+        assembler.words(0x9800)
+    elif stack_forward:
+        assembler.words(0xB081, 0x9000,
+                        0x9801 if wrong_slot else 0x9800)
+    if wrong_forward:
+        assembler.words(0x2020)  # Forward a constant instead of outer selector.
+    assembler.bl('raw')
+    if stack_forward:
+        assembler.words(0xB001)
+    assembler.words(0xBD00)
+    assembler.at(0x1320)
+    assembler.label('caller')
+    assembler.words(0xB500, 0x2000 | selector, 0x225A)
+    assembler.bl('filter')
+    assembler.words(0xBD00)
+
+    assembler.at(0x1400)
+    assembler.pool('sbi', 0x03000780)
+    assembler.pool('shadow', 0x01000000)
+    assembler.pool('command_address', 0x0300078C)
+    for name in ('poll_busy_base', 'poll_ready_base', 'poll_full_base'):
+        assembler.pool(name, 0x03000780)
+    for name, value in (('poll_busy_status', 0x5F20),
+                        ('poll_ready_status', 0x6A20),
+                        ('poll_full_status', 0x6A22)):
+        assembler.pool(name, value)
+    return assembler.finish()
+
+
+def profile(source=0x40, selected=0x40, entry=0x500, read_pc=0x686):
+    return {
+        'signature': 'thumb-sbi-raw-sample-086a-v1',
+        'admission': 'temporary-evidence-gated',
+        'accepted': True,
+        'policy': 'configured-virtual-raw-byte-uncalibrated',
+        'base_address': 0x03000780,
+        'control': 0x086A,
+        'request_prefix': 0x0A80,
+        'read_command': 0x8B00,
+        'selector_mask': 0x60,
+        'source_selector': source,
+        'selector_value': selected,
+        'entry': entry,
+        'entries': [entry],
+        'read_pc': read_pc,
+    }
 
 
 class SbiRawInputTests(unittest.TestCase):
-    def detect(self, image, bootstrap=None, ram_base=0x01000000, ram_size=0x00800000):
-        if bootstrap is None: bootstrap=find_sbi_bootstrap_profile(image)
-        return find_sbi_raw_input_profile(image, bootstrap, ram_base, ram_size)
+    def setUp(self):
+        self.config = SimpleNamespace(flash_size=0x2000, load_address=0,
+                                      board_adc_value=0x5A)
 
-    def test_relocated_explicit_selector_branches_and_ram_parameters(self):
-        for shift in (0,0x204):
-            for selector,wire in ((0,0x20),(0x40,0x40),(0x60,0x60)):
-                for ram_base in (0x01000000,0x14000000):
-                    with self.subTest(shift=shift,selector=selector,ram_base=ram_base):
-                        image=fixture(selector,shift=shift,ram_base=ram_base)
-                        profile,reason=self.detect(image,ram_base=ram_base)
-                        self.assertEqual(reason,'accepted')
-                        self.assertEqual(profile['read_pc'],0x586+shift)
-                        self.assertEqual(profile['entry'],0x500+shift)
-                        self.assertEqual(profile['selector_value'],wire)
-                        self.assertEqual(profile['selector_mask'],0x60)
-                        self.assertEqual(profile['source_selector'],selector)
-                        self.assertEqual(profile['control'],0x086A)
-                        self.assertEqual(profile['read_command'],0x8B00)
-                        self.assertEqual(profile['policy'],'configured-virtual-raw-byte-uncalibrated')
-                        self.assertNotIn('raw_value',profile)
-                        self.assertEqual(profile['clock_values'],[0x4A,0xCA])
-                        self.assertEqual(profile['clock_entry'],0x11BC+shift)
-                        self.assertEqual(profile['clock_write_pcs'],[0x11C8+shift,0x11DC+shift])
-                        self.assertEqual(profile['clock_shadow'],ram_base+0x80)
-        # The software filter parameter does not choose the configured virtual byte.
-        self.assertIsNotNone(self.detect(fixture(parameter=1))[0])
-        for selector in (1,0x20,0x80,0xFF):
-            self.assertIsNone(self.detect(fixture(selector))[0])
+    def test_wire_uses_transaction_read_site_without_fixed_layout(self):
+        for source, selected in ((0, 0x20), (0x40, 0x40), (0x60, 0x60)):
+            with self.subTest(source=source):
+                value, reason = qemu_sbi_raw_input_property(
+                    self.config, profile(source, selected))
+                self.assertEqual((value, reason),
+                                 (f'sbi-raw-input-profile=686:60:{selected:x}', None))
 
-    def test_required_opcode_width_literal_call_and_branch_mutations(self):
-        original=fixture();bootstrap=find_sbi_bootstrap_profile(original)
-        mutations={
-            'raw-control':0x512,'raw-first-command':0x556,'raw-second-command':0x570,
-            'raw-read-command':0x57A,'raw-data-width':0x586,'raw-lowbyte':0x588,
-            'raw-selector-mask':0x524,'raw-selector-branch':0x52C,'raw-clear80':0x568,
-            'raw-literal-register':0x518,'raw-status-base':0x5B4,'raw-flag-branch':0x59E,
-            'filter-three-samples':0x832,'filter-backedge':0x83E,'filter-return':0x8C2,
-            'cache-read-width':0xC04,'cache-write-width':0xC0E,'cache-return':0xC10,
-            'control-width':0x120C,'write-width':0x1252,'start-width':0x1284,
-            'read-request-width':0x12D2,'request-base':0x1258,'start-base':0x128C,
-            'busy-width':0x1106,'busy-mask':0x1108,'busy-backedge':0x1122,
-            'write-poll-branch':0x114E,'read-full-mask':0x1188,'read-full-edge':0x11A0,
-            'delay-return':0x1300,'irq-save-bit':0x1010,
-        }
-        for name,at in mutations.items():
-            with self.subTest(name=name):
-                image=bytearray(original);image[at]^=1
-                self.assertIsNone(self.detect(bytes(image),bootstrap)[0])
-        for at in (0x506,0x50E,0x514,0x558,0x55C,0x560,0x572,0x576,0x57C,
-                   0x580,0x590,0x842,0x8A2,0x8BC,0xC0A):
-            image=bytearray(original);image[at:at+4]=bytes(4)
-            self.assertIsNone(self.detect(bytes(image),bootstrap)[0])
-        for address in (0x03000780,0x01000100,0x01000201,0x01800000):
-            image=bytearray(original);struct.pack_into('<I',image,0xC40,address)
-            self.assertIsNone(self.detect(bytes(image),bootstrap)[0])
+    def test_invalid_source_contracts_are_rejected(self):
+        cases = (
+            (profile(1, 0x20), 'raw-input-selector-unclosed'),
+            (profile(0x40, 0x20), 'raw-input-selector-unclosed'),
+            (profile(read_pc=0x2000), 'raw-input-consumer-unclosed'),
+            (profile(read_pc=0x685), 'raw-input-consumer-unclosed'),
+        )
+        for candidate, reason in cases:
+            with self.subTest(reason=reason, candidate=candidate):
+                self.assertEqual(qemu_sbi_raw_input_property(self.config, candidate),
+                                 (None, reason))
 
-    def test_bootstrap_ram_bounds_duplicates_and_missing_consumers(self):
-        image=fixture();bootstrap=find_sbi_bootstrap_profile(image)
-        for name,value in (('accepted',False),('signature','other'),('entries',[-2]),
-                           ('entries',[True]),('layout',None)):
-            bad=copy.deepcopy(bootstrap);bad[name]=value
-            self.assertIsNone(self.detect(image,bad)[0])
-        bad=copy.deepcopy(bootstrap);bad['bootstrap'][0][1]=True
-        self.assertIsNone(self.detect(image,bad)[0])
-        self.assertIsNotNone(self.detect(image,bootstrap,ram_size=0x301)[0])
-        self.assertIsNone(self.detect(image,bootstrap,ram_size=0x300)[0])
-        self.assertIsNone(find_sbi_raw_input_profile(image,None,0x01000000,0x800000)[0])
-        for base,size in ((True,0x800000),(0x01000000,0),(0x01000000,0x100),(-1,0x800000)):
-            self.assertIsNone(self.detect(image,bootstrap,base,size)[0])
-        self.assertIsNone(self.detect(bytes(image)*2,bootstrap)[0])
-        extra=bytearray(image);extra[0xE00:0xE12]=image[0xC00:0xC12];extra[0xE40:0xE44]=image[0xC40:0xC44]
-        delta=0x800-0xE0A-4
-        struct.pack_into('<2H',extra,0xE0A,0xF000|(delta>>12&0x7FF),0xF800|(delta>>1&0x7FF))
-        self.assertIsNone(self.detect(bytes(extra),bootstrap)[0])
-        for end in (0x586,0x8C7,0x1300):
-            self.assertIsNone(self.detect(image[:end],bootstrap)[0])
-        missing=bytearray(image);missing[0xC00:0xC12]=bytes(0x12)
-        self.assertIsNone(self.detect(bytes(missing),bootstrap)[0])
-        self.assertIsNone(self.detect(b'\0'+bytes(image),bootstrap)[0])
+    def test_configuration_requirements(self):
+        self.config.load_address = 0x1000
+        self.assertEqual(qemu_sbi_raw_input_property(self.config, profile()),
+                         (None, 'raw-input-unverified-code-layout'))
+        self.config.load_address = 0
+        self.config.board_adc_value = None
+        self.assertEqual(qemu_sbi_raw_input_property(self.config, profile()),
+                         (None, 'raw-input-byte-unavailable'))
 
-    def test_mandatory_clock_pair_mutations_and_missing_body(self):
-        original=fixture();bootstrap=find_sbi_bootstrap_profile(original);clock=0x11BC
-        for offset in (4,6,8,10,12,14,16,26,28,30,32,34,36,42):
-            with self.subTest(clock_offset=offset):
-                changed=bytearray(original);changed[clock+offset]^=1
-                self.assertIsNone(self.detect(bytes(changed),bootstrap)[0])
-        for offset in (0,18,22,38):
-            changed=bytearray(original);changed[clock+offset:clock+offset+4]=bytes(4)
-            self.assertIsNone(self.detect(bytes(changed),bootstrap)[0])
-        for offset in (8,12,30,32):
-            changed=bytearray(original)
-            word=struct.unpack_from('<H',changed,clock+offset)[0]
-            struct.pack_into('<H',changed,clock+offset,word^0x1000)
-            self.assertIsNone(self.detect(bytes(changed),bootstrap)[0])
-        for pointer in (0x03000780,0x01000100,0x01000200,0x01000300,0x01800000):
-            changed=bytearray(original);struct.pack_into('<I',changed,0x11F8,pointer)
-            self.assertIsNone(self.detect(bytes(changed),bootstrap)[0])
-        changed=bytearray(original);struct.pack_into('<I',changed,0x11FC,0x03000784)
-        self.assertIsNone(self.detect(bytes(changed),bootstrap)[0])
-        self.assertIsNone(_clock_pair(original[:clock+0x2B],{0x14:0x1200,6:0x1000,0x90:0x1040}))
-        changed=bytearray(original);changed[clock:clock+0x2C]=bytes(0x2C)
-        self.assertIsNone(self.detect(bytes(changed),bootstrap)[0])
-        self.assertEqual(find_sbi_bootstrap_profile(changed),bootstrap)
+    def test_finder_requires_recomputed_bootstrap_evidence(self):
+        image = bytes(0x1000)
+        self.assertEqual(find_sbi_raw_input_profile(image, None, 0x01000000, 0x800000),
+                         (None, 'bootstrap-prerequisite-missing'))
+        self.assertEqual(find_sbi_raw_input_profile(
+            image, {'signature': 'thumb-sbi-bootstrap-only-v1'}, 0x01000000, 0x800000),
+            (None, 'bootstrap-prerequisite-unclosed'))
+
+    def test_source_binding_recomputes_pc_and_selector_for_both_images(self):
+        source = profile()
+        bootstrap = {'signature': 'bootstrap'}
+        with patch('msm5xxx_emulator.detection.devices.sbi.raw.find_sbi_raw_input_profile',
+                   side_effect=((source, 'accepted'), (source, 'accepted'))):
+            self.assertEqual(qemu_sbi_raw_input_property_for_images(
+                self.config, source, bootstrap, (b'original', b'loaded'),
+                0x01000000, 0x800000),
+                ('sbi-raw-input-profile=686:60:40', None))
+        tampered = {**source, 'read_pc': 0x688}
+        with patch('msm5xxx_emulator.detection.devices.sbi.raw.find_sbi_raw_input_profile',
+                   return_value=(source, 'accepted')):
+            self.assertEqual(qemu_sbi_raw_input_property_for_images(
+                self.config, tampered, bootstrap, (b'original',),
+                0x01000000, 0x800000),
+                (None, 'raw-input-source-mismatch'))
+        changed_loaded = {**source, 'selector_value': 0x60,
+                          'source_selector': 0x60}
+        with patch('msm5xxx_emulator.detection.devices.sbi.raw.find_sbi_raw_input_profile',
+                   side_effect=((source, 'accepted'), (changed_loaded, 'accepted'))):
+            self.assertEqual(qemu_sbi_raw_input_property_for_images(
+                self.config, source, bootstrap, (b'original', b'loaded'),
+                0x01000000, 0x800000),
+                (None, 'raw-input-loaded-source-mismatch'))
+
+    def test_bootstrap_source_binding_rejects_type_coercion(self):
+        actual = {'signature': 'typed', 'entries': [0x100], 'layout': 'source-label'}
+        with patch('msm5xxx_emulator.detection.devices.sbi.bootstrap.find_sbi_bootstrap_profile',
+                   return_value=actual):
+            self.assertTrue(bootstrap_profile_matches(b'image', actual))
+            self.assertFalse(bootstrap_profile_matches(
+                b'image', {'signature': 'typed', 'entries': [True]}))
+            self.assertTrue(bootstrap_profile_matches(
+                b'image', {**actual, 'layout': 'stale-diagnostic-label'}))
+
+    def _image_with_bootstrap(self, selector=0x40, **kwargs):
+        from test_sbi_bootstrap_profile import SbiBootstrapProfileTest
+        from msm5xxx_emulator.detection.devices.sbi.bootstrap import (find_sbi_bootstrap_profile)
+
+        bootstrap_code, _ = SbiBootstrapProfileTest._image('direct')
+        image = bytearray(transaction_image(selector, **kwargs))
+        image[:len(bootstrap_code)] = bootstrap_code
+        image = bytes(image)
+        return image, find_sbi_bootstrap_profile(image)
+
+    def test_complete_synthetic_transaction_and_cfg_mutations(self):
+        for selector, wire in ((0, 0x20), (0x40, 0x40), (0x60, 0x60)):
+            image, bootstrap = self._image_with_bootstrap(selector)
+            candidate, reason = find_sbi_raw_input_profile(
+                image, bootstrap, 0x01000000, 0x1000)
+            with self.subTest(selector=selector):
+                self.assertEqual(reason, 'accepted')
+                self.assertEqual(candidate['selector_value'], wire)
+                self.assertEqual(candidate['read_pc'], 0x104A)
+                self.assertTrue(candidate['code_intervals'])
+                output, output_reason = qemu_sbi_raw_input_property(
+                    self.config, candidate)
+                self.assertEqual((output, output_reason),
+                                 (f'sbi-raw-input-profile=104a:60:{wire:x}', None))
+
+        image, bootstrap = self._image_with_bootstrap(read_before_entry=True)
+        candidate, reason = find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)
+        self.assertEqual(reason, 'accepted')
+        self.assertLess(candidate['read_pc'], candidate['entry'])
+        self.assertEqual(qemu_sbi_raw_input_property(self.config, candidate),
+                         ('sbi-raw-input-profile=f00:60:40', None))
+
+        for mutation in ('reorder', 'skip_command', 'skip_poll',
+                         'extra_cycle', 'poll_write'):
+            image, bootstrap = self._image_with_bootstrap(**{mutation: True})
+            candidate, _ = find_sbi_raw_input_profile(
+                image, bootstrap, 0x01000000, 0x1000)
+            with self.subTest(mutation=mutation):
+                self.assertIsNone(candidate)
+
+        image, bootstrap = self._image_with_bootstrap(0x60, wrong_forward=True)
+        candidate, _ = find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)
+        self.assertIsNone(candidate)
+        image, bootstrap = self._image_with_bootstrap(
+            0x60, loop_stack_rewrite=True)
+        candidate, _ = find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)
+        self.assertIsNone(candidate)
+
+        image, bootstrap = self._image_with_bootstrap(0x60, stack_forward=True)
+        candidate, reason = find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)
+        self.assertEqual(reason, 'accepted')
+        self.assertEqual(candidate['source_selector'], 0x60)
+        image, bootstrap = self._image_with_bootstrap(
+            0x60, stack_forward=True, wrong_slot=True)
+        candidate, _ = find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)
+        self.assertIsNone(candidate)
+
+    def test_source_bound_profile_matches_only_original_and_loaded_evidence(self):
+        image, bootstrap = self._image_with_bootstrap()
+        candidate, reason = find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)
+        self.assertEqual(reason, 'accepted')
+        self.assertTrue(raw_input_profile_matches(
+            image, bootstrap, candidate, 0x01000000, 0x1000))
+        self.assertFalse(raw_input_profile_matches(
+            image, bootstrap, {**candidate, 'read_pc': 0x104C},
+            0x01000000, 0x1000))
+        self.assertEqual(qemu_sbi_raw_input_property_for_images(
+            self.config, candidate, bootstrap, (image, image),
+            0x01000000, 0x1000),
+            ('sbi-raw-input-profile=104a:60:40', None))
+        altered, _ = self._image_with_bootstrap(0x60)
+        self.assertEqual(qemu_sbi_raw_input_property_for_images(
+            self.config, candidate, bootstrap, (image, altered),
+            0x01000000, 0x1000),
+            (None, 'raw-input-loaded-source-mismatch'))
+
+    def test_owner_and_runtime_source_projections_revalidate_transaction(self):
+        image, bootstrap = self._image_with_bootstrap()
+        candidate, reason = find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)
+        self.assertEqual(reason, 'accepted')
+        config = SimpleNamespace(
+                flash_size=len(image), load_address=0, board_adc_value=0x5A,
+                ram_base=0x01000000, ram_size=0x1000,
+                sbi_bootstrap_profile={**bootstrap, 'raw_input': candidate})
+        expected = ('sbi=on,sbi-raw-input-profile=104a:60:40', None)
+        self.assertEqual(bootstrap_property(config, original=image, loaded=image),
+                         expected)
+        self.assertEqual(runtime_properties(image, image, config)[:2], expected)
+
+        config.sbi_bootstrap_profile = {
+            **bootstrap, 'raw_input': {**candidate, 'read_pc': 0x104C}}
+        self.assertEqual(bootstrap_property(config, original=image, loaded=image),
+                         ('sbi=on,sbi-bootstrap-only=on',
+                          'raw-input-source-mismatch'))
+
+        config.sbi_bootstrap_profile = {**bootstrap, 'raw_input': candidate}
+        changed_loaded, _ = self._image_with_bootstrap(0x60)
+        self.assertEqual(bootstrap_property(
+            config, original=image, loaded=changed_loaded),
+            ('sbi=on,sbi-bootstrap-only=on',
+             'raw-input-loaded-source-mismatch'))
+
+    def test_unmocked_bootstrap_and_raw_source_binding(self):
+        from test_sbi_bootstrap_profile import SbiBootstrapProfileTest
+        from msm5xxx_emulator.detection.devices.sbi.bootstrap import (find_sbi_bootstrap_profile)
+
+        bootstrap_code, bootstrap_entry = SbiBootstrapProfileTest._image('direct')
+        original = bytearray(transaction_image())
+        original[:len(bootstrap_code)] = bootstrap_code
+        original = bytes(original)
+        bootstrap = find_sbi_bootstrap_profile(original)
+        self.assertIsNotNone(bootstrap)
+        self.assertEqual(bootstrap['entries'], [bootstrap_entry])
+        raw, reason = find_sbi_raw_input_profile(
+            original, bootstrap, 0x01000000, 0x1000)
+        self.assertEqual(reason, 'accepted')
+
+        config = SimpleNamespace(
+            flash_size=len(original), load_address=0, board_adc_value=0x5A,
+            ram_base=0x01000000, ram_size=0x1000,
+            sbi_bootstrap_profile={**bootstrap, 'raw_input': raw})
+        expected = ('sbi=on,sbi-raw-input-profile=104a:60:40', None)
+        self.assertEqual(bootstrap_property(
+            config, original=original, loaded=original), expected)
+        self.assertEqual(runtime_properties(original, original, config)[:2], expected)
+
+        changed_raw = bytearray(transaction_image(0x60))
+        changed_raw[:len(bootstrap_code)] = bootstrap_code
+        self.assertEqual(bootstrap_property(
+            config, original=original, loaded=bytes(changed_raw)),
+            ('sbi=on,sbi-bootstrap-only=on',
+             'raw-input-loaded-source-mismatch'))
+
+        changed_bootstrap = bytearray(original)
+        changed_bootstrap[bootstrap_entry + 0x30] ^= 1
+        self.assertEqual(bootstrap_property(
+            config, original=original, loaded=bytes(changed_bootstrap)),
+            (None, 'sbi-bootstrap-source-unclosed'))
+
+    def test_thumb_raw_input_requires_thumb_bootstrap_source(self):
+        from test_sbi_bootstrap_profile import SbiBootstrapProfileTest
+        from msm5xxx_emulator.detection.devices.sbi.bootstrap import (find_sbi_bootstrap_profile)
+
+        arm_bootstrap, _ = SbiBootstrapProfileTest._arm_image()
+        image = bytearray(transaction_image())
+        image[:len(arm_bootstrap)] = arm_bootstrap
+        image = bytes(image)
+        bootstrap = find_sbi_bootstrap_profile(image)
+        self.assertIsNotNone(bootstrap)
+        assert bootstrap is not None
+        # The compatibility profile exposes integer offsets. Source mode must
+        # come from the Thumb bootstrap query, not that offset or layout text.
+        self.assertEqual(bootstrap['entries'], [0x20])
+        self.assertIsNone(find_sbi_raw_input_profile(
+            image, bootstrap, 0x01000000, 0x1000)[0])
+
+
+if __name__ == '__main__':
+    unittest.main()
