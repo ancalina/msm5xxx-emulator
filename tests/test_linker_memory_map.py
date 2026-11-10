@@ -5,7 +5,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.memory_map import detect_linker_memory_map
+from msm5xxx_emulator.detection.fact_memory_map import detect_linker_memory_map
 
 
 def arm_branch(pc, target, link=False):
@@ -15,7 +15,7 @@ def arm_branch(pc, target, link=False):
 
 class LinkerMemoryMapTests(unittest.TestCase):
     def test_decoder_absence_is_an_explicit_rejection(self):
-        import msm5xxx_emulator.detection.memory_map as memory_map
+        import msm5xxx_emulator.detection.fact_memory_map as memory_map
         spec = importlib.util.spec_from_file_location(
             'memory_map_without_decoder', Path(memory_map.__file__))
         module = importlib.util.module_from_spec(spec)
@@ -67,7 +67,7 @@ class LinkerMemoryMapTests(unittest.TestCase):
         self.assertEqual(reason, "memory-map-no-reset-linked-descriptor")
 
     def test_bic_invalidates_stale_register_pointer(self):
-        from msm5xxx_emulator.detection.memory_map import _reset, _trace
+        from msm5xxx_emulator.detection.fact_memory_map import _reset, _trace
 
         image = bytearray(0x100)
         struct.pack_into("<I", image, 0, 0xEA000006)

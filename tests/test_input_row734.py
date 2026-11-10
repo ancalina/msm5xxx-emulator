@@ -4,8 +4,11 @@ import hashlib
 import os
 import struct
 import unittest
-from msm5xxx_emulator.detection import input_row734 as module
-from msm5xxx_emulator.detection.protected_nor import _MASKS as COPY_MASKS
+from msm5xxx_emulator.detection.contracts import _IRQ_PRIMITIVES
+from msm5xxx_emulator.detection.registry import device_domain
+module = device_domain('input.row734')
+from msm5xxx_emulator.detection.registry import device_domain
+COPY_MASKS = device_domain('storage.protected_nor')._MASKS
 from corpus import FIRMWARE_ROOT, snippet
 
 # Reuse the reviewed portable boot-contact fixture, not an original dump.
@@ -124,7 +127,12 @@ def fixture(filtered=False,shift=0,ram_delta=0):
         if op&0xf800==0x4800:literal('copy',off,ram+0xa00)
         off+=2
     for role in ('save','restore'):
-        blob=bytes.fromhex(COPY_MASKS['irq_'+role]);data[pos[role]:pos[role]+len(blob)]=blob
+        body=_IRQ_PRIMITIVES['irq_'+role]
+        assert body.size == len(body.words)*2
+        assert all(mask == 0xffff for _,_,mask in body.words)
+        blob=bytearray(body.size)
+        for offset,word,_mask in body.words:struct.pack_into('<H',blob,offset,word)
+        data[pos[role]:pos[role]+body.size]=blob
     for role in ('set_sigs','clear_sigs','stub'):h(pos[role],0x4770)
     t=pos['copy_tables'];source=pos['copy_data']
     tuples=[(source,ram,0x2000,ram+0x2000,0x6000),

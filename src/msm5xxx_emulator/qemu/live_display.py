@@ -1,5 +1,6 @@
 """Run QEMU with the desktop LCD, input, and settings interface."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import argparse
 from datetime import datetime
@@ -15,7 +16,8 @@ from PIL import Image, ImageTk
 
 
 from .transport import *  # noqa: F403
-from ..detection.firmware import DEFAULT_STATE_ROOT
+from msm5xxx_emulator.detection.registry import device_domain
+DEFAULT_STATE_ROOT = device_domain('storage.configuration').DEFAULT_STATE_ROOT
 from ..gui.app import Window, choose_firmware
 from ..gui.controls import detect_profile
 from ..gui.locale import display_model_name, resolve_ui_language

@@ -7,9 +7,10 @@ from types import SimpleNamespace
 import unittest
 
 from corpus import firmware_path
-from msm5xxx_emulator.detection.efs_nor import (
-    _Unclosed, _thumb_body, find_inline_efs_nor_profile,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_Unclosed = device_domain('storage.efs_nor')._Unclosed
+_thumb_body = device_domain('storage.efs_nor')._thumb_body
+find_inline_efs_nor_profile = device_domain('storage.efs_nor').find_inline_efs_nor_profile
 from msm5xxx_emulator.qemu.transport import qemu_amd_bank_profile
 
 

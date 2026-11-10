@@ -1,7 +1,8 @@
 """Portable complete source groups, not filename-selected display behavior."""
 import hashlib,json,os,struct,unittest
 from pathlib import Path
-from msm5xxx_emulator.detection import copied_window as m
+from msm5xxx_emulator.detection.registry import device_domain
+m = device_domain('display.copied_window')
 
 
 def fixture(shift=0,ram_shift=0):

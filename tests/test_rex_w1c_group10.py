@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 from corpus import firmware_path
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.rex import find_rex_static_controller_callback_candidate
+from msm5xxx_emulator.detection.registry import device_domain
+find_rex_static_controller_callback_candidate = device_domain('rex.rules').find_rex_static_controller_callback_candidate
 from msm5xxx_emulator.qemu.transport import w1c_rex_irq_profile
 from test_rex_controller_candidate import _bl
 

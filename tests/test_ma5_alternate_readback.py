@@ -3,8 +3,10 @@ import unittest
 
 from corpus import firmware_path
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
-from msm5xxx_emulator.detection.ma5_gpio_irq import find_ma5_gpio_irq_candidate
+from msm5xxx_emulator.detection.registry import device_domain
+find_ma5_readback_candidate = device_domain('audio.rules').find_ma5_readback_candidate
+from msm5xxx_emulator.detection.registry import device_domain
+find_ma5_gpio_irq_candidate = device_domain('audio.ma5_gpio_irq').find_ma5_gpio_irq_candidate
 from msm5xxx_emulator.qemu.transport import qemu_ma5_temporary_auto_property
 
 

@@ -4,10 +4,14 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.input_table7 import (
-    _PATTERN_SIZE, _CALLS, _LITERALS, _FOLD_SIZE, _FOLD_CALLS,
-    _FOLD_LITERALS, find_table7_matrix,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_PATTERN_SIZE = device_domain('input.table7')._PATTERN_SIZE
+_CALLS = device_domain('input.table7')._CALLS
+_LITERALS = device_domain('input.table7')._LITERALS
+_FOLD_SIZE = device_domain('input.table7')._FOLD_SIZE
+_FOLD_CALLS = device_domain('input.table7')._FOLD_CALLS
+_FOLD_LITERALS = device_domain('input.table7')._FOLD_LITERALS
+find_table7_matrix = device_domain('input.table7').find_table7_matrix
 from test_legacy_keypad import branch, literal
 
 
@@ -58,9 +62,9 @@ class Table7Tests(unittest.TestCase):
             return hashlib.sha256(code).hexdigest()
         loop_hash = digest(0x500, _PATTERN_SIZE, _CALLS, _LITERALS)
         fold_hash = digest(0xa00, _FOLD_SIZE, _FOLD_CALLS, _FOLD_LITERALS)
-        with patch('msm5xxx_emulator.detection.input_table7._PATTERN_HASH', loop_hash), \
-             patch('msm5xxx_emulator.detection.input_table7._FOLD_HASH', fold_hash), \
-             patch('msm5xxx_emulator.detection.input_table7._layouts',
+        with patch('msm5xxx_emulator.detection.devices.input.table7._PATTERN_HASH', loop_hash), \
+             patch('msm5xxx_emulator.detection.devices.input.table7._FOLD_HASH', fold_hash), \
+             patch('msm5xxx_emulator.detection.devices.input.table7._layouts',
                    return_value=[(0x100, 0x2000, 0x01000000, 0x400, 0)]):
             profile = find_table7_matrix(image)
             self.assertEqual((profile['rows'], profile['fold_input']['mask']), (7, 2))

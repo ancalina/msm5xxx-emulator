@@ -90,7 +90,7 @@ class ShiftedOrientationTests(unittest.TestCase):
                 d = Decoder()
                 d.image = b'AB'
                 d._lcd_page_loaded_image = loaded
-                with patch('msm5xxx_emulator.detection.input_table7.find_table7_matrix',
+                with patch('msm5xxx_emulator.detection.devices.input.table7.find_table7_matrix',
                            return_value={'dependencies': [(0, 2)]}):
                     self.feed(d, _SHIFTED_ORIENTATION_PREFIX)
                 self.publish(d)

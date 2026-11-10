@@ -1,52 +1,34 @@
 """Closed source shape for the 244-byte paired DMD download/readback driver."""
 from __future__ import annotations
-
+from msm5xxx_emulator.detection.facts import facts_for
 import re
 import struct
-
-from ...arm import thumb_bl_target, thumb_literal_value, thumb_normalized_source_shape
+from msm5xxx_emulator.detection.fact_bodies import match_thumb_shape as thumb_normalized_source_shape
 
 _DRIVER_SIZE = 0xF4
 _PROFILE_SIGNATURE = "dmd5100-paired-program-readback-v1"
-_HOLES = ((0x0E, 0x12), (0x26, 0x2A), (0x4E, 0x52), (0x56, 0x5A),
-          (0xD0, 0xD4), (0xD6, 0xD7), (0xD8, 0xDC),
-          (0xE0, 0xE4), (0xE8, 0xEC),
-          (0xF0, 0xF4))
+_HOLES = ((0x0E, 0x12), (0x26, 0x2A), (0x4E, 0x52), (0x56, 0x5A), (0xD0, 0xD4), (0xD6, 0xD7), (0xD8, 0xDC), (0xE0, 0xE4), (0xE8, 0xEC), (0xF0, 0xF4))
 # Relocatable BLs, three address literals, and only the failure-line imm8 vary.
-_DRIVER = bytes.fromhex(
-    'f0b5002701250024354901200870000000000604360c334900200873324b3149'
-    '988810398881000000002e482e4b103809e02d4b79001a685218528802821a68'
-    '515a01820237284bd988b942f1dc00000000002e01d100000000244e0e203072'
-    '00203073307a204f0020f9883a684b0809e061001d4e515a3689b14201d00025'
-    '03e0023401308342f3dc184a00201073107afb88002100203c685f0809e04b00'
-    'e3185b889689b34201d0002503e0023101308742f3dc00201072002d08d00849'
-    '02200870074901200873f0bc08bc1847000000000649002005f0b2fef5e70000'
-    '000000005000000300000000e007000300000000'
-)
+_DRIVER = bytes.fromhex('f0b5002701250024354901200870000000000604360c334900200873324b3149' '988810398881000000002e482e4b103809e02d4b79001a685218528802821a68'
+    '515a01820237284bd988b942f1dc00000000002e01d100000000244e0e203072' '00203073307a204f0020f9883a684b0809e061001d4e515a3689b14201d00025'
+    '03e0023401308342f3dc184a00201073107afb88002100203c685f0809e04b00' 'e3185b889689b34201d0002503e0023101308742f3dc00201072002d08d00849'
+    '02200870074901200873f0bc08bc1847000000000649002005f0b2fef5e70000' '000000005000000300000000e007000300000000')
 _CANDIDATE_SIGNATURE = _DRIVER[:14]
 _MASK = bytearray(b"\xff" * _DRIVER_SIZE)
 for _start, _end in _HOLES:
     _MASK[_start:_end] = bytes(_end - _start)
 _MASK = bytes(_MASK)
 _BL_PATTERN = re.compile(rb"(?=[\x00-\xff][\xf0-\xf7][\x00-\xff][\xf8-\xff])")
-
-
-_READ_760_HASHES = (
-    '41c481659c1265d5b4cbf941999141116c178bdb47225ee9685e06cc9e80d6d7',
-    'ca1457ab310a744c3206ad59028f1a4dc80bfd13eab53ed61b33ed69798a80f0',
-)
+_READ_760_HASHES = ('41c481659c1265d5b4cbf941999141116c178bdb47225ee9685e06cc9e80d6d7', 'ca1457ab310a744c3206ad59028f1a4dc80bfd13eab53ed61b33ed69798a80f0',)
 _READ_760_CALLS = (0xe,0x26,0x4e,0x56,0xd0,0xd8)
 _READ_760_LITERALS = (8,0x16,0x1c,0x1e,0x2a,0x2c,0x32,0x46,0x5a,0x66,0x74,0x8a,0xbe,0xc4,0xd4)
 
-
 def _read_760_shape(image, entry):
     for digest in _READ_760_HASHES:
-        shape = thumb_normalized_source_shape(image, entry,
-            (0xde,digest,_READ_760_CALLS,_READ_760_LITERALS))
+        shape = thumb_normalized_source_shape(image, entry, (0xde,digest,_READ_760_CALLS,_READ_760_LITERALS))
         if shape is not None:
             return shape
     return None
-
 
 def _driver_matches(image: bytes, entry: int) -> bool:
     if entry & 1 or entry < 0 or entry + _DRIVER_SIZE > len(image):
@@ -57,11 +39,8 @@ def _driver_matches(image: bytes, entry: int) -> bool:
     # Keep the MOVS opcode and destination fixed; only the report code varies.
     return struct.unpack_from("<H", image, entry + 0xD6)[0] & 0xFF00 == 0x2000
 
-
 def _callers(image: bytes, target: int) -> list[int]:
-    return [m.start() for m in _BL_PATTERN.finditer(image)
-            if not m.start() & 1 and thumb_bl_target(image, m.start()) == target]
-
+    return [m.start() for m in _BL_PATTERN.finditer(image) if not m.start() & 1 and facts_for(image).thumb_call_target(m.start()) == target]
 
 def _callee_intervals(image: bytes, targets: list[int], excluded: tuple[tuple[int, int], ...]):
     entries = sorted(set(targets))
@@ -70,8 +49,7 @@ def _callee_intervals(image: bytes, targets: list[int], excluded: tuple[tuple[in
         if target & 1 or target < 0 or target + 2 > len(image):
             return None, "dmd5100-callee-outside-image"
         entry_span = (target, target + 2)
-        if any(entry_span[0] < end and start < entry_span[1]
-               for start, end in (*excluded, *intervals)):
+        if any(entry_span[0] < end and start < entry_span[1] for start, end in (*excluded, *intervals)):
             return None, "dmd5100-callee-aliases-source-data"
         first = struct.unpack_from("<H", image, target)[0]
         if first in (0x0000, 0xFFFF):
@@ -82,12 +60,10 @@ def _callee_intervals(image: bytes, targets: list[int], excluded: tuple[tuple[in
             if literal + 4 > len(image):
                 return None, "dmd5100-callee-literal-outside-image"
             literal_span = (literal, literal + 4)
-            if any(literal_span[0] < end and start < literal_span[1]
-                   for start, end in (*excluded, *intervals)):
+            if any(literal_span[0] < end and start < literal_span[1] for start, end in (*excluded, *intervals)):
                 return None, "dmd5100-callee-literal-aliases-source-data"
             intervals.append(literal_span)
     return tuple(intervals), "accepted"
-
 
 def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
     legacy = _driver_matches(image, entry)
@@ -95,31 +71,20 @@ def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
     if not legacy and bank_shape is None:
         return None, "dmd5100-driver-shape-unclosed"
     read_base = 0x030007e0 if legacy else 0x03000760
-    calls = [thumb_bl_target(image, entry + offset)
-             for offset in (0x0E, 0x26, 0x4E, 0x56, 0xD0, 0xD8)]
-    if (any(target is None or not 0 <= target < len(image) for target in calls)
-            or calls[1] != calls[2]):
+    calls = [facts_for(image).thumb_call_target(entry + offset) for offset in (0x0E, 0x26, 0x4E, 0x56, 0xD0, 0xD8)]
+    if (any(target is None or not 0 <= target < len(image) for target in calls) or calls[1] != calls[2]):
         return None, "dmd5100-relocated-call-shape-unclosed"
-
-    completion = thumb_literal_value(image, entry + 0x08, 1)
-    descriptor = thumb_literal_value(image, entry + 0x1C, 3)
-    filename = thumb_literal_value(image, entry + 0xD4, 1)
-    literal_checks = (
-        (entry + 0x16, 1, 0x03000050), (entry + 0x1E, 1, 0x03000050),
-        (entry + 0x2A, 0, 0x03000050), (entry + 0xC4, 1, 0x03000050),
-        (entry + 0x5A, 6, read_base), (entry + 0x74, 6, read_base),
-        (entry + 0x8A, 2, read_base), (entry + 0xBE, 1, completion),
-        (entry + 0x2C, 3, descriptor), (entry + 0x32, 3, descriptor),
-        (entry + 0x46, 3, descriptor), (entry + 0x66, 7, descriptor),
-    )
-    if (completion is None or not 0x01000000 <= completion < 0x02000000
-            or descriptor is None or filename is None
-            or any(thumb_literal_value(image, at, reg) != value
-                   for at, reg, value in literal_checks)):
+    completion = facts_for(image).thumb_literal_value(entry + 0x08, 1)
+    descriptor = facts_for(image).thumb_literal_value(entry + 0x1C, 3)
+    filename = facts_for(image).thumb_literal_value(entry + 0xD4, 1)
+    literal_checks = ((entry + 0x16, 1, 0x03000050), (entry + 0x1E, 1, 0x03000050), (entry + 0x2A, 0, 0x03000050), (entry + 0xC4, 1, 0x03000050), (entry + 0x5A,
+        6, read_base), (entry + 0x74, 6, read_base), (entry + 0x8A, 2, read_base), (entry + 0xBE, 1, completion), (entry + 0x2C, 3, descriptor), (entry + 0x32,
+        3, descriptor), (entry + 0x46, 3, descriptor), (entry + 0x66, 7, descriptor),)
+    if (completion is None or not 0x01000000 <= completion < 0x02000000 or descriptor is None or filename is None or any(facts_for(image).thumb_literal_value(at,
+        reg) != value for at, reg, value in literal_checks)):
         return None, "dmd5100-linked-literals-unclosed"
     if not 0 <= filename < len(image):
         return None, "dmd5100-filename-reference-outside-image"
-
     if descriptor & 3 or descriptor + 8 > len(image):
         return None, "dmd5100-descriptor-outside-image"
     payload, mode, halfwords = struct.unpack_from("<IHH", image, descriptor)
@@ -130,8 +95,7 @@ def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
         return None, "dmd5100-halfword-count-out-of-range"
     payload_size = halfwords * 2
     payload_end = payload + payload_size
-    if (payload & 1 or payload < 0 or payload_end != descriptor
-            or payload_end > len(image)):
+    if (payload & 1 or payload < 0 or payload_end != descriptor or payload_end > len(image)):
         return None, "dmd5100-payload-range-unclosed"
     filename_limit = min(descriptor + 0x40, len(image))
     if not descriptor + 8 <= filename < filename_limit:
@@ -140,41 +104,24 @@ def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
     if terminator <= filename:
         return None, "dmd5100-readonly-string-unclosed"
     filename_span = (filename, terminator + 1)
-
     callers = _callers(image, entry)
     if len(callers) != 1:
         return None, "dmd5100-caller-missing-or-ambiguous"
     caller = callers[0]
-    intervals = ((entry, entry + _DRIVER_SIZE), (payload, payload_end),
-                 (descriptor, descriptor + 8), filename_span, (caller, caller + 4))
+    intervals = ((entry, entry + _DRIVER_SIZE), (payload, payload_end), (descriptor, descriptor + 8), filename_span, (caller, caller + 4))
     for index, (start, end) in enumerate(intervals):
         if not 0 <= start < end <= len(image):
             return None, "dmd5100-loaded-interval-outside-image"
-        if any(start < other_end and other_start < end
-               for other_start, other_end in intervals[index + 1:]):
+        if any(start < other_end and other_start < end for other_start, other_end in intervals[index + 1:]):
             return None, "dmd5100-loaded-interval-overlap"
     callee_intervals, reason = _callee_intervals(image, calls, intervals)
     if callee_intervals is None:
         return None, reason
     all_intervals = intervals + callee_intervals
-
-    profile = {
-        "signature": _PROFILE_SIGNATURE,
-        "admission": "temporary-evidence-gated",
-        "entry_file_offset": entry,
-        "caller_file_offset": caller,
-        "callee_entries": tuple(sorted(set(calls))),
-        "descriptor_file_offset": descriptor,
-        "filename_file_interval": filename_span,
-        "payload_file_offset": payload,
-        "mode": mode,
-        "halfword_count": halfwords,
-        "pair_count": halfwords // 2,
-        "payload_bytes": payload_size,
-        "completion_byte_address": completion,
-        "failure_report_code": struct.unpack_from("<H", image, entry + 0xD6)[0] & 0xFF,
-        "source_intervals": tuple(sorted(set(all_intervals))),
-    }
+    profile = { "signature": _PROFILE_SIGNATURE, "admission": "temporary-evidence-gated", "entry_file_offset": entry, "caller_file_offset": caller,
+        "callee_entries": tuple(sorted(set(calls))), "descriptor_file_offset": descriptor, "filename_file_interval": filename_span, "payload_file_offset":
+        payload, "mode": mode, "halfword_count": halfwords, "pair_count": halfwords // 2, "payload_bytes": payload_size, "completion_byte_address": completion,
+        "failure_report_code": struct.unpack_from("<H", image, entry + 0xD6)[0] & 0xFF, "source_intervals": tuple(sorted(set(all_intervals))), }
     if not legacy:
         if halfwords != 0x1000:
             return None, "dmd5100-760-fixed-count-unclosed"
@@ -190,7 +137,6 @@ def _profile_at(image: bytes, entry: int) -> tuple[dict | None, str]:
                 return None, "dmd5100-760-literal-owner-unclosed"
         profile['source_intervals'] = tuple(sorted(set(owned+[code]+pools)))
     return profile, "accepted"
-
 
 def find_dmd5100_profile(image: bytes) -> tuple[dict | None, str]:
     """Return one fully linked source profile; this is not hardware identity."""
@@ -208,9 +154,7 @@ def find_dmd5100_profile(image: bytes) -> tuple[dict | None, str]:
         return None, "dmd5100-typed-driver-ambiguous"
     return _profile_at(image, candidates[0])
 
-
 _DMD_510X_SIGNATURE = bytes.fromhex("f0b539480027006801250024002800d060e0")
-
 
 def download_signature_position(image: bytes) -> int | None:
     """Return the unique generic DMD entry signature in legacy priority order."""

@@ -1,0 +1,114 @@
+"""Immutable captures between boot detection stages."""
+from __future__ import annotations
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class LayoutCapture:
+    path: object
+    overrides: object
+    chipset: object
+    compound_fujitsu: object
+    confidence: object
+    detection_notes: object
+    image: object
+    image_kind: object
+    image_offset: object
+    linker: object
+    loaded: object
+    model: object
+    override_model: object
+    primary_image: object
+    ram_base: object
+    ram_bootstrap_profile: object
+    ram_size: object
+    requested_flash_size: object
+    requested_load_address: object
+    required_flash_extent: object
+    scan_chipset: object
+    scan_flash_size: object
+    verified_model: object
+
+@dataclass(frozen=True)
+class DriverCapture:
+    audio_address: object
+    audio_transport: object
+    auto_relative: object
+    board_adc_address: object
+    board_adc_reader_address: object
+    board_status_input: object
+    boot_keysense_release: object
+    busy_delay_address: object
+    dc0_board_adc_profile: object
+    delay_address: object
+    fast_boot_address: object
+    framebuffer: object
+    framebuffer_address: object
+    framebuffer_flush_address: object
+    framebuffer_format: object
+    framebuffer_rect_flush_address: object
+    framebuffer_stride: object
+    guest_owned_status_72c: object
+    height: object
+    ma2_silent_boot_address: object
+    mapped_file: object
+    mapped_position: object
+    mapped_runtime: object
+    overlays: object
+    page_panel: object
+    ready_poll: object
+    revision: object
+    rex_basic_irq_profile: object
+    rex_idle_address: object
+    rex_irq_arm_address: object
+    rex_irq_route: object
+    rex_static_c40_controller_observation: object
+    rex_static_controller_candidate: object
+    rex_tick_address: object
+    rex_tick_ms: object
+    runtime_position: object
+    runtime_signature: object
+    sbi_bootstrap_profile: object
+    sd810_profile: object
+    spi_nv_profile: object
+    uart_console: object
+    uis_idle_body_address: object
+    uis_idle_entry_address: object
+    width: object
+
+@dataclass(frozen=True)
+class ResourceCapture:
+    adjacent: object
+    adjacent_amd: object
+    adjacent_secondary_size: object
+    arm_memory_copy_addresses: object
+    clear_layout: object
+    compound_secondary_offset: object
+    compound_secondary_size: object
+    copy_layout: object
+    crc16_address: object
+    default_flash_state: object
+    default_secondary_state: object
+    descriptor_flash_id: object
+    direct_middle_nand: object
+    dmd_download_address: object
+    eeprom_geometry_address: object
+    eeprom_read_address: object
+    eeprom_static_capacity: object
+    eeprom_write_address: object
+    flash_id_address: object
+    flash_size: object
+    guarded_nand: object
+    legacy_efs_page_read_address: object
+    memory_clear_addresses: object
+    memory_copy_addresses: object
+    nand_bad_block_address: object
+    nand_enabled: object
+    nand_read_address: object
+    nand_write_address: object
+    native_nand_profile: object
+    primary_flash_probe_address: object
+    ramp_layout: object
+    register_ramp_addresses: object
+    revision_profile: object
+    secondary_flash_read_address: object
+    secondary_flash_write_address: object

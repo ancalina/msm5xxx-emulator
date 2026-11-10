@@ -6,10 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.model import (
-    _product_constructor_model, detect_model, embedded_model_scores,
-    verified_embedded_model,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_product_constructor_model = device_domain('identity.model')._product_constructor_model
+detect_model = device_domain('identity.model').detect_model
+embedded_model_scores = device_domain('identity.model').embedded_model_scores
+verified_embedded_model = device_domain('identity.model').verified_embedded_model
 from corpus import FIRMWARE_ROOT
 
 
@@ -93,7 +94,7 @@ class ModelIdentityTests(unittest.TestCase):
             path = Path(directory) / 'SCH-X123.bin'
             path.write_bytes(raw)
             actual = detect(path)
-            with patch('msm5xxx_emulator.detection.firmware.detect_model',
+            with patch('msm5xxx_emulator.detection.plan.detect_model',
                        return_value='SCH-X123'):
                 filename_only = detect(path)
         self.assertEqual(actual.model, 'LG-AB123')
@@ -201,7 +202,8 @@ class ModelIdentityTests(unittest.TestCase):
 
 # Separate namespace: browser product software label, not the AT model alias.
 def browser_fixture(start=0x100, label=b'CDM-1234/T10'):
-    from msm5xxx_emulator.detection.model import _BROWSER_BODIES
+    from msm5xxx_emulator.detection.registry import device_domain
+    _BROWSER_BODIES = device_domain('identity.model')._BROWSER_BODIES
     raw=bytearray(b'\xff'*0x6000)
     sites={'producer':start,'append':start+0x400,'span':start+0x500,
            'init':start+0x700,'strlen':start+0x900,'getter':start+0xb00,
@@ -232,7 +234,8 @@ def browser_fixture(start=0x100, label=b'CDM-1234/T10'):
 
 class BrowserModelIdentityTests(unittest.TestCase):
     def test_linked_browser_label_relocates_preserves_suffix_and_confidence(self):
-        from msm5xxx_emulator.detection.model import _browser_product_model
+        from msm5xxx_emulator.detection.registry import device_domain
+        _browser_product_model = device_domain('identity.model')._browser_product_model
         for start in (0x100,0x240,0x400):
             raw,sites=browser_fixture(start)
             self.assertEqual(_browser_product_model(bytes(raw)),
@@ -257,7 +260,8 @@ class BrowserModelIdentityTests(unittest.TestCase):
         self.assertEqual(detect_model(bytes(raw),Path('neutral.bin'),chipset='MSM5000',notes=notes),'BRAND-X123')
         self.assertIn('model-evidence conflict',notes)
     def test_raw_record_missing_or_foreign_callee_and_caller_reject(self):
-        from msm5xxx_emulator.detection.model import _browser_product_model
+        from msm5xxx_emulator.detection.registry import device_domain
+        _browser_product_model = device_domain('identity.model')._browser_product_model
         raw,sites=browser_fixture()
         self.assertIsNone(_browser_product_model(bytes(raw[sites['record']:]))[0])
         shifted,_=browser_fixture(0x122)
@@ -272,7 +276,8 @@ class BrowserModelIdentityTests(unittest.TestCase):
         for key in ('getter','append','init','span','strlen','stub'):
             changed=bytearray(raw);at=sites[key];changed[at:at+4]=b'\xff'*4
             self.assertIsNone(_browser_product_model(bytes(changed))[0])
-        from msm5xxx_emulator.detection.model import _BROWSER_BODIES
+        from msm5xxx_emulator.detection.registry import device_domain
+        _BROWSER_BODIES = device_domain('identity.model')._BROWSER_BODIES
         for kind,(_,offsets) in _BROWSER_BODIES.items():
             for offset in offsets:
                 changed=bytearray(raw);pc=sites[kind]+offset;delta=0x10000-pc-4
@@ -281,7 +286,9 @@ class BrowserModelIdentityTests(unittest.TestCase):
         for end in (sites['producer']+0x80,sites['getter']+7,sites['record']+20):
             self.assertIsNone(_browser_product_model(bytes(raw[:end]))[0])
     def test_every_fixed_producer_and_builder_halfword_and_duplicate_reject(self):
-        from msm5xxx_emulator.detection.model import _browser_product_model,_BROWSER_BODIES
+        from msm5xxx_emulator.detection.registry import device_domain
+        _browser_product_model = device_domain('identity.model')._browser_product_model
+        _BROWSER_BODIES = device_domain('identity.model')._BROWSER_BODIES
         raw,sites=browser_fixture()
         for kind,(encoded,calls) in _BROWSER_BODIES.items():
             variable={i for offset in calls for i in range(offset,offset+4)}
@@ -295,7 +302,9 @@ class BrowserModelIdentityTests(unittest.TestCase):
 
 
 def adr_browser_fixture(start=0x100, label=b'XYZ-1234/T10'):
-    from msm5xxx_emulator.detection.model import _BROWSER_ADR_BODIES, _BROWSER_LENGTH_FRAME
+    from msm5xxx_emulator.detection.registry import device_domain
+    _BROWSER_ADR_BODIES = device_domain('identity.model')._BROWSER_ADR_BODIES
+    _BROWSER_LENGTH_FRAME = device_domain('identity.model')._BROWSER_LENGTH_FRAME
     raw=bytearray(b'\xff'*(start+0x2000))
     sites={kind:start+offset for kind,offset in
            (('producer',0),('getter',0x400),('append',0x500),('span',0x600),
@@ -331,7 +340,8 @@ def adr_browser_fixture(start=0x100, label=b'XYZ-1234/T10'):
 
 class ADRBrowserIdentityTests(unittest.TestCase):
     def test_relocated_neutral_and_generic_label_is_only_provisional(self):
-        from msm5xxx_emulator.detection.model import _browser_product_model
+        from msm5xxx_emulator.detection.registry import device_domain
+        _browser_product_model = device_domain('identity.model')._browser_product_model
         for start,label in((0x100,b'XYZ-1234/T10'),(0x400,b'ABC-4321/T20')):
             raw,_=adr_browser_fixture(start,label)
             self.assertEqual(_browser_product_model(bytes(raw)),(label.decode(),'provisional-browser-product-adr-constructor'))
@@ -342,7 +352,9 @@ class ADRBrowserIdentityTests(unittest.TestCase):
             self.assertEqual(detect_model(bytes(raw),Path('SCH-X123.bin'),{'SCH-X777':10},notes=notes),'SCH-X777')
             self.assertIn('model-evidence conflict',notes)
     def test_fixed_bodies_calls_getter_record_frame_and_bounds_fail_closed(self):
-        from msm5xxx_emulator.detection.model import _BROWSER_ADR_BODIES,_browser_product_model
+        from msm5xxx_emulator.detection.registry import device_domain
+        _BROWSER_ADR_BODIES = device_domain('identity.model')._BROWSER_ADR_BODIES
+        _browser_product_model = device_domain('identity.model')._browser_product_model
         raw,sites=adr_browser_fixture()
         for kind,(body,calls)in _BROWSER_ADR_BODIES.items():
             variable={i for offset in calls for i in range(offset,offset+4)}
@@ -364,7 +376,8 @@ class ADRBrowserIdentityTests(unittest.TestCase):
         for end in(sites['producer']+0x8d,sites['getter']+10,sites['record']+20,sites['version']+5):
             self.assertIsNone(_browser_product_model(bytes(raw[:end]))[0])
     def test_duplicate_foreign_record_and_mixed_classes_are_ambiguous(self):
-        from msm5xxx_emulator.detection.model import _browser_product_model
+        from msm5xxx_emulator.detection.registry import device_domain
+        _browser_product_model = device_domain('identity.model')._browser_product_model
         raw,sites=adr_browser_fixture()
         record=raw[sites['record']:sites['record']+80]
         changed=bytearray(raw);changed[sites['record']+0x100:sites['record']+0x150]=record
@@ -380,7 +393,8 @@ class ADRBrowserIdentityTests(unittest.TestCase):
         self.assertEqual(_browser_product_model(bytes(partial))[0],'CDM-1234/T10')
     def test_two_supplied_full_and_partial_labels_only(self):
         import hashlib
-        from msm5xxx_emulator.detection.model import _browser_product_model
+        from msm5xxx_emulator.detection.registry import device_domain
+        _browser_product_model = device_domain('identity.model')._browser_product_model
         root=FIRMWARE_ROOT
         cases=[('incoming-20260719-r1/MSM5100/T055BW1T19_1.242_JTAG.bin','24bf05931ac81cce005b1ad5e970e061b38daf25ea3d70f658e2fa66fb801491'),
                ('incoming-msm5xxx-candidates-20260726/Audiovox/CDM-8600/T055BM1T16_2.242_Memory/T055BM1T16_2.242_Memory.bin','3ce5fac1b66816972a11236f239d62207dd584f067c809a44922631e0cbd8753')]
@@ -393,7 +407,8 @@ class ADRBrowserIdentityTests(unittest.TestCase):
             self.assertIsNone(verified_embedded_model(raw))
             self.assertEqual(path.stat().st_mtime_ns,before.st_mtime_ns)
     def test_old_literal_getter_still_requires_record_pointer_identity(self):
-        from msm5xxx_emulator.detection.model import _browser_product_model
+        from msm5xxx_emulator.detection.registry import device_domain
+        _browser_product_model = device_domain('identity.model')._browser_product_model
         raw,sites=browser_fixture();copy_at=0x5f00
         raw[copy_at:copy_at+13]=b'CDM-1234/T10\0'
         from msm5xxx_emulator.detection.arm import thumb_bl_target

@@ -1,5 +1,6 @@
 """Focused static-only auxiliary completion shape tests."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import struct
 import os
@@ -7,22 +8,22 @@ from pathlib import Path
 import unittest
 from corpus import snippet
 
-from msm5xxx_emulator.detection.baseband import (
-    detect_aux_completion_shape,
-    detect_search2_result_shape,
-    find_search2_transport_profile,
-    find_search1_transport_profile,
-    find_search1_abort_profile,
-    find_tx_init_profile,
-    find_tx_frame_profile,
-    find_finger_transport_profile,
-    find_decoder_init_profile,
-    find_combiner_clock_profile,
-    find_paging_decoder_profile,
-    find_traffic_decoder_profile,
-    _find_finger_quality,
-)
-from msm5xxx_emulator.detection.rex import find_rex_5ms_sleep_timer
+from msm5xxx_emulator.detection.registry import device_domain
+detect_aux_completion_shape = device_domain('baseband.rules').detect_aux_completion_shape
+detect_search2_result_shape = device_domain('baseband.rules').detect_search2_result_shape
+find_search2_transport_profile = device_domain('baseband.rules').find_search2_transport_profile
+find_search1_transport_profile = device_domain('baseband.rules').find_search1_transport_profile
+find_search1_abort_profile = device_domain('baseband.rules').find_search1_abort_profile
+find_tx_init_profile = device_domain('baseband.rules').find_tx_init_profile
+find_tx_frame_profile = device_domain('baseband.rules').find_tx_frame_profile
+find_finger_transport_profile = device_domain('baseband.rules').find_finger_transport_profile
+find_decoder_init_profile = device_domain('baseband.rules').find_decoder_init_profile
+find_combiner_clock_profile = device_domain('baseband.rules').find_combiner_clock_profile
+find_paging_decoder_profile = device_domain('baseband.rules').find_paging_decoder_profile
+find_traffic_decoder_profile = device_domain('baseband.rules').find_traffic_decoder_profile
+_find_finger_quality = device_domain('baseband.rules')._find_finger_quality
+from msm5xxx_emulator.detection.registry import device_domain
+find_rex_5ms_sleep_timer = device_domain('rex.rules').find_rex_5ms_sleep_timer
 from corpus import FIRMWARE_ROOT
 
 
@@ -88,8 +89,9 @@ class BasebandDetectionTests(unittest.TestCase):
         self.assertFalse(find_paging_decoder_profile(bytes(damaged), tick)["accepted"])
 
     def test_traffic_decoder_two_rom_class_and_dependency_bounds(self):
-        from msm5xxx_emulator.detection.firmware import detect
-        from msm5xxx_emulator.detection.memory_layout import find_linker_layout
+        from msm5xxx_emulator.detection.registry import device_domain
+        detect = boot_plan.detect
+        from msm5xxx_emulator.detection.layout_queries import find_linker_layout
         for path, image, tick in self._traffic_images():
             with self.subTest(firmware=path.name):
                 profile = find_traffic_decoder_profile(image, tick)
@@ -196,7 +198,8 @@ class BasebandDetectionTests(unittest.TestCase):
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
             self.skipTest("firmware corpus unavailable; set MSM5XXX_TEST_FIRMWARE_ROOT")
-        from msm5xxx_emulator.detection.firmware import detect
+        from msm5xxx_emulator.detection.registry import device_domain
+        detect = boot_plan.detect
         for path in paths:
             image = path.read_bytes()
             tick = find_rex_5ms_sleep_timer(image)[1]
@@ -264,7 +267,8 @@ class BasebandDetectionTests(unittest.TestCase):
         self.assertTrue(profile["accepted"], profile["reject_reason"])
         self.assertFalse(profile["active"])
         self.assertEqual(profile["fifo_port"], 0x03000298)
-        from msm5xxx_emulator.detection.firmware import detect
+        from msm5xxx_emulator.detection.registry import device_domain
+        detect = boot_plan.detect
         config = detect(path)
         for address, size in profile["code_dependencies"]:
             self.assertTrue(0 <= address <= min(len(image), config.flash_size) - size)
@@ -301,7 +305,8 @@ class BasebandDetectionTests(unittest.TestCase):
             self.assertIn(profile["callback_size"], (0x100, 0x102))
             self.assertEqual(profile["armed_flag"] + 12, profile["counter_address"])
             self.assertEqual(profile["first_flag_load"], profile["callback"] + 0x18)
-            from msm5xxx_emulator.detection.firmware import detect
+            from msm5xxx_emulator.detection.registry import device_domain
+            detect = boot_plan.detect
             config = detect(path)
             self.assertEqual(profile["code_dependencies"], (
                 (profile["callback"], profile["callback_size"]),
@@ -383,7 +388,7 @@ class BasebandDetectionTests(unittest.TestCase):
                          literal_at(entry + 2), literal_at(entry + 8),
                          literal_at(entry + 0xa), literal_at(entry + 0x3c),
                          literal_at(transport["consumer_entry"] + 0xc),
-                         literal_at(shared["worker"] + 4)]
+                         literal_at(shared["task"] + 4)]
             for at in mutations:
                 with self.subTest(firmware=path.name, mutation=hex(at)):
                     changed = bytearray(image)
@@ -545,7 +550,7 @@ class BasebandDetectionTests(unittest.TestCase):
                  0x2904, 0x8495, 0xDBF4, 0xBDF0)
         struct.pack_into(f"<{len(words)}H", image, 0x180, *words)
         struct.pack_into("<I", image, 0x200, 0x03000800)
-        self.assertEqual(reason(image), "search2-worker-cardinality:0")
+        self.assertEqual(reason(image), "search2-task-cardinality:0")
         self.assertFalse(find_search2_transport_profile(bytes(image), 0)["active"])
 
     def test_search2_result_order_and_rejected_near_misses(self) -> None:

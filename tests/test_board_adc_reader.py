@@ -1,5 +1,6 @@
 """Regression tests for shared MSM5000 board ADC reader discovery/device path."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from pathlib import Path
 import struct
@@ -10,7 +11,8 @@ from unittest.mock import patch
 
 from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_DATA_ADDRESS, find_board_adc_reader)
 from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_READ_OFFSET)
-from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
 from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_EXTENDED_FIXED, BOARD_ADC_READER_EXTENDED_SIZE, BOARD_ADC_READER_LITERAL, BOARD_ADC_READER_REORDERED_FIXED, BOARD_ADC_READER_VARIANT_SIZE, board_adc_reader_read_offset_at, find_dc0_board_adc_profile)
 from corpus import FIRMWARE_ROOT
 

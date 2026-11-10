@@ -26,7 +26,7 @@ class PairedRowPageTests(unittest.TestCase):
                 for value in (0xb0 | page, 0x10, 0): command(value)
                 for _ in range(128): data(a); data(b)
             command(0xaf)
-        with patch('msm5xxx_emulator.detection.mono_page.find_odd_byte_page_profile',
+        with patch('msm5xxx_emulator.detection.devices.display.mono_page.find_odd_byte_page_profile',
                    return_value=(profile, 'synthetic')):
             for value in profile['init_commands']: command(value)
             raster(1,0)

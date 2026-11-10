@@ -7,11 +7,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection import external_bus
-from msm5xxx_emulator.detection.external_bus import (
-    _available_external_ram,
-    detect_external_bus,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+external_bus = device_domain('external_bus.rules')
+from msm5xxx_emulator.detection.registry import device_domain
+_available_external_ram = device_domain('external_bus.rules')._available_external_ram
+detect_external_bus = device_domain('external_bus.rules').detect_external_bus
 from msm5xxx_emulator.qemu.transport import qemu_external_bus_property
 from test_external_devices import (
     ldr_literal, put16, put32, _ram_readback_image, _boot_gpio_bit9_image,

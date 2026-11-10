@@ -3,7 +3,8 @@ from __future__ import annotations
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.tone import find_tone_generator
+from msm5xxx_emulator.detection.registry import device_domain
+find_tone_generator = device_domain('audio.tone').find_tone_generator
 
 
 _DIVIDERS = (307500, 2152500, 4305000, 8610000)

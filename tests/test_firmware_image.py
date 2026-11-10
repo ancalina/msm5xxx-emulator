@@ -1,5 +1,6 @@
 """Strict Intel HEX/HXB normalization regressions."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from io import BytesIO
 import hashlib
@@ -13,7 +14,8 @@ import zipfile
 
 import msm5xxx_emulator.detection.firmware_image as firmware_image
 from msm5xxx_emulator.core.device_state import DeviceStateMixin
-from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
 from msm5xxx_emulator.detection.facts import fact_scope, facts_for
 from msm5xxx_emulator.detection.firmware_image import (
     MAX_LOGICAL_IMAGE_SIZE, decode_intel_hex, decode_intel_hex_view,

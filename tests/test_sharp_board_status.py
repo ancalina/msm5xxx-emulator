@@ -6,9 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from corpus import firmware_path
-from msm5xxx_emulator.detection.sharp_board_status import (
-    find_sharp_board_status_profile,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+find_sharp_board_status_profile = device_domain('storage.sharp_board_status').find_sharp_board_status_profile
 from msm5xxx_emulator.qemu.transport import qemu_sharp_board_status_property
 
 
@@ -95,7 +94,7 @@ class SharpBoardStatusTests(unittest.TestCase):
     def test_transport_rechecks_loaded_source_and_respects_existing_owner(self):
         config = SimpleNamespace(flash_size=8, ram_base=RAM_BASE, ram_size=RAM_SIZE)
         profile = {"rf": {"address": 0x03000730, "mask": 1, "default": 1}, "lid": None}
-        target = "msm5xxx_emulator.detection.sharp_board_status.find_sharp_board_status_profile"
+        target = "msm5xxx_emulator.detection.devices.storage.sharp_board_status.find_sharp_board_status_profile"
         with patch(target, return_value=(profile, "accepted")) as finder:
             self.assertEqual(qemu_sharp_board_status_property(b"source!!", b"loaded!!", config,
                                                                claimed=False),

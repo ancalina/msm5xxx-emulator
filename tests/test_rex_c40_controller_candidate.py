@@ -1,5 +1,6 @@
 """C40 static observations stay telemetry-only and fail closed."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import struct
 import tempfile
@@ -7,8 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.rex import find_rex_static_c40_controller_observation
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
+from msm5xxx_emulator.detection.registry import device_domain
+find_rex_static_c40_controller_observation = device_domain('rex.rules').find_rex_static_c40_controller_observation
 
 
 def _bl(source: int, target: int) -> bytes:
@@ -202,7 +205,7 @@ class C40ObservationTests(unittest.TestCase):
             firmware.write_bytes(b"\xff" * 0x100)
             for observation, note in ((accepted, "observation detected"),
                                       (rejected, "c40-handler-not-unique")):
-                with patch("msm5xxx_emulator.detection.firmware."
+                with patch("msm5xxx_emulator.detection.devices.rex.capture."
                            "find_rex_static_c40_controller_observation",
                            return_value=observation):
                     config = detect(firmware)

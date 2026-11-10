@@ -6,9 +6,10 @@ from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
-from msm5xxx_emulator.detection.input_sd810 import (
-    sd810_fold_event_source, sd810_fold_irq_source, sd810_gpio_board_status_profile,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+sd810_fold_event_source = device_domain('input.sd810').sd810_fold_event_source
+sd810_fold_irq_source = device_domain('input.sd810').sd810_fold_irq_source
+sd810_gpio_board_status_profile = device_domain('input.sd810').sd810_gpio_board_status_profile
 from msm5xxx_emulator.qemu.transport import qemu_sd810_sxs_menu_selection
 
 

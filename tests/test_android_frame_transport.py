@@ -44,7 +44,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
             binary.write_bytes(b'input')
             request = dict(experimental_rex=False, firmware=str(binary),
                            profile=profile, qemu=str(binary), state=None)
-            with mock.patch('msm5xxx_emulator.detection.firmware.detect',
+            with mock.patch('msm5xxx_emulator.detection.detect',
                             return_value=config), mock.patch(
                                 'msm5xxx_emulator.qemu.transport.Transport', return_value=transport) as constructor:
                 try:
@@ -76,7 +76,7 @@ class AndroidFrameTransportTests(unittest.TestCase):
             request = dict(experimental_rex=False, firmware=str(binary),
                            profile=profile, qemu=str(binary), state=None,
                            virtual_network=True, network_host_time=True, network_start_time=1037837100)
-            with mock.patch('msm5xxx_emulator.detection.firmware.detect',
+            with mock.patch('msm5xxx_emulator.detection.detect',
                             return_value=config), mock.patch(
                                 'msm5xxx_emulator.qemu.transport.Transport', return_value=transport) as constructor:
                 try:

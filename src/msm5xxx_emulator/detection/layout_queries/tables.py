@@ -1,0 +1,336 @@
+from __future__ import annotations
+
+PAGE = 0x1000
+_HIGH_RAM_TEST_PREFIX = bytes.fromhex("54019fe5000090e50110a0e30020a0e3")
+_HIGH_RAM_TEST_SHA256 = ("6b3b59b43cc612c0e58a369709895a11607f138d5229d75121df6852ae4c89e8")
+
+def _high_ram_readback_layout(image: bytes, position: int) -> tuple[int, int] | None:
+    from . import struct
+    layouts = []
+    if position >= 28 and struct.unpack_from('<I', image, position-28)[0] == 0x14000000:
+        layouts.append((position-28, position))
+    if (position >= 60 and not position & 3 and image[position-20:position] == bytes.fromhex('5c019fe558019fe554019fe554019fe554019fe5') and struct.unpack_from('<I',
+        image, position-60)[0] == 0x14000000):
+        table, entry = position-60, position-20
+        valid = True
+        for offset, field in ((0, 28), (4, 28), (8, 28), (12, 32), (16, 36)):
+            instruction = struct.unpack_from('<I', image, entry+offset)[0]
+            literal = entry+offset+8+(instruction & 0xFFF)
+            if (literal > len(image)-4 or struct.unpack_from('<I', image, literal)[0] != table+field):
+                valid = False
+                break
+        if valid:
+            layouts.append((table, entry))
+    return layouts[0] if len(layouts) == 1 else None
+
+def find_high_ram_readback_tests(image: bytes) -> list[int]:
+    """Find the complete readback body with one closed descriptor layout."""
+    from . import _HIGH_RAM_TEST_PREFIX, _HIGH_RAM_TEST_SHA256, _high_ram_readback_layout, find_all, hashlib
+    return [position for position in find_all(image[:0x10000], _HIGH_RAM_TEST_PREFIX) if _high_ram_readback_layout(image, position) is not None and hashlib.sha256(image[position:position
+        + 0x150]).hexdigest() == _HIGH_RAM_TEST_SHA256]
+
+def _reset_copy_covers_upper_half(image: bytes, called: set[int], base: int, size: int) -> bool:
+    """Match a closed literal-descriptor copy, including its loop operands."""
+    from . import struct, thumb_literal_value
+    shapes = ((0x4800, 0x6804, 0x4800, 0x6800, 0x1826, 0x4800, 0x6805, 0xE001, 0xCD01, 0xC401, 0x42B4, 0xD3FB), (0x4A00, 0x6814, 0x4A00, 0x6812, 0x18A6, 0x4A00,
+        0x6815, 0xE001, 0xCD04, 0xC404, 0x42B4, 0xD3FB),)
+    for target in called:
+        if not target & 1:
+            continue
+        start = target & ~1
+        for pc in range(start, min(start + 0x400, len(image) - 23), 2):
+            words = struct.unpack_from('<12H', image, pc)
+            normalized = tuple(word & 0xFF00 if i in (0, 2, 5) else word for i, word in enumerate(words))
+            if normalized not in shapes:
+                continue
+            register = (words[0] >> 8) & 7
+            pointers = [thumb_literal_value(image, pc + offset, register) for offset in (0, 4, 10)]
+            if any(p is None or p & 3 or p > len(image) - 4 for p in pointers):
+                continue
+            destination_ptr, length_ptr, source_ptr = pointers
+            if (length_ptr != destination_ptr + 4 or source_ptr != destination_ptr - 4):
+                continue
+            destination, length, source = (struct.unpack_from('<I', image, p)[0] for p in pointers)
+            if (not (destination | length | source) & 3 and length > 0 and source + length <= len(image) and base + size // 2 <= destination < destination +
+                length <= base + size):
+                return True
+    return False
+
+def high_ram_bootstrap_profile(image: bytes) -> tuple[int, int] | None:
+    """Require a closed extent table and a reset-linked RAM consumer."""
+    from . import PAGE, _high_ram_readback_layout, _reset_copy_covers_upper_half, find_high_ram_readback_tests, struct
+    if len(image) < 4:
+        return None
+    vector = struct.unpack_from("<I", image)[0]
+    if vector & 0xFF000000 != 0xEA000000:
+        return None
+    displacement = (vector & 0xFFFFFF) << 2
+    if displacement & 0x02000000:
+        displacement -= 0x04000000
+    reset = 8 + displacement
+    if not 0 <= reset < min(len(image) - 24, 0x10000):
+        return None
+    called: set[int] = set()
+    for pc in range(reset, min(reset + 0x400, len(image) - 24), 4):
+        words = struct.unpack_from("<5I", image, pc)
+        if (words[0] & 0xFFFFF000 == 0xE59F4000 and words[1] == 0xE3140001 and words[2] & 0xFFFFF000 == 0x159FE000 and words[3] & 0xFFFFF000 == 0x059FE000 and
+            words[4] == 0xE12FFF14):
+            literal = pc + 8 + (words[0] & 0xFFF)
+            return_literal = pc + 20 + (words[3] & 0xFFF)
+            if (literal <= len(image) - 4 and return_literal <= len(image) - 4 and struct.unpack_from("<I", image, return_literal)[0] == pc + 24):
+                target = struct.unpack_from("<I", image, literal)[0]
+                if target & 1:
+                    thumb_return = pc + 16 + (words[2] & 0xFFF)
+                    if (thumb_return > len(image) - 4
+                            or struct.unpack_from('<I', image, thumb_return)[0]
+                            != (pc + 20) | 1
+                            or struct.unpack_from('<H', image, pc + 20)[0]
+                            != 0x4778):  # Thumb BX PC returns to aligned ARM.
+                        continue
+                called.add(target)
+    found: set[tuple[int, int]] = set()
+    for position in find_high_ram_readback_tests(image):
+        if position < 28 or position + 0x178 > len(image):
+            continue
+        layout = _high_ram_readback_layout(image, position)
+        if layout is None:
+            continue
+        table, entry = layout
+        base, extent, stride, word, half, byte, watchdog = struct.unpack_from("<7I", image, table)
+        if (base != 0x14000000 or extent not in (0x3FFDFF, 0x3FFFFF, 0x7FFDFF, 0x7FFFFF) or (stride, word, half, byte, watchdog) != (0x10, 0x55AA0F, 0xAA0F,
+            0x55, 0x030006D0)):
+            continue
+        valid = True
+        for offset, field in ((0, 0), (0x10, 8), (0x40, 24), (0x6C, 4), (0x80, 4), (0xF4, 12), (0x108, 16), (0x11C, 20)):
+            instruction = struct.unpack_from("<I", image, position + offset)[0]
+            literal = position + offset + 8 + (instruction & 0xFFF)
+            if (literal > len(image) - 4 or struct.unpack_from("<I", image, literal)[0] != table + field):
+                valid = False
+                break
+        size = (extent + PAGE) & ~(PAGE - 1)
+        linked = (entry in called or (entry == position and _reset_copy_covers_upper_half(image, called, base, size)))
+        if valid and linked:
+            found.add((base, size))
+    return next(iter(found)) if len(found) == 1 else None
+
+_BOOT_REGISTER_TABLE_LOOP = bytes.fromhex("c100004a5158002900d0c10089188988c200004b9a581180" "411c0904090c081c00e7")
+_BOOT_REGISTER_TABLE_WILDCARDS = frozenset((2, 8, 18, 32))
+_BOOT_REGISTER_DESTINATIONS = (0x048000A0, 0x03000738, 0x0300073C)
+ARM_MEMORY_COPY_SIGNATURE = bytes.fromhex("030052e33e00009a03c010e20800000a0130d1e402005ce3" "0c2082e001c0d1940130c0e40130d134")
+ARM_MEMORY_COPY_TAIL = bytes.fromhex("043080241040bde81eff2f01822fb0e10120d1440130d124" "01c0d1240120c0440130c02401c0c0241eff2fe1")
+ARM_MEMORY_COPY_TAIL_OFFSET = 0xF8
+_BOOTSTRAP_PROGRESS_CLEAR = bytes.fromhex("b4420dd202e0201d041cf9e700202060a003f8d1")
+_DUAL_SDRAM_BOOTSTRAP = bytes.fromhex("8c009fe50000d0e5020000e2020050e30300000a7c009fe5" "0010d0e5011081e30010c0e570209fe512ff2fe1")
+_DUAL_SDRAM_STATUS_LITERAL_OFFSET = 0x94
+_DUAL_SDRAM_FLAG_LITERAL_OFFSET = 0x98
+_DUAL_SDRAM_DISPATCH_LITERAL_OFFSET = 0x9C
+_DUAL_SDRAM_LOW_BASE = 0x01000000
+_DUAL_SDRAM_HIGH_BASE = 0x01800000
+_DUAL_SDRAM_END = 0x02000000
+_HIGH_BANK_READER_BOOTSTRAP = bytes.fromhex("0321c905081c00b5")
+_HIGH_BANK_READER_BOOTSTRAP_TAIL = bytes.fromhex("002008bc1847")
+_HIGH_BANK_READER_ENTRY = bytes.fromhex("f3b5184e0d1c30780128")
+_HIGH_BANK_READER = bytes.fromhex("ffb5061c1c1c86b00025")
+_HIGH_BANK_READER_ASSIGN = bytes.fromhex("b8631c2000ab1870381c")
+_HIGH_BANK_READER_CONSUMER = bytes.fromhex("b8b5041c002000ab1870084d0027a06ba26f291c")
+
+def _bootstrap_ram_base(image: bytes) -> int | None:
+    """Recover the SDRAM bank from the reset clear loop's own descriptor."""
+    from . import _BOOTSTRAP_PROGRESS_CLEAR, find_all, struct, thumb_literal_value
+    found: set[int] = set()
+    for position in find_all(image, _BOOTSTRAP_PROGRESS_CLEAR):
+        if position < 18:
+            continue
+        words = struct.unpack_from("<9H", image, position - 18)
+        if not (words[0] & 0xFF00 == 0x4800 and words[1] == 0x6800 and words[2] & 0xFF00 == 0x4900 and words[3: 6] == (0x6809, 0x1840, 0x1C06) and words[6] &
+            0xFF00 == 0x4800 and words[7:] == (0x6800, 0x1C04)):
+            continue
+        start_pointer = thumb_literal_value(image, position - 18, 0)
+        size_pointer = thumb_literal_value(image, position - 14, 1)
+        if (start_pointer is None or start_pointer != thumb_literal_value(image, position - 6, 0) or not 0 <= start_pointer <= len(image) - 4 or not 0 <=
+            size_pointer <= len(image) - 4):
+            continue
+        start = struct.unpack_from("<I", image, start_pointer)[0]
+        size = struct.unpack_from("<I", image, size_pointer)[0]
+        for base in (0x01000000, 0x01800000):
+            if base <= start < start + size <= base + 0x00800000:
+                found.add(base)
+    return next(iter(found)) if len(found) == 1 else None
+
+def _boot_register_table_pointer(image: bytes) -> int | None:
+    """Return the common reset loop's table pointer when uniquely observed."""
+    from . import _BOOT_REGISTER_TABLE_LOOP, _BOOT_REGISTER_TABLE_WILDCARDS, struct
+    limit = min(len(image), 0x4000)
+    size = len(_BOOT_REGISTER_TABLE_LOOP)
+    found: set[int] = set()
+    for position in range(0, limit - size + 1, 2):
+        candidate = image[position:position + size]
+        if any(index not in _BOOT_REGISTER_TABLE_WILDCARDS and candidate[index] != expected for index, expected in enumerate(_BOOT_REGISTER_TABLE_LOOP)):
+            continue
+        pointers: list[int] = []
+        for instruction_position in (position + 2, position + 18):
+            instruction = struct.unpack_from("<H", image, instruction_position)[0]
+            literal = ((instruction_position + 4) & ~3) + (instruction & 0xFF) * 4
+            if literal + 4 > len(image):
+                break
+            pointers.append(struct.unpack_from("<I", image, literal)[0])
+        if len(pointers) != 2 or pointers[0] != pointers[1]:
+            continue
+        found.add(pointers[0])
+    return next(iter(found)) if len(found) == 1 else None
+
+def _is_boot_register_table(image: bytes, offset: int) -> bool:
+    from . import _BOOT_REGISTER_DESTINATIONS, struct
+    if not 0 <= offset <= len(image) - 32:
+        return False
+    entries = struct.unpack_from("<8I", image, offset)
+    return (entries[0::2] == (*_BOOT_REGISTER_DESTINATIONS, 0) and entries[1::2][-1] == 0)
+
+def restore_sparse_nor_gap(image: bytes) -> tuple[bytes, tuple[int, int] | None]:
+    """Restore a cross-validated erased 0x20-byte hole in a sparse NOR dump."""
+    from . import _boot_register_table_pointer, _is_boot_register_table, arm_vector_score, struct
+    gap_offset, gap_size = 0x1000, 0x20
+    if len(image) < 0x4040 or arm_vector_score(image) < 7:
+        return image, None
+    table = _boot_register_table_pointer(image)
+    if (table is None or table <= gap_offset + gap_size or _is_boot_register_table(image, table) or not _is_boot_register_table(image, table - gap_size)):
+        return image, None
+    targets: list[int] = []
+    for index, word in enumerate(struct.unpack_from("<8I", image), 0):
+        if index == 0:
+            continue
+        if word & 0x0E000000 != 0x0A000000:
+            return image, None
+        displacement = (word & 0x00FFFFFF) << 2
+        if displacement & 0x02000000:
+            displacement -= 0x04000000
+        targets.append((index * 4 + 8 + displacement) & 0xFFFFFFFF)
+    vector_block = min(targets) - 4
+    shifted = vector_block - gap_size
+    if (vector_block <= gap_offset or arm_vector_score(image, vector_block) >= 4 or arm_vector_score(image, shifted) < 7):
+        return image, None
+    return (image[:gap_offset] + b"\xff" * gap_size + image[gap_offset:], (gap_offset, gap_size))
+
+def find_arm_vector_offset(image: bytes) -> tuple[int, int]:
+    """Return the best small dump-header offset and validated vector score."""
+    from . import arm_vector_score
+    candidates = [(0, arm_vector_score(image, 0))]
+    for offset in range(4, min(0x100, len(image) - 32) + 1, 4):
+        candidates.append((offset, arm_vector_score(image, offset)))
+    best_score = max(score for _offset, score in candidates)
+    return next(item for item in candidates if item[1] == best_score)
+
+def infer_ram_base(layout: LinkerLayout | None, chipset: str, image: bytes = b"") -> int:
+    """Select the 8 MiB SDRAM bank that contains linker data and BSS."""
+    from . import _bootstrap_ram_base, struct
+    if layout is not None:
+        first = layout.data_target
+        last = layout.bss_target + layout.bss_size
+        for base in (0x01000000, 0x01800000):
+            if base <= first and last <= base + 0x00800000:
+                return base
+    if image:
+        if (bootstrap_base := _bootstrap_ram_base(image)) is not None:
+            return bootstrap_base
+        # Linker tables are absent in several partial builds.  Literal pools
+        # in the reset/driver region still reveal which external SDRAM bank
+        # the image was linked against.  Requiring a 3:1 margin avoids random
+        # resource words deciding the result.
+        counts: list[int] = []
+        sample = image[:min(len(image), 0x20000)]
+        sample = sample[:len(sample) & ~3]
+        words = tuple(value[0] for value in struct.iter_unpack("<I", sample))
+        for base in (0x01000000, 0x01800000):
+            counts.append(sum(base <= value < base + 0x00800000 for value in words))
+        if max(counts, default=0) >= 32:
+            if counts[0] >= counts[1] * 3:
+                return 0x01000000
+            if counts[1] >= counts[0] * 3:
+                return 0x01800000
+    return 0x01000000 if chipset in ("MSM5000", "MSM5500") else 0x01800000
+
+def has_dual_sdram_bootstrap(image: bytes, layout: LinkerLayout | None) -> bool:
+    """Require one closed reset path before widening high-bank SDRAM."""
+    from . import _DUAL_SDRAM_BOOTSTRAP, _DUAL_SDRAM_DISPATCH_LITERAL_OFFSET, _DUAL_SDRAM_END, _DUAL_SDRAM_FLAG_LITERAL_OFFSET, _DUAL_SDRAM_HIGH_BASE, _DUAL_SDRAM_LOW_BASE, _DUAL_SDRAM_STATUS_LITERAL_OFFSET, find_all, struct
+    if layout is None:
+        return False
+    high_end = layout.bss_target + layout.bss_size
+    if not (_DUAL_SDRAM_HIGH_BASE <= layout.data_target and layout.data_target + layout.data_size <= high_end and high_end <= _DUAL_SDRAM_END):
+        return False
+    matches: list[int] = []
+    for position in find_all(image, _DUAL_SDRAM_BOOTSTRAP):
+        dispatch_offset = position + _DUAL_SDRAM_DISPATCH_LITERAL_OFFSET
+        if dispatch_offset + 4 > len(image):
+            continue
+        status = struct.unpack_from("<I", image, position + _DUAL_SDRAM_STATUS_LITERAL_OFFSET)[0]
+        flag = struct.unpack_from("<I", image, position + _DUAL_SDRAM_FLAG_LITERAL_OFFSET)[0]
+        dispatch = struct.unpack_from("<I", image, dispatch_offset)[0]
+        if (status != 0x0300072C or flag != _DUAL_SDRAM_LOW_BASE + 0x110 or (dispatch & 1) == 0 or not 0x1000 <= (dispatch & ~1) < len(image)):
+            continue
+        matches.append(position)
+    return len(matches) == 1
+
+def has_high_bank_reader_bootstrap(image: bytes) -> bool:
+    """Accept one complete Thumb bootstrap that consumes high-bank SDRAM."""
+    from . import _HIGH_BANK_READER, _HIGH_BANK_READER_ASSIGN, _HIGH_BANK_READER_BOOTSTRAP, _HIGH_BANK_READER_BOOTSTRAP_TAIL, _HIGH_BANK_READER_CONSUMER, _HIGH_BANK_READER_ENTRY, find_all, thumb_bl_target
+    matches: list[int] = []
+    for position in find_all(image, _HIGH_BANK_READER_BOOTSTRAP):
+        if image[position + 20:position + 26] != _HIGH_BANK_READER_BOOTSTRAP_TAIL:
+            continue
+        reader_entry = thumb_bl_target(image, position + 8)
+        if (reader_entry is None or image[reader_entry:reader_entry + len(_HIGH_BANK_READER_ENTRY)] != _HIGH_BANK_READER_ENTRY):
+            continue
+        reader = thumb_bl_target(image, reader_entry + 0x3C)
+        if (reader is None or image[reader:reader + len(_HIGH_BANK_READER)] != _HIGH_BANK_READER or image[reader + 0x5C:reader + 0x5C + len(_HIGH_BANK_READER_ASSIGN)]
+            != _HIGH_BANK_READER_ASSIGN):
+            continue
+        consumer = thumb_bl_target(image, reader + 0x66)
+        if (consumer is None or image[consumer:consumer + len(_HIGH_BANK_READER_CONSUMER)] != _HIGH_BANK_READER_CONSUMER or thumb_bl_target(image, position + 12)
+            is None or thumb_bl_target(image, position + 16) is None):
+            continue
+        matches.append(position)
+    return len(matches) == 1
+
+def plausible_ram_seed_size(image_size: int, flash_size: int, ram_size: int = 0x00800000) -> int:
+    """Reject tiny capture trailers while preserving real RAM snapshots."""
+    tail = max(0, image_size - flash_size)
+    return min(tail, ram_size) if tail >= 0x10000 else 0
+
+def aligned(value: int) -> int:
+    from . import PAGE
+    return (value + PAGE - 1) & -PAGE
+
+def interval_gaps(start: int, end: int, excluded: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Subtract half-open intervals and return remaining half-open gaps."""
+    if start >= end:
+        return []
+    gaps: list[tuple[int, int]] = []
+    cursor = start
+    for left, right in sorted(excluded):
+        left, right = max(start, left), min(end, right)
+        if left >= right or right <= cursor:
+            continue
+        if cursor < left:
+            gaps.append((cursor, left))
+        cursor = max(cursor, right)
+    if cursor < end:
+        gaps.append((cursor, end))
+    return gaps
+
+def normalised_flash_size(size: int, address_limit: int) -> int:
+    """Recover physical NOR capacity from partial dumps and small trailers."""
+    capacities = (0x200000, 0x400000, 0x800000, 0x1000000, 0x1800000, 0x2000000)
+    for capacity in capacities:
+        if capacity <= address_limit and size <= capacity:
+            return capacity
+        # A short trailer beyond an exact NOR capacity is normally a captured
+        # RAM prefix, not a non-standard flash chip size.
+        if capacity < address_limit and capacity < size <= capacity + 0x10000:
+            return capacity
+    return min(size, address_limit)
+
+def referenced_flash_extent(image: bytes, load_address: int = 0) -> int:
+    """Infer NOR capacity from closed references into an absent dump tail."""
+    from . import _referenced_flash_extent, layout_facts_for
+    facts = layout_facts_for(image)
+    return facts.query("referenced-flash-extent", (load_address,), lambda: _referenced_flash_extent(image, load_address, facts),)

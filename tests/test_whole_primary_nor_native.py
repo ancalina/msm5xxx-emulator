@@ -181,7 +181,7 @@ int main(void) {
 '''
         flags = shlex.split(subprocess.check_output(
             ['pkg-config', '--cflags', '--libs', 'glib-2.0'], text=True, timeout=10))
-        with tempfile.TemporaryDirectory(prefix='.whole-primary-native-', dir=repo) as directory:
+        with tempfile.TemporaryDirectory(prefix='.whole-primary-native-') as directory:
             path = Path(directory)
             (path / 'check.c').write_text(code)
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',

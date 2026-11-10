@@ -6,7 +6,7 @@ import struct
 import tempfile
 import unittest
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.memory_layout import (
+from msm5xxx_emulator.detection.layout_queries import (
     find_high_ram_readback_tests, high_ram_bootstrap_profile, find_linker_layout,
 )
 

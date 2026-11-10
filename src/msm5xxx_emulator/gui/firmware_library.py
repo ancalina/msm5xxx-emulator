@@ -1,5 +1,6 @@
 """Filesystem firmware library data; never starts an emulator."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import hashlib
 import json
@@ -49,7 +50,8 @@ def describe_file(path: Path, cache: dict, *, detector: Callable | None = None,
     digest = source_hash(path, maximum)
     if digest not in cache:
         if detector is None:
-            from ..detection.firmware import detect
+            from msm5xxx_emulator.detection.registry import device_domain
+            detect = boot_plan.detect
             detector = detect
         try:
             config = detector(path)

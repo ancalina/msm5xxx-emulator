@@ -1,12 +1,9 @@
 """Immutable observations produced by shared image analysis."""
 from __future__ import annotations
-
 from .values import CodeAddress
 from .values import SymbolicValue
 from capstone import arm as a
-
 from dataclasses import dataclass
-
 
 @dataclass(frozen=True, slots=True)
 class Literal:
@@ -120,7 +117,7 @@ class FunctionFacts:
         for source, target in self.control_edges:
             edges.setdefault(source, set()).add(target)
         calls = {site for site, _ in self.calls} - set(allowed_calls)
-        current, path, seen = start, [], set()
+        current, path, seen = start,[], set()
         while current not in seen and current in instructions:
             if (current.phase, current.bank) != (start.phase, start.bank):
                 return None
@@ -137,10 +134,8 @@ class FunctionFacts:
     def dominates(self, source: CodeAddress, target: CodeAddress) -> bool:
         """Whether every path from this complete local entry passes source."""
         instructions = set(self.instructions)
-        if (not self.complete or self.unresolved or self.entry not in instructions
-                or source not in instructions or target not in instructions
-                or any(a not in instructions or b not in instructions
-                       for a, b in self.control_edges)):
+        if (not self.complete or self.unresolved or self.entry not in instructions or source not in instructions or target not in instructions or any(a not in
+            instructions or b not in instructions for a, b in self.control_edges)):
             return False
         edges = {}
         for start, end in self.control_edges:
@@ -159,16 +154,12 @@ class FunctionFacts:
         return reaches() and not reaches(source)
 
     def peripheral_map(self, ranges=((0x03000000, 0x10000000),)):
-        return tuple(use for use in self.accesses
-                     if any(lo <= use.address and use.address + use.width <= hi
-                            for lo, hi in ranges))
+        return tuple(use for use in self.accesses if any(lo <= use.address and use.address + use.width <= hi for lo, hi in ranges))
 
     @property
     def polls(self):
         # A loop-contained read is a poll candidate, not a ready-bit contract.
-        return tuple(use for use in self.accesses if use.operation == 'read'
-                     and any(target <= use.instruction.address <= branch
-                             for branch, target in self.back_edges))
+        return tuple(use for use in self.accesses if use.operation == 'read' and any(target <= use.instruction.address <= branch for branch, target in self.back_edges))
 
 @dataclass(frozen=True, slots=True)
 class ScatterCandidate:

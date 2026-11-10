@@ -1,5 +1,6 @@
 """Static C80 controller/callback candidates must fail closed."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import struct
 import tempfile
@@ -8,14 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
 from msm5xxx_emulator.detection.arm import thumb_bl_target
-from msm5xxx_emulator.detection.rex import (
-    _controller_registrar_at,
-    _legacy_620_vector_copy,
-    find_rex_static_controller_callback_candidate,
-    find_rex_static_overlay_controller_callback_candidate,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_controller_registrar_at = device_domain('rex.rules')._controller_registrar_at
+_legacy_620_vector_copy = device_domain('rex.rules')._legacy_620_vector_copy
+find_rex_static_controller_callback_candidate = device_domain('rex.rules').find_rex_static_controller_callback_candidate
+find_rex_static_overlay_controller_callback_candidate = device_domain('rex.rules').find_rex_static_overlay_controller_callback_candidate
 from corpus import FIRMWARE_ROOT, firmware_path
 
 RAM_5000 = {"ram_base": 0x01000000, "ram_size": 0x00800000}
@@ -639,7 +640,8 @@ class StaticControllerCandidateTests(unittest.TestCase):
                 self.assertTrue(fallback is None or not fallback["accepted"]
                                 or "group_row_size" not in fallback)
         # A second eligible copy tuple makes the provenance ambiguous.
-        from msm5xxx_emulator.detection.rex import _legacy_620_vector_copy
+        from msm5xxx_emulator.detection.registry import device_domain
+        _legacy_620_vector_copy = device_domain('rex.rules')._legacy_620_vector_copy
         source, target, size, _ = _legacy_620_vector_copy(image, **RAM_5000)
         changed = bytearray(image)
         record = image.find(struct.pack("<4I", source, target, size, target + size))
@@ -825,7 +827,7 @@ class StaticControllerCandidateTests(unittest.TestCase):
                     (accepted, "native pending, IRQ, and idle remain unproven"),
                     (rejected, "two-bank-handler-not-closed")):
                 with patch(
-                    "msm5xxx_emulator.detection.firmware."
+                    "msm5xxx_emulator.detection.devices.rex.capture."
                     "find_rex_static_controller_callback_candidate",
                     return_value=candidate,
                 ):

@@ -3,7 +3,8 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection import protected_nor
+from msm5xxx_emulator.detection.registry import device_domain
+protected_nor = device_domain('storage.protected_nor')
 
 
 def program(with_call=False):
@@ -32,11 +33,13 @@ class ProtectedNorContractTests(unittest.TestCase):
             body = protected_nor._body(bytes(image), entry, 'synthetic')
             self.assertEqual(body.values, {0: 0x03000720})
             self.assertEqual(body.pools, (pool,))
+            self.assertTrue(protected_nor._code(bytes(image), entry, 'synthetic'))
             self.assertEqual(list(protected_nor._hits(bytes(image), 'synthetic')), [entry])
             changed = bytearray(image)
             struct.pack_into('<H', changed, entry + 2, 0x2100)
+            self.assertFalse(protected_nor._body(bytes(changed), entry, 'synthetic'))
             self.assertFalse(protected_nor._code(bytes(changed), entry, 'synthetic'))
-            self.assertFalse(protected_nor._code(bytes(image[:pool]), entry, 'synthetic'))
+            self.assertFalse(protected_nor._body(bytes(image[:pool]), entry, 'synthetic'))
 
     def test_call_and_literal_fields_are_separate_evidence(self):
         image, entry, pool, mask = program(with_call=True)
@@ -45,6 +48,8 @@ class ProtectedNorContractTests(unittest.TestCase):
             body = protected_nor._body(bytes(image), entry, 'synthetic')
             self.assertEqual(body.targets, {2: 0x140})
             self.assertEqual(body.values, {0: 0x03000720})
+            self.assertTrue(protected_nor._code(bytes(image), entry, 'synthetic'))
             changed = bytearray(image)
             changed[entry + 2:entry + 6] = bytes(4)
+            self.assertFalse(protected_nor._body(bytes(changed), entry, 'synthetic'))
             self.assertFalse(protected_nor._code(bytes(changed), entry, 'synthetic'))

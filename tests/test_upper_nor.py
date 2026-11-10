@@ -1,5 +1,6 @@
 """Admitted upper-NOR detector and device ownership regressions."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from pathlib import Path
 import tempfile
@@ -7,13 +8,15 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.firmware import _infer_upper_nor
-from msm5xxx_emulator.detection import upper_nor
-from msm5xxx_emulator.detection.upper_nor import (
-    find_upper_amd_x16_nor,
-    find_upper_nor,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
+from msm5xxx_emulator.detection.registry import device_domain
+_infer_upper_nor = device_domain('storage.configuration').infer_upper_nor
+from msm5xxx_emulator.detection.registry import device_domain
+upper_nor = device_domain('storage.upper_nor')
+from msm5xxx_emulator.detection.registry import device_domain
+find_upper_amd_x16_nor = device_domain('storage.upper_nor').find_upper_amd_x16_nor
+find_upper_nor = device_domain('storage.upper_nor').find_upper_nor
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from corpus import FIRMWARE_ROOT
 

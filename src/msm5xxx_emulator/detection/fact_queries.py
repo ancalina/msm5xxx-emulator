@@ -1,19 +1,15 @@
 """Shared queries queries; no device selection."""
 from __future__ import annotations
-
 from .fact_models import FunctionFacts
-
 from .values import CodeAddress, SymbolicValue
 from capstone import arm as a
 import capstone as cs
-
 
 class FactQueries:
     def _reaching_sites(self, function, use, removed, include_entry, defines):
         """Walk complete local predecessors with a register/memory write query."""
         nodes = set(function.instructions)
-        if (not function.complete or function.unresolved or use not in nodes
-                or function.entry not in nodes):
+        if (not function.complete or function.unresolved or use not in nodes or function.entry not in nodes):
             return None
         predecessors, successors = {}, {}
         for source, target in function.control_edges:
@@ -46,8 +42,7 @@ class FactQueries:
             if written:
                 definitions.add(pc)
                 continue
-            previous = tuple(source for source in predecessors.get(pc, ())
-                             if source in reached)
+            previous = tuple(source for source in predecessors.get(pc, ()) if source in reached)
             if pc == function.entry:
                 if not include_entry:
                     return None
@@ -55,13 +50,9 @@ class FactQueries:
             elif not previous:
                 return None
             pending.extend(previous)
-        return (tuple(sorted(definitions, key=lambda pc: (
-                    -1, '', '', '') if pc is None else
-                    (pc.address, pc.isa, pc.phase, pc.bank)))
-                if definitions else None)
+        return (tuple(sorted(definitions, key=lambda pc: (-1, '', '', '') if pc is None else (pc.address, pc.isa, pc.phase, pc.bank))) if definitions else None)
 
-    def reaching_definitions(self, function: FunctionFacts, use: CodeAddress,
-                             register: int, *, cut_edges=(), include_entry=False):
+    def reaching_definitions(self, function: FunctionFacts, use: CodeAddress, register: int, *, cut_edges=(), include_entry=False):
         """Find the last register writes on every local path reaching a use.
 
         ``None`` denotes an entry value, opaque call result, conditional write
@@ -76,47 +67,31 @@ class FactQueries:
                 return None
         removed = frozenset(cut_edges)
         key = (id(function), use, register, removed, include_entry)
-
         def extract():
             calls = {site for site, _ in function.calls}
-            caller_saved = {a.ARM_REG_R0, a.ARM_REG_R1, a.ARM_REG_R2,
-                            a.ARM_REG_R3, a.ARM_REG_R12, a.ARM_REG_LR,
-                            a.ARM_REG_CPSR}
-
+            caller_saved = {a.ARM_REG_R0, a.ARM_REG_R1, a.ARM_REG_R2, a.ARM_REG_R3, a.ARM_REG_R12, a.ARM_REG_LR, a.ARM_REG_CPSR}
             def defines(pc):
                 instruction = self.decode(pc)
                 if instruction is None:
                     return None
-                if (instruction.id == a.ARM_INS_SVC
-                        or register in caller_saved and
-                        (pc in calls or instruction.id in (a.ARM_INS_BL, a.ARM_INS_BLX))):
+                if (instruction.id == a.ARM_INS_SVC or register in caller_saved and (pc in calls or instruction.id in (a.ARM_INS_BL, a.ARM_INS_BLX))):
                     return None
-                if (instruction.id == a.ARM_INS_MSR
-                        and instruction.operands
-                        and instruction.operands[0].type == a.ARM_OP_SYSREG
-                        and instruction.operands[0].reg & a.ARM_SYSREG_CPSR_C
-                        and not instruction.operands[0].reg & ~(
-                            a.ARM_SYSREG_CPSR_C | a.ARM_SYSREG_CPSR_X
-                            | a.ARM_SYSREG_CPSR_S | a.ARM_SYSREG_CPSR_F)
-                        and register in {a.ARM_REG_SP, a.ARM_REG_LR, a.ARM_REG_R8,
-                                         a.ARM_REG_R9, a.ARM_REG_R10,
-                                         a.ARM_REG_R11, a.ARM_REG_R12}):
+                if (instruction.id == a.ARM_INS_MSR and instruction.operands and instruction.operands[0].type == a.ARM_OP_SYSREG and instruction.operands[0].reg
+                    & a.ARM_SYSREG_CPSR_C and not instruction.operands[0].reg & ~(a.ARM_SYSREG_CPSR_C | a.ARM_SYSREG_CPSR_X | a.ARM_SYSREG_CPSR_S | a.ARM_SYSREG_CPSR_F)
+                    and register in {a.ARM_REG_SP, a.ARM_REG_LR, a.ARM_REG_R8, a.ARM_REG_R9, a.ARM_REG_R10, a.ARM_REG_R11, a.ARM_REG_R12}):
                     return None
                 try:
                     _, writes = instruction.regs_access()
                 except (AttributeError, RuntimeError, cs.CsError):
                     return None
-                written = register in writes or register == a.ARM_REG_CPSR and (
-                    instruction.update_flags or instruction.id == a.ARM_INS_MSR)
+                written = register in writes or register == a.ARM_REG_CPSR and (instruction.update_flags or instruction.id == a.ARM_INS_MSR)
                 if written and instruction.cc not in (a.ARM_CC_AL, a.ARM_CC_INVALID):
                     return None
                 return written
             return self._reaching_sites(function, use, removed, include_entry, defines)
         return self.memo('reaching-definitions', key, extract)
 
-    def memory_definitions(self, function: FunctionFacts, use: CodeAddress,
-                           address: int, *, width: int, cut_edges=(), include_entry=False,
-                           allowed_calls=()):
+    def memory_definitions(self, function: FunctionFacts, use: CodeAddress, address: int, *, width: int, cut_edges=(), include_entry=False, allowed_calls=()):
         """Find exact scalar stores reaching one concrete memory cell.
 
         Partial/wider overlaps, unknown aliases, conditional writes, opaque
@@ -128,29 +103,22 @@ class FactQueries:
         with self._lock:
             if id(function) not in self._function_ids:
                 return None
-        if (type(address) is not int or type(width) is not int
-                or width not in (1, 2, 4) or not 0 <= address < address + width <= 1 << 32):
+        if (type(address) is not int or type(width) is not int or width not in (1, 2, 4) or not 0 <= address < address + width <= 1 << 32):
             return None
         removed = frozenset(cut_edges)
         allowed = frozenset(allowed_calls)
-
         def extract():
             unknown = self.unmodelled_memory(function)
             if unknown is None:
                 return None
             unknown = set(unknown)
             calls = {site for site, _ in function.calls}
-            writes = {access.instruction: access for access in function.accesses
-                      if access.operation == 'write'}
-            writes.update({access.instruction: access for access in function.symbolic_accesses
-                           if access.operation == 'write'})
-
+            writes = {access.instruction: access for access in function.accesses if access.operation == 'write'}
+            writes.update({access.instruction: access for access in function.symbolic_accesses if access.operation == 'write'})
             def defines(pc):
                 instruction = self.decode(pc)
-                if (instruction is None or pc in unknown
-                        or instruction.id == a.ARM_INS_SVC
-                        or pc not in allowed and (pc in calls
-                            or instruction.id in (a.ARM_INS_BL, a.ARM_INS_BLX))):
+                if (instruction is None or pc in unknown or instruction.id == a.ARM_INS_SVC or pc not in allowed and (pc in calls or instruction.id in (a.ARM_INS_BL,
+                    a.ARM_INS_BLX))):
                     return None
                 if instruction.id not in (a.ARM_INS_STR, a.ARM_INS_STRB, a.ARM_INS_STRH):
                     return False
@@ -164,13 +132,11 @@ class FactQueries:
                     return None
                 if target + access.width <= address or address + width <= target:
                     return False
-                if (target != address or access.width != width
-                        or access.predicate not in (a.ARM_CC_AL, a.ARM_CC_INVALID)):
+                if (target != address or access.width != width or access.predicate not in (a.ARM_CC_AL, a.ARM_CC_INVALID)):
                     return None
                 return True
             return self._reaching_sites(function, use, removed, include_entry, defines)
-        return self.memo('memory-definitions',
-                         (id(function), use, address, width, removed, include_entry, allowed), extract)
+        return self.memo('memory-definitions', (id(function), use, address, width, removed, include_entry, allowed), extract)
 
     def ordered_events(self, function: FunctionFacts, sites, *, repeat_edges=()):
         """Order mandatory instruction sites by CFG relationships, not layout.
@@ -184,19 +150,15 @@ class FactQueries:
             if id(function) not in self._function_ids:
                 return None
         selected, removed = frozenset(sites), frozenset(repeat_edges)
-
         def extract():
             nodes, edges = set(function.instructions), set(function.control_edges)
-            if (not function.complete or function.unresolved or not selected <= nodes
-                    or not removed <= edges
-                    or any(source not in nodes or target not in nodes for source, target in edges)):
+            if (not function.complete or function.unresolved or not selected <= nodes or not removed <= edges or any(source not in nodes or target not in nodes
+                for source, target in edges)):
                 return None
             if not selected:
                 return ()
-            sequence = tuple(sorted(selected, key=lambda site: sum(
-                function.dominates(other, site) for other in selected)))
-            if any(not function.dominates(left, right)
-                   for left, right in zip(sequence, sequence[1:])):
+            sequence = tuple(sorted(selected, key=lambda site: sum(function.dominates(other, site) for other in selected)))
+            if any(not function.dominates(left, right) for left, right in zip(sequence, sequence[1:])):
                 return None
             exits = nodes - {source for source, _ in edges}
             if not exits or any(not function.dominates(sequence[-1], end) for end in exits):
@@ -216,8 +178,7 @@ class FactQueries:
             return sequence
         return self.memo('ordered-events', (id(function), selected, removed), extract)
 
-    def register_origins(self, function: FunctionFacts, use: CodeAddress,
-                         register: int, *, cut_edges=()):
+    def register_origins(self, function: FunctionFacts, use: CodeAddress, register: int, *, cut_edges=()):
         """Trace all local register copies to their original defining writes.
 
         Results retain the register written at each origin. Only unconditional
@@ -228,37 +189,28 @@ class FactQueries:
             if id(function) not in self._function_ids:
                 return None
         removed = frozenset(cut_edges)
-
         def extract():
             results = {}
-
             def visit(site, reg, active):
                 key = (site, reg)
                 if key in results:
                     return results[key]
                 if key in active or len(active) >= 64:
                     return None
-                definitions = self.reaching_definitions(
-                    function, site, reg, cut_edges=removed)
+                definitions = self.reaching_definitions(function, site, reg, cut_edges=removed)
                 if definitions is None:
                     return None
                 origins = set()
                 for definition in definitions:
                     ins = self.decode(definition)
                     source = None
-                    if (reg != a.ARM_REG_CPSR and ins is not None
-                            and ins.cc in (a.ARM_CC_AL, a.ARM_CC_INVALID)
-                            and not any(op.shift.type for op in ins.operands)):
+                    if (reg != a.ARM_REG_CPSR and ins is not None and ins.cc in (a.ARM_CC_AL, a.ARM_CC_INVALID) and not any(op.shift.type for op in ins.operands)):
                         ops = ins.operands
-                        if (ins.id in (a.ARM_INS_MOV, a.ARM_INS_MOVS)
-                                and len(ops) == 2 and ops[0].type == a.ARM_OP_REG
-                                and ops[0].reg == reg and ops[1].type == a.ARM_OP_REG):
+                        if (ins.id in (a.ARM_INS_MOV, a.ARM_INS_MOVS) and len(ops) == 2 and ops[0].type == a.ARM_OP_REG and ops[0].reg == reg and ops[1].type ==
+                            a.ARM_OP_REG):
                             source = ops[1].reg
-                        elif (ins.id in (a.ARM_INS_ADD, a.ARM_INS_SUB)
-                              and len(ops) in (2, 3)
-                              and ops[0].type == a.ARM_OP_REG and ops[0].reg == reg
-                              and ops[-1].type == a.ARM_OP_IMM and ops[-1].imm == 0
-                              and ops[-2].type == a.ARM_OP_REG):
+                        elif (ins.id in (a.ARM_INS_ADD, a.ARM_INS_SUB) and len(ops) in (2, 3) and ops[0].type == a.ARM_OP_REG and ops[0].reg == reg and ops[-1].type
+                            == a.ARM_OP_IMM and ops[-1].imm == 0 and ops[-2].type == a.ARM_OP_REG):
                             source = ops[-2].reg
                     if source is None:
                         origins.add((definition, reg))
@@ -267,9 +219,7 @@ class FactQueries:
                         if earlier is None:
                             return None
                         origins.update(earlier)
-                result = tuple(sorted(origins, key=lambda item: (
-                    item[0].address, item[0].isa, item[0].phase,
-                    item[0].bank, item[1])))
+                result = tuple(sorted(origins, key=lambda item: (item[0].address, item[0].isa, item[0].phase, item[0].bank, item[1])))
                 results[key] = result
                 return result
             return visit(use, register, frozenset())
@@ -280,16 +230,14 @@ class FactQueries:
         from .stack_facts import stack_frame
         return stack_frame(self, function)
 
-    def register_value(self, function: FunctionFacts, use: CodeAddress,
-                       register: int, *, cut_edges=(), follow_stack=False, allowed_calls=()):
+    def register_value(self, function: FunctionFacts, use: CodeAddress, register: int, *, cut_edges=(), follow_stack=False, allowed_calls=()):
         """Query values, optionally closing exact stack spill/reload dependencies.
 
         Preserved calls require separately proved non-aliasing memory effects;
         this never suppresses the normal caller-saved register clobbers.
         """
         from .value_query import register_value
-        return register_value(self, function, use, register, cut_edges=cut_edges,
-                              follow_stack=follow_stack, allowed_calls=allowed_calls)
+        return register_value(self, function, use, register, cut_edges=cut_edges, follow_stack=follow_stack, allowed_calls=allowed_calls)
 
     def branch_predicate(self, function: FunctionFacts, branch: CodeAddress, *, cut_edges=()):
         """Link a conditional branch to its flag producer and opaque reads."""
@@ -306,10 +254,7 @@ class FactQueries:
         with self._lock:
             if id(function) not in self._function_ids:
                 return None
-        scalar = {a.ARM_INS_LDR, a.ARM_INS_LDRB, a.ARM_INS_LDRH,
-                  a.ARM_INS_LDRSB, a.ARM_INS_LDRSH,
-                  a.ARM_INS_STR, a.ARM_INS_STRB, a.ARM_INS_STRH}
-
+        scalar = {a.ARM_INS_LDR, a.ARM_INS_LDRB, a.ARM_INS_LDRH, a.ARM_INS_LDRSB, a.ARM_INS_LDRSH, a.ARM_INS_STR, a.ARM_INS_STRB, a.ARM_INS_STRH}
         def extract():
             unknown = []
             for pc in function.instructions:
@@ -318,16 +263,13 @@ class FactQueries:
                     return None
                 if pc in function.scope_before or instruction.id in scalar:
                     continue
-                if (any(op.type == a.ARM_OP_MEM for op in instruction.operands)
-                        or instruction.mnemonic.startswith((
-                            'ldm', 'stm', 'push', 'pop', 'swp', 'vld', 'vst',
-                            'ldr', 'str', 'ldc', 'stc', 'rfe', 'srs'))):
+                if (any(op.type == a.ARM_OP_MEM for op in instruction.operands) or instruction.mnemonic.startswith(('ldm', 'stm', 'push', 'pop', 'swp', 'vld',
+                    'vst', 'ldr', 'str', 'ldc', 'stc', 'rfe', 'srs'))):
                     unknown.append(pc)
             return tuple(unknown)
         return self.memo('unmodelled-memory', (id(function),), extract)
 
-    def function_region(self, entry: CodeAddress, stop_at=(), budget=1024, *,
-                        stop_before=(), **options):
+    def function_region(self, entry: CodeAddress, stop_at=(), budget=1024, *, stop_before=(), **options):
         """Analyze a region through explicit, non-transfer endpoint instructions.
 
         A complete region has supplied code on every local path, reaches an
@@ -338,11 +280,8 @@ class FactQueries:
         observed, and neither their effects nor successors belong to the region.
         """
         exits = (stop_at,) if isinstance(stop_at, CodeAddress) else tuple(stop_at)
-        before = ((stop_before,) if isinstance(stop_before, CodeAddress)
-                  else tuple(stop_before))
-        if (not exits and not before
-                or not all(isinstance(pc, CodeAddress) for pc in (*exits, *before))
-                or set(exits) & set(before)):
+        before = ((stop_before,) if isinstance(stop_before, CodeAddress) else tuple(stop_before))
+        if (not exits and not before or not all(isinstance(pc, CodeAddress) for pc in (*exits, *before)) or set(exits) & set(before)):
             raise ValueError('region endpoints must be distinct explicit code addresses')
         for pc in exits:
             ins = self.decode(pc)
@@ -351,9 +290,6 @@ class FactQueries:
                     _, writes = ins.regs_access()
                 except cs.CsError:
                     writes = ()
-                if (any(ins.group(group) for group in (
-                        cs.CS_GRP_CALL, cs.CS_GRP_JUMP, cs.CS_GRP_INT))
-                        or a.ARM_REG_PC in writes):
+                if (any(ins.group(group) for group in (cs.CS_GRP_CALL, cs.CS_GRP_JUMP, cs.CS_GRP_INT)) or a.ARM_REG_PC in writes):
                     raise ValueError('region endpoints cannot transfer control')
-        return self.function(entry, budget, _stop_after=frozenset(exits),
-                             _stop_before=frozenset(before), **options)
+        return self.function(entry, budget, _stop_after=frozenset(exits), _stop_before=frozenset(before), ** options)

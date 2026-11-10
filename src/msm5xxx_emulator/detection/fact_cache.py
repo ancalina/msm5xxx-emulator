@@ -1,8 +1,6 @@
 """Scoped and bounded reuse of immutable image analysis contexts."""
 from __future__ import annotations
-
 from .image_view import ImageView
-
 from .fact_context import FirmwareFacts
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -10,24 +8,18 @@ from contextvars import ContextVar
 from functools import wraps
 from threading import RLock
 
-
 _cache: OrderedDict[tuple[int, int, int], FirmwareFacts] = OrderedDict()
 _cache_lock = RLock()
-_scope_bindings: ContextVar[dict[tuple[int, int], tuple[bytes, FirmwareFacts]] | None] = ContextVar(
-    'firmware_facts_scope_bindings', default=None)
-_scope_prefixes: ContextVar[dict[tuple[int, int, int], tuple[bytes, bytes, FirmwareFacts | None]] | None] = ContextVar(
-    'firmware_facts_scope_prefixes', default=None)
-
+_scope_bindings: ContextVar[dict[tuple[int, int], tuple[bytes, FirmwareFacts]] | None] = ContextVar('firmware_facts_scope_bindings', default=None)
+_scope_prefixes: ContextVar[dict[tuple[int, int, int], tuple[bytes, bytes, FirmwareFacts | None]] | None] = ContextVar('firmware_facts_scope_prefixes', default=None)
 
 def _remember_context(facts: FirmwareFacts) -> None:
     with _cache_lock:
-        key = next((key for key, value in _cache.items() if value is facts),
-                   (id(facts.image), facts.base, id(facts.view)))
+        key = next((key for key, value in _cache.items() if value is facts), (id(facts.image), facts.base, id(facts.view)))
         _cache[key] = facts
         _cache.move_to_end(key)
         while len(_cache) > 4:
             _cache.popitem(last=False)
-
 
 @contextmanager
 def fact_scope():
@@ -42,7 +34,6 @@ def fact_scope():
         _scope_prefixes.reset(prefix_token)
         _scope_bindings.reset(token)
 
-
 def with_fact_scope(function):
     """Run a callable with an isolated scoped facts registry."""
     @wraps(function)
@@ -50,7 +41,6 @@ def with_fact_scope(function):
         with fact_scope():
             return function(*args, **kwargs)
     return scoped
-
 
 def bind_facts(image: bytes, view: ImageView, base: int = 0) -> FirmwareFacts | None:
     """Bind one immutable source object to its normalized view in this scope.
@@ -70,9 +60,7 @@ def bind_facts(image: bytes, view: ImageView, base: int = 0) -> FirmwareFacts | 
     # A later loader read can reuse analysis only after exact byte and mapping
     # equality, including holes, banks, phases and source provenance.
     with _cache_lock:
-        reusable = next(((key, facts) for key, facts in reversed(_cache.items())
-                         if facts.base == base and facts.image == image
-                         and facts.view == view), None)
+        reusable = next(((key, facts) for key, facts in reversed(_cache.items()) if facts.base == base and facts.image == image and facts.view == view), None)
         if reusable is not None:
             cached_key, facts = reusable
             _cache.move_to_end(cached_key)
@@ -82,7 +70,6 @@ def bind_facts(image: bytes, view: ImageView, base: int = 0) -> FirmwareFacts | 
     updated[key] = (image, facts)
     _scope_bindings.set(updated)
     return facts
-
 
 def source_prefix(image: bytes, size: int) -> bytes:
     """Return an immutable prefix, retaining any active normalized view.
@@ -97,7 +84,6 @@ def source_prefix(image: bytes, size: int) -> bytes:
         return bytes(image[:size])
     if size >= len(image):
         return image
-
     bindings = _scope_bindings.get()
     prefix_cache = _scope_prefixes.get()
     bound = None
@@ -111,7 +97,6 @@ def source_prefix(image: bytes, size: int) -> bytes:
     cached = prefix_cache.get(key)
     if cached is not None and cached[0] is image:
         return cached[1]
-
     prefix = image[:size]
     prefix_facts = None
     if bound is not None and bindings is not None:
@@ -123,9 +108,7 @@ def source_prefix(image: bytes, size: int) -> bytes:
         _scope_prefixes.set(updated)
     return prefix
 
-
-def facts_for(image: bytes, base: int = 0,
-              view: ImageView | None = None) -> FirmwareFacts:
+def facts_for(image: bytes, base: int = 0, view: ImageView | None = None) -> FirmwareFacts:
     """Identity cache avoids hashing large images at every primitive read."""
     if type(image) is bytes and view is None:
         bindings = _scope_bindings.get()

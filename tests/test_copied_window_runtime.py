@@ -13,7 +13,7 @@ INIT = (0x2c, 2, 1, 0x20, 5, 0x22, 0x11, 0x26, 15, 0x40, 1,
         0x53, 0, 0x34, 0x86, 0x30, 0, 0x2a, 0xcc, 0x43, 0, 127,
         0x42, 0, 127, 0x10, 2)
 CONTROLS = [[0x51], [0x2c, 0x51], [0x50, 0x2d], [0x50, 0x2d, 0x26, 0, 2, 0]]
-FINDER = 'msm5xxx_emulator.detection.copied_window.find_copied_window_profile'
+FINDER = 'msm5xxx_emulator.detection.devices.display.copied_window.find_copied_window_profile'
 
 
 def profile():
@@ -140,7 +140,7 @@ class MuxPageRuntimeTests(unittest.TestCase):
                  mode_port=0x02800000, mode_mask=0x10, access_width=1)
         h.config.chipset = 'MSM5100'
         original = bytes(0x1000)
-        with patch('msm5xxx_emulator.detection.mux_page.find_mux_page_profile', return_value=(p, 'source')):
+        with patch('msm5xxx_emulator.detection.devices.display.mux_page.find_mux_page_profile', return_value=(p, 'source')):
             h._lcd_bind_source_mux(original, original if loaded is None else loaded, **kwargs)
 
     def test_source_raster_acquires_snapshot_and_geometry_ownership(self):
@@ -186,7 +186,7 @@ class GpioSerialRuntimeTests(unittest.TestCase):
             data_intervals=((0x300,0x320),),ram_intervals=((0x01000000,0x01001000),))
         original = bytes(0x1000)
         loaded = kwargs.pop('loaded',original)
-        with patch('msm5xxx_emulator.detection.gpio_serial.find_gpio_serial_profile',
+        with patch('msm5xxx_emulator.detection.devices.display.gpio_serial.find_gpio_serial_profile',
                    return_value=(candidate,'static-candidate')):
             return h._lcd_bind_source_gpio(original,loaded,**kwargs)
 
@@ -234,7 +234,7 @@ class BootPageRuntimeTests(unittest.TestCase):
             access_width=2,code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
             data_intervals=(),ram_intervals=((0x01000000,0x01001000),))
         loaded=kwargs.pop('loaded',bytes(0x1000))
-        with patch('msm5xxx_emulator.detection.boot_page.find_boot_page_profile',
+        with patch('msm5xxx_emulator.detection.devices.display.boot_page.find_boot_page_profile',
                    return_value=(candidate,'static-candidate')):
             return h._lcd_bind_source_boot_page(bytes(0x1000),loaded,**kwargs)
 
@@ -275,7 +275,7 @@ class ByteBootPageRuntimeTests(unittest.TestCase):
             code_intervals=((0x100,0x120),),literal_intervals=((0x200,0x204),),
             data_intervals=(),ram_intervals=((0x01000000,0x01001000),))
         h=Harness();h.config.chipset='MSM5100'
-        with patch('msm5xxx_emulator.detection.boot_page.find_boot_page_profile', return_value=(candidate,'candidate')):
+        with patch('msm5xxx_emulator.detection.devices.display.boot_page.find_boot_page_profile', return_value=(candidate,'candidate')):
             self.assertTrue(h._lcd_bind_source_boot_page(bytes(0x1000),bytes(0x1000)))
         for value in (0xae,0xaf):h._lcd_source_boot_page_write(0x02000000,1,value)
         for page in range(8):
@@ -296,7 +296,7 @@ class Rgb565BootRuntimeTests(unittest.TestCase):
             data_intervals=(),ram_intervals=((0x01000000,0x01001000),),
             iram_intervals=((0x03800000,0x03801000),))
         loaded=kwargs.pop('loaded',bytes(0x1000))
-        with patch('msm5xxx_emulator.detection.rgb565_boot.find_rgb565_boot_profile',
+        with patch('msm5xxx_emulator.detection.devices.display.rgb565_boot.find_rgb565_boot_profile',
                    return_value=(candidate,'static-candidate')):
             return h._lcd_bind_source_rgb565_boot(bytes(0x1000),loaded,**kwargs)
 
@@ -345,7 +345,7 @@ class BytePair565RuntimeTests(unittest.TestCase):
             data_intervals=(),ram_intervals=((0x01000000,0x01001000),),
             iram_intervals=((0x03800000,0x03801000),))
         loaded=kwargs.pop('loaded',bytes(0x1000))
-        with patch('msm5xxx_emulator.detection.bytepair565.find_bytepair565_profile',
+        with patch('msm5xxx_emulator.detection.devices.display.bytepair565.find_bytepair565_profile',
                    return_value=(candidate,'static-candidate')):
             return h._lcd_bind_source_bytepair565(bytes(0x1000),loaded,**kwargs)
 

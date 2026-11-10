@@ -116,7 +116,7 @@ class IOSRuntimeTests(unittest.TestCase):
                    "state": None, "experimental_rex": False, "virtual_network": True,
                    "network_host_time": True, "network_start_time": 1037837100}
         self.runtime.detect_profile = lambda _: json.dumps({"accepted": True})
-        with patch("msm5xxx_emulator.detection.firmware.detect", return_value=config), \
+        with patch("msm5xxx_emulator.detection.detect", return_value=config), \
              patch("msm5xxx_emulator.qemu.transport.Transport", return_value=transport) as factory, \
              patch("msm5xxx_emulator.qemu.transport.IOSLauncher"), \
              patch.object(self.runtime.threading, "Thread"):

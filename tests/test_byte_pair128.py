@@ -1,9 +1,12 @@
 """Synthetic paired-plane display source recognition."""
 import unittest
 
-from msm5xxx_emulator.detection.byte_pair128 import (
-    _WRITERS, _PAGE_COLUMN, _FLUSH, _PREFIX, find_byte_pair128_profile,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_WRITERS = device_domain('display.byte_pair128')._WRITERS
+_PAGE_COLUMN = device_domain('display.byte_pair128')._PAGE_COLUMN
+_FLUSH = device_domain('display.byte_pair128')._FLUSH
+_PREFIX = device_domain('display.byte_pair128')._PREFIX
+find_byte_pair128_profile = device_domain('display.byte_pair128').find_byte_pair128_profile
 from test_legacy_keypad import branch, literal
 
 

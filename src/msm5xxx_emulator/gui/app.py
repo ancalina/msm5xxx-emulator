@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import logging
 from pathlib import Path
@@ -12,7 +13,8 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import ImageTk
 
 from ..core.constants import BUILD_CODENAME
-from ..detection.firmware import DEFAULT_STATE_ROOT
+from msm5xxx_emulator.detection.registry import device_domain
+DEFAULT_STATE_ROOT = device_domain('storage.configuration').DEFAULT_STATE_ROOT
 from ..update import (UpdateError, UpdateInfo, application_root, check_for_update,
                       inplace_update_command, installation_status, prepare_update,
                       remember_update)

@@ -12,11 +12,8 @@ class LegacyPanel:
 
     def __init__(self, protocol: str):
         self.protocol = protocol
-        self.width, self.height, self.bits = {
-            'byte31': (128, 128, 8), 'column16': (128, 160, 16),
-            'direct16': (176, 220, 16), 'half43': (128, 144, 16),
-            'byte565_boot': (120, 133, 16),
-        }[protocol]
+        from msm5xxx_emulator.detection.registry import device_domain
+        self.width, self.height, self.bits = device_domain('display.binding').LEGACY_FORMATS[protocol]
         if protocol == 'byte565_boot':
             self.port = 0x02000000
         self.byte565_phase = 0

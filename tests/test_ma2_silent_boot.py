@@ -1,13 +1,16 @@
 """Yamaha MA2 silent-boot HLE qualification and ABI checks."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from pathlib import Path
 import unittest
 
 
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
-from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.boot import find_ma2_silent_boot_wait
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
+from msm5xxx_emulator.detection.registry import device_domain
+find_ma2_silent_boot_wait = device_domain('audio.boot_rules').find_ma2_silent_boot_wait
 from corpus import FIRMWARE_ROOT
 
 

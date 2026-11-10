@@ -8,19 +8,23 @@ import threading
 import unittest
 
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
-from msm5xxx_emulator.detection.display import detect_lcd_width_hint
-from msm5xxx_emulator.detection.display import (find_dual_page_ports,
-                                              find_paired_display_state_ports,
-                                              find_packed_cursor_port,
-                                              detect_packed_selector_port)
+from msm5xxx_emulator.detection.registry import device_domain
+detect_lcd_width_hint = device_domain('display.rules').detect_lcd_width_hint
+from msm5xxx_emulator.detection.registry import device_domain
+find_dual_page_ports = device_domain('display.rules').find_dual_page_ports
+find_paired_display_state_ports = device_domain('display.rules').find_paired_display_state_ports
+find_packed_cursor_port = device_domain('display.rules').find_packed_cursor_port
+detect_packed_selector_port = device_domain('display.rules').detect_packed_selector_port
 from msm5xxx_emulator.devices.display.protocols.direct import _028_SPLIT16_PREFIX
 
 
 class LCDGeometryTests(unittest.TestCase):
     def test_packed_selector_static_writer_requires_linked_records(self):
         import struct
-        from msm5xxx_emulator.detection.display import (
-            _SELECTOR_FULL, _SELECTOR_PARTIAL, _SELECTOR_TAIL)
+        from msm5xxx_emulator.detection.registry import device_domain
+        _SELECTOR_FULL = device_domain('display.rules')._SELECTOR_FULL
+        _SELECTOR_PARTIAL = device_domain('display.rules')._SELECTOR_PARTIAL
+        _SELECTOR_TAIL = device_domain('display.rules')._SELECTOR_TAIL
 
         def fixture(full=0x40, partial=0x200):
             image = bytearray(0x600)

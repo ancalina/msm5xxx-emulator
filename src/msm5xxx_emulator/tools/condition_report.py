@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Extract and group firmware-required boot conditions from a dump corpus."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import argparse
 from collections import Counter, defaultdict
@@ -10,9 +11,11 @@ import json
 from pathlib import Path
 import sys
 
-from ..detection.firmware import detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
 from ..detection.firmware_image import load_firmware_image
-from ..detection.input import detect_input_profile
+from msm5xxx_emulator.detection.registry import device_domain
+detect_input_profile = device_domain('input.rules').detect_input_profile
 
 
 FIRMWARE_SUFFIXES = (

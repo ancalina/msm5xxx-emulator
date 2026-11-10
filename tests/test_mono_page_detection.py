@@ -2,7 +2,8 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection import mono_page as detector
+from msm5xxx_emulator.detection.registry import device_domain
+detector = device_domain('display.mono_page')
 
 
 def fixture(shift=0, ram_shift=0, image=None):

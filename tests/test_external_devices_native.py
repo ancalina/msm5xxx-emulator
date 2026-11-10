@@ -326,7 +326,7 @@ int main(void) {
 '''
         flags = shlex.split(subprocess.check_output(
             ['pkg-config', '--cflags', '--libs', 'glib-2.0'], text=True, timeout=10))
-        with tempfile.TemporaryDirectory(prefix='.external-devices-native-', dir=repo) as directory:
+        with tempfile.TemporaryDirectory(prefix='.external-devices-native-') as directory:
             path = Path(directory)
             (path / 'check.c').write_text(harness)
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror',

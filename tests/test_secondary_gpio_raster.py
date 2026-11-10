@@ -2,7 +2,8 @@ import unittest
 from threading import RLock
 from types import SimpleNamespace
 from corpus import FIRMWARE_ROOT
-from msm5xxx_emulator.detection.secondary_gpio_raster import find_secondary_gpio_raster
+from msm5xxx_emulator.detection.registry import device_domain
+find_secondary_gpio_raster = device_domain('display.secondary_gpio_raster').find_secondary_gpio_raster
 from msm5xxx_emulator.devices.display.controller import DisplayControllerMixin
 from msm5xxx_emulator.devices.display.secondary_gpio_raster import SecondaryGpioRaster
 

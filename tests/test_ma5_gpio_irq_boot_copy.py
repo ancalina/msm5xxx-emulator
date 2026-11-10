@@ -4,8 +4,21 @@ import struct
 import unittest
 
 import os
-from msm5xxx_emulator.detection import ma5_gpio_irq as candidate
-from msm5xxx_emulator.detection.audio import find_ma5_readback_candidate
+from msm5xxx_emulator.detection.registry import device_domain
+candidate = device_domain('audio.ma5_gpio_irq')
+from msm5xxx_emulator.detection import startup_layouts
+
+def _span(image, entry, role):
+    if role == 'boot_copy':
+        return startup_layouts._boot_copy_span(image, entry)
+    return candidate._span(image, entry, role)
+
+def _templates(role):
+    if role == 'boot_copy':
+        return ((startup_layouts._BOOT_COPY_EXPECTED.hex(), (), startup_layouts._BOOT_COPY_LITERAL_OFFSETS, ()),)
+    return candidate._SPANS[role]
+from msm5xxx_emulator.detection.registry import device_domain
+find_ma5_readback_candidate = device_domain('audio.rules').find_ma5_readback_candidate
 from corpus import FIRMWARE_ROOT
 ROOT = FIRMWARE_ROOT
 FIRMWARE = ROOT / 'KTFT_X3500_verX3p56.73.0_riffdump_clean.bin'
@@ -16,17 +29,17 @@ class SD810ConditionalInstall(unittest.TestCase):
         if not firmware.is_file():
             self.skipTest('firmware corpus unavailable')
         image = firmware.read_bytes()
-        install = candidate._span(image, 0xAB58, 'install_conditional')
+        install = _span(image, 0xAB58, 'install_conditional')
         self.assertEqual(install['pins'][0x28], 5)
         self.assertEqual(install['pins'][0x44], 5)
         alternate = bytearray(image)
         alternate[0xAB58 + 0x74] ^= 1 << 7
-        self.assertEqual(candidate._span(alternate, 0xAB58, 'install_conditional')['size'],
+        self.assertEqual(_span(alternate, 0xAB58, 'install_conditional')['size'],
                          install['size'])
         invalid = bytearray(image)
         invalid[0xAB58 + 0x74] ^= 1 << 6
         with self.assertRaises(candidate._Reject):
-            candidate._span(invalid, 0xAB58, 'install_conditional')
+            _span(invalid, 0xAB58, 'install_conditional')
         audio = find_ma5_readback_candidate(image)
         route = candidate.find_ma5_gpio_irq_candidate(image, audio)
         self.assertEqual(route['status'], 'candidate')
@@ -43,19 +56,19 @@ class NewParentClass(unittest.TestCase):
 
     def test_finite_variants_and_roles(self):
         for role, entry, size in [('parent_register', 0x484868, 134), ('soc_dispatch', 0x484648, 392), ('exception_register', 0x45299C, 14), ('chip_isr', 0x561CB8, 88), ('install_direct', 0x3D5C90, 56)]:
-            span = candidate._span(self.image, entry, role)
+            span = _span(self.image, entry, role)
             self.assertEqual(span['size'], size)
             # Every fixed instruction byte participates in exact class recognition.
-            encoded, calls, literals, pins = next(row for row in candidate._SPANS[role] if len(bytes.fromhex(row[0])) == size)
+            encoded, calls, literals, pins = next(row for row in _templates(role) if len(bytes.fromhex(row[0])) == size)
             normalized = set(literals) | set(pins)
             normalized.update(x for o in calls for x in range(o, o + 4))
             image = bytearray(self.image)
             for offset in set(range(size)) - normalized:
                 image[entry + offset] ^= 0x80
                 with self.assertRaises(candidate._Reject, msg=(role, offset)):
-                    candidate._span(image, entry, role)
+                    _span(image, entry, role)
                 image[entry + offset] ^= 0x80
-        exception = candidate._span(self.image, 0x45299C, 'exception_register')
+        exception = _span(self.image, 0x45299C, 'exception_register')
         self.assertEqual(exception['literals'][0], 0x010F1FD0)
         self.assertEqual((struct.unpack_from('<H', self.image, exception['entry'] + 6)[0] >> 6 & 31) * 4, 0x1C)
 
@@ -83,7 +96,7 @@ class NewParentClass(unittest.TestCase):
         from test_audio_transport import _thumb_bl
         image = bytearray(self.image)
         for role, original in [('parent_register', 0x484868), ('soc_dispatch', 0x484648), ('exception_register', 0x45299C), ('chip_isr', 0x561CB8), ('install_direct', 0x3D5C90), ('boot_copy', 0xAD8)]:
-            span = candidate._span(self.image, original, role)
+            span = _span(self.image, original, role)
             entry = original + 0x2000
             code = bytearray(self.image[original:original+span['size']])
             pool = (entry + len(code) + 3) & ~3
@@ -102,7 +115,7 @@ class NewParentClass(unittest.TestCase):
                     struct.pack_into('<I', image, pool, value)
                     pool += 4
             image[entry:entry+len(code)] = code
-            self.assertEqual(candidate._span(image, entry, role)['size'], span['size'])
+            self.assertEqual(_span(image, entry, role)['size'], span['size'])
 
     def test_partition_and_partial_overlap(self):
         layouts = candidate._layouts(self.image)
@@ -139,12 +152,12 @@ class NewParentClass(unittest.TestCase):
         image = bytearray(self.image)
         # Every new call rejects invalid encoding, every fixed byte checked separately above.
         for role, entry in [('parent_register', 0x484868), ('soc_dispatch', 0x484648), ('chip_isr', 0x561CB8), ('install_direct', 0x3D5C90)]:
-            span = candidate._span(image, entry, role)
+            span = _span(image, entry, role)
             for offset in span['calls']:
                 original = image[entry+offset:entry+offset+4]
                 image[entry+offset:entry+offset+4] = bytes(4)
                 with self.assertRaises(candidate._Reject):
-                    candidate._span(image, entry, role)
+                    _span(image, entry, role)
                 image[entry+offset:entry+offset+4] = original
         # Mutations in graph/descriptor/read-consumer operands cannot become candidates.
         for address in (0x3ED220, 0x48482E, 0x4529A2, 0x8ED178, 0x8ED188, 0x8ED1C9, 0x3D5CB4, 0x3D5CBC):

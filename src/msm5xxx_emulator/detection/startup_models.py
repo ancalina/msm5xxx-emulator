@@ -1,8 +1,6 @@
 """Immutable result types for startup relocation proofs."""
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 from .facts import CodeAddress
 from .stack_facts import StackAccess
 
@@ -128,8 +126,6 @@ class VectorCopyRow:
         view before using them as evidence.
         """
         offset = guest_address - self.target
-        if (type(guest_address) is not int or type(size) is not int
-                or size <= 0 or offset < 0 or offset + size > self.size):
+        if (type(guest_address) is not int or type(size) is not int or size <= 0 or offset < 0 or offset + size > self.size):
             return None
         return self.source + offset
-

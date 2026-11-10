@@ -1,7 +1,14 @@
 import unittest
-from msm5xxx_emulator.devices.display.fa_direct_panel import (
-    FaDirectPanel, find_fa_direct_port, _ROW, _WINDOW, _CALLER, _HEIGHT,
-    _CONTROL_INIT, _CONTROL_STANDBY, _CONTROL_VALUES)
+from msm5xxx_emulator.devices.display.fa_direct_panel import FaDirectPanel
+from msm5xxx_emulator.detection.registry import device_domain
+find_fa_direct_port = device_domain("display.fa_direct").find_fa_direct_port
+_ROW = device_domain("display.fa_direct")._ROW
+_WINDOW = device_domain("display.fa_direct")._WINDOW
+_CALLER = device_domain("display.fa_direct")._CALLER
+_HEIGHT = device_domain("display.fa_direct")._HEIGHT
+_CONTROL_INIT = device_domain("display.fa_direct")._CONTROL_INIT
+_CONTROL_STANDBY = device_domain("display.fa_direct")._CONTROL_STANDBY
+_CONTROL_VALUES = device_domain("display.fa_direct")._CONTROL_VALUES
 
 
 class FaDirectTests(unittest.TestCase):

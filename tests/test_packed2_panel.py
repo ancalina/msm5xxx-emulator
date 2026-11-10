@@ -1,9 +1,11 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.devices.display.packed2_panel import (
-    Packed2Panel, find_packed2_port, _HELPER, _CONSUMER,
-)
+from msm5xxx_emulator.devices.display.packed2_panel import Packed2Panel
+from msm5xxx_emulator.detection.registry import device_domain
+find_packed2_port = device_domain("display.packed2").find_packed2_port
+_HELPER = device_domain("display.packed2")._HELPER
+_CONSUMER = device_domain("display.packed2")._CONSUMER
 
 
 def image():

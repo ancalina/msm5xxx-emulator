@@ -4,10 +4,14 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection import legacy_keypad
-from msm5xxx_emulator.detection.legacy_keypad import (
-    _SCAN_SIZE, _BOARD_SIZE, _BOARD_ANCHOR, _BOARD_BASE, find_legacy_six_row_keypad,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+legacy_keypad = device_domain('input.legacy_keypad')
+from msm5xxx_emulator.detection.registry import device_domain
+_SCAN_SIZE = device_domain('input.legacy_keypad')._SCAN_SIZE
+_BOARD_SIZE = device_domain('input.legacy_keypad')._BOARD_SIZE
+_BOARD_ANCHOR = device_domain('input.legacy_keypad')._BOARD_ANCHOR
+_BOARD_BASE = device_domain('input.legacy_keypad')._BOARD_BASE
+find_legacy_six_row_keypad = device_domain('input.legacy_keypad').find_legacy_six_row_keypad
 
 
 def branch(image, site, target):
@@ -80,7 +84,8 @@ class LegacyKeypadTests(unittest.TestCase):
         branch(image, 0x11c, 0x180)
         image[0x180:0x194] = bytes.fromhex('08b5044800ab007b58700020187000a8008808bd')
         struct.pack_into('<I', image, 0x194, 0x03000750)
-        with patch('msm5xxx_emulator.detection.sharp_intel._legacy_sharp_pcr_profile', return_value={}), \
+        with patch.dict(qemu_legacy_board_revision_property.__globals__,
+                        legacy_sharp_pcr_profile=lambda *_args: {}), \
              patch('msm5xxx_emulator.detection.devices.dmd.dual.find_dmd5000_profile', return_value={'entry': 0x100}):
             self.assertEqual(qemu_legacy_board_revision_property(image, 0x800000, {}),
                              'board-revision=300075c:60')

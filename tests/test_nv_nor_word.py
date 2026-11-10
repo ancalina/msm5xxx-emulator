@@ -5,9 +5,9 @@ import unittest
 from msm5xxx_emulator.detection.facts import CodeAddress, FirmwareFacts
 from msm5xxx_emulator.detection.image_view import ImageView
 from msm5xxx_emulator.detection.image_view import LoadOperation
-from msm5xxx_emulator.detection.nv_nor_word import (
-    _descriptor_profile, _source_pool_matches,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_descriptor_profile = device_domain('storage.nv_nor_word')._descriptor_profile
+_source_pool_matches = device_domain('storage.nv_nor_word')._source_pool_matches
 from msm5xxx_emulator.detection.startup_facts import (
     OrderedCopyTransfer, VectorCopyRow, vector_copy_rows,
 )

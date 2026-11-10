@@ -1,7 +1,9 @@
 """Synthetic padded allocation and independent main/sub scanout regression."""
 import struct
 import unittest
-from msm5xxx_emulator.detection.display import find_dual_page_ports, detect_lcd_width_hint
+from msm5xxx_emulator.detection.registry import device_domain
+find_dual_page_ports = device_domain('display.rules').find_dual_page_ports
+detect_lcd_width_hint = device_domain('display.rules').detect_lcd_width_hint
 from msm5xxx_emulator.devices.display.page_panel import PagePanel
 import test_lcd_geometry as fixtures
 

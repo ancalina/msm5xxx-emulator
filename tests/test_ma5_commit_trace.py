@@ -55,7 +55,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory(dir=root) as temporary:
+        with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary); (path/'test.c').write_text(harness)
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-pedantic',
                             '-I'+str(root),str(path/'test.c'),'-o',str(path/'test')],check=True)

@@ -1,6 +1,7 @@
 """Synthetic inline GPIO interrupt installer."""
 import unittest
-from msm5xxx_emulator.detection import ma5_gpio_irq
+from msm5xxx_emulator.detection.registry import device_domain
+ma5_gpio_irq = device_domain('audio.ma5_gpio_irq')
 from test_legacy_keypad import branch, literal
 
 

@@ -1,5 +1,6 @@
 """Yamaha transport detector and write-stream checks."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from corpus import snippet, firmware_path
 
@@ -11,17 +12,18 @@ from unittest.mock import patch
 
 import numpy as np
 
-from msm5xxx_emulator.detection.audio import (
-    _marker_families, _synthesized_base_accesses,
-)
-from msm5xxx_emulator.detection.audio import (
-    find_audio_transport, find_ma3_indexed_candidate,
-    find_ma3_kp6200_candidate,
-    find_ma3_packetized_candidate, find_ma3_readback_candidate,
-    find_ma5_readback_candidate,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_marker_families = device_domain('audio.rules')._marker_families
+_synthesized_base_accesses = device_domain('audio.rules')._synthesized_base_accesses
+from msm5xxx_emulator.detection.registry import device_domain
+find_audio_transport = device_domain('audio.rules').find_audio_transport
+find_ma3_indexed_candidate = device_domain('audio.rules').find_ma3_indexed_candidate
+find_ma3_kp6200_candidate = device_domain('audio.rules').find_ma3_kp6200_candidate
+find_ma3_packetized_candidate = device_domain('audio.rules').find_ma3_packetized_candidate
+find_ma3_readback_candidate = device_domain('audio.rules').find_ma3_readback_candidate
+find_ma5_readback_candidate = device_domain('audio.rules').find_ma5_readback_candidate
 from msm5xxx_emulator.detection.arm import thumb_bl_target
-from msm5xxx_emulator.detection.memory_layout import find_linker_layout
+from msm5xxx_emulator.detection.layout_queries import find_linker_layout
 from msm5xxx_emulator.devices.audio import AudioMixin
 from msm5xxx_emulator.devices.audio_lle import AudioTransport
 from msm5xxx_emulator.qemu.transport import qemu_audio_sites
@@ -426,7 +428,8 @@ class AudioTransportTests(unittest.TestCase):
     def test_sequence_metadata_integrates_with_firmware_detector(self):
         import tempfile
         from pathlib import Path
-        from msm5xxx_emulator.detection.firmware import detect
+        from msm5xxx_emulator.detection.registry import device_domain
+        detect = boot_plan.detect
         image, _ = _sequence_image()
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "protocol.bin"
@@ -440,7 +443,7 @@ class AudioTransportTests(unittest.TestCase):
     def test_marker_scan_keeps_chunk_boundary_matches(self) -> None:
         image = bytearray(b"\xff" * 128)
         image[62:71] = b"Ma2main.c"
-        with patch("msm5xxx_emulator.detection.audio._MARKER_CHUNK", 64):
+        with patch("msm5xxx_emulator.detection.devices.audio.rules._MARKER_CHUNK", 64):
             self.assertEqual(_marker_families(bytes(image)), ["ma2"])
 
     def test_unaccepted_transport_skips_hot_path_pc_read(self) -> None:

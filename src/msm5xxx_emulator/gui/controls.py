@@ -1,4 +1,5 @@
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import argparse
 import json
@@ -7,8 +8,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from ..detection.firmware import (DEFAULT_STATE_ROOT, DISABLEABLE_ADDRESS_FIELDS,
-                                  detect)
+from msm5xxx_emulator.detection.registry import device_domain
+DEFAULT_STATE_ROOT = device_domain('storage.configuration').DEFAULT_STATE_ROOT
+DISABLEABLE_ADDRESS_FIELDS = boot_plan.DISABLEABLE_ADDRESS_FIELDS
+detect = boot_plan.detect
 from ..state_io import atomic_write_text, exclusive_path_lock
 
 from .locale import (UI_TEXT, normalize_ui_language, resolve_ui_language)

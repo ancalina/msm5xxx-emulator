@@ -3,8 +3,10 @@ import struct
 import unittest
 
 from msm5xxx_emulator.core.config import BoardStatusInput
-from msm5xxx_emulator.detection.input import find_board_status_input
-from msm5xxx_emulator.detection.input_scanner_gated import gated_scanner_at
+from msm5xxx_emulator.detection.registry import device_domain
+find_board_status_input = device_domain('input.rules').find_board_status_input
+from msm5xxx_emulator.detection.registry import device_domain
+gated_scanner_at = device_domain('input.scanner_gated').gated_scanner_at
 
 
 def gated_scanner(start=0x100, address=0x03000674, mask=0x20):

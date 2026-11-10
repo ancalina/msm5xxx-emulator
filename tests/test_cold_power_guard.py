@@ -3,8 +3,10 @@ import struct
 import unittest
 
 from msm5xxx_emulator.core.config import BoardStatusInput
-from msm5xxx_emulator.detection.cold_power_guard import find_cold_power_guard
-from msm5xxx_emulator.detection.input import find_board_status_input
+from msm5xxx_emulator.detection.registry import device_domain
+find_cold_power_guard = device_domain('external_bus.cold_power_guard').find_cold_power_guard
+from msm5xxx_emulator.detection.registry import device_domain
+find_board_status_input = device_domain('input.rules').find_board_status_input
 
 
 class ColdPowerGuardTests(unittest.TestCase):

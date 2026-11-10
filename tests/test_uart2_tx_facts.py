@@ -4,9 +4,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.uart2_tx import (
-    DATA, PULSE, STATUS, find_uart2_tx_ready_pc, transmit_proofs, uart2_tx_property,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+DATA = device_domain('uart2.rules').DATA
+PULSE = device_domain('uart2.rules').PULSE
+STATUS = device_domain('uart2.rules').STATUS
+find_uart2_tx_ready_pc = device_domain('uart2.rules').find_uart2_tx_ready_pc
+transmit_proofs = device_domain('uart2.rules').transmit_proofs
+uart2_tx_property = device_domain('uart2.rules').uart2_tx_property
 
 
 def transmitter(entry=0x80):
@@ -81,7 +85,7 @@ class UARTTransmitFactsTests(unittest.TestCase):
                                  load_address=0, image_offset=0, entry=0,
                                  uart_console=None, ready_poll=ready)
         # Isolate the compatibility projection; transmitter proof remains real.
-        with patch('msm5xxx_emulator.detection.devices.ready_poll.find_ready_poll_profile', return_value=ready):
+        with patch('msm5xxx_emulator.detection.devices.uart2.rules._required_ready_poll_find_ready_poll_profile', return_value=ready):
             self.assertEqual(uart2_tx_property(image, image, config), 'uart2-tx-ready=82')
             self.assertIsNone(uart2_tx_property(image, image, config, claimed=True))
             changed = bytearray(image)
@@ -108,7 +112,7 @@ class UARTTransmitFactsTests(unittest.TestCase):
                                  load_address=0, image_offset=0, entry=0,
                                  uart_console=None, ready_poll=ready)
         self.assertEqual(find_uart2_tx_ready_pc(image), 0x82)
-        with patch('msm5xxx_emulator.detection.devices.ready_poll.find_ready_poll_profile', return_value=ready):
+        with patch('msm5xxx_emulator.detection.devices.uart2.rules._required_ready_poll_find_ready_poll_profile', return_value=ready):
             self.assertIsNone(uart2_tx_property(image, image, config))
 
 

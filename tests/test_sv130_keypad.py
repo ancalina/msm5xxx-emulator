@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import unittest
 
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.input_sv130 import sv130_keypad_source
+from msm5xxx_emulator.detection.registry import device_domain
+sv130_keypad_source = device_domain('input.sv130').sv130_keypad_source
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 
 

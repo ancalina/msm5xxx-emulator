@@ -326,7 +326,7 @@ class SourceClassTransportTests(unittest.TestCase):
                        size=0x3000, sector_size=0x1000, backing_size=0x4000,
                        id0=0x98, id1=0x95, guard_intervals=[[0x20, 0x40], [0x50, 0x58]])
         module = SimpleNamespace(find_amd_bank_profile=lambda *_: (profile, 'accepted'))
-        with patch.dict(sys.modules, {'msm5xxx_emulator.detection.amd_bank': module}):
+        with patch.dict(sys.modules, {'msm5xxx_emulator.detection.devices.storage.amd_bank': module}):
             self.assertEqual(qemu_amd_bank_profile(image, image, c), (profile, None))
             nv = bytearray(image); nv[0x4000] = 0x55
             self.assertEqual(qemu_amd_bank_profile(image, bytes(nv), c), (profile, None))
@@ -387,8 +387,10 @@ class SourceClassTransportTests(unittest.TestCase):
 
     def test_actual_profiles_loaded_guards_and_numeric_route(self):
         import hashlib
-        from msm5xxx_emulator.detection.input_row734 import find_row734_input_profile
-        from msm5xxx_emulator.detection.protected_nor import find_protected_nor_profile
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_row734_input_profile = device_domain('input.row734').find_row734_input_profile
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_protected_nor_profile = device_domain('storage.protected_nor').find_protected_nor_profile
         from msm5xxx_emulator.devices.input import InputMixin
         from msm5xxx_emulator.qemu.transport import Transport, matrix_input_command, HOST_INPUT
         root=FIRMWARE_ROOT / 'incoming-20260719-r1/MSM5100'
@@ -451,11 +453,11 @@ class DMDPaddedConsoleBindingTests(unittest.TestCase):
             source_intervals=((0x100,0x180),(0x200,0x240),(0x400,0x408)))
 
     def bind(self,loaded=None,console='uart-console-probe=3000f0c:ff:cc:99',**kwargs):
-        with patch('msm5xxx_emulator.detection.devices.dmd.find_dmd5100_profile',
+        with patch('msm5xxx_emulator.detection.devices.dmd.selection.find_dmd5100_profile',
                    return_value=(self.profile,'typed-source')):
             with patch('msm5xxx_emulator.detection.devices.dmd.projection.find_dmd5100_profile',
                        return_value=(self.profile,'typed-source')):
-                with patch('msm5xxx_emulator.qemu.transport.qemu_loaded_uart_console_property',
+                with patch('msm5xxx_emulator.detection.devices.dmd.selection.qemu_loaded_uart_console_property',
                            return_value=(console,None)):
                     return qemu_dmd5100_property(self.original,self.loaded if loaded is None else loaded,
                                                  self.cfg,**kwargs)
@@ -482,11 +484,11 @@ class DMDPaddedIndirectPageBindingTests(unittest.TestCase):
 
     def bind(self,loaded=None,parent=True,**kwargs):
         source=dict(ram_intervals=((0x01000000,0x01001000),)) if parent else None
-        with patch('msm5xxx_emulator.detection.devices.dmd.find_dmd5100_profile',
+        with patch('msm5xxx_emulator.detection.devices.dmd.selection.find_dmd5100_profile',
                    return_value=(self.profile,'typed-source')):
             with patch('msm5xxx_emulator.detection.devices.dmd.projection.find_dmd5100_profile',
                        return_value=(self.profile,'typed-source')):
-                with patch('msm5xxx_emulator.detection.boot_page_indirect.find_indirect_boot_page_profile',
+                with patch('msm5xxx_emulator.detection.devices.dmd.selection.find_indirect_boot_page_profile',
                            return_value=(source,'indirect-parent')):
                     return qemu_dmd5100_property(self.original,self.loaded if loaded is None else loaded,
                                                  self.cfg,**kwargs)

@@ -1,5 +1,6 @@
 """Pure settings schema, parsing, and validation helpers."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,7 +10,8 @@ from .locale import UI_TEXT, resolve_ui_language
 from ..core.config import FirmwareConfig
 from ..core.constants import (MAX_NAND_BACKING_SIZE, MAX_NAND_DATA_SIZE,
                               MAX_RAM_SIZE, PAGE)
-from ..detection.firmware import MAX_FLASH_SIZE
+from msm5xxx_emulator.detection.registry import device_domain
+MAX_FLASH_SIZE = device_domain('storage.boot_rules').MAX_FLASH_SIZE
 from ..detection.firmware_image import load_firmware_image
 
 

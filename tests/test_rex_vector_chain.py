@@ -2,9 +2,12 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.rex_vector_chain import (
-    _RESET, _RESET_LITERALS, _COPY, _COPY_LITERALS, find_nor_veneer_vector_copy,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_RESET = device_domain('rex.vector_chain')._RESET
+_RESET_LITERALS = device_domain('rex.vector_chain')._RESET_LITERALS
+_COPY = device_domain('rex.vector_chain')._COPY
+_COPY_LITERALS = device_domain('rex.vector_chain')._COPY_LITERALS
+find_nor_veneer_vector_copy = device_domain('rex.vector_chain').find_nor_veneer_vector_copy
 from test_legacy_keypad import literal
 
 
@@ -75,11 +78,12 @@ class RexVectorChainTests(unittest.TestCase):
 
     def test_veneer_route_requires_nand_producer(self):
         from unittest.mock import patch
-        from msm5xxx_emulator.detection.rex import _nand_backed_veneer_chain
-        with patch('msm5xxx_emulator.detection.rex.find_static_middle_nand_profile', return_value=None), \
-             patch('msm5xxx_emulator.detection.rex.find_nor_veneer_vector_copy') as vector:
+        from msm5xxx_emulator.detection.registry import device_domain
+        _nand_backed_veneer_chain = device_domain('rex.rules')._nand_backed_veneer_chain
+        with patch('msm5xxx_emulator.detection.devices.rex.rules.find_static_middle_nand_profile', return_value=None), \
+             patch('msm5xxx_emulator.detection.devices.rex.rules.find_nor_veneer_vector_copy') as vector:
             self.assertIsNone(_nand_backed_veneer_chain(b'', ram_base=1, ram_size=2))
             vector.assert_not_called()
-        with patch('msm5xxx_emulator.detection.rex.find_static_middle_nand_profile', return_value={}), \
-             patch('msm5xxx_emulator.detection.rex.find_nor_veneer_vector_copy', return_value={'copy_target': 1}):
+        with patch('msm5xxx_emulator.detection.devices.rex.rules.find_static_middle_nand_profile', return_value={}), \
+             patch('msm5xxx_emulator.detection.devices.rex.rules.find_nor_veneer_vector_copy', return_value={'copy_target': 1}):
             self.assertEqual(_nand_backed_veneer_chain(b'', ram_base=1, ram_size=2), {'copy_target': 1})

@@ -1,0 +1,38 @@
+"""Normalized instruction contracts for copied middle-aperture NAND producers.
+
+Only hashes, instruction locations and semantic call/literal roles are retained.
+No firmware code is embedded. Offsets are relative to the reset primitive.
+"""
+
+CONTRACTS = (({'reset': (0, 10, '33e6b1f9a9ff86524d1366d114ec8238a11fbd01137a74b82aa3ed3026224bcd', (), (), ()), 'status': (-104, 68,
+    'a2412133b621a271f8765c3385b42226f1c9ea82f8b63738dc8221c15e54325b', ((52, 'fatal_log'),), ((12, 7, 'watchdog_pulse'), (40, 3, 'status_retry_bound_20000')),
+    (50,)), 'ready': (10, 28, 'c25f801400002bba06519d620f6b5a3e1529bcb1e00fd70f4ed1a3c8c6b082e8', (), ((0, 2, 'ready_descriptor'), (4, 1, 'watchdog_pulse')), ()),
+    'erase_sweep': (132, 26, '252944194ae1832a6485edd870629cdbcfcba2defb553d5dc582219e19d036e8', ((6, 'erase_wrapper'),), (), ()), 'erase_wrapper': (158, 62,
+    '723d5d0f695ad115cb7a3846aba7c0a6a83572bc6803c34774c5b54514a25be4', ((4, 'translate_page'), (8, 'erase'), (18, 'remap_page'), (28, 'translate_page'), (34,
+    'erase'), (48, 'translate_page'), (52, 'erase')), (), ()), 'erase': (220, 58, '99fc52bb9f4e59f66ace384827f1c4e0ba3ee54b6e243a8c8a591437a0767675', ((4,
+    'reset'), (38, 'ready'), (42, 'status')), (), ()), 'read_wrapper': (278, 32, '5713e3819d688c5e9818253ab92203290c11503d3714b30ee74dae0502c00ba0', ((10,
+    'translate_page'), (22, 'read_page')), (), ()), 'read_page': (310, 338, 'd6bc5fef37cf570f8cab0c48e363919233e7e10ba8980eef2b8b494d7b22e132', ((10, 'reset'),
+    (116, 'ready'), (322, 'memcpy')), ((146, 6, 'watchdog_pulse'),), ()), 'program_wrapper': (652, 98,
+    'acb880fbb260a57251c24119c0d62037658aa7034a44a7a7417752c29ae7707a', ((12, 'translate_page'), (24, 'program'), (34, 'remap_page'), (44, 'translate_page'), (58,
+    'program'), (76, 'translate_page'), (88, 'program')), (), ()), 'program': (750, 210, 'fadf192cf76aa12c01acd0f766f861b08cdacb696ccce84d5861b86892f9e253', ((10,
+    'reset'), (22, 'fatal_log'), (46, 'fatal_log'), (186, 'ready'), (190, 'status')), ((116, 1, 'watchdog_pulse'),), (20, 44)), 'read_split': (-292, 84,
+    '71deb17bc4887e1173dec672c3d2a890b8139fb067608aa78c3ee665cc964a95', ((42, 'read_wrapper'),), (), ()), 'program_split': (-208, 84,
+    '71deb17bc4887e1173dec672c3d2a890b8139fb067608aa78c3ee665cc964a95', ((42, 'program_wrapper'),), (), ())}, { 'reset': 0, 'status': -104, 'fatal_log': 14796,
+    'ready': 10, 'erase_sweep': 132, 'erase_wrapper': 158, 'translate_page': 1032, 'erase': 220, 'remap_page': 1904, 'read_wrapper': 278, 'read_page': 310,
+    'memcpy': 15580, 'program_wrapper': 652, 'program': 750, 'read_split': -292, 'program_split': -208}, 36, 50333480, 1), ({'reset': (0, 10,
+    '33e6b1f9a9ff86524d1366d114ec8238a11fbd01137a74b82aa3ed3026224bcd', (), (), ()), 'status': (-108, 72,
+    '32005b0108f1a7ef2b25fa89d30a301f366ddb15a14b0353a431e9e82ff24b4d', ((56, 'fatal_log'),), ((12, 7, 'watchdog_pulse'), (40, 3, 'status_retry_bound_20000')),
+    (54,)), 'ready': (10, 28, '633728a4725a8d64caa054740be784e25a01520db438a493aac300c34cb89f9f', (), ((2, 0, 'ready_descriptor'), (6, 2, 'watchdog_pulse')), ()),
+    'erase_sweep': (132, 26, '252944194ae1832a6485edd870629cdbcfcba2defb553d5dc582219e19d036e8', ((6, 'erase_wrapper'),), (), ()), 'erase_wrapper': (158, 62,
+    '723d5d0f695ad115cb7a3846aba7c0a6a83572bc6803c34774c5b54514a25be4', ((4, 'translate_page'), (8, 'erase'), (18, 'remap_page'), (28, 'translate_page'), (34,
+    'erase'), (48, 'translate_page'), (52, 'erase')), (), ()), 'erase': (220, 58, '99fc52bb9f4e59f66ace384827f1c4e0ba3ee54b6e243a8c8a591437a0767675', ((4,
+    'reset'), (38, 'ready'), (42, 'status')), (), ()), 'read_wrapper': (278, 32, '5713e3819d688c5e9818253ab92203290c11503d3714b30ee74dae0502c00ba0', ((10,
+    'translate_page'), (22, 'read_page')), (), ()), 'read_page': (310, 338, 'd6bc5fef37cf570f8cab0c48e363919233e7e10ba8980eef2b8b494d7b22e132', ((10, 'reset'),
+    (116, 'ready'), (322, 'memcpy')), ((146, 6, 'watchdog_pulse'),), ()), 'program_wrapper': (652, 98,
+    'acb880fbb260a57251c24119c0d62037658aa7034a44a7a7417752c29ae7707a', ((12, 'translate_page'), (24, 'program'), (34, 'remap_page'), (44, 'translate_page'), (58,
+    'program'), (76, 'translate_page'), (88, 'program')), (), ()), 'program': (750, 218, 'f7a8153d98e503c22c665f268e3648169e1e9cfbec351085dc8b44cc59b17ecf', ((10,
+    'reset'), (26, 'fatal_log'), (54, 'fatal_log'), (194, 'ready'), (198, 'status')), ((124, 1, 'watchdog_pulse'),), (24, 52)), 'read_split': (-296, 84,
+    '71deb17bc4887e1173dec672c3d2a890b8139fb067608aa78c3ee665cc964a95', ((42, 'read_wrapper'),), (), ()), 'program_split': (-212, 84,
+    '71deb17bc4887e1173dec672c3d2a890b8139fb067608aa78c3ee665cc964a95', ((42, 'program_wrapper'),), (), ())}, { 'reset': 0, 'status': -108, 'fatal_log': 14792,
+    'ready': 10, 'erase_sweep': 132, 'erase_wrapper': 158, 'translate_page': 1040, 'erase': 220, 'remap_page': 1808, 'read_wrapper': 278, 'read_page': 310,
+    'memcpy': 24892, 'program_wrapper': 652, 'program': 750, 'read_split': -296, 'program_split': -212}, 4, 50333472, 16))

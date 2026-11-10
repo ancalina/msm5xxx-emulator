@@ -4,7 +4,8 @@ import subprocess
 import tempfile
 import unittest
 from corpus import firmware_path
-from msm5xxx_emulator.detection.baseband import find_legacy_cdma_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_legacy_cdma_profile = device_domain('baseband.rules').find_legacy_cdma_profile
 
 
 class LegacyProfileNativeTests(unittest.TestCase):

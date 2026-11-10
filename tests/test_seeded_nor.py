@@ -3,7 +3,8 @@ from pathlib import Path
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.storage import seeded_amd_x16_nor_profile
+from msm5xxx_emulator.detection.registry import device_domain
+seeded_amd_x16_nor_profile = device_domain('storage.rules').seeded_amd_x16_nor_profile
 from corpus import FIRMWARE_ROOT
 
 

@@ -10,7 +10,8 @@ import unittest
 
 from msm5xxx_emulator.core.config import BoardStatusInput
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
-from msm5xxx_emulator.detection.input import find_board_status_input
+from msm5xxx_emulator.detection.registry import device_domain
+find_board_status_input = device_domain('input.rules').find_board_status_input
 
 
 class BoardStatusInputTests(unittest.TestCase):

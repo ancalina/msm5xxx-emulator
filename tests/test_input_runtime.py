@@ -1,5 +1,6 @@
 """CPU-free mapping and validation for candidate GPIO keypad profiles."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,8 +9,10 @@ import tempfile
 import unittest
 
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
-from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.input_descriptor import LG_DESCRIPTOR_RAW
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
+from msm5xxx_emulator.detection.registry import device_domain
+LG_DESCRIPTOR_RAW = device_domain('input.descriptor').LG_DESCRIPTOR_RAW
 
 
 class InputRuntimeTests(unittest.TestCase):

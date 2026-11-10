@@ -1,7 +1,8 @@
 """Watchdog property emission is tied to the loaded instruction graph."""
 import unittest
 
-from msm5xxx_emulator.detection.watchdog import find_watchdog_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_watchdog_profile = device_domain('watchdog.rules').find_watchdog_profile
 from msm5xxx_emulator.qemu.transport import qemu_watchdog_property
 from test_watchdog import fixture
 

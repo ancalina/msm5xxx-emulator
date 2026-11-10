@@ -205,7 +205,7 @@ int main(void) {
  return 0;
 }
 '''
-        with tempfile.TemporaryDirectory(prefix='ma5-shared-', dir=SOURCE.parent) as tmp:
+        with tempfile.TemporaryDirectory(prefix='ma5-shared-') as tmp:
             c = Path(tmp)/'harness.c'; binary=Path(tmp)/'harness'
             c.write_text(harness+actual+'\n'+ops+'\n'+setup)
             compiled = subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(c),'-o',str(binary)],capture_output=True,text=True)

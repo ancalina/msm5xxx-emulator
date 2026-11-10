@@ -2,12 +2,10 @@
 
 from ...facts import facts_for
 
-
 def byte_code(image: bytes, at: int, mask: str) -> bool:
     if at < 0 or at & 1 or at + len(mask)//2 > len(image):
         return False
-    if any(token != '??' and image[at+i//2] != int(token,16)
-           for i in range(0,len(mask),2) for token in (mask[i:i+2],)):
+    if any(token != '??' and image[at+i//2] != int(token,16) for i in range(0,len(mask),2) for token in (mask[i: i+2],)):
         return False
     facts = facts_for(image)
     if not facts.view.covers(at, len(mask) // 2):
@@ -26,12 +24,10 @@ def byte_code(image: bytes, at: int, mask: str) -> bool:
         off += 2
     return True
 
-
 def called_code_candidates(image, calls, mask, matcher):
     by_target = {}
     for site, target in calls:
-        if (target not in by_target and target >= 0 and not target & 1
-                and matcher(image, target, mask)):
+        if (target not in by_target and target >= 0 and not target & 1 and matcher(image, target, mask)):
             by_target[target] = []
         if target in by_target:
             by_target[target].append(site)

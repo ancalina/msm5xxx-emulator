@@ -4,15 +4,21 @@ from __future__ import annotations
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.external_devices import (
-    detect_boot_strap, detect_boot_uart, detect_external_lcd,
-    detect_external_cs0a, detect_external_cs09, detect_external_ram,
-    detect_external_status, detect_external_windows,
-    detect_external_panel_writers, detect_gpio_ready_bit21,
-    _literal_window_accesses_many,
-    detect_boot_gpio_bit9,
-)
-from msm5xxx_emulator.detection.external_bus import detect_external_bus
+from msm5xxx_emulator.detection.registry import device_domain
+detect_boot_strap = device_domain('external_bus.observations').detect_boot_strap
+detect_boot_uart = device_domain('external_bus.observations').detect_boot_uart
+detect_external_lcd = device_domain('external_bus.observations').detect_external_lcd
+detect_external_cs0a = device_domain('external_bus.observations').detect_external_cs0a
+detect_external_cs09 = device_domain('external_bus.observations').detect_external_cs09
+detect_external_ram = device_domain('external_bus.observations').detect_external_ram
+detect_external_status = device_domain('external_bus.observations').detect_external_status
+detect_external_windows = device_domain('external_bus.observations').detect_external_windows
+detect_external_panel_writers = device_domain('external_bus.observations').detect_external_panel_writers
+detect_gpio_ready_bit21 = device_domain('external_bus.observations').detect_gpio_ready_bit21
+_literal_window_accesses_many = device_domain('external_bus.observations')._literal_window_accesses_many
+detect_boot_gpio_bit9 = device_domain('external_bus.observations').detect_boot_gpio_bit9
+from msm5xxx_emulator.detection.registry import device_domain
+detect_external_bus = device_domain('external_bus.rules').detect_external_bus
 from msm5xxx_emulator.detection.facts import bind_facts, fact_scope, source_prefix
 from msm5xxx_emulator.detection.image_view import ImageView
 

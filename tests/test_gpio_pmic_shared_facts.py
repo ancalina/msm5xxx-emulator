@@ -3,9 +3,10 @@ import struct
 import unittest
 
 from msm5xxx_emulator.detection.facts import bind_facts, fact_scope
-from msm5xxx_emulator.detection.gpio_pmic import (
-    _instructions, _literal, _memory_base,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_instructions = device_domain('external_bus.gpio_pmic')._instructions
+_literal = device_domain('external_bus.gpio_pmic')._literal
+_memory_base = device_domain('external_bus.gpio_pmic')._memory_base
 from msm5xxx_emulator.detection.image_view import ImageView
 
 

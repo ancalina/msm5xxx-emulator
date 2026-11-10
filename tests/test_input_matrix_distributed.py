@@ -3,10 +3,12 @@ from corpus import snippet
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.input_matrix import (
-    resolve_distributed_matrix_input, resolve_direct_matrix_input,
-    classify_matrix_event_sink, UNCLASSIFIED, SAMSUNG_RAW_DEQUEUE,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+resolve_distributed_matrix_input = device_domain('input.matrix').resolve_distributed_matrix_input
+resolve_direct_matrix_input = device_domain('input.matrix').resolve_direct_matrix_input
+classify_matrix_event_sink = device_domain('input.matrix').classify_matrix_event_sink
+UNCLASSIFIED = device_domain('input.matrix').UNCLASSIFIED
+SAMSUNG_RAW_DEQUEUE = device_domain('input.matrix').SAMSUNG_RAW_DEQUEUE
 
 
 class DistributedMatrixTests(unittest.TestCase):
@@ -180,7 +182,8 @@ class DistributedMatrixTests(unittest.TestCase):
         return image,sites
 
     def call_image(self, code_delta=0, ram_delta=0, handler_shift=0):
-        from msm5xxx_emulator.detection.input_matrix import _DISTRIBUTED_CALL_SPANS
+        from msm5xxx_emulator.detection.registry import device_domain
+        _DISTRIBUTED_CALL_SPANS = device_domain('input.matrix')._DISTRIBUTED_CALL_SPANS
         delta=0xC0000+code_delta
         image,sites=self.controls_image(delta)
         image.extend(bytes.fromhex('c046')*((delta+0xD000-len(image))//2))
@@ -228,7 +231,8 @@ class DistributedMatrixTests(unittest.TestCase):
 
     def test_call_rejection_keeps_parent_and_other_optional_keys(self):
         from copy import deepcopy
-        from msm5xxx_emulator.detection.input_matrix import _distributed_call_profile
+        from msm5xxx_emulator.detection.registry import device_domain
+        _distributed_call_profile = device_domain('input.matrix')._distributed_call_profile
         image,sites=self.call_image();parent,status,_=resolve_distributed_matrix_input(bytes(image))
         self.assertEqual(parent['call_mapping_status'],'accepted-provisional')
         handler=sites['confirm']
@@ -265,7 +269,8 @@ class DistributedMatrixTests(unittest.TestCase):
     def test_call_actual_source_and_optional_tail_failure(self):
         import os
         from pathlib import Path
-        from msm5xxx_emulator.detection.input_matrix import _distributed_call_profile
+        from msm5xxx_emulator.detection.registry import device_domain
+        _distributed_call_profile = device_domain('input.matrix')._distributed_call_profile
         from corpus import firmware_path
         image = firmware_path('SPH-X4500.bin').read_bytes()
         parent,status,_=resolve_distributed_matrix_input(image)
@@ -394,7 +399,8 @@ class DistributedMatrixTests(unittest.TestCase):
         changed=image.copy();changed[sites['table']+20]=0;mutations.append(changed)
         # Remove only tail of back span while retaining all parent/nav code in a
         # direct optional-helper fixture; resolver-level truncation can also reject nav.
-        from msm5xxx_emulator.detection.input_matrix import _distributed_back_profile
+        from msm5xxx_emulator.detection.registry import device_domain
+        _distributed_back_profile = device_domain('input.matrix')._distributed_back_profile
         parent,_,_=resolve_distributed_matrix_input(bytes(image))
         mappings,metadata=_distributed_back_profile(bytes(image[:handler+0x5C6]),parent)
         self.assertFalse(mappings);self.assertEqual(metadata['back_mapping_status'],'rejected')

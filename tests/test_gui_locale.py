@@ -1,5 +1,6 @@
 """Locale-selection regressions; no Tk display required."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import json
 import queue
@@ -17,7 +18,8 @@ from msm5xxx_emulator.gui.locale import (display_model_name, normalize_ui_langua
 from msm5xxx_emulator import gui as package_gui
 from msm5xxx_emulator.gui.app import (choose_firmware,
                                       main as package_main)
-from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
 from msm5xxx_emulator.gui.controls import (ControlsMixin, detect_profile,
                                            merge_settings_overrides, manual_keymap,
                                            parse_manual_key_event)
@@ -490,8 +492,8 @@ class GuiLocaleTests(unittest.TestCase):
             firmware = Path(directory) / "phone.bin"
             firmware.write_bytes(image)
             from argparse import Namespace
-            with (mock.patch("msm5xxx_emulator.detection.firmware.detect_model", return_value="FIRMWARE"),
-                  mock.patch("msm5xxx_emulator.detection.firmware._verified_embedded_model", return_value="FIRMWARE")):
+            with (mock.patch("msm5xxx_emulator.detection.plan.detect_model", return_value="FIRMWARE"),
+                  mock.patch("msm5xxx_emulator.detection.plan._verified_embedded_model", return_value="FIRMWARE")):
                 baseline = detect(firmware)
                 custom = detect(firmware, Namespace(model="CUSTOM"))
                 self.assertEqual((baseline.model, baseline.verified_model), ("FIRMWARE", "FIRMWARE"))

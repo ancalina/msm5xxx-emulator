@@ -1,5 +1,6 @@
 """Detector regression tests for BSP and handset identity evidence."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 from corpus import snippet
 
@@ -13,21 +14,33 @@ import unittest
 from unittest.mock import patch
 
 from msm5xxx_emulator.tools import condition_report
-import msm5xxx_emulator.detection.storage as storage_detection
+import msm5xxx_emulator.detection.devices.storage.rules as storage_detection
 from msm5xxx_emulator.core.config import LinkerLayout
-from msm5xxx_emulator.detection.memory_layout import (
+from msm5xxx_emulator.detection.layout_queries import (
     has_dual_sdram_bootstrap, has_high_bank_reader_bootstrap, infer_ram_base,
     referenced_flash_extent,
 )
 from msm5xxx_emulator.detection.devices.dmd import (DMD_DOWNLOAD_5500_LITERALS, DMD_DOWNLOAD_5500_SIZE, detect_dmd_download_5500)
-from msm5xxx_emulator.detection.boot import (
-    DIRECT_INTEL_X16_PROBE_SIGNATURE,
-    DMD_DOWNLOAD_SIGNATURE,
-    PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE,
-    PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE,
-    PRIMARY_FLASH_PROBE_SIGNATURE,
-)
-from msm5xxx_emulator.detection.storage import DIRECT_AMD_X16_CALLER_PREFIX, DIRECT_AMD_X16_PROBE_SIGNATURE, MAPPED_PRIMARY_INTEL_X16_SIGNATURES, direct_amd_x16_nor_profile, direct_intel_x16_nor_profile, find_adjacent_amd_x16_nor, find_adjacent_fujitsu_x16_nor, find_catalog_amd_x16_nor, find_embedded_fujitsu_x16_nor, find_primary_fsd_amd_x16_nor, find_record_amd_x16_nor, mapped_primary_intel_x16_nor_profile, primary_probe_x16_nor_profile
+from msm5xxx_emulator.detection.registry import device_domain
+DIRECT_INTEL_X16_PROBE_SIGNATURE = device_domain('storage.boot_rules').DIRECT_INTEL_X16_PROBE_SIGNATURE
+DMD_DOWNLOAD_SIGNATURE = device_domain('dmd.boot_rules').DMD_DOWNLOAD_SIGNATURE
+PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE = device_domain('storage.boot_rules').PRIMARY_FLASH_DESCRIPTOR_PROBE_SIGNATURE
+PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE = device_domain('storage.boot_rules').PRIMARY_FLASH_EXTERNAL_DESCRIPTOR_PROBE_SIGNATURE
+PRIMARY_FLASH_PROBE_SIGNATURE = device_domain('storage.boot_rules').PRIMARY_FLASH_PROBE_SIGNATURE
+from msm5xxx_emulator.detection.registry import device_domain
+DIRECT_AMD_X16_CALLER_PREFIX = device_domain('storage.rules').DIRECT_AMD_X16_CALLER_PREFIX
+DIRECT_AMD_X16_PROBE_SIGNATURE = device_domain('storage.rules').DIRECT_AMD_X16_PROBE_SIGNATURE
+MAPPED_PRIMARY_INTEL_X16_SIGNATURES = device_domain('storage.rules').MAPPED_PRIMARY_INTEL_X16_SIGNATURES
+direct_amd_x16_nor_profile = device_domain('storage.rules').direct_amd_x16_nor_profile
+direct_intel_x16_nor_profile = device_domain('storage.rules').direct_intel_x16_nor_profile
+find_adjacent_amd_x16_nor = device_domain('storage.rules').find_adjacent_amd_x16_nor
+find_adjacent_fujitsu_x16_nor = device_domain('storage.rules').find_adjacent_fujitsu_x16_nor
+find_catalog_amd_x16_nor = device_domain('storage.rules').find_catalog_amd_x16_nor
+find_embedded_fujitsu_x16_nor = device_domain('storage.rules').find_embedded_fujitsu_x16_nor
+find_primary_fsd_amd_x16_nor = device_domain('storage.rules').find_primary_fsd_amd_x16_nor
+find_record_amd_x16_nor = device_domain('storage.rules').find_record_amd_x16_nor
+mapped_primary_intel_x16_nor_profile = device_domain('storage.rules').mapped_primary_intel_x16_nor_profile
+primary_probe_x16_nor_profile = device_domain('storage.rules').primary_probe_x16_nor_profile
 from msm5xxx_emulator.detection.devices.eeprom import (
     EEPROM_24LC64_CLASS_B_BOUND,
     EEPROM_24LC64_CLASS_B_READ_PREFIX,
@@ -37,17 +50,19 @@ from msm5xxx_emulator.detection.devices.eeprom import (
 )
 
 
-from msm5xxx_emulator.detection.boot import (
-    BUSY_DELAY_SIGNATURE,
-    BUSY_DELAY_REGISTER_SIGNATURE,
-    OPTIONAL_RAM_CALLER_PATTERN,
-    OPTIONAL_RAM_PROBE_SIGNATURE,
-    DMD_DOWNLOAD_510X_SIGNATURE,
-    absent_optional_ram_probe_addresses,
-    busy_delay_addresses,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+BUSY_DELAY_SIGNATURE = device_domain('boot.rules').BUSY_DELAY_SIGNATURE
+BUSY_DELAY_REGISTER_SIGNATURE = device_domain('boot.rules').BUSY_DELAY_REGISTER_SIGNATURE
+OPTIONAL_RAM_CALLER_PATTERN = device_domain('memory.boot_rules').OPTIONAL_RAM_CALLER_PATTERN
+OPTIONAL_RAM_PROBE_SIGNATURE = device_domain('memory.boot_rules').OPTIONAL_RAM_PROBE_SIGNATURE
+DMD_DOWNLOAD_510X_SIGNATURE = device_domain('dmd.boot_rules').DMD_DOWNLOAD_510X_SIGNATURE
+absent_optional_ram_probe_addresses = device_domain('memory.boot_rules').absent_optional_ram_probe_addresses
+busy_delay_addresses = device_domain('boot.rules').busy_delay_addresses
 from msm5xxx_emulator.core.config import CopyLayout
-from msm5xxx_emulator.detection.storage import find_compound_fujitsu_layout, find_fujitsu_x16_bulk_write, fujitsu_x16_flash_ids
+from msm5xxx_emulator.detection.registry import device_domain
+find_compound_fujitsu_layout = device_domain('storage.rules').find_compound_fujitsu_layout
+find_fujitsu_x16_bulk_write = device_domain('storage.rules').find_fujitsu_x16_bulk_write
+fujitsu_x16_flash_ids = device_domain('storage.rules').fujitsu_x16_flash_ids
 from msm5xxx_emulator.detection.devices.eeprom import (
     EEPROM_24LC64_CLASS_A_READ_PREFIX,
     EEPROM_24LC64_CLASS_A_SENTINEL,
@@ -66,29 +81,32 @@ from msm5xxx_emulator.detection.devices.eeprom import (
     find_24lcxx_driver,
 )
 from corpus import FIRMWARE_ROOT
-from msm5xxx_emulator.detection.chipset import chipset_confidence, detect_chipset
+from msm5xxx_emulator.detection.registry import device_domain
+chipset_confidence = device_domain('identity.chipset').chipset_confidence
+detect_chipset = device_domain('identity.chipset').detect_chipset
 from msm5xxx_emulator.detection.arm import arm_vector_score, thumb_bl_target, thumb_literal_value
-from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.model import detect_model
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect_model = device_domain('identity.model').detect_model
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
-from msm5xxx_emulator.detection.memory_layout import (
+from msm5xxx_emulator.detection.layout_queries import (
     find_arm_vector_offset,
     find_missing_overlays,
     restore_sparse_nor_gap,
 )
-from msm5xxx_emulator.detection.rex import (
-    find_rex_5ms_irq_arm,
-    find_rex_5ms_irq_route,
-    find_rex_5ms_sleep_timer,
-    find_trampm5_consumer,
-    trampm5_consumer_at,
-)
-from msm5xxx_emulator.detection.boot import DELAY_SIGNATURE
-from msm5xxx_emulator.detection.rex import (
-    REX_5MS_ARM_PATTERN,
-    REX_5MS_REGISTRATION_PATTERN,
-    _rex_5ms_registration_targets,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+find_rex_5ms_irq_arm = device_domain('rex.rules').find_rex_5ms_irq_arm
+find_rex_5ms_irq_route = device_domain('rex.rules').find_rex_5ms_irq_route
+find_rex_5ms_sleep_timer = device_domain('rex.rules').find_rex_5ms_sleep_timer
+find_trampm5_consumer = device_domain('rex.rules').find_trampm5_consumer
+trampm5_consumer_at = device_domain('rex.rules').trampm5_consumer_at
+from msm5xxx_emulator.detection.registry import device_domain
+DELAY_SIGNATURE = device_domain('boot.rules').DELAY_SIGNATURE
+from msm5xxx_emulator.detection.registry import device_domain
+REX_5MS_ARM_PATTERN = device_domain('rex.rules').REX_5MS_ARM_PATTERN
+REX_5MS_REGISTRATION_PATTERN = device_domain('rex.rules').REX_5MS_REGISTRATION_PATTERN
+rex_5ms_registration_targets = device_domain('rex.rules').rex_5ms_registration_targets
 
 
 class DetectionTests(unittest.TestCase):
@@ -260,7 +278,7 @@ class DetectionTests(unittest.TestCase):
              for match in REX_5MS_REGISTRATION_PATTERN.finditer(registration)],
             [0],
         )
-        self.assertEqual(_rex_5ms_registration_targets(registration, tick), [])
+        self.assertEqual(rex_5ms_registration_targets(registration, tick), [])
 
         mapped_registration = bytearray(16)
         struct.pack_into(
@@ -275,7 +293,7 @@ class DetectionTests(unittest.TestCase):
             return position
 
         self.assertEqual(
-            _rex_5ms_registration_targets(
+            rex_5ms_registration_targets(
                 bytes(mapped_registration), 0, runtime
             ),
             [12],
@@ -283,7 +301,7 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(calls, [0, 12, 2, 4, 6])
         calls.clear()
         self.assertEqual(
-            _rex_5ms_registration_targets(
+            rex_5ms_registration_targets(
                 bytes(mapped_registration), 0, runtime,
                 candidate_only_mapper=True,
             ),
@@ -298,14 +316,14 @@ class DetectionTests(unittest.TestCase):
         )
         with (
             patch(
-                "msm5xxx_emulator.detection.rex."
-                "_rex_5ms_registration_targets",
+                "msm5xxx_emulator.detection.devices.rex.rules."
+                "rex_5ms_registration_targets",
                 return_value=[0, 0, 0],
             ),
-            patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
+            patch("msm5xxx_emulator.detection.devices.rex.rules.thumb_literal_value",
                   side_effect=lambda _image, position, _register:
                   0x030006E0 if position == 0 else tick | 1),
-            patch("msm5xxx_emulator.detection.rex.thumb_bl_target",
+            patch("msm5xxx_emulator.detection.devices.rex.rules.thumb_bl_target",
                   return_value=0),
         ):
             self.assertIsNone(find_rex_5ms_irq_arm(arm, tick))
@@ -448,7 +466,7 @@ class DetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "sdram-overlay-candidate.bin"
             firmware.write_bytes(raw)
-            with patch("msm5xxx_emulator.detection.firmware.find_runtime_overlays",
+            with patch("msm5xxx_emulator.detection.devices.storage.postprocess.find_runtime_overlays",
                        return_value=[candidate]):
                 config = detect(firmware)
 
@@ -481,7 +499,7 @@ class DetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "sdram-overlay-candidate.bin"
             firmware.write_bytes(raw)
-            with patch("msm5xxx_emulator.detection.firmware.find_runtime_overlays",
+            with patch("msm5xxx_emulator.detection.devices.storage.postprocess.find_runtime_overlays",
                        return_value=[candidate]):
                 config = detect(firmware)
             with patch.object(condition_report, "detect", return_value=config):
@@ -1746,7 +1764,7 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(find_compound_fujitsu_layout(bytes(image)),
                          (primary_size, secondary_size))
         with tempfile.TemporaryDirectory() as directory, patch(
-                "msm5xxx_emulator.detection.firmware.DEFAULT_STATE_ROOT",
+                "msm5xxx_emulator.detection.devices.storage.configuration.DEFAULT_STATE_ROOT",
                 Path(directory)):
             firmware = Path(directory) / "compound.bin"
             firmware.write_bytes(image)

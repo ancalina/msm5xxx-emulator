@@ -18,10 +18,11 @@ from msm5xxx_emulator.detection.startup_facts import (
     prove_reset_prefix_completion, prove_startup_copy_consumer,
     prove_copy_consumer, proven_startup_rows,
 )
-from msm5xxx_emulator.detection.nor_protocol import (
-    CopyConsumerProof, known_amd_x16_profile,
-    prove_amd_x16_hardware_contract, summarize_amd_x16,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+CopyConsumerProof = device_domain('storage.nor_protocol').CopyConsumerProof
+known_amd_x16_profile = device_domain('storage.nor_protocol').known_amd_x16_profile
+prove_amd_x16_hardware_contract = device_domain('storage.nor_protocol').prove_amd_x16_hardware_contract
+summarize_amd_x16 = device_domain('storage.nor_protocol').summarize_amd_x16
 
 
 from nor_fixtures import (

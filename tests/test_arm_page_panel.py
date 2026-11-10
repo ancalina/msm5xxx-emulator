@@ -44,7 +44,8 @@ class ArmPageRoutingTests(unittest.TestCase):
         from types import SimpleNamespace
         from test_secondary_page_panel import SecondaryPagePanelTests
         from test_secondary_arm_page import fixture
-        from msm5xxx_emulator.detection.secondary_arm_page import find_secondary_arm_page
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_secondary_arm_page = device_domain('display.secondary_arm_page').find_secondary_arm_page
         image = bytes(fixture())
         profile, _ = find_secondary_arm_page(image)
         controller, fallback = SecondaryPagePanelTests().controller()

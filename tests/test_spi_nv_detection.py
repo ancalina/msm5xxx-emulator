@@ -4,7 +4,8 @@ import struct
 import unittest
 import zlib
 
-from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_spi_nv_profile = device_domain('storage.spi_nv').find_spi_nv_profile
 
 _FIXTURE_0 = (
     'c-rmUeQX<N0mt#@u^lIIoEN8=<4dmDrAeElX-m3kCE-Q5DU2jqUl7|rOqD8uV1Gdh)9U_33Je8-L|Rm-Nl^hI*tGITBsyAzGO`z@'

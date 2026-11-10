@@ -1,3 +1,4 @@
+import msm5xxx_emulator.detection.plan as boot_plan
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -121,7 +122,8 @@ class MobileLibraryBridgeTest(unittest.TestCase):
         import importlib.util
         import json
         import os
-        from msm5xxx_emulator.detection import firmware
+        from msm5xxx_emulator.detection.registry import device_domain
+        firmware = boot_plan
         root = Path(__file__).resolve().parents[1]
         spec = importlib.util.spec_from_file_location('fd_android_runtime', root / 'android/app/src/main/python/msm5xxx_android_runtime.py')
         runtime = importlib.util.module_from_spec(spec)
@@ -141,7 +143,8 @@ class MobileLibraryBridgeTest(unittest.TestCase):
     def test_bridge_rejects_oversize_and_invalid_requests(self):
         import importlib.util
         import json
-        from msm5xxx_emulator.detection import firmware
+        from msm5xxx_emulator.detection.registry import device_domain
+        firmware = boot_plan
         root = Path(__file__).resolve().parents[1]
         spec = importlib.util.spec_from_file_location('limit_android_runtime', root / 'android/app/src/main/python/msm5xxx_android_runtime.py')
         runtime = importlib.util.module_from_spec(spec)
@@ -161,7 +164,8 @@ class MobileLibraryBridgeTest(unittest.TestCase):
         import importlib.util
         import json
         import sys
-        from msm5xxx_emulator.detection import firmware
+        from msm5xxx_emulator.detection.registry import device_domain
+        firmware = boot_plan
         root = Path(__file__).resolve().parents[1]
         spec = importlib.util.spec_from_file_location('library_android_runtime', root / 'android/app/src/main/python/msm5xxx_android_runtime.py')
         android = importlib.util.module_from_spec(spec)

@@ -4,7 +4,8 @@ from pathlib import Path
 import unittest
 
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.sharp_intel import find_sharp_intel_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_sharp_intel_profile = device_domain('storage.sharp_intel').find_sharp_intel_profile
 
 
 class SharpIntelProfileTests(unittest.TestCase):

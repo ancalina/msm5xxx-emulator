@@ -4,14 +4,17 @@ import unittest
 from unittest.mock import patch
 
 from msm5xxx_emulator.detection.facts import CodeAddress, ScatterCandidate
-from msm5xxx_emulator.detection.nor_protocol import (
-    NORDeviceProfile, NORHardwareEvidence, NORWrite,
-)
-from msm5xxx_emulator.detection.nv_nor import select_legacy_nv_nor
-from msm5xxx_emulator.detection.nv_nor_byte import ByteNORProof
-from msm5xxx_emulator.detection.nv_nor_word import (
-    WordNORDescriptor, WordNORProof,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+NORDeviceProfile = device_domain('storage.nor_protocol').NORDeviceProfile
+NORHardwareEvidence = device_domain('storage.nor_protocol').NORHardwareEvidence
+NORWrite = device_domain('storage.nor_protocol').NORWrite
+from msm5xxx_emulator.detection.registry import device_domain
+select_legacy_nv_nor = device_domain('storage.nv_nor').select_legacy_nv_nor
+from msm5xxx_emulator.detection.registry import device_domain
+ByteNORProof = device_domain('storage.nv_nor_byte').ByteNORProof
+from msm5xxx_emulator.detection.registry import device_domain
+WordNORDescriptor = device_domain('storage.nv_nor_word').WordNORDescriptor
+WordNORProof = device_domain('storage.nv_nor_word').WordNORProof
 from msm5xxx_emulator.detection.startup_facts import (
     CopyConsumerProof, CopyLoopTransfer, OrderedCopyTransfer,
     ResetPrefixProof, VectorCopyRow,
@@ -95,11 +98,11 @@ def byte_proof():
 
 class NVNORCapabilityTests(unittest.TestCase):
     def test_word_profile_emits_native_properties_claim_and_captured_tuple(self):
-        with (patch('msm5xxx_emulator.detection.nv_nor.find_embedded_fujitsu_x16_nor',
+        with (patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_embedded_fujitsu_x16_nor',
                     return_value=None),
-              patch('msm5xxx_emulator.detection.nv_nor.find_word_nv_nor_proof',
+              patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_word_nv_nor_proof',
                     return_value=word_proof()),
-              patch('msm5xxx_emulator.detection.nv_nor.find_byte_nv_nor_proof',
+              patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_byte_nv_nor_proof',
                     return_value=None)):
             capability = select_legacy_nv_nor(b'', config())
         self.assertIsNotNone(capability)
@@ -120,11 +123,11 @@ class NVNORCapabilityTests(unittest.TestCase):
         self.assertEqual(evidence['nv-word-copy-pool'].value[4], 0x220)
 
     def test_byte_profile_emits_existing_fujitsu_property(self):
-        with (patch('msm5xxx_emulator.detection.nv_nor.find_embedded_fujitsu_x16_nor',
+        with (patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_embedded_fujitsu_x16_nor',
                     return_value=None),
-              patch('msm5xxx_emulator.detection.nv_nor.find_word_nv_nor_proof',
+              patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_word_nv_nor_proof',
                     return_value=None),
-              patch('msm5xxx_emulator.detection.nv_nor.find_byte_nv_nor_proof',
+              patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_byte_nv_nor_proof',
                     return_value=byte_proof())):
             capability = select_legacy_nv_nor(b'', config())
         self.assertEqual(dict(capability.properties), {
@@ -134,11 +137,11 @@ class NVNORCapabilityTests(unittest.TestCase):
                          'byte-offset-boot-sectors')
 
     def test_two_profiles_are_ambiguous_and_owner_guards_reject(self):
-        with (patch('msm5xxx_emulator.detection.nv_nor.find_embedded_fujitsu_x16_nor',
+        with (patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_embedded_fujitsu_x16_nor',
                     return_value=None),
-              patch('msm5xxx_emulator.detection.nv_nor.find_word_nv_nor_proof',
+              patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_word_nv_nor_proof',
                     return_value=word_proof()),
-              patch('msm5xxx_emulator.detection.nv_nor.find_byte_nv_nor_proof',
+              patch('msm5xxx_emulator.detection.devices.storage.nv_nor.find_byte_nv_nor_proof',
                     return_value=byte_proof())):
             self.assertIsNone(select_legacy_nv_nor(b'', config()))
             self.assertIsNone(select_legacy_nv_nor(b'', config(), claimed=True))

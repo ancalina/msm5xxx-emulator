@@ -93,7 +93,7 @@ class HalfwordEEPROMTests(unittest.TestCase):
         self.assertEqual(eeprom_gpio_profile(bytes(changed), config),
                          (None, 'gpio-line-shape-mismatch'))
         # The GPIO descriptor is admitted only through unique scatter metadata.
-        from msm5xxx_emulator.detection.memory_layout import find_linker_layout
+        from msm5xxx_emulator.detection.layout_queries import find_linker_layout
         layout = find_linker_layout(image, required_span=(0x10009f8, 12))
         # Relocate only the GPIO descriptor and its literal references inside
         # the same proven scatter span; offsets and model identity are irrelevant.

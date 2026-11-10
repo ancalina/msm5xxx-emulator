@@ -1,9 +1,13 @@
 """Portable complete bank/copy compiler fixture; no original firmware dependency."""
 import struct
 import unittest
-from msm5xxx_emulator.detection.amd_bank import (
-    _SPEC, _MOVE, _FORWARD, _ALIGNED, _STATE_REFS, find_amd_bank_profile,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_SPEC = device_domain('storage.amd_bank')._SPEC
+_MOVE = device_domain('storage.amd_bank')._MOVE
+_FORWARD = device_domain('storage.amd_bank')._FORWARD
+_ALIGNED = device_domain('storage.amd_bank')._ALIGNED
+_STATE_REFS = device_domain('storage.amd_bank')._STATE_REFS
+find_amd_bank_profile = device_domain('storage.amd_bank').find_amd_bank_profile
 
 
 def fixture(shift=0, ram_shift=0, ids=(0x98,0x95), count=3, sector=0x10000):

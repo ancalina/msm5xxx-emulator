@@ -4,7 +4,8 @@ import unittest
 
 from corpus import firmware_path
 from msm5xxx_emulator.core.config import BoardStatusInput
-from msm5xxx_emulator.detection.input import find_board_status_input
+from msm5xxx_emulator.detection.registry import device_domain
+find_board_status_input = device_domain('input.rules').find_board_status_input
 
 
 def scanner(start=0x100, address=0x03000674, mask=0x20):

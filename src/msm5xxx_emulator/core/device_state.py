@@ -11,28 +11,48 @@ from .constants import MAX_RAM_SIZE
 from .constants import NAND_MMIO_RANGES
 from .constants import PAGE
 from .constants import STABLE_MSM_MMIO
-from ..detection.display import (detect_lcd_width_hint, detect_packed_selector_port, find_dual_page_ports, find_byte_main_page_secondary, find_mixed_primary_power_port,
-                                 find_paired_display_state_ports, find_packed_cursor_port, find_packed12_port, find_window_panel_port)
+from msm5xxx_emulator.detection.registry import device_domain
+detect_lcd_width_hint = device_domain('display.rules').detect_lcd_width_hint
+detect_packed_selector_port = device_domain('display.rules').detect_packed_selector_port
+find_dual_page_ports = device_domain('display.rules').find_dual_page_ports
+find_byte_main_page_secondary = device_domain('display.rules').find_byte_main_page_secondary
+find_mixed_primary_power_port = device_domain('display.rules').find_mixed_primary_power_port
+find_paired_display_state_ports = device_domain('display.rules').find_paired_display_state_ports
+find_packed_cursor_port = device_domain('display.rules').find_packed_cursor_port
+find_packed12_port = device_domain('display.rules').find_packed12_port
+find_window_panel_port = device_domain('display.rules').find_window_panel_port
 from ..devices.display.page_panel import PagePanel
-from ..devices.display.indexed_byte_panel import IndexedBytePanel, find_indexed_byte_panel
+from ..devices.display.indexed_byte_panel import IndexedBytePanel
+find_indexed_byte_panel = device_domain('display.indexed_byte').find_indexed_byte_panel
 from ..devices.display.cursor_panel import PackedCursorPanel
 from ..devices.display.packed12_panel import Packed12Panel
 from ..devices.display.window_panel import WindowPanel
-from ..devices.display.packed_cursor12_panel import PackedCursor12Panel, find_packed_cursor12_port
-from ..devices.display.packed2_panel import Packed2Panel, find_packed2_port
-from ..devices.display.split18_panel import Split18Panel, find_split18_port
-from ..devices.display.split565_panel import Split565Panel, find_split565_port
-from ..devices.display.fa_direct_panel import FaDirectPanel, find_fa_direct_port
+from ..devices.display.packed_cursor12_panel import PackedCursor12Panel
+find_packed_cursor12_port = device_domain('display.packed_cursor12').find_packed_cursor12_port
+from ..devices.display.packed2_panel import Packed2Panel
+find_packed2_port = device_domain('display.packed2').find_packed2_port
+from ..devices.display.split18_panel import Split18Panel
+find_split18_port = device_domain('display.split18').find_split18_port
+from ..devices.display.split565_panel import Split565Panel
+find_split565_port = device_domain('display.split565').find_split565_port
+from ..devices.display.fa_direct_panel import FaDirectPanel
+find_fa_direct_port = device_domain('display.fa_direct').find_fa_direct_port
 from ..devices.display.segmented_panel import SegmentedPanel
-from ..detection.segmented import detect_segmented_panel
-from ..detection.firmware import ADDRESS_SPACE
-from ..detection.firmware import MAX_FLASH_SIZE
+from msm5xxx_emulator.detection.registry import device_domain
+detect_segmented_panel = device_domain('display.segmented').detect_segmented_panel
+from msm5xxx_emulator.detection.registry import device_domain
+from msm5xxx_emulator.detection.image_view import ADDRESS_SPACE
+from msm5xxx_emulator.detection.registry import device_domain
+MAX_FLASH_SIZE = device_domain('storage.boot_rules').MAX_FLASH_SIZE
 from ..detection.firmware_image import load_firmware_image
-from ..detection.cold_power_guard import find_cold_power_guard
-from ..detection.memory_layout import aligned
-from ..detection.memory_layout import restore_sparse_nor_gap
-from ..detection.storage import fujitsu_x16_flash_ids
-from ..detection.storage import qualcomm_efs_seed
+from msm5xxx_emulator.detection.registry import device_domain
+find_cold_power_guard = device_domain('external_bus.cold_power_guard').find_cold_power_guard
+from ..detection.layout_queries import aligned
+from ..detection.layout_queries import restore_sparse_nor_gap
+from msm5xxx_emulator.detection.registry import device_domain
+fujitsu_x16_flash_ids = device_domain('storage.rules').fujitsu_x16_flash_ids
+from msm5xxx_emulator.detection.registry import device_domain
+qualcomm_efs_seed = device_domain('storage.rules').qualcomm_efs_seed
 from ..devices.storage.nor import NORFlash
 from ..devices.audio_lle import AudioTransport
 from pathlib import Path
@@ -430,7 +450,8 @@ class DeviceStateMixin:
                             and end == start + 1
                             and (config.board_status_input.mask,
                                  config.board_status_input.default) == (4, 4)):
-                        from ..detection.input_seven_row import find_seven_row_board_status
+                        from msm5xxx_emulator.detection.registry import device_domain
+                        find_seven_row_board_status = device_domain('input.seven_row').find_seven_row_board_status
                         if (find_seven_row_board_status(available) == config.board_status_input
                                 or find_cold_power_guard(available) == config.board_status_input):
                             continue
@@ -796,7 +817,8 @@ class DeviceStateMixin:
         self._lcd_secondary_panel = (PagePanel(secondary_port, independent_ports=bool(ports))
                                      if secondary_port else None)
         if not ports and secondary_port is None:
-            from ..detection.halfword_page import find_halfword_page_secondary
+            from msm5xxx_emulator.detection.registry import device_domain
+            find_halfword_page_secondary = device_domain('display.halfword_page').find_halfword_page_secondary
             halfword_port = find_halfword_page_secondary(self.image)
             if halfword_port is not None:
                 self._lcd_secondary_panel = PagePanel(halfword_port, data_offset=2,
@@ -804,14 +826,16 @@ class DeviceStateMixin:
                 self._lcd_secondary_reason = "halfword-byte-page-consumer-awaiting-runtime"
                 secondary_port = halfword_port
         if not ports and secondary_port is None:
-            from ..detection.mixed_page import find_mixed_page_secondary
+            from msm5xxx_emulator.detection.registry import device_domain
+            find_mixed_page_secondary = device_domain('display.mixed_page').find_mixed_page_secondary
             mixed_port = find_mixed_page_secondary(self.image)
             if mixed_port is not None:
                 self._lcd_secondary_panel = PagePanel(mixed_port, independent_ports=True)
                 self._lcd_secondary_reason = "mixed-byte-halfword-page-awaiting-runtime"
                 secondary_port = mixed_port
         if not ports and secondary_port is None:
-            from ..detection.secondary_arm_page import find_secondary_arm_page
+            from msm5xxx_emulator.detection.registry import device_domain
+            find_secondary_arm_page = device_domain('display.secondary_arm_page').find_secondary_arm_page
             from ..devices.display.arm_page_panel import ArmPagePanel
             profile, reason = find_secondary_arm_page(self.image)
             if profile is not None:
@@ -855,33 +879,6 @@ class DeviceStateMixin:
         LOGGER.info("decoder close complete model=%s", self.config.model)
 
     def _initial_primary_flash_ids(self, read_memory, memory_errors) -> tuple[int, int] | None:
-        """Infer NOR autoselect IDs only from one unambiguous firmware descriptor."""
-        from ..detection.boot import PRIMARY_FLASH_PROBE_SIGNATURE
-
-        address = self.config.primary_flash_probe_address
-        if address is None:
-            return None
-        try:
-            signature = bytes(read_memory(address, len(PRIMARY_FLASH_PROBE_SIGNATURE)))
-            _, flash_base_global, table_global = struct.unpack(
-                "<3I", read_memory(
-                    address + len(PRIMARY_FLASH_PROBE_SIGNATURE), 12
-                )
-            )
-            flash_base = struct.unpack("<I", read_memory(flash_base_global, 4))[0]
-            first, terminator = struct.unpack("<2I", read_memory(table_global, 8))
-            manufacturer, device = struct.unpack(
-                "<2H", read_memory(first + 0x124, 4)
-            )
-        except (*memory_errors, struct.error):
-            return None
-        flash_end = self.config.load_address + self.config.flash_size
-        ram_end = self.config.ram_base + self.config.ram_size
-        if (signature != PRIMARY_FLASH_PROBE_SIGNATURE or not first or terminator
-                or not self.config.ram_base <= flash_base_global <= ram_end - 4
-                or not self.config.ram_base <= table_global <= ram_end - 8
-                or not self.config.load_address <= flash_base < flash_end
-                or not self.config.load_address <= first <= flash_end - 0x128
-                or manufacturer in (0, 0xFFFF) or device in (0, 0xFFFF)):
-            return None
-        return manufacturer, device
+        return device_domain('storage.selection').initial_primary_flash_ids(
+            self.config, read_memory, memory_errors
+        )

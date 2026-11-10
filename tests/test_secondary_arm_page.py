@@ -1,8 +1,9 @@
 import struct
 import unittest
-from msm5xxx_emulator.detection.secondary_arm_page import (
-    _BODY, _DATA_AND_COMMAND, find_secondary_arm_page,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_BODY = device_domain('display.secondary_arm_page')._BODY
+_DATA_AND_COMMAND = device_domain('display.secondary_arm_page')._DATA_AND_COMMAND
+find_secondary_arm_page = device_domain('display.secondary_arm_page').find_secondary_arm_page
 
 
 def fixture():

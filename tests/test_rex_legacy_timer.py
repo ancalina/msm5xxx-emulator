@@ -5,16 +5,32 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.rex import (
-    _relocated_thumb_file_target,
-    _legacy_software_timer_target,
-    _legacy_timer_registration_at,
-    find_rex_legacy_5ms_irq_route,
-    find_rex_legacy_5ms_timer_bridge,
-    find_rex_idle_address,
-    rex_legacy_5ms_callback_shape_at,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_relocated_thumb_file_target = device_domain('rex.rules')._relocated_thumb_file_target
+_legacy_software_timer_target = device_domain('rex.rules')._legacy_software_timer_target
+_legacy_timer_registration_at = device_domain('rex.rules')._legacy_timer_registration_at
+find_rex_legacy_5ms_irq_route = device_domain('rex.rules').find_rex_legacy_5ms_irq_route
+find_rex_legacy_5ms_timer_bridge = device_domain('rex.rules').find_rex_legacy_5ms_timer_bridge
+find_rex_idle_address = device_domain('rex.rules').find_rex_idle_address
+rex_legacy_5ms_callback_shape_at = device_domain('rex.rules').rex_legacy_5ms_callback_shape_at
 from msm5xxx_emulator.detection.arm import thumb_literal_value
+from msm5xxx_emulator.detection.fact_context import FirmwareFacts
+
+
+def _patch_literal_values(side_effect):
+    return patch.object(
+        FirmwareFacts, "thumb_literal_value", autospec=True,
+        side_effect=lambda context, position, register:
+            side_effect(context.image, position, register),
+    )
+
+
+def _patch_call_targets(side_effect):
+    return patch.object(
+        FirmwareFacts, "thumb_call_target", autospec=True,
+        side_effect=lambda context, position:
+            side_effect(context.image, position),
+    )
 
 
 def _bl(source: int, target: int) -> bytes:
@@ -158,8 +174,8 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
         class FullAddressSpaceImage(bytearray):
             def __len__(self) -> int:
                 return 0x02000000
-        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value", side_effect=literals),
-              patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
+        with (_patch_literal_values(literals),
+              _patch_call_targets(targets)):
             result = find_rex_legacy_5ms_irq_route(
                 FullAddressSpaceImage(image), bridge
             )
@@ -193,9 +209,8 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
                 return None
             return literals(_image, position, register)
 
-        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
-                    side_effect=compact_literals),
-              patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
+        with (_patch_literal_values(compact_literals),
+              _patch_call_targets(targets)):
             self.assertIsNotNone(find_rex_legacy_5ms_irq_route(
                 compact, bridge
             ))
@@ -213,9 +228,8 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
                 return None
             return literals(_image, position, register)
 
-        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
-                    side_effect=tighter_literals),
-              patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
+        with (_patch_literal_values(tighter_literals),
+              _patch_call_targets(targets)):
             self.assertIsNotNone(find_rex_legacy_5ms_irq_route(tighter, bridge))
             struct.pack_into("<H", tighter, registrar + 42, 0x4361)
             self.assertIsNone(find_rex_legacy_5ms_irq_route(tighter, bridge))
@@ -247,19 +261,15 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
                 return 0x180
             return targets(_image, position)
 
-        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
-                    side_effect=newer_literals),
-              patch("msm5xxx_emulator.detection.rex.thumb_bl_target",
-                    side_effect=newer_targets)):
+        with (_patch_literal_values(newer_literals),
+              _patch_call_targets(newer_targets)):
             result = find_rex_legacy_5ms_irq_route(newer, bridge)
         self.assertIsNotNone(result)
         self.assertEqual(result["handler"], newer_handler)
 
         struct.pack_into("<H", newer, newer_handler + 2, 0xB085)
-        with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value",
-                    side_effect=newer_literals),
-              patch("msm5xxx_emulator.detection.rex.thumb_bl_target",
-                    side_effect=newer_targets)):
+        with (_patch_literal_values(newer_literals),
+              _patch_call_targets(newer_targets)):
             self.assertIsNone(find_rex_legacy_5ms_irq_route(newer, bridge))
 
         for offset, value, width in ((registrar + 60, 0, 2),
@@ -273,8 +283,8 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
                 struct.pack_into("<H", changed, offset, value)
             else:
                 struct.pack_into("<I", changed, offset, value)
-            with (patch("msm5xxx_emulator.detection.rex.thumb_literal_value", side_effect=literals),
-                  patch("msm5xxx_emulator.detection.rex.thumb_bl_target", side_effect=targets)):
+            with (_patch_literal_values(literals),
+                  _patch_call_targets(targets)):
                 self.assertIsNone(find_rex_legacy_5ms_irq_route(changed, bridge))
     def test_idle_loop_accepts_backward_branch_displacement(self) -> None:
         words = [0] * 30
@@ -430,18 +440,17 @@ class LegacyTimerRegistrationTests(unittest.TestCase):
             "initial": 0x19, "reload": 0x19, "stack_flag": 1,
         }
         def detect(dispatcher: int = 0x1A0) -> dict[str, object] | None:
-            with (patch("msm5xxx_emulator.detection.rex.rex_legacy_5ms_callback_at",
+            with (patch("msm5xxx_emulator.detection.devices.rex.rules.rex_legacy_5ms_callback_at",
                         side_effect=lambda _image, position:
                         (0x120, software) if position == outer else None),
-                  patch("msm5xxx_emulator.detection.rex._legacy_timer_registration_at",
+                  patch("msm5xxx_emulator.detection.devices.rex.rules._legacy_timer_registration_at",
                         side_effect=lambda _image, candidate, position:
                         registration if candidate == scanner and position == 0x40
                         else None),
-                  patch("msm5xxx_emulator.detection.rex.rex_timer_callback_drain_at",
+                  patch("msm5xxx_emulator.detection.devices.rex.rules.rex_timer_callback_drain_at",
                         side_effect=lambda _image, position:
                         0x01110000 if position == drain else None),
-                  patch("msm5xxx_emulator.detection.rex.thumb_bl_target",
-                        side_effect=lambda _image, position: {
+                  _patch_call_targets(lambda _image, position: {
                             software + 0x52: dispatcher, 0x1B4: 0x1C0,
                             0x1E0: drain, len(image) - 4: drain,
                         }.get(position))):

@@ -1,7 +1,8 @@
 """Synthetic instruction graphs for the halfword/low-byte secondary panel."""
 import struct
 import unittest
-from msm5xxx_emulator.detection.halfword_page import find_halfword_page_secondary
+from msm5xxx_emulator.detection.registry import device_domain
+find_halfword_page_secondary = device_domain('display.halfword_page').find_halfword_page_secondary
 
 
 def fixture(independent=False):

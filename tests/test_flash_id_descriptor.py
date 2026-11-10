@@ -1,17 +1,20 @@
 """Focused regression tests for descriptor-backed fs_dev flash IDs."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import argparse
 import struct
 from types import SimpleNamespace
 import unittest
 
-from msm5xxx_emulator.detection.boot import FLASH_ID_SIGNATURE
-from msm5xxx_emulator.detection.firmware import _apply_overrides, _infer_secondary_nor
-from msm5xxx_emulator.detection.storage import (
-    find_fs_device_flash_id,
-    flash_id_for_size,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+FLASH_ID_SIGNATURE = device_domain('storage.boot_rules').FLASH_ID_SIGNATURE
+from msm5xxx_emulator.detection.registry import device_domain
+_apply_overrides = boot_plan._apply_overrides
+_infer_secondary_nor = device_domain('storage.configuration').infer_secondary_nor
+from msm5xxx_emulator.detection.registry import device_domain
+find_fs_device_flash_id = device_domain('storage.rules').find_fs_device_flash_id
+flash_id_for_size = device_domain('storage.rules').flash_id_for_size
 
 
 def _thumb_bl(source: int, target: int) -> bytes:

@@ -1,9 +1,11 @@
 """CPU-free EEPROM persistence shared with the native transport."""
+import msm5xxx_emulator.detection.plan as boot_plan
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 import struct
-from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
 from msm5xxx_emulator.detection.devices.eeprom import (
     EEPROM_24LC64_CLASS_B_WRITE_PREFIX,
     EEPROM_24LC64_CLASS_B_READ_PREFIX,

@@ -2,7 +2,8 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.static_middle_nand import find_static_middle_nand_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_static_middle_nand_profile = device_domain('storage.static_middle_nand').find_static_middle_nand_profile
 
 
 def branch(image, site, target):
@@ -53,12 +54,12 @@ class StaticMiddleNandTests(unittest.TestCase):
                                  ram_base=0x01000000, ram_size=0x800000,
                                  upper_flash_address=None)
         from unittest.mock import patch
-        with patch("msm5xxx_emulator.qemu.transport.find_table7_matrix", return_value={}):
+        with patch("msm5xxx_emulator.detection.devices.storage.transport_projection.find_table7_matrix", return_value={}):
             result, error = qemu_raw_nand_main_profile(image, config)
         self.assertIsNone(error)
         self.assertEqual(result[:3], (0x01800000, 0x01900000, 0x01a00000))
         config.upper_flash_address = 0x01800000
-        with patch("msm5xxx_emulator.qemu.transport.find_table7_matrix", return_value={}):
+        with patch("msm5xxx_emulator.detection.devices.storage.transport_projection.find_table7_matrix", return_value={}):
             result, error = qemu_raw_nand_main_profile(image, config)
         self.assertIsNone(result)
         self.assertEqual(error, 'direct-middle-aperture-mapping-conflict')

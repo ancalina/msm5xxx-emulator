@@ -45,7 +45,7 @@ def full(display):
 
 class ByteLanePageRuntimeTests(unittest.TestCase):
     def setUp(self):
-        patcher = patch('msm5xxx_emulator.detection.byte_lane_page.find_byte_lane_page_profile',
+        patcher = patch('msm5xxx_emulator.detection.devices.display.byte_lane_page.find_byte_lane_page_profile',
                         return_value=(PROFILE, 'accepted-test-source-contract'))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -77,7 +77,7 @@ class ByteLanePageRuntimeTests(unittest.TestCase):
     def test_missing_source_image_keeps_native_fallback(self):
         display = self.display()
         del display.image
-        with patch('msm5xxx_emulator.detection.byte_lane_page.find_byte_lane_page_profile',
+        with patch('msm5xxx_emulator.detection.devices.display.byte_lane_page.find_byte_lane_page_profile',
                    return_value=(None, 'no-source')) as finder:
             self.assertFalse(display._lcd_odd_page_write(0x02000000, 1, 0xE2))
             finder.assert_called_once_with(b'')
@@ -170,7 +170,7 @@ PAIRED_PROFILE = dict(
 
 class DescendingPairedPageRuntimeTests(unittest.TestCase):
     def setUp(self):
-        patcher = patch('msm5xxx_emulator.detection.byte_lane_page.find_byte_lane_page_profile',
+        patcher = patch('msm5xxx_emulator.detection.devices.display.byte_lane_page.find_byte_lane_page_profile',
                         return_value=(PAIRED_PROFILE, 'accepted-test-paired-source'))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -334,7 +334,7 @@ class DescendingPairedPageRuntimeTests(unittest.TestCase):
         display = self.display()
         loaded = bytearray(display.image); loaded[0x900] = 1
         display._lcd_page_loaded_image = bytes(loaded)
-        target = 'msm5xxx_emulator.detection.byte_lane_page.find_byte_lane_page_profile'
+        target = 'msm5xxx_emulator.detection.devices.display.byte_lane_page.find_byte_lane_page_profile'
         with patch(target, side_effect=((PAIRED_PROFILE, 'accepted'), (None, 'ambiguous'))):
             write(display, 0xe2)
         self.assertFalse(display.odd_page_snapshot()['source_bound'])

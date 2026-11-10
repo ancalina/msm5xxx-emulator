@@ -1,3 +1,4 @@
+import msm5xxx_emulator.detection as detector
 import argparse
 import importlib.util
 from pathlib import Path
@@ -6,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from msm5xxx_emulator.gui import settings
-from msm5xxx_emulator.detection import firmware as detector
+from msm5xxx_emulator.detection.registry import device_domain
 
 path = Path(__file__).resolve().parents[1] / 'android/app/src/main/python/msm5xxx_android_runtime.py'
 spec = importlib.util.spec_from_file_location('mobile_settings_runtime', path)

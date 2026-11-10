@@ -1,8 +1,9 @@
 """Synthetic instruction and aperture evidence for middle NAND producers."""
 import struct
 import unittest
-from msm5xxx_emulator.detection.low_port_nand import (find_middle_nand_driver_marker,
-                                                     find_middle_nand_producers)
+from msm5xxx_emulator.detection.registry import device_domain
+find_middle_nand_driver_marker = device_domain('storage.low_port_nand').find_middle_nand_driver_marker
+find_middle_nand_producers = device_domain('storage.low_port_nand').find_middle_nand_producers
 
 
 class NandProducerTests(unittest.TestCase):
@@ -44,7 +45,7 @@ class NandProducerTests(unittest.TestCase):
         image[10:22] = bytes.fromhex('0348406a0188090bfcd37047')
         self.assertFalse(find_middle_nand_producers(bytes(image)))
         digest = hashlib.sha256(image[:64]).hexdigest()
-        with patch('msm5xxx_emulator.detection.low_port_nand._KNOWN_DRIVER_BODY', digest):
+        with patch('msm5xxx_emulator.detection.devices.storage.low_port_nand._KNOWN_DRIVER_BODY', digest):
             self.assertTrue(find_middle_nand_producers(bytes(image)))
             image[30] ^= 1
             self.assertFalse(find_middle_nand_producers(bytes(image)))

@@ -4,7 +4,8 @@ from pathlib import Path
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.audio_irq import find_audio_irq_candidate
+from msm5xxx_emulator.detection.registry import device_domain
+find_audio_irq_candidate = device_domain('audio.irq').find_audio_irq_candidate
 from corpus import FIRMWARE_ROOT
 
 

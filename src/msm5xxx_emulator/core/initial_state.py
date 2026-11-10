@@ -1,7 +1,7 @@
 """CPU-independent reset state for the QEMU guest and display decoder."""
 from __future__ import annotations
 
-from ..detection.memory_layout import aligned
+from ..detection.layout_queries import aligned
 
 REGISTER_NAMES = tuple(f"r{index}" for index in range(13)) + (
     "sp", "lr", "pc", "cpsr",

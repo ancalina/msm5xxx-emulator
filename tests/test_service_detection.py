@@ -3,9 +3,14 @@ from pathlib import Path
 import os
 import hashlib
 import unittest
-from msm5xxx_emulator.detection.service import (
-    _at as at, find_origination_service_profile as find,
-    _SIZE, _CALLS, _LITERALS, _CALLEE_BODIES, thumb_bl_target)
+from msm5xxx_emulator.detection.registry import device_domain
+from msm5xxx_emulator.detection.arm import thumb_bl_target
+at = device_domain('baseband.service')._at
+find = device_domain('baseband.service').find_origination_service_profile
+_SIZE = device_domain('baseband.service')._SIZE
+_CALLS = device_domain('baseband.service')._CALLS
+_LITERALS = device_domain('baseband.service')._LITERALS
+_CALLEE_BODIES = device_domain('baseband.service')._CALLEE_BODIES
 from corpus import FIRMWARE_ROOT
 
 CASES=[('x350_VC22.bin',0x1081c,'7a6a4df853b51a4b44e86c3334330c12facad2954eef5a94031724ff1ff44073'),
@@ -89,7 +94,8 @@ class ServiceDetectionTests(unittest.TestCase):
                                               (0xf800|((encoded>>1)&2047)).to_bytes(2,'little'))
         raw=bytes(image)
         relocate(raw,entry,clone,_SIZE+4,[off for off,_ in _CALLS])
-        from msm5xxx_emulator.detection.service import _DISPATCHER_CALLS
+        from msm5xxx_emulator.detection.registry import device_domain
+        _DISPATCHER_CALLS = device_domain('baseband.service')._DISPATCHER_CALLS
         relocate(raw,dispatcher,dispatch_clone,92,_DISPATCHER_CALLS,(entry,clone))
         result=find(image,0x1000000,0x800000)
         self.assertFalse(result['accepted']);self.assertEqual(result['matches'],2)

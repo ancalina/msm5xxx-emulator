@@ -1,7 +1,8 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.gpio_pmic import find_gpio_pmic_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_gpio_pmic_profile = device_domain('external_bus.gpio_pmic').find_gpio_pmic_profile
 
 
 def _h(word):

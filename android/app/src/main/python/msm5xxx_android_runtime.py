@@ -29,7 +29,7 @@ def probe():
     from msm5xxx_emulator.qemu.gdb_remote import Remote
     from msm5xxx_emulator.qemu.transport import Transport
     from msm5xxx_emulator.qemu.decoder import QemuDecoder
-    from msm5xxx_emulator.detection.firmware import detect
+    from msm5xxx_emulator.detection import detect
 
     return _json({
         "detector_entry": callable(detect),
@@ -47,7 +47,7 @@ def detect_profile(firmware_path):
     # An explicit protocol prefix carries library requests without changing JNI.
     if firmware_path.startswith("library-v1:"):
         return library_describe(firmware_path[len("library-v1:"):])
-    from msm5xxx_emulator.detection.firmware import detect
+    from msm5xxx_emulator.detection import detect
 
     config = detect(Path(firmware_path))
     profile = config.diagnostic_config()
@@ -87,7 +87,8 @@ def _apply_settings(firmware, baseline, edits):
     import argparse
     from msm5xxx_emulator.gui.settings import (SETTINGS_SECTIONS, settings_values,
         parse_settings_values, validate_settings_values)
-    from msm5xxx_emulator.detection.firmware import detect, DISABLEABLE_ADDRESS_FIELDS
+    from msm5xxx_emulator.detection import detect
+    from msm5xxx_emulator.detection.plan import DISABLEABLE_ADDRESS_FIELDS
     if not isinstance(edits, dict):
         raise ValueError("invalid settings")
     names = {name for _, fields in SETTINGS_SECTIONS for name, _ in fields} - {"firmware"}
@@ -120,7 +121,7 @@ def start_session(request_json):
     global _session, _session_stop, _session_thread, _session_error
     global _scanout_sent, _session_log, _original_stderr, _log_offset, _log_next
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
-    from msm5xxx_emulator.detection.firmware import detect
+    from msm5xxx_emulator.detection import detect
     from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
     from msm5xxx_emulator.qemu.transport import Transport
 

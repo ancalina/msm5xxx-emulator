@@ -2,8 +2,9 @@
 import struct
 import unittest
 from corpus import snippet
-from msm5xxx_emulator.detection.rex import (
-    _controller_registrar_at, find_rex_static_controller_callback_candidate)
+from msm5xxx_emulator.detection.registry import device_domain
+_controller_registrar_at = device_domain('rex.rules')._controller_registrar_at
+find_rex_static_controller_callback_candidate = device_domain('rex.rules').find_rex_static_controller_callback_candidate
 
 def chunks():
     return (

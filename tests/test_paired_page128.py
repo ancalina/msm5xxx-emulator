@@ -2,9 +2,11 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.paired_page128 import (
-    _CLEAR, _PIXEL, _TRANSFER, find_paired_page128,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_CLEAR = device_domain('display.paired_page128')._CLEAR
+_PIXEL = device_domain('display.paired_page128')._PIXEL
+_TRANSFER = device_domain('display.paired_page128')._TRANSFER
+find_paired_page128 = device_domain('display.paired_page128').find_paired_page128
 import test_lcd_geometry as display_helpers
 
 

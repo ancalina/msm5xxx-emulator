@@ -4,8 +4,33 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection import input_descriptor
-from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance, _descriptor_pointer, _raw_consumer_metadata, _row_order, _row_register, _sense_roles, _table_base
+from msm5xxx_emulator.detection.registry import device_domain
+from msm5xxx_emulator.detection.fact_context import FirmwareFacts
+input_descriptor = device_domain('input.descriptor')
+from msm5xxx_emulator.detection.registry import device_domain
+_descriptor_mmio_provenance = device_domain('input.descriptor')._descriptor_mmio_provenance
+_descriptor_pointer = device_domain('input.descriptor')._descriptor_pointer
+_raw_consumer_metadata = device_domain('input.descriptor')._raw_consumer_metadata
+_row_order = device_domain('input.descriptor')._row_order
+_row_register = device_domain('input.descriptor')._row_register
+_sense_roles = device_domain('input.descriptor')._sense_roles
+_table_base = device_domain('input.descriptor')._table_base
+
+
+def _patch_literal_values(side_effect):
+    return patch.object(
+        FirmwareFacts, "thumb_literal_value", autospec=True,
+        side_effect=lambda context, site, register:
+            side_effect(context.image, site, register),
+    )
+
+
+def _patch_call_targets(side_effect):
+    return patch.object(
+        FirmwareFacts, "thumb_call_target", autospec=True,
+        side_effect=lambda context, site:
+            side_effect(context.image, site),
+    )
 
 
 class DescriptorColumnTableTests(unittest.TestCase):
@@ -96,7 +121,7 @@ class DescriptorColumnTableTests(unittest.TestCase):
             return ring if (site, register) in ((enqueue, 2), (dequeue + 2, 4)) else None
         def branch(_image, site):
             return dequeue if site in (task, task + 0x20) else dispatch if site in (task + 8, task + 0x28) else None
-        with patch.object(input_descriptor, "thumb_literal_value", literal), patch.object(input_descriptor, "thumb_bl_target", branch):
+        with _patch_literal_values(literal), _patch_call_targets(branch):
             positive = _raw_consumer_metadata(bytes(image), load + enqueue, list(b"1259"), load)
             self.assertEqual(positive, {
                 "raw_ring": ring, "raw_ring_capacity": 32,
@@ -144,8 +169,7 @@ class DescriptorColumnTableTests(unittest.TestCase):
         def branch(_image, site):
             return dequeue if site == task else dispatch if site == task + 8 else None
 
-        with (patch.object(input_descriptor, "thumb_literal_value", literal),
-              patch.object(input_descriptor, "thumb_bl_target", branch)):
+        with (_patch_literal_values(literal), _patch_call_targets(branch)):
             self.assertIsNone(_raw_consumer_metadata(
                 bytes(image), load + enqueue, list(b"1259"), load,
             ))

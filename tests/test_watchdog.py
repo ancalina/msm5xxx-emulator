@@ -2,7 +2,8 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection import watchdog as detector
+from msm5xxx_emulator.detection.registry import device_domain
+detector = device_domain('watchdog.rules')
 from corpus import firmware_path
 
 

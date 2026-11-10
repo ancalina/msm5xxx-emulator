@@ -1,8 +1,11 @@
 """Source-bound external device composition over synthetic instruction images."""
 import unittest
 
-from msm5xxx_emulator.detection.external_bus import detect_external_bus
-from msm5xxx_emulator.detection.external_plan import external_bus_plan, external_bus_property
+from msm5xxx_emulator.detection.registry import device_domain
+detect_external_bus = device_domain('external_bus.rules').detect_external_bus
+from msm5xxx_emulator.detection.registry import device_domain
+external_bus_plan = device_domain('external_bus.projection').external_bus_plan
+external_bus_property = device_domain('external_bus.projection').external_bus_property
 from msm5xxx_emulator.detection.facts import bind_facts, fact_scope
 from msm5xxx_emulator.detection.image_view import ImageView
 from test_external_bus_transport import chip_select_only_image

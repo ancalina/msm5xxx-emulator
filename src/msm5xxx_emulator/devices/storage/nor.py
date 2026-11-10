@@ -7,7 +7,8 @@ import base64
 import binascii
 from ...state_io import durable_unlink
 from ...state_io import exclusive_path_lock
-from ...detection.storage import FUJITSU_MB84VD2219X_IDS
+from msm5xxx_emulator.detection.registry import device_domain
+FUJITSU_MB84VD2219X_IDS = device_domain('storage.rules').FUJITSU_MB84VD2219X_IDS
 import hashlib
 import json
 import logging

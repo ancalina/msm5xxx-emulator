@@ -1,6 +1,9 @@
 """Static import-boundary checks for detector device domains."""
 import ast
 import importlib.util
+import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -19,7 +22,7 @@ SHARED_DETECTION_MODULES = {
 } | {path.stem for pattern in ("startup_*.py", "fact_*.py")
      for path in DETECTION.glob(pattern)} | {
          "function_analysis", "function_states", "function_results",
-         "instruction_values",
+         "instruction_values", "layout_queries",
      }
 SHARED_DETECTION_MODULE_PREFIXES = {
     "fact_", "facts_", "instruction_values", "function_analysis",
@@ -85,6 +88,8 @@ def domain_for(path):
 
 
 def shared_layer_import_problem(imported):
+    if imported == DETECTION_PREFIX + '.plan' or imported.startswith(DETECTION_PREFIX + '.plan.'):
+        return 'shared facts cannot depend on the consuming plan'
     if is_detection_devices(imported):
         return "shared facts layers cannot depend on device domains"
     if imported == f"{DETECTION_PREFIX}.registry":
@@ -114,6 +119,8 @@ def domain_import_problem(imported, own_prefix):
     if any(imported == prefix or imported.startswith(prefix + ".")
            for prefix in SHARED_CORE_PREFIXES):
         return None
+    if imported.startswith(("msm5xxx_emulator.qemu", "msm5xxx_emulator.devices", "msm5xxx_emulator.gui")):
+        return "device admission cannot depend on runtime consumers"
     if is_detection_devices(imported):
         return f"device domains cannot import sibling domain {imported}"
     if imported.startswith(DETECTION_PREFIX + "."):
@@ -122,6 +129,20 @@ def domain_import_problem(imported, own_prefix):
 
 
 class DeviceImportTests(unittest.TestCase):
+    def test_lazy_projection_composes_its_own_helper_dependencies(self):
+        program = """
+from types import SimpleNamespace
+from msm5xxx_emulator.detection.registry import device_domain
+projection = device_domain('storage.transport_projection')
+image = bytes(8)
+config = SimpleNamespace(flash_size=0x100000, ram_base=0x1800000, ram_size=0x800000)
+value, reason = projection.qemu_sharp_board_status_property(image, image, config, claimed=False)
+assert value is None and reason.startswith('sharp-board-status-lcd-source-unverified:')
+"""
+        subprocess.run([sys.executable, '-c', program], check=True,
+                       env={**os.environ, 'PYTHONPATH': str(SOURCE.parent),
+                            'PYTHONDONTWRITEBYTECODE': '1'}, capture_output=True, text=True)
+
     def test_registry_discovers_packages_and_rejects_unknown_domains(self):
         domains = device_domains()
         self.assertIsInstance(domains, tuple)
@@ -151,6 +172,22 @@ class DeviceImportTests(unittest.TestCase):
             for imported, line in imported_modules(path, tree):
                 self.assertFalse(is_detection_devices(imported), f"{path}:{line}: {imported}")
 
+    def test_plan_contains_no_literal_device_signatures(self):
+        for path in (DETECTION / 'plan').rglob('*.py'):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Constant) and isinstance(node.value, bytes):
+                    self.assertLessEqual(len(node.value), 1, f'{path}:{node.lineno}')
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    self.assertNotEqual(node.func.attr, 'fromhex', f'{path}:{node.lineno}')
+
+    def test_display_consumers_request_only_display_providers(self):
+        for path in (SOURCE / 'devices' / 'display').rglob('*.py'):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == 'device_domain' and node.args
+                        and isinstance(node.args[0], ast.Constant)):
+                    self.assertTrue(node.args[0].value.startswith('display.'), f'{path}:{node.lineno}')
+
     def test_domain_imports_stay_within_domain_or_shared_layers(self):
         for path in DEVICE_DOMAINS.rglob("*.py"):
             domain = domain_for(path)
@@ -164,6 +201,35 @@ class DeviceImportTests(unittest.TestCase):
                     continue
                 problem = domain_import_problem(imported, own_prefix)
                 self.assertIsNone(problem, f"{path}:{line}: {imported}: {problem}")
+
+    def test_every_discovered_rule_has_bound_evidence_requirements(self):
+        for path in sorted(DEVICE_DOMAINS.rglob("*.py")):
+            relative = path.relative_to(DEVICE_DOMAINS).with_suffix("")
+            parts = relative.parts[:-1] if path.name == "__init__.py" else relative.parts
+            if not parts:
+                continue
+            module = device_domain(".".join(parts))
+            for symbol, (provider, attribute) in getattr(module, "REQUIRES", {}).items():
+                if provider.split('.')[0] != parts[0] and attribute is not None:
+                    self.assertFalse(attribute.startswith('_'), f'{module.__name__}: private provider {provider}.{attribute}')
+                dependency = device_domain(provider)
+                expected = dependency if attribute is None else getattr(dependency, attribute)
+                self.assertIs(getattr(module, symbol), expected, f"{module.__name__}.{symbol}")
+
+    def test_root_contains_only_shared_layers_and_registry(self):
+        allowed = SHARED_DETECTION_MODULES | {"__init__", "registry"}
+        for path in DETECTION.glob("*.py"):
+            self.assertTrue(path.stem in allowed or any(path.stem.startswith(prefix)
+                            for prefix in SHARED_FACT_FILE_PREFIXES), str(path))
+        for name in SHARED_DETECTION_MODULES | {'plan'}:
+            package = DETECTION / name
+            if not package.is_dir():
+                continue
+            for path in package.rglob("*.py"):
+                self.assertLessEqual(len(path.read_text().splitlines()), 600, str(path))
+                if name != 'plan':
+                    for imported, line in imported_modules(path, ast.parse(path.read_text())):
+                        self.assertIsNone(shared_layer_import_problem(imported), f"{path}:{line}: {imported}")
 
     def test_synthetic_ast_imports_enforce_each_direction(self):
         domain_path = DEVICE_DOMAINS / "sample" / "__init__.py"
@@ -199,6 +265,8 @@ class DeviceImportTests(unittest.TestCase):
             f"{DETECTION_PREFIX}.instruction_values", own))
         self.assertIsNone(domain_import_problem(
             f"{DETECTION_PREFIX}.function_analysis", own))
+        self.assertIsNotNone(domain_import_problem("msm5xxx_emulator.qemu.decoder", own))
+        self.assertIsNotNone(domain_import_problem("msm5xxx_emulator.devices.input", own))
         self.assertIn("sibling", domain_import_problem(sibling, own))
         self.assertIn("legacy", domain_import_problem(legacy, own))
 

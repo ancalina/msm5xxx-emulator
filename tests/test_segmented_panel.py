@@ -134,7 +134,8 @@ class SegmentedPanelTests(unittest.TestCase):
 
     def test_detector_structural_admission_and_mutations(self):
         import struct
-        from msm5xxx_emulator.detection.segmented import detect_segmented_panel
+        from msm5xxx_emulator.detection.registry import device_domain
+        detect_segmented_panel = device_domain('display.segmented').detect_segmented_panel
         image = bytearray(1024)
         def put(offset, value):
             data = bytes.fromhex(value)

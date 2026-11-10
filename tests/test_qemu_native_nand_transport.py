@@ -1,4 +1,5 @@
 """Timed NAND image binding and qualified host-state shutdown without QEMU."""
+import msm5xxx_emulator.detection.plan as boot_plan
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import hashlib
@@ -17,9 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 from msm5xxx_emulator.qemu import transport
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu import nand_state as native_nand_state
-from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
-from msm5xxx_emulator.detection.firmware import detect
-from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
+from msm5xxx_emulator.detection.startup_sdram import reset_copy_ram_profile
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
+from msm5xxx_emulator.detection.registry import device_domain
+small_page_nand_profile = device_domain('storage.small_page_nand').small_page_nand_profile
 from msm5xxx_emulator.state_io import exclusive_path_lock
 from test_small_page_nand_detection import _nand_fixture
 from corpus import FIRMWARE_ROOT

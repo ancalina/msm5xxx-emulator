@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 import unittest
 
-from msm5xxx_emulator.detection.input_lg_kp import find_kp_legacy_scanner
+from msm5xxx_emulator.detection.registry import device_domain
+find_kp_legacy_scanner = device_domain('input.lg_kp').find_kp_legacy_scanner
 from msm5xxx_emulator.detection.arm import thumb_bl_target
 from msm5xxx_emulator.detection import detect
 from msm5xxx_emulator.qemu.decoder import QemuDecoder

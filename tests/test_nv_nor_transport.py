@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from msm5xxx_emulator.qemu import transport
+from msm5xxx_emulator.detection.devices.storage import transport_projection
 from msm5xxx_emulator.detection.capabilities import Capability, Evidence
 
 
@@ -17,7 +18,7 @@ class NVNORTransportTests(unittest.TestCase):
             ("profile",), (Evidence("profile", profile, (0x100,), "data"),),
             parameters=(("legacy-kind", "byte-offset-boot-sectors"),
                         ("legacy-profile", profile)))
-        with mock.patch.object(transport, "select_legacy_nv_nor",
+        with mock.patch.object(transport_projection, "select_legacy_nv_nor",
                                return_value=capability):
             self.assertEqual(transport.qemu_legacy_nv_nor_profile(b"", config),
                              ("byte-offset-boot-sectors", profile))

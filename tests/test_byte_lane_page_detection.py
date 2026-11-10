@@ -4,7 +4,10 @@ import hashlib
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.byte_lane_page import _SPEC, _GLYPH_REFS, find_byte_lane_page_profile
+from msm5xxx_emulator.detection.registry import device_domain
+_SPEC = device_domain('display.byte_lane_page')._SPEC
+_GLYPH_REFS = device_domain('display.byte_lane_page')._GLYPH_REFS
+find_byte_lane_page_profile = device_domain('display.byte_lane_page').find_byte_lane_page_profile
 
 
 def fixture(shift=0, ram_shift=0):
@@ -141,7 +144,10 @@ class ByteLanePageDetectionTests(unittest.TestCase):
 
 
 def paired_fixture(shift=0, variant_index=0):
-    from msm5xxx_emulator.detection.byte_lane_page import _PAIRED_SPECS, _PAIRED_VARIANTS, _PAIRED_LINKS
+    from msm5xxx_emulator.detection.registry import device_domain
+    _PAIRED_SPECS = device_domain('display.byte_lane_page')._PAIRED_SPECS
+    _PAIRED_VARIANTS = device_domain('display.byte_lane_page')._PAIRED_VARIANTS
+    _PAIRED_LINKS = device_domain('display.byte_lane_page')._PAIRED_LINKS
     variant, links = _PAIRED_VARIANTS[variant_index], _PAIRED_LINKS[variant_index]
     image = bytearray(0x60000 + shift)
     entries = {role: 0x1000 + i * 0x1000 + shift for i, role in enumerate(variant)}
@@ -284,7 +290,8 @@ class DescendingPairedPageTests(unittest.TestCase):
         self.assertEqual(find_byte_lane_page_profile(new)[1], 'byte-lane-page-group-ambiguous')
         image, entries, _ = paired_fixture()
         # A complete callee fragment is not an additional complete owned graph.
-        from msm5xxx_emulator.detection.byte_lane_page import _PAIRED_SPECS
+        from msm5xxx_emulator.detection.registry import device_domain
+        _PAIRED_SPECS = device_domain('display.byte_lane_page')._PAIRED_SPECS
         image[0x50000:0x5000c] = _PAIRED_SPECS['data'][0]
         self.assertIsNotNone(find_byte_lane_page_profile(image)[0])
 

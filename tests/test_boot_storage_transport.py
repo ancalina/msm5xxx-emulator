@@ -10,9 +10,12 @@ import unittest
 from test_boot_keysense import fixture as key_fixture
 from test_spi_nv_detection import _fixture as spi_fixture
 from test_rex_legacy_row0 import fixture as row0_fixture
-from msm5xxx_emulator.detection.rex import find_rex_legacy_row0_profile
-from msm5xxx_emulator.detection.boot_keysense import find_boot_keysense_release
-from msm5xxx_emulator.detection.spi_nv import find_spi_nv_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_rex_legacy_row0_profile = device_domain('rex.rules').find_rex_legacy_row0_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_boot_keysense_release = device_domain('input.boot_keysense').find_boot_keysense_release
+from msm5xxx_emulator.detection.registry import device_domain
+find_spi_nv_profile = device_domain('storage.spi_nv').find_spi_nv_profile
 from msm5xxx_emulator.qemu.transport import (prepare_spi_nv_state, qemu_boot_keysense_property,
                             qemu_spi_nv_properties, qemu_state_directory, qemu_basic_row0_property)
 

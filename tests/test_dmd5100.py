@@ -4,7 +4,8 @@ import hashlib
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.boot import DMD_DOWNLOAD_SIGNATURE
+from msm5xxx_emulator.detection.registry import device_domain
+DMD_DOWNLOAD_SIGNATURE = device_domain('dmd.boot_rules').DMD_DOWNLOAD_SIGNATURE
 from msm5xxx_emulator.detection.devices.dmd import find_dmd5100_profile
 from corpus import FIRMWARE_ROOT
 

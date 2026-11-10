@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 from msm5xxx_emulator.devices.display.controller import DisplayControllerMixin
 from msm5xxx_emulator.devices.display.page_panel import PagePanel
-from msm5xxx_emulator.detection.display import find_byte_main_page_secondary
+from msm5xxx_emulator.detection.registry import device_domain
+find_byte_main_page_secondary = device_domain('display.rules').find_byte_main_page_secondary
 
 
 class SecondaryPagePanelTests(unittest.TestCase):

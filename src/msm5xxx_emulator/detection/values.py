@@ -1,10 +1,7 @@
 """Immutable analysis values and shared 32-bit arithmetic/flag semantics."""
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 from capstone import arm as a
-
 
 # Analysis-only flags; architectural register IDs are nonnegative.
 _FLAG_N, _FLAG_Z, _FLAG_C, _FLAG_V = -2, -3, -4, -5
@@ -16,47 +13,23 @@ _ORIGIN_C = 4
 _ORIGIN_V = 8
 _FLAGS = (_FLAG_N, _FLAG_Z, _FLAG_C, _FLAG_V)
 
-
 def _condition_flag_mask(condition):
-    return {
-        a.ARM_CC_EQ: _ORIGIN_Z, a.ARM_CC_NE: _ORIGIN_Z,
-        a.ARM_CC_MI: _ORIGIN_N, a.ARM_CC_PL: _ORIGIN_N,
-        a.ARM_CC_HS: _ORIGIN_C, a.ARM_CC_LO: _ORIGIN_C,
-        a.ARM_CC_VS: _ORIGIN_V, a.ARM_CC_VC: _ORIGIN_V,
-        a.ARM_CC_HI: _ORIGIN_C | _ORIGIN_Z,
-        a.ARM_CC_LS: _ORIGIN_C | _ORIGIN_Z,
-        a.ARM_CC_GE: _ORIGIN_N | _ORIGIN_V,
-        a.ARM_CC_LT: _ORIGIN_N | _ORIGIN_V,
-        a.ARM_CC_GT: _ORIGIN_N | _ORIGIN_V | _ORIGIN_Z,
-        a.ARM_CC_LE: _ORIGIN_N | _ORIGIN_V | _ORIGIN_Z,
-    }.get(condition, 0)
+    return { a.ARM_CC_EQ: _ORIGIN_Z, a.ARM_CC_NE: _ORIGIN_Z, a.ARM_CC_MI: _ORIGIN_N, a.ARM_CC_PL: _ORIGIN_N, a.ARM_CC_HS: _ORIGIN_C, a.ARM_CC_LO: _ORIGIN_C, a.ARM_CC_VS:
+        _ORIGIN_V, a.ARM_CC_VC: _ORIGIN_V, a.ARM_CC_HI: _ORIGIN_C | _ORIGIN_Z, a.ARM_CC_LS: _ORIGIN_C | _ORIGIN_Z, a.ARM_CC_GE: _ORIGIN_N | _ORIGIN_V, a.ARM_CC_LT:
+        _ORIGIN_N | _ORIGIN_V, a.ARM_CC_GT: _ORIGIN_N | _ORIGIN_V | _ORIGIN_Z, a.ARM_CC_LE: _ORIGIN_N | _ORIGIN_V | _ORIGIN_Z, }.get(condition, 0)
 _RECENT_POP_REGISTER = -6
-
 
 def _condition_holds(condition, registers):
     if condition in (a.ARM_CC_AL, a.ARM_CC_INVALID):
         return True
-    requirements, predicate = {
-        a.ARM_CC_EQ: ((_FLAG_Z,), lambda z: z == 1),
-        a.ARM_CC_NE: ((_FLAG_Z,), lambda z: z == 0),
-        a.ARM_CC_MI: ((_FLAG_N,), lambda n: n == 1),
-        a.ARM_CC_PL: ((_FLAG_N,), lambda n: n == 0),
-        a.ARM_CC_HS: ((_FLAG_C,), lambda c: c == 1),
-        a.ARM_CC_LO: ((_FLAG_C,), lambda c: c == 0),
-        a.ARM_CC_VS: ((_FLAG_V,), lambda v: v == 1),
-        a.ARM_CC_VC: ((_FLAG_V,), lambda v: v == 0),
-        a.ARM_CC_HI: ((_FLAG_C, _FLAG_Z), lambda c, z: c == 1 and z == 0),
-        a.ARM_CC_LS: ((_FLAG_C, _FLAG_Z), lambda c, z: c == 0 or z == 1),
-        a.ARM_CC_GE: ((_FLAG_N, _FLAG_V), lambda n, v: n == v),
-        a.ARM_CC_LT: ((_FLAG_N, _FLAG_V), lambda n, v: n != v),
-        a.ARM_CC_GT: ((_FLAG_N, _FLAG_V, _FLAG_Z), lambda n, v, z: n == v and z == 0),
-        a.ARM_CC_LE: ((_FLAG_N, _FLAG_V, _FLAG_Z), lambda n, v, z: n != v or z == 1),
-    }.get(condition, ((), None))
-    return (predicate(*(registers[flag] for flag in requirements))
-            if predicate is not None and all(type(registers.get(flag)) is int
-                                            for flag in requirements)
-            else None)
-
+    requirements, predicate = { a.ARM_CC_EQ: ((_FLAG_Z,), lambda z: z == 1), a.ARM_CC_NE: ((_FLAG_Z,), lambda z: z == 0), a.ARM_CC_MI: ((_FLAG_N,), lambda n: n
+        == 1), a.ARM_CC_PL: ((_FLAG_N,), lambda n: n == 0), a.ARM_CC_HS: ((_FLAG_C,), lambda c: c == 1), a.ARM_CC_LO: ((_FLAG_C,), lambda c: c == 0), a.ARM_CC_VS:
+        ((_FLAG_V,), lambda v: v == 1), a.ARM_CC_VC: ((_FLAG_V,), lambda v: v == 0), a.ARM_CC_HI: ((_FLAG_C, _FLAG_Z), lambda c, z: c == 1 and z == 0), a.ARM_CC_LS:
+        ((_FLAG_C, _FLAG_Z), lambda c, z: c == 0 or z == 1), a.ARM_CC_GE: ((_FLAG_N, _FLAG_V), lambda n, v: n == v), a.ARM_CC_LT: ((_FLAG_N, _FLAG_V), lambda n,
+        v: n != v), a.ARM_CC_GT: ((_FLAG_N, _FLAG_V, _FLAG_Z), lambda n, v, z: n == v and z == 0), a.ARM_CC_LE: ((_FLAG_N, _FLAG_V, _FLAG_Z), lambda n, v, z: n
+        != v or z == 1), }.get(condition, ((), None))
+    return (predicate(*(registers[flag] for flag in requirements)) if predicate is not None and all(type(registers.get(flag)) is int for flag in requirements)
+        else None)
 
 @dataclass(frozen=True, slots=True)
 class CodeAddress:
@@ -64,7 +37,6 @@ class CodeAddress:
     isa: str = 'thumb'
     phase: str = 'reset'
     bank: str = 'primary'
-
 
 @dataclass(frozen=True, slots=True)
 class SymbolicValue:
@@ -88,21 +60,16 @@ class SymbolicValue:
             raise ValueError('symbolic argument index must be nonnegative')
         return cls('arg', index)
 
-
 UNKNOWN_VALUE = SymbolicValue('unknown')
-
 
 def _symbolic_cost(value: SymbolicValue) -> tuple[int, int]:
     if value.kind != 'op' and value.kind != 'load':
         return 1, 1
-    counts = [ _symbolic_cost(item) for item in value.operands ]
+    counts = [_symbolic_cost(item) for item in value.operands]
     return 1 + sum(count for count, _ in counts), 1 + max((depth for _, depth in counts), default=0)
 
-
 def _contains_symbolic_load(value: SymbolicValue) -> bool:
-    return (value.kind == 'load'
-            or any(_contains_symbolic_load(item) for item in value.operands))
-
+    return (value.kind == 'load' or any(_contains_symbolic_load(item) for item in value.operands))
 
 def _symbolic_operation(operation: str, left, right, *, budget_exhausted=None):
     """Fold constants, otherwise build one bounded expression node."""
@@ -116,15 +83,8 @@ def _symbolic_operation(operation: str, left, right, *, budget_exhausted=None):
         return UNKNOWN_VALUE
     if left.kind == right.kind == 'const':
         a_value, b_value = left.value, right.value
-        operations = {
-            'add': lambda: a_value + b_value,
-            'sub': lambda: a_value - b_value,
-            'and': lambda: a_value & b_value,
-            'or': lambda: a_value | b_value,
-            'xor': lambda: a_value ^ b_value,
-            'lsl': lambda: a_value << min(b_value, 32),
-            'lsr': lambda: a_value >> min(b_value, 32),
-        }
+        operations = { 'add': lambda: a_value + b_value, 'sub': lambda: a_value - b_value, 'and': lambda: a_value & b_value, 'or': lambda: a_value | b_value,
+            'xor': lambda: a_value ^ b_value, 'lsl': lambda: a_value << min(b_value, 32), 'lsr': lambda: a_value >> min(b_value, 32), }
         folded = operations[operation]() & 0xFFFFFFFF
         if type(a_value) is int and type(b_value) is int:
             return folded
@@ -161,21 +121,16 @@ def _symbolic_operation(operation: str, left, right, *, budget_exhausted=None):
         return UNKNOWN_VALUE
     return result
 
-
-def _symbolic_load(address: SymbolicValue, width: int, signed: bool,
-                   site: CodeAddress, memory_version: tuple[CodeAddress, ...] | None,
-                   *, budget_exhausted=None) -> SymbolicValue:
+def _symbolic_load(address: SymbolicValue, width: int, signed: bool, site: CodeAddress, memory_version: tuple[CodeAddress, ...] | None, *, budget_exhausted=None) -> SymbolicValue:
     if address is UNKNOWN_VALUE or memory_version is None:
         return UNKNOWN_VALUE
-    result = SymbolicValue('load', operands=(address,), width=width, signed=signed,
-                           site=site, memory_version=memory_version)
+    result = SymbolicValue('load', operands=(address,), width=width, signed=signed, site=site, memory_version= memory_version)
     count, depth = _symbolic_cost(result)
     if count > 48 or depth > 8:
         if budget_exhausted is not None:
             budget_exhausted[0] = True
         return UNKNOWN_VALUE
     return result
-
 
 def evaluate_value(value: SymbolicValue, *, arguments=None, reads=None) -> int | None:
     """Evaluate a bounded expression with explicit argument/read substitutions.
@@ -186,7 +141,6 @@ def evaluate_value(value: SymbolicValue, *, arguments=None, reads=None) -> int |
     """
     arguments, reads = arguments or {}, reads or {}
     remaining = 48
-
     def visit(item, depth):
         nonlocal remaining
         remaining -= 1
@@ -208,36 +162,28 @@ def evaluate_value(value: SymbolicValue, *, arguments=None, reads=None) -> int |
             if item.signed and result & (1 << (bits - 1)):
                 result -= 1 << bits
             return result & 0xFFFFFFFF
-        if (item.kind != 'op' or item.value not in
-                ('add', 'sub', 'and', 'or', 'xor', 'lsl', 'lsr')
-                or len(item.operands) != 2):
+        if (item.kind != 'op' or item.value not in ('add', 'sub', 'and', 'or', 'xor', 'lsl', 'lsr') or len(item.operands) != 2):
             return None
         operands = tuple(visit(child, depth + 1) for child in item.operands)
         if any(child is None for child in operands):
             return None
         result = _symbolic_operation(item.value, *operands)
         return result if type(result) is int else None
-
     return visit(value, 0)
-
 
 def _evaluate_flags(operation, values, shift):
     mask = 0xFFFFFFFF
     if operation in ('cmp', 'sub') and len(values) == 2:
         left, right = values
         result = (left - right) & mask
-        return (result >> 31, int(result == 0), int(left >= right),
-                int(bool(((left ^ right) & (left ^ result)) & 0x80000000)))
+        return (result >> 31, int(result == 0), int(left >= right), int(bool(((left ^ right) & (left ^ result)) & 0x80000000)))
     if operation in ('cmn', 'add') and len(values) == 2:
         left, right = values
         result = (left + right) & mask
-        return (result >> 31, int(result == 0),
-                int(left + right > mask),
-                int(bool((~(left ^ right) & (left ^ result)) & 0x80000000)))
+        return (result >> 31, int(result == 0), int(left + right > mask), int(bool((~(left ^ right) & (left ^ result)) & 0x80000000)))
     if operation in ('tst', 'teq', 'and', 'or', 'xor') and len(values) == 2:
         left, right = values
-        result = (left & right if operation in ('tst', 'and') else
-                  left | right if operation == 'or' else left ^ right) & mask
+        result = (left & right if operation in ('tst', 'and') else left | right if operation == 'or' else left ^ right) & mask
         return result >> 31, int(result == 0), None, None
     if operation == 'mov' and len(values) == 1:
         result = values[0] & mask
@@ -265,4 +211,3 @@ def _evaluate_flags(operation, values, shift):
             carry = (source >> (min(amount, 32) - 1)) & 1
         return result >> 31, int(result == 0), carry, None
     return None
-

@@ -7,7 +7,8 @@ import sys
 from types import SimpleNamespace
 import unittest
 from msm5xxx_emulator.qemu.transport import qemu_virtual_cell_property
-from msm5xxx_emulator.detection.rex import find_rex_5ms_sleep_timer
+from msm5xxx_emulator.detection.registry import device_domain
+find_rex_5ms_sleep_timer = device_domain('rex.rules').find_rex_5ms_sleep_timer
 from corpus import FIRMWARE_ROOT
 
 
@@ -119,7 +120,8 @@ class QEMUBasebandTransportTests(unittest.TestCase):
             qemu_virtual_cell_property(b"", object(), {**extended, "sid": 1})
 
     def test_tx_init_is_explicit_same_image_bound_and_mapped(self):
-        from msm5xxx_emulator.detection.baseband import find_tx_init_profile
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_tx_init_profile = device_domain('baseband.rules').find_tx_init_profile
         root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
@@ -169,7 +171,8 @@ class QEMUBasebandTransportTests(unittest.TestCase):
             cell = {**CELL, "tx_init_delay_ns": 1000000}
             original, reason = qemu_virtual_cell_property(image, config, cell)
             self.assertIsNone(reason)
-            from msm5xxx_emulator.detection.baseband import find_tx_frame_profile
+            from msm5xxx_emulator.detection.registry import device_domain
+            find_tx_frame_profile = device_domain('baseband.rules').find_tx_frame_profile
             frame = find_tx_frame_profile(image, tick)
             for period in (1, 20000000, 1000000000):
                 scenario = {**cell, "tx_frame_period_ns": period}
@@ -285,7 +288,8 @@ class QEMUBasebandTransportTests(unittest.TestCase):
         from contextlib import ExitStack
         from functools import lru_cache
         from unittest.mock import patch
-        from msm5xxx_emulator.detection import baseband
+        from msm5xxx_emulator.detection.registry import device_domain
+        baseband = device_domain('baseband.rules')
         root = FIRMWARE_ROOT
         paths = [root / name for name in ("schx150.bin", "x350_VC22.bin")]
         if not all(path.is_file() for path in paths):
@@ -334,14 +338,16 @@ class QEMUBasebandTransportTests(unittest.TestCase):
                     image, config, {**cell, "traffic_decoder_probe": True,
                                     "traffic_frame_hex": "auto"})
                 self.assertIsNone(reason)
-                from msm5xxx_emulator.detection.service import find_origination_service_profile
+                from msm5xxx_emulator.detection.registry import device_domain
+                find_origination_service_profile = device_domain('baseband.service').find_origination_service_profile
                 service = find_origination_service_profile(image, config.ram_base, config.ram_size)
                 self.assertTrue(service["accepted"])
                 service_fields = ":".join(f"{service[key]:x}" for key in (
                     "entry", "header_packer", "dispatcher", "revision_address"))
                 self.assertEqual(automatic, enabled + ",traffic-service-source=" + service_fields)
                 self.assertNotIn("decoder-traffic-frame=", automatic)
-                from msm5xxx_emulator.detection import service as service_detector
+                from msm5xxx_emulator.detection.registry import device_domain
+                service_detector = device_domain('baseband.service')
                 rejected_service = {"accepted": False, "reject_reason": "service-packer-unmatched"}
                 with patch.object(service_detector, "find_origination_service_profile", return_value=rejected_service):
                     fallback, limit = qemu_virtual_cell_property(

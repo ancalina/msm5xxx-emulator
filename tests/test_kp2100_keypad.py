@@ -4,7 +4,8 @@ import copy
 import unittest
 
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
+from msm5xxx_emulator.detection.registry import device_domain
+_descriptor_mmio_provenance = device_domain('input.descriptor')._descriptor_mmio_provenance
 from msm5xxx_emulator.core.config import BoardStatusInput
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu.transport import (

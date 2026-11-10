@@ -4,10 +4,13 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection import input_halfword
-from msm5xxx_emulator.detection.input_halfword import (
-    find_indirect_matrix_scanners, find_loop_row_scanners, interrupt_helper, resolve_indirect_matrix_input,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+input_halfword = device_domain('input.halfword')
+from msm5xxx_emulator.detection.registry import device_domain
+find_indirect_matrix_scanners = device_domain('input.halfword').find_indirect_matrix_scanners
+find_loop_row_scanners = device_domain('input.halfword').find_loop_row_scanners
+interrupt_helper = device_domain('input.halfword').interrupt_helper
+resolve_indirect_matrix_input = device_domain('input.halfword').resolve_indirect_matrix_input
 from msm5xxx_emulator.detection.arm import thumb_bl_target
 from pathlib import Path
 import hashlib
@@ -140,7 +143,7 @@ class MappedRowTests(unittest.TestCase):
                 changed = image.copy()
                 struct.pack_into('<H',changed,site,word)
                 self.assertIsNone(resolve_indirect_matrix_input(bytes(changed))[0])
-        with patch('msm5xxx_emulator.detection.input_halfword.find_indirect_matrix_scanners',
+        with patch('msm5xxx_emulator.detection.devices.input.halfword.find_indirect_matrix_scanners',
                    return_value=[{'grammar':'indirect-halfword-six-row-v1'}]):
             self.assertEqual(resolve_indirect_matrix_input(bytes(image))[1],'ambiguous-scanners')
         self.assertEqual(resolve_indirect_matrix_input(bytes(image),4)[1],'unsupported-load-address')
@@ -254,7 +257,8 @@ class FunctionalConfirmTests(unittest.TestCase):
         return ((pc+4)&~3)+4*(opcode&255)
 
     def test_actual_and_import_order_fallback(self):
-        from msm5xxx_emulator.detection import input_halfword_status
+        from msm5xxx_emulator.detection.registry import device_domain
+        input_halfword_status = device_domain('input.halfword_status')
         with patch.object(input_halfword_status,'resolve_indirect_board_status',
                           side_effect=AssertionError('public resolver must not recurse')):
             self.accepted(self.original)

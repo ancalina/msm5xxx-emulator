@@ -1,4 +1,5 @@
 """Synthetic reset, device decoding and persistence without a CPU backend."""
+import msm5xxx_emulator.detection.plan as boot_plan
 from copy import deepcopy
 from pathlib import Path
 import struct
@@ -8,7 +9,8 @@ from unittest.mock import patch, Mock
 
 from msm5xxx_emulator.core.config import LinkerLayout, BoardStatusInput
 from msm5xxx_emulator.core.initial_state import initial_register_state
-from msm5xxx_emulator.detection.firmware import detect
+from msm5xxx_emulator.detection.registry import device_domain
+detect = boot_plan.detect
 from msm5xxx_emulator.qemu.decoder import QemuDecoder
 from msm5xxx_emulator.qemu.transport import qemu_memory_profile
 
@@ -151,7 +153,7 @@ class QemuDecoderTests(unittest.TestCase):
                          clear_banks=(0x03000c80, 0x03000c84),
                          controller_write_banks=(0x03000ca0, 0x03000ca4),
                          group_row_size=10, controller_aperture=(0x03000c80, 0x03000ca6))
-            prefix = 'msm5xxx_emulator.devices.input.'
+            prefix = 'msm5xxx_emulator.detection.devices.input.selection.'
             with patch(prefix + 'resolve_direct_matrix_input', return_value=(None, 'not-found', [])), \
                  patch(prefix + 'resolve_lg_descriptor_input', side_effect=lambda _: (deepcopy(descriptor), 'accepted', [])), \
                  patch(prefix + 'find_rex_legacy_5ms_timer_bridge', return_value=bridge), \

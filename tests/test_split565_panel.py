@@ -1,9 +1,9 @@
 import struct
 import unittest
 from corpus import snippet
-from msm5xxx_emulator.devices.display.split565_panel import (
-    Split565Panel, decode_split565, find_split565_port,
-)
+from msm5xxx_emulator.devices.display.split565_panel import Split565Panel, decode_split565
+from msm5xxx_emulator.detection.registry import device_domain
+find_split565_port = device_domain("display.split565").find_split565_port
 
 
 def encode(pixel):

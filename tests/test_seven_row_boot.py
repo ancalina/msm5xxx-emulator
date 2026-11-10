@@ -2,12 +2,14 @@
 import unittest
 
 from corpus import firmware_path
-from msm5xxx_emulator.detection.boot_format_nor import find_boot_format_nor
-from msm5xxx_emulator.detection.input_seven_row import (
-    find_seven_row_board_status, find_seven_row_scanners,
-)
-from msm5xxx_emulator.detection.legacy_lcd import _COLUMN16_BOOT
-from msm5xxx_emulator.detection.thumb_patterns import match
+from msm5xxx_emulator.detection.registry import device_domain
+find_boot_format_nor = device_domain('storage.boot_format_nor').find_boot_format_nor
+from msm5xxx_emulator.detection.registry import device_domain
+find_seven_row_board_status = device_domain('input.seven_row').find_seven_row_board_status
+find_seven_row_scanners = device_domain('input.seven_row').find_seven_row_scanners
+from msm5xxx_emulator.detection.registry import device_domain
+_COLUMN16_BOOT = device_domain('display.legacy_lcd')._COLUMN16_BOOT
+from msm5xxx_emulator.detection.fact_patterns import match
 
 
 class SevenRowBootTests(unittest.TestCase):
@@ -43,8 +45,12 @@ class SevenRowBootTests(unittest.TestCase):
         self.assertIsNone(find_seven_row_board_status(self.image[:0x1000]))
 
     def test_instruction_and_descriptor_mutations_reject(self):
-        from msm5xxx_emulator.detection.boot_format_nor import _CODE
-        from msm5xxx_emulator.detection.input_seven_row import _SCANNER_CODE, _SCANNER, _shape
+        from msm5xxx_emulator.detection.registry import device_domain
+        _CODE = device_domain('storage.boot_format_nor')._CODE
+        from msm5xxx_emulator.detection.registry import device_domain
+        _SCANNER_CODE = device_domain('input.seven_row')._SCANNER_CODE
+        _SCANNER = device_domain('input.seven_row')._SCANNER
+        _shape = device_domain('input.seven_row')._shape
         for at, _ in _CODE:
             with self.subTest(nor=hex(at)):
                 image = bytearray(self.image)

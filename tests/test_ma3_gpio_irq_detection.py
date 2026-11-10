@@ -5,8 +5,10 @@ import unittest
 from types import SimpleNamespace
 
 from corpus import firmware_path
-from msm5xxx_emulator.detection.audio import find_ma3_indexed_candidate
-from msm5xxx_emulator.detection.ma3_gpio_irq import find_ma3_gpio_irq_candidate
+from msm5xxx_emulator.detection.registry import device_domain
+find_ma3_indexed_candidate = device_domain('audio.rules').find_ma3_indexed_candidate
+from msm5xxx_emulator.detection.registry import device_domain
+find_ma3_gpio_irq_candidate = device_domain('audio.ma3_gpio_irq').find_ma3_gpio_irq_candidate
 from msm5xxx_emulator.qemu.transport import qemu_ma3_gpio_irq_property
 
 

@@ -2,7 +2,8 @@ import struct
 import unittest
 from types import SimpleNamespace
 
-from msm5xxx_emulator.detection import rex
+from msm5xxx_emulator.detection.registry import device_domain
+rex = device_domain('rex.rules')
 
 
 RAM = 0x01000000

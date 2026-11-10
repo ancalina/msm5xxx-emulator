@@ -4,8 +4,10 @@ import unittest
 
 from corpus import firmware_path
 from msm5xxx_emulator.core.config import BoardStatusInput
-from msm5xxx_emulator.detection.input import find_board_status_input
-from msm5xxx_emulator.detection.input_scanner_direct import direct_scanner_at
+from msm5xxx_emulator.detection.registry import device_domain
+find_board_status_input = device_domain('input.rules').find_board_status_input
+from msm5xxx_emulator.detection.registry import device_domain
+direct_scanner_at = device_domain('input.scanner_direct').direct_scanner_at
 
 
 def direct_scanner(start=0x100, address=0x03000664, bit=2, state=0x01003000):

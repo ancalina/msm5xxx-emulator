@@ -243,7 +243,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
     def test_sequence_receiver_property_rechecks_same_image_and_primary_nor(self):
         from copy import deepcopy
         from test_audio_transport import _sequence_image
-        from msm5xxx_emulator.detection.audio import find_audio_transport
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_audio_transport = device_domain('audio.rules').find_audio_transport
         image, roles = _sequence_image(0x2000)
         image = bytes(image)
         audio = find_audio_transport(image)
@@ -298,7 +299,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
     def test_optional_clear_property_same_image_and_dependency_bounds(self):
         from copy import deepcopy
         from test_audio_transport import _sequence_clear_image
-        from msm5xxx_emulator.detection.audio import find_audio_transport
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_audio_transport = device_domain('audio.rules').find_audio_transport
         for shift in (0, 0x2000):
             image, roles = _sequence_clear_image(shift)
             image = bytes(image)
@@ -331,7 +333,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
     def test_missing_or_rejected_clear_keeps_old_sequence_property(self):
         from copy import deepcopy
         from test_audio_transport import _sequence_image, _sequence_clear_image
-        from msm5xxx_emulator.detection.audio import find_audio_transport
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_audio_transport = device_domain('audio.rules').find_audio_transport
         config = SimpleNamespace(load_address=0, flash_size=0x4000,
                                  ram_base=0x1000000, ram_size=0x4000)
         images = [_sequence_image()[0]]
@@ -350,7 +353,8 @@ class QEMUAudioTransportTests(unittest.TestCase):
 
     def test_sequence_ready_byte_window_accepts_last_byte_and_rejects_unmapped(self):
         from test_audio_transport import _sequence_image
-        from msm5xxx_emulator.detection.audio import find_audio_transport
+        from msm5xxx_emulator.detection.registry import device_domain
+        find_audio_transport = device_domain('audio.rules').find_audio_transport
         image, roles = _sequence_image()
         config = SimpleNamespace(load_address=0, flash_size=0x1000,
                                  ram_base=0x1000000, ram_size=0x4000)
@@ -639,12 +643,13 @@ class QEMUAudioTransportTests(unittest.TestCase):
             encoding="utf-8"
         )
         audio_block = source[source.index("audio = self.config.audio_transport"):]
-        audio_block = audio_block[:audio_block.index("        rex_fields =")]
-        sites_gate = audio_block.index("if audio_sites is not None:")
-        self.assertGreater(audio_block.index("audio-aperture=", sites_gate),
-                           sites_gate)
-        self.assertGreater(audio_block.index("self.audio_stream_enabled = True",
-                                             sites_gate), sites_gate)
+        audio_block = audio_block[:audio_block.index("        machine, boot_property =")]
+        from msm5xxx_emulator.detection.registry import device_domain
+        selection = Path(device_domain('audio.selection').__file__).read_text()
+        sites_gate = selection.index("if sites is not None:")
+        self.assertGreater(selection.index("audio-aperture=", sites_gate), sites_gate)
+        self.assertIn("if audio_selection['stream']:", audio_block)
+        self.assertIn("self.audio_stream_enabled = True", audio_block)
         self.assertIn('"qemu-audio-adapter-unsupported"', audio_block)
         self.assertIn('"qemu-audio-detector-"', audio_block)
         self.assertIn('machine += ",audio-pcm=off"', audio_block)

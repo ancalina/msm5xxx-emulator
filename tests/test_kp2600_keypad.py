@@ -5,7 +5,8 @@ from pathlib import Path
 import unittest
 
 from msm5xxx_emulator.detection import detect
-from msm5xxx_emulator.detection.input_lg_kp2600 import find_kp2600_scanner
+from msm5xxx_emulator.detection.registry import device_domain
+find_kp2600_scanner = device_domain('input.lg_kp2600').find_kp2600_scanner
 from msm5xxx_emulator.devices.input import InputMixin
 from msm5xxx_emulator.qemu.transport import (
     qemu_kp2600_irq_compatible, qemu_kp2600_matrix_property,

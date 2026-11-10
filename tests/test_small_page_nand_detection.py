@@ -6,7 +6,8 @@ import struct
 import unittest
 from pathlib import Path
 
-from msm5xxx_emulator.detection.small_page_nand import small_page_nand_profile
+from msm5xxx_emulator.detection.registry import device_domain
+small_page_nand_profile = device_domain('storage.small_page_nand').small_page_nand_profile
 from test_bootstrap_sdram import _fixture as reset_fixture, _word, _branch
 from corpus import FIRMWARE_ROOT
 

@@ -1,7 +1,8 @@
 import unittest
 from types import SimpleNamespace
 from corpus import firmware_path
-from msm5xxx_emulator.detection.input_distributed7 import find_seven_row_input_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_seven_row_input_profile = device_domain('input.distributed7').find_seven_row_input_profile
 from msm5xxx_emulator.qemu.transport import matrix_input_command, qemu_seven_row_matrix_property
 
 

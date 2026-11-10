@@ -1,5 +1,6 @@
 """Experimental QEMU matrix input packet checks."""
 from __future__ import annotations
+import msm5xxx_emulator.detection.plan as boot_plan
 
 import importlib.util
 import io
@@ -16,17 +17,18 @@ from corpus import firmware_path, snippet
 from unittest import mock
 
 from msm5xxx_emulator.detection.registry import device_domain
+from msm5xxx_emulator.detection.fact_context import FirmwareFacts
 
 from msm5xxx_emulator.detection.devices.dmd import (DMD_DOWNLOAD_5500_LITERALS)
-from msm5xxx_emulator.detection.boot import (
-    PRIMARY_FLASH_PROBE_SIGNATURE,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+PRIMARY_FLASH_PROBE_SIGNATURE = device_domain('storage.boot_rules').PRIMARY_FLASH_PROBE_SIGNATURE
 
 
 NATIVE = Path(__file__).parents[1] / "native/qemu"
 TRANSPORT_SOURCE = Path(__file__).parents[1] / "src/msm5xxx_emulator/qemu/transport.py"
 MODULE = importlib.import_module("msm5xxx_emulator.qemu.live_display")
 EEPROM = device_domain("eeprom")
+INPUT_PROJECTION = device_domain("input.transport_projection")
 
 
 def _thumb_bl_bytes(source: int, target: int) -> bytes:
@@ -152,7 +154,8 @@ def _assert_byte_gpio_owners_return(testcase, image: bytes,
 
 class QEMUInputTransportTests(unittest.TestCase):
     def test_sv130_low5_property_from_real_qemu_decoder(self):
-        from msm5xxx_emulator.detection.firmware import detect
+        from msm5xxx_emulator.detection.registry import device_domain
+        detect = boot_plan.detect
         from msm5xxx_emulator.qemu.decoder import QemuDecoder
 
         source = firmware_path("LG-SV130.bin")
@@ -334,7 +337,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                          promotion='temporary-evidence-gated',
                          runtime_admitted=False, default_level=None, physical_role=None)
         helper = MODULE.qemu_halfword_status_property
-        with mock.patch('msm5xxx_emulator.qemu.transport.resolve_indirect_board_status',
+        with mock.patch.object(INPUT_PROJECTION, 'resolve_indirect_board_status',
                         return_value=(candidate,'static-candidate',[])) as resolver:
             for profile in (None, dict(matrix, promotion=None),
                             dict(matrix, grammar='indirect-halfword-six-row-v1')):
@@ -811,15 +814,16 @@ class QEMUInputTransportTests(unittest.TestCase):
         struct.pack_into('<5H', image, 0x80, 0x6b60, 0x8800, 0x0940, 0xd207, 0x2051)
         for pos in (0x3a, 0x60):
             struct.pack_into('<4H', image, pos, 0x6b40, 0x8800, 0x0940, 0xd200)
-        with mock.patch.dict(helper.__globals__,
-                             sd810_gpio_board_status_profile=lambda image: (0x3000720, 1, 1),
-                             thumb_literal_value=lambda *args: 0x1816618):
+        with (mock.patch.object(INPUT_PROJECTION, 'sd810_gpio_board_status_profile',
+                                return_value=(0x3000720, 1, 1)),
+              mock.patch.object(FirmwareFacts, 'thumb_literal_value', autospec=True,
+                                side_effect=lambda *_args: 0x1816618)):
             self.assertEqual(helper(bytes(image), config, sd810),
                              ('matrix-low5=1816618:12:22:3c:62:82', None))
             self.assertEqual(helper(bytes(image), config, profile),
                              (None, 'conflicting-status-profile'))
-        with mock.patch.dict(helper.__globals__,
-                             sd810_gpio_board_status_profile=lambda image: None):
+        with mock.patch.object(INPUT_PROJECTION, 'sd810_gpio_board_status_profile',
+                               return_value=None):
             self.assertEqual(helper(bytes(image), config, sd810),
                              (None, 'conflicting-status-profile'))
 
@@ -878,8 +882,9 @@ class QEMUInputTransportTests(unittest.TestCase):
         config = SimpleNamespace(load_address=0, flash_size=len(image),
                                  ram_base=0x1800000, ram_size=0x800000,
                                  board_status_input=None)
-        with mock.patch.dict(MODULE.qemu_sd840_low5_contacts.__globals__,
-                             thumb_literal_value=lambda *args: descriptor):
+        with mock.patch.object(
+                FirmwareFacts, 'thumb_literal_value', autospec=True,
+                side_effect=lambda _facts, _position, _register: descriptor):
             self.assertEqual(MODULE.qemu_low5_matrix_property(bytes(image), config, profile),
                 ('matrix-low5=181661c:12:22:15c:182:340', None))
             numeric = MODULE.qemu_sd840_numeric_profile(profile)
@@ -920,7 +925,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         struct.pack_into('<H', changed, reader + 58, 0x2008)
         self.assertFalse(MODULE.qemu_sd840_status_source(bytes(changed), config, profile))
         changed = bytearray(probe.image)
-        from msm5xxx_emulator.detection.input_descriptor import _descriptor_mmio_provenance
+        from msm5xxx_emulator.detection.registry import device_domain
+        _descriptor_mmio_provenance = device_domain('input.descriptor')._descriptor_mmio_provenance
         provenance = _descriptor_mmio_provenance(changed, profile['descriptor_pointer'])
         struct.pack_into('<I', changed, provenance['source'] + 4, 0x03000724)
         self.assertFalse(MODULE.qemu_sd840_status_source(bytes(changed), config, profile))
@@ -992,7 +998,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                       descriptor=0x1000000, queue_sink="0x500")
         candidate = dict(descriptor=0x1000000, queue_sink=0x500)
         helper = MODULE.qemu_halfword_status_property
-        with mock.patch('msm5xxx_emulator.qemu.transport.resolve_indirect_board_status',
+        with mock.patch.object(INPUT_PROJECTION, 'resolve_indirect_board_status',
                         return_value=(candidate, 'static-candidate', [])) as resolver:
             self.assertEqual(helper(b'', 0, matrix, None), (None, None))
             resolver.assert_not_called()
@@ -1221,7 +1227,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                                             source=0x100, target=0x1000600, size=0x100))
         helper = MODULE.qemu_halfword_matrix_property
         owner = (0x3000720, 0, 0x20, 0, 0x40, 0xc, 0x8000)
-        with mock.patch('msm5xxx_emulator.qemu.transport.eeprom_gpio_profile', return_value=(owner, None)):
+        with mock.patch.object(INPUT_PROJECTION, 'eeprom_gpio_profile', return_value=(owner, None)):
             self.assertEqual(helper(bytes(image), config, profile, enabled=False),
                              ('matrix-halfword=1000628:12:22:3b03,'
                               'experimental-matrix-contact=32:10,'
@@ -1275,7 +1281,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         for bad_owner in (None, (0x300072a, 0, 0x20, 0, 0x40, 0xc, 0x8000),
                           (0x3000720, 8, 2, 0, 0x40, 0xc, 0x8000),
                           (0x3000720, 0, 0x10, 0, 0x40, 0xc, 0x8000)):
-            with self.subTest(owner=bad_owner), mock.patch('msm5xxx_emulator.qemu.transport.eeprom_gpio_profile', return_value=(bad_owner, None)):
+            with self.subTest(owner=bad_owner), mock.patch.object(
+                    INPUT_PROJECTION, 'eeprom_gpio_profile', return_value=(bad_owner, None)):
                 self.assertIsNone(helper(bytes(image), config, profile, enabled=False)[0])
 
     def test_halfword_public_key_api_requires_unique_semantic_cell(self):
@@ -1334,7 +1341,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         image[0x22] ^= 1
         self.assertEqual(helper(bytes(image), config, profile),
                          (None, 'sense-load-shape-mismatch'))
-        with mock.patch('msm5xxx_emulator.qemu.transport.resolve_indirect_board_status') as resolver:
+        with mock.patch.object(INPUT_PROJECTION, 'resolve_indirect_board_status') as resolver:
             self.assertEqual(MODULE.qemu_halfword_status_property(b'', 0, profile, 4),
                              (None, 'halfword-matrix-not-admitted'))
             resolver.assert_not_called()
@@ -2264,7 +2271,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
 
         low_image = bytearray(b"\xff" * 0x1000)
-        from msm5xxx_emulator.detection import low_port_nand
+        from msm5xxx_emulator.detection.registry import device_domain
+        low_port_nand = device_domain('storage.low_port_nand')
         for position, signature in zip(
                 (0x100, 0x200, 0x300, 0x500, 0x700),
                 (low_port_nand.RAW_NAND_LOW_PORT_RESET_SIGNATURE,
@@ -2343,11 +2351,6 @@ class QEMUInputTransportTests(unittest.TestCase):
         start = machine.index("    if (s->primary_x16_nor_enabled) {")
         end = machine.index("    if (s->record_x16_nor_enabled) {", start)
         primary_init = machine[start:end]
-        transport_start = transport.index("        if primary_profile is not None:")
-        transport_end = transport.index(
-            "        if record_profile is not None:", transport_start
-        )
-
         self.assertIn(
             'qdev_prop_set_bit(dev, "write-while-suspended", true);',
             primary_init,
@@ -2360,20 +2363,12 @@ class QEMUInputTransportTests(unittest.TestCase):
             '        oc, "primary-x16-write-while-suspended",',
             machine,
         )
-        primary_transport = transport[transport_start:transport_end]
-        regions_start = primary_transport.index(
-            "            if primary_regions is not None:"
-        )
-        regions_end = primary_transport.index(
-            "            storage_args.extend", regions_start
-        )
-        self.assertIn(
-            'machine += ",primary-x16-write-while-suspended=on"',
-            primary_transport[regions_start:regions_end],
-        )
-        self.assertEqual(
-            transport.count("primary-x16-write-while-suspended=on"), 1,
-        )
+        projection = device_domain('storage.native_projection')
+        plain = projection.primary_fragment(0x100000, 0x200000, 0x10000, 1, 2, None)
+        suspended = projection.primary_fragment(0x100000, 0x200000, 0x10000, 1, 2, ((32, 0x10000),))
+        self.assertNotIn('primary-x16-write-while-suspended=on', plain)
+        self.assertTrue(suspended.endswith(':20:10000,primary-x16-write-while-suspended=on'))
+        self.assertEqual(suspended.count('primary-x16-write-while-suspended=on'), 1)
 
     def test_record_nor_is_descriptor_gated_and_identity_fail_closed(self) -> None:
         machine = (NATIVE / "msm5xxx-poc.c").read_text()
@@ -2412,8 +2407,8 @@ class QEMUInputTransportTests(unittest.TestCase):
             "                                prepend=True",
             transport,
         )
-        self.assertIn("record_base + record_size != primary_profile[0]",
-                      transport)
+        owner = Path(device_domain('storage.selection').__file__).read_text()
+        self.assertIn("record_base + record_size != primary_profile[0]", owner)
 
     def test_secondary_nor_hides_power_of_two_backing_tail(self) -> None:
         machine = (NATIVE / "msm5xxx-poc.c").read_text()
@@ -2455,12 +2450,11 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         self.assertIn("find_catalog_amd_x16_nor", transport)
         self.assertIn('"catalog-x16.raw"', transport)
-        self.assertIn("f\"{secondary_base:x}:{secondary_size:x}:\"", transport)
+        owner = Path(device_domain('storage.native_projection').__file__).read_text()
+        self.assertIn("f\"{secondary_base:x}:{secondary_size:x}:\"", owner)
         self.assertIn(
-            "find_embedded_fujitsu_x16_nor(\n"
-            "                bytes(self.decoder.flash.data), "
-            "self.config.flash_size",
-            transport,
+            "bytes(self.decoder.flash.data), self.config.flash_size",
+            Path(device_domain('storage.selection').__file__).read_text(),
         )
 
     def test_raw_nand_state_is_observable_without_ready_synthesis(self) -> None:

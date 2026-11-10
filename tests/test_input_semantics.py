@@ -6,15 +6,14 @@ import json
 import struct
 import unittest
 
-import msm5xxx_emulator.detection.input_semantics as semantic
-from msm5xxx_emulator.detection.input_semantics import (
-    KEYEMU_EVENTS,
-    KEYEMU_GRAMMAR_FINGERPRINT,
-    KEYEMU_NORMALIZER,
-    KEYEMU_SEMANTIC_CONTRACT,
-    KEYEMUL_MARKER,
-    detect_keyemu_semantics,
-)
+import msm5xxx_emulator.detection.devices.input.semantics as semantic
+from msm5xxx_emulator.detection.registry import device_domain
+KEYEMU_EVENTS = device_domain('input.semantics').KEYEMU_EVENTS
+KEYEMU_GRAMMAR_FINGERPRINT = device_domain('input.semantics').KEYEMU_GRAMMAR_FINGERPRINT
+KEYEMU_NORMALIZER = device_domain('input.semantics').KEYEMU_NORMALIZER
+KEYEMU_SEMANTIC_CONTRACT = device_domain('input.semantics').KEYEMU_SEMANTIC_CONTRACT
+KEYEMUL_MARKER = device_domain('input.semantics').KEYEMUL_MARKER
+detect_keyemu_semantics = device_domain('input.semantics').detect_keyemu_semantics
 
 
 def _branch(source: int, target: int) -> int:

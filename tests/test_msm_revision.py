@@ -2,10 +2,10 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.boot import (
-    MSM5500_REVISION_RAW_GETTER, MSM5500_REVISION_TRANSFORMER,
-    detect_msm5500_revision_f025,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+MSM5500_REVISION_RAW_GETTER = device_domain('boot.rules').MSM5500_REVISION_RAW_GETTER
+MSM5500_REVISION_TRANSFORMER = device_domain('boot.rules').MSM5500_REVISION_TRANSFORMER
+detect_msm5500_revision_f025 = device_domain('boot.rules').detect_msm5500_revision_f025
 
 
 class RevisionTests(unittest.TestCase):

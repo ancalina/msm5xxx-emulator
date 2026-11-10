@@ -3,10 +3,14 @@ import struct
 import unittest
 from unittest.mock import patch
 from msm5xxx_emulator.core.config import BoardStatusInput
-from msm5xxx_emulator.detection.guarded_middle_nand import (
-    _STATUS, _READY, _BAD_PREFIX, _BAD_TRANSFER, _SWEEP_PREFIX, _SWEEP_TAIL,
-    find_guarded_middle_nand_profile,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+_STATUS = device_domain('storage.guarded_middle_nand')._STATUS
+_READY = device_domain('storage.guarded_middle_nand')._READY
+_BAD_PREFIX = device_domain('storage.guarded_middle_nand')._BAD_PREFIX
+_BAD_TRANSFER = device_domain('storage.guarded_middle_nand')._BAD_TRANSFER
+_SWEEP_PREFIX = device_domain('storage.guarded_middle_nand')._SWEEP_PREFIX
+_SWEEP_TAIL = device_domain('storage.guarded_middle_nand')._SWEEP_TAIL
+find_guarded_middle_nand_profile = device_domain('storage.guarded_middle_nand').find_guarded_middle_nand_profile
 from test_legacy_keypad import branch
 
 
@@ -51,7 +55,7 @@ class GuardedMiddleNandTests(unittest.TestCase):
 
     def test_copied_driver_and_ready_mask(self):
         image = self.fixture()
-        with patch('msm5xxx_emulator.detection.guarded_middle_nand.find_cold_power_guard',
+        with patch('msm5xxx_emulator.detection.devices.storage.guarded_middle_nand.find_cold_power_guard',
                    return_value=BoardStatusInput(0x03000720, 4, 4)):
             profile = find_guarded_middle_nand_profile(image)
             self.assertEqual((profile['data_size'], profile['ready_address'], profile['ready_mask']),
@@ -60,7 +64,7 @@ class GuardedMiddleNandTests(unittest.TestCase):
                 changed = bytearray(image)
                 changed[offset] ^= 1
                 self.assertIsNone(find_guarded_middle_nand_profile(changed))
-        with patch('msm5xxx_emulator.detection.guarded_middle_nand.find_cold_power_guard', return_value=None):
+        with patch('msm5xxx_emulator.detection.devices.storage.guarded_middle_nand.find_cold_power_guard', return_value=None):
             self.assertIsNone(find_guarded_middle_nand_profile(image))
 
     def test_transport_requires_disjoint_nand_aperture(self):
@@ -70,7 +74,7 @@ class GuardedMiddleNandTests(unittest.TestCase):
                                  ram_base=0x01000000, ram_size=0x800000,
                                  upper_flash_address=None)
         profile = dict(data_size=0x2000000)
-        with patch('msm5xxx_emulator.qemu.transport.find_guarded_middle_nand_profile',
+        with patch('msm5xxx_emulator.detection.devices.storage.transport_projection.find_guarded_middle_nand_profile',
                    return_value=profile):
             bus, error = qemu_raw_nand_main_profile(bytes(64), config)
             self.assertIsNone(error)

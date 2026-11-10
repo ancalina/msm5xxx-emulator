@@ -8,7 +8,7 @@ import struct
 import unittest
 from pathlib import Path
 
-from src.msm5xxx_emulator.detection.input_matrix import (
+from src.msm5xxx_emulator.detection.devices.input.matrix import (
     DIRECT_MATRIX_FINGERPRINT,
     LG_RING256,
     SAMSUNG_DUAL_PLANE_RING32,
@@ -29,7 +29,7 @@ from src.msm5xxx_emulator.detection.input_matrix import (
     resolve_direct_matrix_input,
     resolve_distributed_matrix_input,
 )
-from src.msm5xxx_emulator.detection.input_semantics import (
+from src.msm5xxx_emulator.detection.devices.input.semantics import (
     KEYEMU_GRAMMAR_FINGERPRINT,
     KEYEMU_PASSTHROUGH,
     KeyemuSemantics,

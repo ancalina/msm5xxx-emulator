@@ -3,7 +3,7 @@ from corpus import snippet
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.bootstrap_sdram import reset_copy_ram_profile
+from msm5xxx_emulator.detection.startup_sdram import reset_copy_ram_profile
 
 _FIRST = bytes.fromhex(
     '00409fe5010014e300e09f1500e09f0514ff2fe17847000000409fe5010014e300e09f1500e09f0514ff2fe178470000'

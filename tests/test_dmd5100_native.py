@@ -473,7 +473,7 @@ int main(void){
 }
 '''
         flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True,timeout=10))
-        with tempfile.TemporaryDirectory(prefix='.dmd5100-native-',dir=repo)as temporary:
+        with tempfile.TemporaryDirectory(prefix='.dmd5100-native-')as temporary:
             path=Path(temporary);(path/'check.c').write_text(code)
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-parameter',
                             '-fsanitize=undefined','-fno-sanitize-recover=all',

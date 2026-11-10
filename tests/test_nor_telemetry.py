@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 
-from msm5xxx_emulator.detection.storage import qualcomm_efs_seed
+from msm5xxx_emulator.detection.registry import device_domain
+qualcomm_efs_seed = device_domain('storage.rules').qualcomm_efs_seed
 from msm5xxx_emulator.devices.storage.nor import FUJITSU_MB84VD2219X_IDS, NORFlash
 
 

@@ -1,20 +1,15 @@
 """Compact, shared index for aligned raw memory-layout table candidates."""
 from __future__ import annotations
-
 from itertools import chain
 from ..core.config import LinkerLayout
-
 from array import array
 from collections.abc import Iterator
 import struct
 from typing import Callable, Hashable, TypeVar
-
 from .facts import FirmwareFacts, facts_for
-
 
 _INDEX_LIMIT = 0x40000
 _T = TypeVar("_T")
-
 
 class LayoutFacts:
     """Cached raw aligned words and immutable query results for one image.
@@ -35,15 +30,12 @@ class LayoutFacts:
             # Candidate starts stop at 0x40000; the last start still needs its
             # complete five-word row in the compact word index.
             end = min(len(self.image), _INDEX_LIMIT + 20) & ~3
-            self._words = array(
-                "I", (row[0] for row in struct.iter_unpack("<I", self.image[:end]))
-            )
+            self._words = array("I", (row[0] for row in struct.iter_unpack("<I", self.image[:end])))
         return self._words
 
     def words(self, offset: int, count: int) -> tuple[int, ...] | None:
         """Return aligned indexed words, or None for an unavailable span."""
-        if (offset < 0 or count < 0 or offset & 3
-                or offset + count * 4 > min(len(self.image), _INDEX_LIMIT)):
+        if (offset < 0 or count < 0 or offset & 3 or offset + count * 4 > min(len(self.image), _INDEX_LIMIT)):
             return None
         if not self.context.view.covers(offset, count * 4, phase='reset', bank='primary'):
             return None
@@ -53,8 +45,7 @@ class LayoutFacts:
 
     def row(self, width: int, offset: int) -> tuple[int, ...] | None:
         """Return one aligned raw triple/quintuple including its file offset."""
-        if (width not in (3, 5) or offset < 0 or offset & 3
-                or offset > _INDEX_LIMIT):
+        if (width not in (3, 5) or offset < 0 or offset & 3 or offset > _INDEX_LIMIT):
             return None
         if offset + width * 4 > len(self.image):
             return None
@@ -81,19 +72,16 @@ class LayoutFacts:
             if row is not None:
                 yield row
 
-    def query(self, name: str, parameters: tuple[Hashable, ...],
-              compute: Callable[[], _T]) -> _T:
+    def query(self, name: str, parameters: tuple[Hashable, ...], compute: Callable[[], _T]) -> _T:
         return self.context.memo('layout-' + name, parameters, compute)
 
-    def select_rows(self, name: str, width: int, max_offset: int,
-                    parameters: tuple[Hashable, ...], predicate) -> tuple[tuple[int, ...], ...]:
+    def select_rows(self, name: str, width: int, max_offset: int, parameters: tuple[Hashable, ...], predicate) -> tuple[tuple[int, ...], ...]:
         """Cache a device-specific subset without duplicating raw word scans."""
         return self.query(
             f"rows:{name}", (*parameters, width, max_offset),
             lambda: tuple(row for row in self.rows(width, max_offset)
                           if predicate(row)),
         )
-
 
 def layout_facts_for(image: bytes) -> LayoutFacts:
     """Attach layout indexing to the shared per-image firmware context."""
@@ -102,9 +90,7 @@ def layout_facts_for(image: bytes) -> LayoutFacts:
     context = facts_for(image)
     return context.memo("layout-facts", (), lambda: LayoutFacts(context))
 
-
 PAGE = 0x1000
-
 
 def _image_offset(address: int, image_size: int, load_address: int) -> int | None:
     if load_address and load_address <= address < load_address + image_size:
@@ -124,33 +110,26 @@ def _contiguous_address_length_array(image: bytes, offset: int) -> bool:
         if words is None:
             continue
         pairs = tuple(zip(words[::2], words[1::2]))
-        if any(not length or address % PAGE or length % PAGE
-               or address+length > 0x100000000 for address,length in pairs):
+        if any(not length or address % PAGE or length % PAGE or address+length > 0x100000000 for address,length in pairs):
             continue
-        if all(address+length == following[0]
-               for (address,length),following in zip(pairs,pairs[1:])):
+        if all(address+length == following[0] for (address,length),following in zip(pairs,pairs[1:])):
             return True
     return False
 
-def find_linker_layout(image: bytes, load_address: int = 0, *,
-                       required_span: tuple[int, int] | None = None) -> LinkerLayout | None:
+def find_linker_layout(image: bytes, load_address: int = 0, *, required_span: tuple[int, int] | None = None) -> LinkerLayout | None:
     """Find scatter-load metadata; a required data span must have one mapping."""
     if required_span is not None:
-        if (not isinstance(required_span, tuple) or len(required_span) != 2
-                or any(type(value) is not int for value in required_span)
-                or required_span[0] < 0 or required_span[1] <= 0
-                or sum(required_span) > 0x100000000):
+        if (not isinstance(required_span, tuple) or len(required_span) != 2 or any(type(value) is not int for value in required_span) or required_span[0] < 0 or
+            required_span[1] <= 0 or sum(required_span) > 0x100000000):
             return None
     facts = layout_facts_for(image)
-
     def extract() -> tuple[int, ...] | None:
         matches = []
         limit = min(len(image) - 20, 0x20000)
         preferred = facts.row(5, 0x10028)
         rows = facts.rows(5, limit)
         if preferred is not None and preferred[0] <= limit:
-            ordered_rows = chain((preferred,),
-                                 (row for row in rows if row[0] != 0x10028))
+            ordered_rows = chain((preferred,), (row for row in rows if row[0] != 0x10028))
         else:
             ordered_rows = rows
         for row in ordered_rows:
@@ -178,6 +157,5 @@ def find_linker_layout(image: bytes, load_address: int = 0, *,
                     if len(matches) > 1:
                         return None
         return matches[0] if matches else None
-
     values = facts.query("linker-layout", (load_address, required_span), extract)
     return LinkerLayout(*values) if values is not None else None

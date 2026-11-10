@@ -4,7 +4,8 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from msm5xxx_emulator.detection.input_halfword_status import resolve_indirect_board_status
+from msm5xxx_emulator.detection.registry import device_domain
+resolve_indirect_board_status = device_domain('input.halfword_status').resolve_indirect_board_status
 
 
 class IndirectStatusTests(unittest.TestCase):
@@ -34,7 +35,7 @@ class IndirectStatusTests(unittest.TestCase):
     def _resolve(self, image):
         matrix = dict(presence_site=0x380, sense_site=0x400,
                       descriptor=0x01001000, queue_sink='0x500')
-        with patch('msm5xxx_emulator.detection.input_halfword_status.'
+        with patch('msm5xxx_emulator.detection.devices.input.halfword_status.'
                    'resolve_indirect_matrix_input', return_value=(matrix, 'static-candidate', [])):
             return resolve_indirect_board_status(bytes(image))
 
@@ -157,7 +158,7 @@ class LoopStatusTests(unittest.TestCase):
         return image, matrix
 
     def _resolve(self, image, matrix):
-        with patch('msm5xxx_emulator.detection.input_halfword_status.resolve_indirect_matrix_input',
+        with patch('msm5xxx_emulator.detection.devices.input.halfword_status.resolve_indirect_matrix_input',
                    return_value=(matrix,'static-candidate',[])):
             return resolve_indirect_board_status(bytes(image))
 

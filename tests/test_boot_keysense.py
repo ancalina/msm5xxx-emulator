@@ -1,8 +1,10 @@
+from msm5xxx_emulator.detection.facts import facts_for
 """Reset/callee/literal mutations, without original-firmware dependencies."""
 import struct
 import unittest
 
-from msm5xxx_emulator.detection import boot_keysense as detector
+from msm5xxx_emulator.detection.registry import device_domain
+detector = device_domain('input.boot_keysense')
 
 
 def fixture(prefixed=False, shift=0):
@@ -131,7 +133,7 @@ class BootKeysenseTest(unittest.TestCase):
         target=0x2000;delta=target-p['entry']
         image[target:target+0xC4]=image[p['entry']:p['entry']+0xC4]
         for offset in detector._PREFIXED_CALLS:
-            callee=detector.thumb_bl_target(image,p['entry']+offset)
+            callee=facts_for(image).thumb_call_target(p['entry']+offset)
             displacement=callee-(target+offset)-4
             struct.pack_into('<HH',image,target+offset,
                              0xF000|(displacement>>12&0x7FF),0xF800|(displacement>>1&0x7FF))

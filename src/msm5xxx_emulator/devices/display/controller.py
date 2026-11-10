@@ -159,31 +159,14 @@ class DisplayControllerMixin:
                     "rejection": panel.rejection if panel else None,
                     "sequence": panel.sequence if panel else 0}
 
-    def _lcd_bind_legacy_panel(self, original: bytes, loaded: bytes, *,
-                               ram_claimed: bool = False) -> str | None:
-        """Bind original and loaded producer graphs; defer ownership to bus coverage."""
-        from ...detection.legacy_lcd import find_legacy_lcd_profile
+    def _lcd_bind_legacy_panel(self, original: bytes, loaded: bytes, *, ram_claimed=False):
+        from msm5xxx_emulator.detection.registry import device_domain
         from .legacy_panel import LegacyPanel
         self._lcd_legacy_panel = None
-        cfg = self.config
-        if (ram_claimed or getattr(self, "_lcd_source_window_panel", None) is not None
-                or getattr(cfg, "image_kind", None) != "firmware"
-                or any(type(getattr(cfg, key, None)) is not int
-                       for key in ("load_address", "image_offset", "entry", "flash_size"))
-                or cfg.flash_size <= 0
-                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0,0,0)
-                or len(loaded) != cfg.flash_size
-                or getattr(cfg, "ram_bootstrap_profile", None) is not None
-                or getattr(cfg, "missing_overlays", None)):
-            return None
-        protocol = find_legacy_lcd_profile(original, cfg.ram_base, cfg.ram_size)
-        if protocol is None or find_legacy_lcd_profile(loaded, cfg.ram_base, cfg.ram_size) != protocol:
-            return None
-        panel = LegacyPanel(protocol)
-        if ((cfg.width,cfg.height) != (panel.width,panel.height)
-                and getattr(cfg, "display_geometry_source", None) != "auto-default"):
-            return None
-        self._lcd_legacy_panel = panel
+        protocol = device_domain('display.binding').bind_legacy(original, loaded, self.config,
+            ram_claimed=ram_claimed, window_present=getattr(self, '_lcd_source_window_panel', None) is not None)
+        if protocol is not None:
+            self._lcd_legacy_panel = LegacyPanel(protocol)
         return protocol
 
     def legacy_panel_snapshot(self) -> dict[str, object]:
@@ -227,85 +210,21 @@ class DisplayControllerMixin:
                 self._lcd_source_window_publishing = False
         return owned
 
-    def _lcd_bind_source_window(self, original: bytes, loaded: bytes, *,
-                                ram_claimed: bool = False) -> None:
-        """Stage a source candidate; only a complete bus raster acquires ownership."""
-        from ...detection.copied_window import find_copied_window_profile
+    def _lcd_bind_source_window(self, original: bytes, loaded: bytes, *, ram_claimed=False):
+        from msm5xxx_emulator.detection.registry import device_domain
         from .window_panel import WindowPanel
-
         self._lcd_source_window_panel = None
         self._lcd_source_window_owned = False
-        self._lcd_source_window_reason = "source-layout-unverified"
-        cfg = self.config
-        if (not isinstance(original, bytes) or not isinstance(loaded, bytes)
-                or getattr(cfg, "image_kind", None) != "firmware"
-                or any(type(getattr(cfg, field, None)) is not int
-                       for field in ("load_address", "image_offset", "entry",
-                                     "flash_size", "ram_base", "ram_size"))
-                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0)
-                or not 0 < cfg.flash_size <= 0xFFFFFFFF
-                or len(loaded) != getattr(cfg, "flash_size", None)
-                or len(original) < len(loaded)):
-            return
-        profile, reason = find_copied_window_profile(original)
-        self._lcd_source_window_reason = reason
+        profile, self._lcd_source_window_reason = device_domain('display.binding').bind_window(
+            original, loaded, self.config, ram_claimed=ram_claimed)
         if profile is None:
             return
-        if (profile.get("writer_layout") == "arm-loop-count-tail-rom-content-v1"
-                and getattr(cfg, "chipset", None) not in ("MSM5100", "MSM5105")):
-            self._lcd_source_window_reason = "source-writer-chipset-scope-unclosed"
-            return
-        if (ram_claimed or getattr(cfg, "ram_bootstrap_profile", None) is not None
-                or getattr(cfg, "missing_overlays", None)):
-            self._lcd_source_window_reason = "source-memory-owner-unclosed"
-            return
-        if ((cfg.width, cfg.height) != (128, 128)
-                and getattr(cfg, "display_geometry_source", "external-config") != "auto-default"):
-            self._lcd_source_window_reason = "source-geometry-owner-conflict"
-            return
-        for field, begin, end in (
-                ("ram_intervals", cfg.ram_base, cfg.ram_base + cfg.ram_size),
-                ("iram_intervals", 0x03800000, 0x03A00000)):
-            spans = profile.get(field)
-            if (not isinstance(spans, (list, tuple)) or not spans
-                    or any(not isinstance(span, (list, tuple)) or len(span) != 2
-                           or any(type(v) is not int for v in span)
-                           or not begin <= span[0] < span[1] <= end for span in spans)):
-                self._lcd_source_window_reason = "source-" + field + "-unverified"
-                return
-        for field in ("code_intervals", "literal_intervals", "data_intervals", "boot_guard_intervals"):
-            spans = profile.get(field)
-            if (not isinstance(spans, (list, tuple)) or not spans
-                    or any(not isinstance(span, (list, tuple)) or len(span) != 2
-                           or any(type(v) is not int for v in span)
-                           or not 0 <= span[0] < span[1] <= len(loaded)
-                           or original[span[0]:span[1]] != loaded[span[0]:span[1]]
-                           for span in spans)):
-                self._lcd_source_window_reason = "source-loaded-bytes-unverified"
-                return
-        current, _ = find_copied_window_profile(loaded)
-        if current != profile:
-            self._lcd_source_window_reason = "source-loaded-owner-mismatch"
-            return
-        if (profile.get("signature") != "copied-byte-range-half128-v1"
-                or profile.get("admission") != "temporary-evidence-gated"
-                or profile.get("role") != "main"
-                or profile.get("protocol") != "copied-half128"
-                or (profile.get("command_port"), profile.get("data_port"),
-                    profile.get("command_width"), profile.get("access_width"),
-                    profile.get("width"), profile.get("height")) !=
-                   (0x02000000, 0x02000002, 1, 2, 128, 128)):
-            self._lcd_source_window_reason = "source-register-contract-unclosed"
-            return
         try:
-            self._lcd_source_window_panel = WindowPanel(
-                profile["command_port"], profile["width"], profile["height"],
-                protocol=profile["protocol"], source_init=tuple(profile["init_commands"]),
-                source_controls=tuple(tuple(v) for v in profile["opaque_control_sequences"]))
+            self._lcd_source_window_panel = WindowPanel(profile['command_port'], profile['width'], profile['height'],
+                protocol=profile['protocol'], source_init=tuple(profile['init_commands']),
+                source_controls=tuple(tuple(v) for v in profile['opaque_control_sequences']))
         except (KeyError, TypeError, ValueError):
-            self._lcd_source_window_reason = "source-window-profile-malformed"
-            return
-        self._lcd_source_window_reason = "static-source-candidate-awaiting-full-raster"
+            self._lcd_source_window_reason = 'source-window-profile-malformed'
 
     def _lcd_source_window_write(self, address: int, size: int, value: int) -> bool:
         panel = getattr(self, "_lcd_source_window_panel", None)
@@ -336,52 +255,17 @@ class DisplayControllerMixin:
             self._lcd_source_window_reason = "complete-source-window"
         return owned
 
-    def _lcd_bind_source_mux(self, original: bytes, loaded: bytes, *, ram_claimed=False) -> None:
-        from ...detection.mux_page import find_mux_page_profile
+    def _lcd_bind_source_mux(self, original: bytes, loaded: bytes, *, ram_claimed=False):
+        from msm5xxx_emulator.detection.registry import device_domain
         from .mux_page_panel import MuxPagePanel
         self._lcd_mux_page_panel = None
         self._lcd_mux_page_owned = False
-        self._lcd_mux_page_reason = 'source-layout-unverified'
-        cfg = self.config
-        if (getattr(cfg, 'chipset', None) not in ('MSM5100', 'MSM5105')
-                or getattr(cfg, 'image_kind', None) != 'firmware'
-                or any(type(getattr(cfg, key, None)) is not int for key in
-                       ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size'))
-                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0)
-                or not isinstance(original, bytes) or not isinstance(loaded, bytes)
-                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
-                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size, b'\xff')
-                or ram_claimed or getattr(cfg, 'missing_overlays', None)
-                or getattr(cfg, 'ram_bootstrap_profile', None) is not None):
-            return
-        profile, reason = find_mux_page_profile(original)
-        self._lcd_mux_page_reason = reason
+        binding = device_domain('display.binding')
+        profile, self._lcd_mux_page_reason = binding.bind_source('mux', original, loaded, self.config,
+            ram_claimed=ram_claimed)
         if profile is None:
-            return
-        if (profile.get('signature') != 'source-external-bit4-mono96-page-v1'
-                or profile.get('admission') != 'temporary-evidence-gated'
-                or tuple(profile.get(key) for key in ('width', 'height', 'clear_pages',
-                    'clear_row_bytes', 'command_port', 'data_port', 'mode_port',
-                    'mode_mask', 'access_width')) !=
-                   (96, 64, 10, 96, 0x02000000, 0x02000000, 0x02800000, 0x10, 1)):
-            self._lcd_mux_page_reason = 'source-mux-contract-unverified'
-            return
-        if ((cfg.width, cfg.height) != (96, 64)
-                and getattr(cfg, 'display_geometry_source', 'external-config') != 'auto-default'):
-            self._lcd_mux_page_reason = 'source-geometry-owner-conflict'
-            return
-        spans = profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
-        if (any(not 0 <= a < b <= min(len(original), len(loaded)) for a,b in spans)
-                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
-                       for a,b in profile['ram_intervals'])
-                or any(not 0x03800000 <= a < b <= 0x03a00000 for a,b in profile['iram_intervals'])):
-            self._lcd_mux_page_reason = 'source-memory-owner-unverified'
-            return
-        if loaded is not original and find_mux_page_profile(loaded)[0] != profile:
-            self._lcd_mux_page_reason = 'source-loaded-owner-mismatch'
-            return
+            return None
         self._lcd_mux_page_panel = MuxPagePanel()
-        self._lcd_mux_page_reason = 'source-candidate-awaiting-ten-page-clear'
 
     def _lcd_source_mux_write(self, address, size, value):
         panel = getattr(self, '_lcd_mux_page_panel', None)
@@ -420,53 +304,17 @@ class DisplayControllerMixin:
             optical_properties=None, pixel_order='provisional-vertical-lsb-first')
 
     def _lcd_bind_source_gpio(self, original: bytes, loaded: bytes, *, ram_claimed=False):
-        """Bind a passive native capture and source raster to the final seed."""
-        from ...detection.gpio_serial import find_gpio_serial_profile
+        from msm5xxx_emulator.detection.registry import device_domain
         from .gpio_serial_panel import GpioSerial89Panel
         self._lcd_gpio_serial_panel = None
         self._lcd_gpio_serial_owned = False
-        self._lcd_gpio_serial_reason = 'source-layout-unverified'
-        cfg = self.config
-        if (getattr(cfg, 'chipset', None) not in ('MSM5100', 'MSM5105')
-                or getattr(cfg, 'image_kind', None) != 'firmware'
-                or any(type(getattr(cfg, key, None)) is not int for key in
-                       ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size'))
-                or (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0)
-                or not isinstance(original, bytes) or not isinstance(loaded, bytes)
-                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
-                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size, b'\xff')
-                or ram_claimed or getattr(cfg, 'missing_overlays', None)
-                or getattr(cfg, 'ram_bootstrap_profile', None) is not None):
-            return None
-        profile, reason = find_gpio_serial_profile(original)
-        self._lcd_gpio_serial_reason = reason
+        binding = device_domain('display.binding')
+        profile, self._lcd_gpio_serial_reason = binding.bind_source('gpio', original, loaded, self.config,
+            ram_claimed=ram_claimed)
         if profile is None:
             return None
-        if (profile.get('signature') != 'source-gpio660-serial89-v1'
-                or profile.get('admission') != 'temporary-evidence-gated'
-                or tuple(profile.get(key)for key in ('width','height','access_width','port')) !=
-                   (89,64,2,0x03000660)):
-            self._lcd_gpio_serial_reason = 'source-gpio-contract-unverified'
-            return None
-        pcs = profile.get('capture_pcs', ())
-        spans = profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
-        if (not 0 < len(pcs) <= 64 or len(pcs) != len(set(pcs))
-                or any(type(pc) is not int or pc & 1 or not 0 <= pc < len(original) for pc in pcs)
-                or any(not 0 <= a < b <= min(len(original),len(loaded)) for a,b in spans)
-                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
-                       for a,b in profile['ram_intervals'])):
-            self._lcd_gpio_serial_reason = 'source-memory-owner-unverified'
-            return None
-        if ((cfg.width,cfg.height) != (89,64)
-                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
-            self._lcd_gpio_serial_reason = 'source-geometry-owner-conflict'
-            return None
-        if find_gpio_serial_profile(loaded)[0] != profile:
-            self._lcd_gpio_serial_reason = 'source-loaded-owner-mismatch'
-            return None
         self._lcd_gpio_serial_panel = GpioSerial89Panel()
-        self._lcd_gpio_serial_reason = 'source-candidate-awaiting-complete-raster'
-        return 'experimental-gpio660-lcd='+':'.join(f'{pc:x}'for pc in pcs)
+        return binding.gpio_property(profile)
 
     def _lcd_source_gpio_write(self, address, size, value):
         panel = getattr(self, '_lcd_gpio_serial_panel', None)
@@ -504,77 +352,16 @@ class DisplayControllerMixin:
             pixel_order='source-input-bit-permutation-v1',optical_properties=None)
 
     def _lcd_bind_source_boot_page(self, original: bytes, loaded: bytes, *, ram_claimed=False):
-        from ...detection.boot_page import find_boot_page_profile
+        from msm5xxx_emulator.detection.registry import device_domain
         from .boot_page_panel import BootPagePanel
         self._lcd_boot_page_panel = None
         self._lcd_boot_page_owned = False
-        self._lcd_boot_page_reason = 'source-layout-unverified'
-        cfg=self.config
-        if (getattr(cfg,'chipset',None) not in ('MSM5100','MSM5105')
-                or getattr(cfg,'image_kind',None) != 'firmware'
-                or any(type(getattr(cfg,key,None)) is not int for key in
-                       ('load_address','image_offset','entry','flash_size','ram_base','ram_size'))
-                or (cfg.load_address,cfg.image_offset,cfg.entry) != (0,0,0)
-                or not isinstance(original,bytes) or not isinstance(loaded,bytes)
-                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
-                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size,b'\xff')
-                or ram_claimed or getattr(cfg,'missing_overlays',None)
-                or getattr(cfg,'ram_bootstrap_profile',None) is not None):
-            failures = []
-            if getattr(cfg, 'chipset', None) not in ('MSM5100', 'MSM5105'):
-                failures.append('chipset')
-            if getattr(cfg, 'image_kind', None) != 'firmware':
-                failures.append('image-kind')
-            keys = ('load_address', 'image_offset', 'entry', 'flash_size', 'ram_base', 'ram_size')
-            if any(type(getattr(cfg, key, None)) is not int for key in keys):
-                failures.append('layout-fields')
-            else:
-                if (cfg.load_address, cfg.image_offset, cfg.entry) != (0, 0, 0):
-                    failures.append('load-layout')
-                if (not isinstance(original, bytes) or not isinstance(loaded, bytes)
-                        or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size):
-                    failures.append('image-size')
-                elif loaded != original[:cfg.flash_size].ljust(cfg.flash_size, b'\xff'):
-                    failures.append('loaded-image')
-            if ram_claimed:
-                failures.append('memory-claimed')
-            if getattr(cfg, 'missing_overlays', None):
-                failures.append('missing-overlays')
-            if getattr(cfg, 'ram_bootstrap_profile', None) is not None:
-                failures.append('ram-bootstrap')
-            self._lcd_boot_page_reason = 'source-layout-unverified: ' + ', '.join(failures)
-            cfg.detection_notes.append('Boot page rejected: ' + self._lcd_boot_page_reason)
+        binding = device_domain('display.binding')
+        profile, self._lcd_boot_page_reason = binding.bind_source('boot_page', original, loaded, self.config,
+            ram_claimed=ram_claimed)
+        if profile is None:
             return False
-        profile,reason=find_boot_page_profile(original)
-        self._lcd_boot_page_reason=reason
-        if profile is None:return False
-        halfword=(profile.get('signature') == 'source-halfword-boot-page128-v1'
-                  and profile.get('access_width') == 2
-                  and (profile.get('clear_pages'),profile.get('planes')) in ((9,1),(16,2))
-                  and profile.get('publish_after_clear_if_enabled',False) is False)
-        byte=(profile.get('signature') == 'source-byte-boot-page128-v1'
-              and profile.get('access_width') == 1
-              and (profile.get('clear_pages'),profile.get('planes')) == (8,1)
-              and profile.get('publish_after_clear_if_enabled') is True)
-        if (not (halfword or byte) or profile.get('admission') != 'temporary-evidence-gated'
-                or type(profile.get('access_width')) is not int
-                or tuple(profile.get(k)for k in ('width','command_port','data_port')) !=
-                   (128,0x02000000,0x02000002)
-                or profile.get('height') != profile['clear_pages']*8):
-            self._lcd_boot_page_reason='source-boot-page-contract-unverified';return False
-        spans=profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
-        if (any(not 0 <= a < b <= min(len(original),len(loaded))for a,b in spans)
-                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
-                       for a,b in profile['ram_intervals'])):
-            self._lcd_boot_page_reason='source-memory-owner-unverified';return False
-        if ((cfg.width,cfg.height) != (128,profile['height'])
-                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
-            self._lcd_boot_page_reason='source-geometry-owner-conflict';return False
-        if find_boot_page_profile(loaded)[0] != profile:
-            self._lcd_boot_page_reason='source-loaded-owner-mismatch';return False
-        self._lcd_boot_page_panel=BootPagePanel(profile['clear_pages'],profile['planes'],
-            access_width=profile['access_width'],publish_after_clear_if_enabled=byte)
-        self._lcd_boot_page_reason='source-candidate-awaiting-complete-clear'
+        self._lcd_boot_page_panel = BootPagePanel(profile['clear_pages'], profile['planes'], access_width=profile['access_width'], publish_after_clear_if_enabled=profile.get('publish_after_clear_if_enabled', False))
         return True
 
     def _lcd_source_boot_page_write(self,address,size,value):
@@ -606,58 +393,16 @@ class DisplayControllerMixin:
             optical_properties=None)
 
     def _lcd_bind_source_rgb565_boot(self, original: bytes, loaded: bytes, *, ram_claimed=False, allowed_patch=None):
-        from ...detection.rgb565_boot import find_rgb565_boot_profile
+        from msm5xxx_emulator.detection.registry import device_domain
         from .rgb565_boot_panel import Rgb565BootPanel
         self._lcd_rgb565_boot_panel = None
         self._lcd_rgb565_boot_owned = False
-        self._lcd_rgb565_boot_reason = 'source-layout-unverified'
-        cfg=self.config
-        if (getattr(cfg,'chipset',None) not in ('MSM5100','MSM5105')
-                or getattr(cfg,'image_kind',None) != 'firmware'
-                or any(type(getattr(cfg,key,None)) is not int for key in
-                       ('load_address','image_offset','entry','flash_size','ram_base','ram_size'))
-                or (cfg.load_address,cfg.image_offset,cfg.entry) != (0,0,0)
-                or not isinstance(original,bytes) or not isinstance(loaded,bytes)
-                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
-                or ram_claimed or getattr(cfg,'missing_overlays',None)
-                or getattr(cfg,'ram_bootstrap_profile',None) is not None):
+        binding = device_domain('display.binding')
+        profile, self._lcd_rgb565_boot_reason = binding.bind_source('rgb565', original, loaded, self.config,
+            ram_claimed=ram_claimed, allowed_patch=allowed_patch)
+        if profile is None:
             return False
-        canonical=original[:cfg.flash_size].ljust(cfg.flash_size,b'\xff')
-        patch_span=None
-        if allowed_patch is not None:
-            if (not isinstance(allowed_patch,tuple) or len(allowed_patch) != 2
-                    or type(allowed_patch[0]) is not int or not isinstance(allowed_patch[1],bytes)
-                    or not allowed_patch[1] or not 0 <= allowed_patch[0] <= len(canonical)-len(allowed_patch[1])):
-                return False
-            off, payload=allowed_patch
-            patch_span=(off,off+len(payload))
-            canonical=canonical[:off]+payload+canonical[off+len(payload):]
-        if loaded != canonical:
-            self._lcd_rgb565_boot_reason='source-loaded-image-mismatch';return False
-        profile,reason=find_rgb565_boot_profile(original)
-        self._lcd_rgb565_boot_reason=reason
-        if profile is None:return False
-        if (profile.get('signature') != 'source-arm-packed-rgb565-boot120-v1'
-                or profile.get('admission') != 'temporary-evidence-gated'
-                or tuple(profile.get(k)for k in ('width','height','pixel_port','command_port','access_width')) !=
-                   (120,133,0x02000000,0x02000002,2)):
-            self._lcd_rgb565_boot_reason='source-rgb565-boot-contract-unverified';return False
-        spans=profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
-        if patch_span and any(max(a,patch_span[0]) < min(b,patch_span[1]) for a,b in spans):
-            self._lcd_rgb565_boot_reason='source-patch-overlap';return False
-        if (any(not 0 <= a < b <= min(len(original),len(loaded))for a,b in spans)
-                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
-                       for a,b in profile['ram_intervals'])
-                or any(not 0x03800000 <= a < b <= 0x03810000
-                       for a,b in profile['iram_intervals'])):
-            self._lcd_rgb565_boot_reason='source-memory-owner-unverified';return False
-        if ((cfg.width,cfg.height) != (120,profile['height'])
-                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
-            self._lcd_rgb565_boot_reason='source-geometry-owner-conflict';return False
-        if find_rgb565_boot_profile(loaded)[0] != profile:
-            self._lcd_rgb565_boot_reason='source-loaded-owner-mismatch';return False
-        self._lcd_rgb565_boot_panel=Rgb565BootPanel()
-        self._lcd_rgb565_boot_reason='source-candidate-awaiting-complete-blit'
+        self._lcd_rgb565_boot_panel = Rgb565BootPanel()
         return True
 
     def _lcd_source_rgb565_boot_write(self,address,size,value):
@@ -690,45 +435,16 @@ class DisplayControllerMixin:
 
 
     def _lcd_bind_source_bytepair565(self, original: bytes, loaded: bytes, *, ram_claimed=False):
-        from ...detection.bytepair565 import find_bytepair565_profile
+        from msm5xxx_emulator.detection.registry import device_domain
         from .bytepair565_panel import BytePair565Panel
         self._lcd_bytepair565_panel = None
         self._lcd_bytepair565_owned = False
-        self._lcd_bytepair565_reason = 'source-layout-unverified'
-        cfg=self.config
-        if (getattr(cfg,'chipset',None) not in ('MSM5100','MSM5105')
-                or getattr(cfg,'image_kind',None) != 'firmware'
-                or any(type(getattr(cfg,key,None)) is not int for key in
-                       ('load_address','image_offset','entry','flash_size','ram_base','ram_size'))
-                or (cfg.load_address,cfg.image_offset,cfg.entry) != (0,0,0)
-                or not isinstance(original,bytes) or not isinstance(loaded,bytes)
-                or not 0 < cfg.flash_size <= 0xffffffff or len(loaded) != cfg.flash_size
-                or loaded != original[:cfg.flash_size].ljust(cfg.flash_size,b'\xff')
-                or ram_claimed or getattr(cfg,'missing_overlays',None)
-                or getattr(cfg,'ram_bootstrap_profile',None) is not None):
+        binding = device_domain('display.binding')
+        profile, self._lcd_bytepair565_reason = binding.bind_source('bytepair565', original, loaded, self.config,
+            ram_claimed=ram_claimed)
+        if profile is None:
             return False
-        profile,reason=find_bytepair565_profile(original)
-        self._lcd_bytepair565_reason=reason
-        if profile is None:return False
-        if (profile.get('signature') != 'source-halfword-bytepair565-104-v1'
-                or profile.get('admission') != 'temporary-evidence-gated'
-                or tuple(profile.get(k)for k in ('width','height','pixel_port','command_port','access_width')) !=
-                   (104,80,0x02400000,0x02000000,2)):
-            self._lcd_bytepair565_reason='source-rgb565-boot-contract-unverified';return False
-        spans=profile['code_intervals']+profile['literal_intervals']+profile['data_intervals']
-        if (any(not 0 <= a < b <= min(len(original),len(loaded))for a,b in spans)
-                or any(not cfg.ram_base <= a < b <= cfg.ram_base+cfg.ram_size
-                       for a,b in profile['ram_intervals'])
-                or any(not 0x03800000 <= a < b <= 0x03810000
-                       for a,b in profile['iram_intervals'])):
-            self._lcd_bytepair565_reason='source-memory-owner-unverified';return False
-        if ((cfg.width,cfg.height) != (104,profile['height'])
-                and getattr(cfg,'display_geometry_source','external-config') != 'auto-default'):
-            self._lcd_bytepair565_reason='source-geometry-owner-conflict';return False
-        if find_bytepair565_profile(loaded)[0] != profile:
-            self._lcd_bytepair565_reason='source-loaded-owner-mismatch';return False
-        self._lcd_bytepair565_panel=BytePair565Panel()
-        self._lcd_bytepair565_reason='source-candidate-awaiting-complete-blit'
+        self._lcd_bytepair565_panel = BytePair565Panel()
         return True
 
     def _lcd_source_bytepair565_write(self,address,size,value):
@@ -1472,17 +1188,12 @@ class DisplayControllerMixin:
         if panel is not None and getattr(panel, "source_profile", None) is not None:
             profile = panel.source_profile
             if not panel.source_validated and panel.rejection is None:
-                loaded = getattr(self, "_lcd_page_loaded_image", self.image)
-                base, length = getattr(self.config, "ram_base", None), getattr(self.config, "ram_size", None)
-                descriptor = profile["descriptor"]
-                if (not isinstance(loaded, bytes) or type(base) is not int or type(length) is not int
-                        or not base <= descriptor < descriptor + 0x2c4 <= base + length
-                        or any(not 0 <= a < b <= min(len(self.image), len(loaded))
-                               or self.image[a:b] != loaded[a:b]
-                               for a, b in profile["source_intervals"])):
-                    panel.rejection = "source-or-ram-owner-unverified"
-                else:
+                from msm5xxx_emulator.detection.registry import device_domain
+                if device_domain('display.page_binding').secondary_source_matches(
+                        self.image, getattr(self, '_lcd_page_loaded_image', self.image), self.config, profile):
                     panel.source_validated = True
+                else:
+                    panel.rejection = "source-or-ram-owner-unverified"
             if address == panel.port and size == 2 and value == 0:
                 # Source-owned bus reinitialization requires fresh page proof.
                 self._lcd_secondary_panel = type(panel)(panel.port, profile)

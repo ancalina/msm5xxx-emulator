@@ -12,15 +12,17 @@ class TestMA5CAudioCore(unittest.TestCase):
         machine = (repo / "native" / "qemu" /
                    "msm5xxx-poc.c").read_text(encoding="utf-8")
         launcher = (repo / "src/msm5xxx_emulator/qemu/transport.py").read_text(encoding="utf-8")
+        selection = (repo / "src/msm5xxx_emulator/detection/devices/audio/selection.py").read_text(encoding="utf-8")
+        projection = (repo / "src/msm5xxx_emulator/detection/devices/audio/transport_projection.py").read_text(encoding="utf-8")
         self.assertNotIn("msm5xxx_ma5_data_write", machine)
         self.assertIn("msm5xxx_poc_audio_opaque_write", machine)
         self.assertIn("msm5xxx_poc_audio_site_owned", machine)
         self.assertIn(".read_with_attrs = msm5xxx_poc_audio_opaque_read",
                       machine)
         self.assertIn("return MEMTX_ERROR;", machine)
-        self.assertIn('audio_family == "ma5"', launcher)
-        self.assertIn('(\"ma5\", \"indexed-rw-v1\")', launcher)
-        self.assertIn('"aperture_write_sites"', launcher)
+        self.assertIn("audio_family == 'ma5'", selection)
+        self.assertIn("('ma5', 'indexed-rw-v1')", selection)
+        self.assertIn('"aperture_write_sites"', projection)
         self.assertIn('"qemu-audio-adapter-unsupported"', launcher)
         self.assertIn('source=%s', machine)
         self.assertIn('read_control_guest_written', machine)
@@ -28,7 +30,7 @@ class TestMA5CAudioCore(unittest.TestCase):
         self.assertIn("s->audio_base != 0x02840000", machine)
         self.assertIn("experimental-ma5-byte-ns requires MA5 byte", machine)
         self.assertIn("msm5xxx_ma5_device_read", machine)
-        self.assertIn("data_offset == 2", machine)
+        self.assertIn("data_offset == 2", projection)
 
     def test_readback_backing_contract(self):
         repo = Path(__file__).resolve().parents[1]

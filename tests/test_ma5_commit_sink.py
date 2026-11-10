@@ -172,7 +172,7 @@ int main(void) {
 class CommitSinkTests(unittest.TestCase):
     def test_actual_core_sink_contract(self):
         native = Path(__file__).resolve().parents[1] / 'native/qemu'
-        with tempfile.TemporaryDirectory(dir=native.parent) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             c = Path(directory) / 'sink.c'
             binary = Path(directory) / 'sink'
             c.write_text(HARNESS)

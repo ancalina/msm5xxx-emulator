@@ -1,6 +1,11 @@
 import unittest
-from msm5xxx_emulator.devices.display.packed_cursor12_panel import (
-    PackedCursor12Panel, find_packed_cursor12_port, _PRODUCER, _HEADER, _THUMB_PRODUCER, _THUMB_DELAYS)
+from msm5xxx_emulator.devices.display.packed_cursor12_panel import PackedCursor12Panel
+from msm5xxx_emulator.detection.registry import device_domain
+find_packed_cursor12_port = device_domain("display.packed_cursor12").find_packed_cursor12_port
+_PRODUCER = device_domain("display.packed_cursor12")._PRODUCER
+_HEADER = device_domain("display.packed_cursor12")._HEADER
+_THUMB_PRODUCER = device_domain("display.packed_cursor12")._THUMB_PRODUCER
+_THUMB_DELAYS = device_domain("display.packed_cursor12")._THUMB_DELAYS
 
 
 class PackedCursor12Tests(unittest.TestCase):

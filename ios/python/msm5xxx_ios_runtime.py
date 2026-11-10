@@ -120,7 +120,7 @@ def probe():
 def start_session(request_json):
     global _control
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
-    from msm5xxx_emulator.detection.firmware import detect
+    from msm5xxx_emulator.detection import detect
     from msm5xxx_emulator.qemu.transport import Transport, IOSLauncher
     from msm5xxx_emulator.qemu.virtual_cell import virtual_cell_scenario
     if shared._session is not None:

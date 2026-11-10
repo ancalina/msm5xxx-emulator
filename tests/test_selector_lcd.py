@@ -2,7 +2,8 @@
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.selector_lcd import find_selector_lcd_profile
+from msm5xxx_emulator.detection.registry import device_domain
+find_selector_lcd_profile = device_domain('display.selector_lcd').find_selector_lcd_profile
 
 
 def selector_image(width=64, height=80):

@@ -1,8 +1,8 @@
 import unittest
 
-from msm5xxx_emulator.devices.display.split18_panel import (
-    Split18Panel, find_split18_port,
-)
+from msm5xxx_emulator.devices.display.split18_panel import Split18Panel
+from msm5xxx_emulator.detection.registry import device_domain
+find_split18_port = device_domain("display.split18").find_split18_port
 
 
 class Split18PanelTests(unittest.TestCase):

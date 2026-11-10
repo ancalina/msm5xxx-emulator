@@ -4,16 +4,15 @@ from __future__ import annotations
 import struct
 import unittest
 
-from msm5xxx_emulator.detection.rex import (
-    UIS_IDLE_BODY_DELTA,
-    UIS_IDLE_BODY_PREFIX,
-    UIS_IDLE_COMPACT_BODY_DELTA,
-    UIS_IDLE_COMPACT_BODY_PREFIX,
-    UIS_IDLE_COMPACT_ENTRY_PREFIX,
-    UIS_IDLE_ENTRY_PREFIX,
-    UIS_IDLE_DRAW_MARKER,
-    find_uis_idle_pair,
-)
+from msm5xxx_emulator.detection.registry import device_domain
+UIS_IDLE_BODY_DELTA = device_domain('rex.rules').UIS_IDLE_BODY_DELTA
+UIS_IDLE_BODY_PREFIX = device_domain('rex.rules').UIS_IDLE_BODY_PREFIX
+UIS_IDLE_COMPACT_BODY_DELTA = device_domain('rex.rules').UIS_IDLE_COMPACT_BODY_DELTA
+UIS_IDLE_COMPACT_BODY_PREFIX = device_domain('rex.rules').UIS_IDLE_COMPACT_BODY_PREFIX
+UIS_IDLE_COMPACT_ENTRY_PREFIX = device_domain('rex.rules').UIS_IDLE_COMPACT_ENTRY_PREFIX
+UIS_IDLE_ENTRY_PREFIX = device_domain('rex.rules').UIS_IDLE_ENTRY_PREFIX
+UIS_IDLE_DRAW_MARKER = device_domain('rex.rules').UIS_IDLE_DRAW_MARKER
+find_uis_idle_pair = device_domain('rex.rules').find_uis_idle_pair
 
 
 def _bl(source: int, target: int) -> bytes:

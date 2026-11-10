@@ -1,0 +1,176 @@
+"""Fail-closed recognition of a Thumb watchdog pulse and its periodic owner.
+
+This deliberately recognizes closed compiler grammars, not arbitrary GPIO pulses.
+The scheduled wait argument is 100; 30 s is an emulator policy margin, not a
+recovered physical timeout or a bound on every interrupt-disabled operation.
+"""
+from __future__ import annotations
+import struct
+from types import SimpleNamespace
+from msm5xxx_emulator.detection.contracts import BodySpec, match_thumb_shape
+from msm5xxx_emulator.detection.facts import facts_for, source_prefix
+from msm5xxx_emulator.detection.capabilities import (Capability, CapabilityPredicate, CapabilityRegistry, Decision, Evidence, Resolution, ResourceClaim)
+
+SIGNATURE = "thumb-shadow-pulse-dog-task-v1"
+DEFAULT_TIMEOUT_MS = 30_000
+
+# ARMv4T instruction contracts. Literal displacements and BL displacements are
+# decoded separately. No image addresses, identity strings, or model IDs occur.
+_SERVICE = { 2: 0xB590, 4: 0x7800, 6: 0x2800, 8: 0xD11E, 0x10: 0x2207, 0x12: 0x01D2, 0x14: 0x188F, 0x16: 0x8839, 0x1C: 0x4019, 0x20: 0x4311, 0x22: 0x8039, 0x24:
+    0x8839, 0x26: 0x7021, 0x28: 0x2800, 0x2A: 0xD101, 0x34: 0x8839, 0x38: 0x4019, 0x3A: 0x8039, 0x3C: 0x8839, 0x3E: 0x7021, 0x40: 0x2800, 0x42: 0xD101, 0x48:
+    0xBC90, 0x4A: 0xBC08, 0x4C: 0x4718, }
+_SERVICE_LITERALS = {0: 0, 0xE: 1, 0x18: 3, 0x1A: 4, 0x36: 3}
+_SERVICE_CALLS = (0xA, 0x2C, 0x30, 0x44)
+_TASK = { 0: 0xB5F0, 6: 0x2501, 0xA: 0x036D, 0xC: 0x2700, 0xE: 0x2264, 0x10: 0x200D, 0x12: 0x02C0, 0x1A: 0x1C04, 0x20: 0x0BE0, 0x22: 0xD301, 0x28: 0x0BA0, 0x2A:
+    0xD307, 0x2C: 0x2108, 0x2E: 0x1C30, 0x34: 0x1C29, 0x3C: 0x3701, 0x3E: 0x043F, 0x42: 0x0C3F, 0x44: 0x429F, 0x46: 0xDBE2, 0x4C: 0x6950, 0x4E: 0x43C0, 0x50:
+    0x4008, 0x52: 0xD013, 0x58: 0x1C39, 0x5A: 0x30F0, 0x64: 0x6950, 0x66: 0x43C0, 0x68: 0x4008, 0x6A: 0xD007, 0x72: 0x1C39, 0x74: 0x30FB, 0x7A: 0xE7C7, 0x7C:
+    0x2000, 0x7E: 0x6150, 0x80: 0xE7C4, }
+_TASK_LITERALS = { 8: 6, 0x14: 1, 0x36: 0, 0x40: 3, 0x48: 2, 0x4A: 1, 0x54: 7, 0x56: 0, 0x60: 2, 0x62: 1, 0x70: 0, }
+_TASK_CALLS = (2, 0x16, 0x1C, 0x24, 0x30, 0x38, 0x5C, 0x6C, 0x76)
+# Alternative report tail: check missing reports, consult a RAM inhibit byte,
+# assert with (line, dog.c), then clear reports and restart the same pet loop.
+# The timed-wait/pet prefix is identical; none of its instructions are relaxed.
+_TASK_REPORT = {off: op for off, op in _TASK.items() if off < 0x48} | { 0x4C: 0x6948, 0x4E: 0x43C0, 0x50: 0x4010, 0x52: 0xD00F, 0x56: 0x7800, 0x58: 0x2800, 0x5A:
+    0xD10B, 0x68: 0x6950, 0x6A: 0x43C0, 0x6C: 0x4008, 0x6E: 0x2000, 0x70: 0x6150, 0x72: 0xE7CB, 0x74: 0x2000, 0x76: 0x6148, 0x78: 0xE7C8, }
+_TASK_REPORT_LITERALS = { off: reg for off, reg in _TASK_LITERALS.items() if off < 0x48 } | {0x48: 1, 0x4A: 2, 0x54: 0, 0x5C: 1, 0x5E: 0, 0x64: 2, 0x66: 1}
+_TASK_REPORT_CALLS = (2, 0x16, 0x1C, 0x24, 0x30, 0x38, 0x60)
+# Wrapper: save signal mask r0 in r7; pass timer r1 and delay r2 to
+# timer setter; then wait on the saved signal mask. Both calls must resolve.
+_WAIT = {0: 0xB580, 2: 0x1C07, 4: 0x1C08, 6: 0x1C11, 0xC: 0x1C38, 0x12: 0xBC80, 0x14: 0xBC08, 0x16: 0x4718}
+_WAIT_CALLS = (8, 0xE)
+_SERVICE_SPEC = BodySpec.thumb(0x4E, _SERVICE, _SERVICE_LITERALS, _SERVICE_CALLS)
+_TASK_SPEC = BodySpec.thumb(0x82, _TASK, _TASK_LITERALS, _TASK_CALLS)
+_TASK_REPORT_SPEC = BodySpec.thumb(0x7A, _TASK_REPORT, _TASK_REPORT_LITERALS, _TASK_REPORT_CALLS,)
+_WAIT_SPEC = BodySpec.thumb(0x18, _WAIT, calls=_WAIT_CALLS)
+# Kept for existing callers while sharing the implementation with contracts.
+_shape = match_thumb_shape
+
+def _ram(value: int) -> bool:
+    return 0x01000000 <= value < 0x03000000
+
+def _find_shadow_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
+    """Return a unique closed service/task pair, or explain rejection.
+
+    All code and dog.c literals must be directly represented in this image;
+    unresolved overlays or differing compiler/control-flow classes are rejected.
+    """
+    facts = facts_for(image)
+    services = {}
+    # Anchor is PUSH {r4,r7,lr}; alignment and the entire routine are checked.
+    for anchor in facts.string_candidates(struct.pack("<H", 0xB590)):
+        entry = anchor - 2
+        body = _SERVICE_SPEC.match(facts, entry)
+        if body is None:
+            continue
+        values, calls = body.values, body.targets
+        op = struct.unpack_from("<H", image, entry + 0x1E)[0]
+        mask = op & 0xFF
+        if (op & 0xFF00 != 0x2200 or not mask or mask & (mask - 1) or values[0x18] != 0xFFFF ^ mask or values[0x36] != values[0x18] or not _ram(values[0]) or
+            not _ram(values[0xE] + 0x380) or (values[0xE] + 0x380) & 1 or not 0x03000000 <= values[0x1A] < 0x04000000 or calls[0xA] != calls[0x30] or calls[0x2C]
+            != calls[0x44] or calls[0xA] == calls[0x2C]):
+            continue
+        services[entry] = (values, mask)
+    if not services:
+        return None, ("watchdog-service-grammar-unclosed" if b"dog.c\0" in image else "no-watchdog-service")
+    candidates = []
+    for task in facts.string_candidates(struct.pack("<H", 0xB5F0)):
+        for report_tail, spec in ((False, _TASK_SPEC), (True, _TASK_REPORT_SPEC)):
+            body = spec.match(facts, task)
+            if body is None:
+                continue
+            values, calls = body.values, body.targets
+            if calls[0x1C] not in services:
+                continue
+            wait = _WAIT_SPEC.match(facts, calls[0x16])
+            if wait is None or wait.targets[8] == wait.targets[0xE]:
+                continue
+            dog = values[0x5C if report_tail else 0x54]
+            if (not 0 <= dog <= len(image) - 6 or image[dog:dog + 6] != b"dog.c\0" or not 0 < values[0x40] <= 0xFFFF):
+                continue
+            if report_tail:
+                # Same timer/report object before the wait and on both exits;
+                # assertion arguments and inhibit load must resolve directly.
+                if (values[0x14] != values[0x48] or values[0x48] != values[0x64] or not _ram(values[0x48]) or not _ram(values[0x48] + 0x17) or values[0x48] & 3
+                    or not _ram(values[0x54]) or not 0 < values[0x5E] <= 0xFFFF or not values[0x4A] or not values[0x66]):
+                    continue
+            elif (calls[0x5C] != calls[0x76] or values[0x48] != values[0x60] or not _ram(values[0x48]) or values[0x56] != values[0x70]):
+                continue
+            candidates.append((task, calls[0x1C]))
+    if len(candidates) != 1:
+        return None, ("watchdog-owner-ambiguous" if candidates else "watchdog-periodic-owner-unclosed")
+    task, service = candidates[0]
+    values, mask = services[service]
+    return { "signature": SIGNATURE, "image_size": len(image), "register": values[0x1A], "mask": mask, "timeout_ms": DEFAULT_TIMEOUT_MS, "service_address":
+        service, "task_address": task, "suppression_address": values[0], "shadow_address": values[0xE] + 0x380, "wait_argument": 100, }, "watchdog-service-and-periodic-dog-owner-closed"
+
+def find_watchdog_profile(image: bytes) -> tuple[dict[str, object] | None, str]:
+    """Preserve existing source classes, then try the closed leaf reset owner."""
+    profile, reason = _find_shadow_watchdog_profile(image)
+    if profile is not None:
+        return profile, reason
+    from msm5xxx_emulator.detection.devices.watchdog.leaf import find_leaf_watchdog_profile
+    profile = find_leaf_watchdog_profile(image)
+    if profile is None:
+        return None, reason
+    return profile, "watchdog-byte-pulse-periodic-and-rebuild-reset-owner-closed"
+
+def watchdog_pulse_claim(address: int, owner: str = 'watchdog-pulse') -> ResourceClaim:
+    """Claim the native byte port and its explicit ready-poll forwarding.
+
+    The backend owns byte readback, even when its watchdog uses one bit.
+    Disjoint pin masks alone cannot make another provider share that byte.
+    """
+    return ResourceClaim('address', owner, address, address + 1, shared_resource='watchdog-ready-pulse', semantics='byte-pulse-forwarding')
+
+def _watchdog_decision(context) -> Decision:
+    """Bind pulse ownership to the supplied image and requested timeout."""
+    profile, image = context.profile, context.image
+    if profile is None:
+        return Decision("missing")
+    if not isinstance(profile, dict):
+        return Decision("missing", reason="invalid profile")
+    size = profile.get("image_size")
+    if type(size) is not int or not 0 < size <= len(image):
+        return Decision("missing", reason="invalid source window")
+    current, reason = find_watchdog_profile(source_prefix(image, size))
+    if current is None:
+        return Decision("missing", reason=f"source not admitted ({reason})")
+    # Timeout is an explicit tunable, while every evidence field stays bound.
+    timeout = profile.get("timeout_ms")
+    if type(timeout) is not int or not 1000 <= timeout <= 3600000:
+        return Decision("missing", reason="invalid timeout")
+    if {**profile, "timeout_ms": current["timeout_ms"]} != current:
+        return Decision("missing", reason="source profile mismatch")
+    service, task = current['service_address'], current['task_address']
+    register, mask = current['register'], current['mask']
+    evidence = (Evidence('watchdog-pulse', (register, mask), (service,)), Evidence('watchdog-periodic-owner', (service, task, current['wait_argument']), (task,),
+        'linkage'),)
+    return Decision('accepted', capability=Capability('watchdog', ('watchdog-pulse', 'watchdog-periodic-owner'), evidence, properties=(('watchdog-register',
+        register), ('watchdog-mask', mask), ('watchdog-timeout-ms', timeout)), claims=(watchdog_pulse_claim(register),),))
+
+_WATCHDOG_REGISTRY = CapabilityRegistry()
+_WATCHDOG_REGISTRY.register(CapabilityPredicate('watchdog', (), _watchdog_decision))
+
+def watchdog_plan(profile: object, image: bytes) -> Resolution:
+    """Resolve source-proved watchdog parameters and native resource claims."""
+    return _WATCHDOG_REGISTRY.resolve(SimpleNamespace(profile=profile, image=image))
+
+def watchdog_property(profile: object, image: bytes) -> tuple[str | None, str | None]:
+    resolution = watchdog_plan(profile, image)
+    values = dict(resolution.plan.properties)
+    if not values:
+        return None, resolution.decisions[0].reason
+    fields = ('watchdog-register', 'watchdog-mask', 'watchdog-timeout-ms')
+    return ','.join(f'{field}={values[field]}' for field in fields), None
+
+def loaded_property(loaded, config, boot_format):
+    result, reason = watchdog_property(getattr(config, 'watchdog', None), loaded)
+    if boot_format is not None:
+        if find_boot_format_nor(loaded, config.ram_base, config.ram_size) != boot_format:
+            raise ValueError('loaded boot formatter source mismatch')
+        # A conservative virtual deadline, not a measured physical period.
+        result = (f"watchdog-register={boot_format['watchdog_register']},"
+                  f"watchdog-mask={boot_format['watchdog_mask']},watchdog-timeout-ms=30000")
+    return result, reason
+
+REQUIRES = {'find_boot_format_nor': ('storage.boot_format_nor', 'find_boot_format_nor')}

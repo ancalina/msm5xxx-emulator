@@ -7,7 +7,9 @@ from msm5xxx_emulator.detection.capabilities import (
 from msm5xxx_emulator.detection.facts import bind_facts, fact_scope
 from msm5xxx_emulator.detection.image_view import ImageView
 from msm5xxx_emulator.detection.devices.ready_poll import ready_poll_plan
-from msm5xxx_emulator.detection.watchdog import find_watchdog_profile, watchdog_plan
+from msm5xxx_emulator.detection.registry import device_domain
+find_watchdog_profile = device_domain('watchdog.rules').find_watchdog_profile
+watchdog_plan = device_domain('watchdog.rules').watchdog_plan
 from test_ready_plan import config, poll_image
 from test_watchdog import fixture
 

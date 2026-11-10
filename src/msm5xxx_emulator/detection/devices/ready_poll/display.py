@@ -1,16 +1,12 @@
 """LCD and source-member aggregation for ready-poll protocols."""
 from __future__ import annotations
-
-import re
 import struct
-from ...arm import thumb_bl_target, thumb_literal_value
 from ...facts import facts_for
-from .helpers import *
-from .semantic import *
-from .uart_profiles import *
+from .helpers import _LCD_HALFWORD_HELPER, _conditional_target, _find_uart_csr_sr_rx_empty_profile, _supplied
+from .semantic import (_find_compact_ready_poll_profile, _find_control_ready_poll_profile, _find_rotated_ready_poll_profile, _find_rotated_uart_csr_sr_profile)
+from .uart_profiles import _find_control_uart_rx_empty_profile
 
-def _find_lcd_halfword_ready_poll_profile(
-        image: bytes) -> dict[str, object] | None:
+def _find_lcd_halfword_ready_poll_profile(image: bytes) -> dict[str, object] | None:
     """Find the exact LCD command/status helper and its closed busy loop."""
     helpers: set[int] = set()
     cursor = 0
@@ -23,46 +19,25 @@ def _find_lcd_halfword_ready_poll_profile(
             helpers.add(helper)
     if not helpers:
         return None
-
     calls = facts_for(image).call_candidates()
     candidates: list[int] = []
     tail = (0x2006, 0x2105, 0x05C9, 0x8108, 0x818A, 0xBC08, 0x4718)
     for callsite, target in calls:
         entry = callsite - 2
         wrapper = entry - 8
-        if (wrapper < 0 or entry + 24 > len(image)
-                or target not in helpers or not _supplied(image, wrapper, entry + 24)):
+        if (wrapper < 0 or entry + 24 > len(image) or target not in helpers or not _supplied(image, wrapper, entry + 24)):
             continue
         words = struct.unpack_from("<12H", image, entry)
         prefix = struct.unpack_from("<4H", image, wrapper)
-        wrapper_called = any(
-            called_target == wrapper
-            and not wrapper <= caller < entry + 24
-            for caller, called_target in calls
-        )
-        if (prefix != (0x0200, 0x4308, 0x1C02, 0xB500)
-                or not wrapper_called
-                or words[0] != 0x2008
-                or words[3] != 0x0900
-                or words[4] & 0xFF00 != 0xD200
-                or _conditional_target(entry + 8, words[4]) != entry
-                or words[5:] != tail):
+        wrapper_called = any(called_target == wrapper and not wrapper <= caller < entry + 24 for caller, called_target in calls)
+        if (prefix != (0x0200, 0x4308, 0x1C02, 0xB500) or not wrapper_called or words[0] != 0x2008 or words[3] != 0x0900 or words[4] & 0xFF00 != 0xD200 or
+            _conditional_target(entry + 8, words[4]) != entry or words[5:] != tail):
             continue
         candidates.append(facts_for(image).thumb_call_target(callsite))
     if len(candidates) != 1:
         return None
-    return {
-        "signature": "thumb-lcd-halfword-busy-clear-v1",
-        "admission": "experimental-only",
-        "status_address": 0x0280000C,
-        "mask": 0x08,
-        "command_address": 0x02800008,
-        "command_value": 0x08,
-        "status_read_pc_offset": 6,
-        "command_write_pc_offset": 4,
-        "entries": candidates,
-    }
-
+    return { "signature": "thumb-lcd-halfword-busy-clear-v1", "admission": "experimental-only", "status_address": 0x0280000C, "mask": 0x08, "command_address":
+        0x02800008, "command_value": 0x08, "status_read_pc_offset": 6, "command_write_pc_offset": 4, "entries": candidates, }
 
 def _extract_ready_poll_profile(image: bytes) -> dict[str, object] | None:
     """Return one unambiguous firmware-proven ready-poll class."""
@@ -73,15 +48,10 @@ def _extract_ready_poll_profile(image: bytes) -> dict[str, object] | None:
             compact = uart
     rotated = _find_rotated_ready_poll_profile(image)
     if rotated is not None:
-        members = rotated.get("variants", [rotated])
-        if any(member[field] != rotated[field]
-               for member in members
-               for field in ("status_address", "mask", "pulse_address")):
+        members = rotated.get("variants",[rotated])
+        if any(member[field] != rotated[field] for member in members for field in ("status_address", "mask", "pulse_address")):
             return None
-        upgraded = [
-            _find_rotated_uart_csr_sr_profile(image, member) or member
-            for member in members
-        ]
+        upgraded = [_find_rotated_uart_csr_sr_profile(image, member) or member for member in members]
         if "variants" in rotated:
             rotated = {**rotated, "variants": upgraded}
         else:
@@ -90,46 +60,29 @@ def _extract_ready_poll_profile(image: bytes) -> dict[str, object] | None:
         fields = ("status_address", "mask", "pulse_address")
         if any(compact[field] != rotated[field] for field in fields):
             return None
-        rotated = {
-            "signature": "thumb-byte-ready-pulse-variants-v1",
-            "admission": "temporary-evidence-gated",
-            **{field: compact[field] for field in fields},
-            "variants": [*compact.get("variants", [compact]),
-                         *rotated.get("variants", [rotated])],
-        }
+        rotated = { "signature": "thumb-byte-ready-pulse-variants-v1", "admission": "temporary-evidence-gated", **{field: compact[field] for field in fields},
+            "variants":[*compact.get("variants",[compact]), * rotated.get("variants",[rotated])], }
         compact = None
     control = _find_control_ready_poll_profile(image)
     if control is not None:
         control_uart = _find_control_uart_rx_empty_profile(image, control)
         if control_uart is not None:
             control = control_uart
-    profiles = [
-        profile for profile in (
-            compact,
-            rotated,
-            control,
-        ) if profile is not None
-    ]
+    profiles = [profile for profile in (compact, rotated, control,) if profile is not None]
     if not profiles:
         lcd = _find_lcd_halfword_ready_poll_profile(image)
         if lcd is not None:
             profiles.append(lcd)
     return profiles[0] if len(profiles) == 1 else None
 
-
 def find_ready_poll_profile(image: bytes) -> dict[str, object] | None:
     """Return a fresh profile copy from the immutable-image cache."""
     context = facts_for(image)
-    profile = context.memo('ready-poll-profile', (),
-                           lambda: _extract_ready_poll_profile(context.image))
+    profile = context.memo('ready-poll-profile', (), lambda: _extract_ready_poll_profile(context.image))
     return _copy_profile(profile) if profile is not None else None
 
-
 def _copy_profile(profile: dict[str, object]) -> dict[str, object]:
-    return {key: [_copy_profile(item) if isinstance(item, dict) else item
-                  for item in value] if isinstance(value, list) else value
-            for key, value in profile.items()}
-
+    return {key:[_copy_profile(item) if isinstance(item, dict) else item for item in value] if isinstance(value, list) else value for key, value in profile.items()}
 
 def find_arm_tx_empty_ready_poll_profile(image: bytes) -> dict[str, object] | None:
     """Close an ARM byte TX-empty poll and both watchdog pulse producers."""
@@ -149,9 +102,7 @@ def find_arm_tx_empty_ready_poll_profile(image: bytes) -> dict[str, object] | No
     while (cursor := image.find(marker, cursor)) >= 0:
         at = cursor
         cursor += 4
-        if (at & 3 or at + 4 * len(program) > len(image)
-                or not _supplied(image, at, at + 4 * len(program))
-                or struct.unpack_from('<12I', image, at) != program):
+        if (at & 3 or at + 4 * len(program) > len(image) or not _supplied(image, at, at + 4 * len(program)) or struct.unpack_from('<12I', image, at) != program):
             continue
         # Calls prove this is executable code owned by the boot UART path.
         callers = 0
@@ -167,16 +118,5 @@ def find_arm_tx_empty_ready_poll_profile(image: bytes) -> dict[str, object] | No
             entries.append(at)
     if len(entries) != 1:
         return None
-    return {
-        'signature': 'arm-byte-tx-empty-pulse-v1',
-        'admission': 'temporary-evidence-gated',
-        'status_address': 0x030007B4, 'mask': 8,
-        'pulse_address': 0x03000600,
-        'status_read_pc_offset': 4,
-        'pulse_set_pc_offset': 0x18, 'pulse_clear_pc_offset': 0x24,
-        'entries': entries,
-    }
-
-
-
-__all__ = [name for name in globals() if name.startswith("_") or name in {"find_ready_poll_profile", "find_arm_tx_empty_ready_poll_profile"}]
+    return { 'signature': 'arm-byte-tx-empty-pulse-v1', 'admission': 'temporary-evidence-gated', 'status_address': 0x030007B4, 'mask': 8, 'pulse_address':
+        0x03000600, 'status_read_pc_offset': 4, 'pulse_set_pc_offset': 0x18, 'pulse_clear_pc_offset': 0x24, 'entries': entries, }

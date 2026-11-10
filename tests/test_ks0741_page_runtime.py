@@ -20,7 +20,7 @@ class PairedPlaneRuntimeTests(unittest.TestCase):
         display.image=bytes(4); display.frame_sequence=0; display.config.chipset='MSM5105'
         display.config.ram_base=0x01000000; display.config.ram_size=0x100000
         display.config.display_geometry_source='manual' if manual else 'auto-default'
-        self.enterContext(patch('msm5xxx_emulator.detection.mono_page.find_odd_byte_page_profile',
+        self.enterContext(patch('msm5xxx_emulator.detection.devices.display.mono_page.find_odd_byte_page_profile',
                                 return_value=(profile(height),'synthetic')))
         return display
 

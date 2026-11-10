@@ -123,7 +123,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory(prefix='.watchdog-native-', dir=repo) as directory:
+        with tempfile.TemporaryDirectory(prefix='.watchdog-native-') as directory:
             path = Path(directory)
             (path / 'check.c').write_text(harness)
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',

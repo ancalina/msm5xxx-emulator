@@ -2,7 +2,8 @@
 import hashlib,struct,unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from msm5xxx_emulator.detection.boot_contact_5100 import _arm_shape
+from msm5xxx_emulator.detection.registry import device_domain
+_arm_shape = device_domain('external_bus.boot_contact_5100')._arm_shape
 from msm5xxx_emulator.qemu.transport import qemu_boot_contact_property
 
 
@@ -26,7 +27,7 @@ class BootContactBindingTests(unittest.TestCase):
         cfg=SimpleNamespace(load_address=0,image_offset=0,entry=0,flash_size=256,
             ram_base=0x01000000,ram_size=0x1000,image_kind='firmware',chipset='MSM5105')
         original=bytes(256)
-        with patch('msm5xxx_emulator.detection.boot_contact_5100.find_boot_contact_release',return_value=(profile,'synthetic')):
+        with patch('msm5xxx_emulator.detection.devices.external_bus.boot_contact_5100.find_boot_contact_release',return_value=(profile,'synthetic')):
             def bind(**kw):return qemu_boot_contact_property(cfg,original,original,**kw)
             self.assertEqual(bind()[0],'experimental-boot-contact=300066c:80:4:1')
             for options in [dict(input_claimed=True),dict(layout_claimed=True),dict(eeprom_window=(0x03000660,32)),dict(eeprom_window=(0x0300066f,1))]:

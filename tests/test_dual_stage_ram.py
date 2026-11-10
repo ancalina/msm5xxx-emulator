@@ -1,4 +1,5 @@
 """Source-shaped fixtures without original firmware file dependencies."""
+import msm5xxx_emulator.detection.plan as boot_plan
 from corpus import snippet
 import argparse
 from pathlib import Path
@@ -7,7 +8,7 @@ from unittest.mock import patch
 import struct
 import unittest
 from msm5xxx_emulator.core.config import LinkerLayout
-from msm5xxx_emulator.detection.memory_layout import dual_stage_ram_profile
+from msm5xxx_emulator.detection.layout_queries import dual_stage_ram_profile
 from msm5xxx_emulator.detection.registry import device_domain
 
 def chunks():
@@ -109,14 +110,16 @@ class DualStageRamTests(unittest.TestCase):
         self.assertEqual(dual_stage_ram_profile(image, linker)[1], "dual-stage-rom-ram-overlap")
 
     def test_explicit_flash_keeps_downstream_primary_bounded(self):
-        from msm5xxx_emulator.detection import firmware
+        from msm5xxx_emulator.detection.registry import device_domain
+        firmware = boot_plan
+        memory_capture = device_domain('memory.capture')
         image, _ = fixture()
         # A complete synthetic vector table admits the real firmware pipeline.
         for index in range(1, 8):
             pc = index * 4
             struct.pack_into("<I", image, pc, 0xea000000 | ((0x130 - pc - 8) // 4))
         image.extend(bytes(0x1800000 - len(image)))
-        real_leaf = firmware.dual_stage_ram_profile
+        real_leaf = memory_capture.dual_stage_ram_profile
         accepted = []
 
         def observe_leaf(*args, **kwargs):
@@ -127,7 +130,7 @@ class DualStageRamTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "source-shaped.bin"
             path.write_bytes(image)
-            with patch.object(firmware, "dual_stage_ram_profile", side_effect=observe_leaf), patch.object(
+            with patch.object(memory_capture, "dual_stage_ram_profile", side_effect=observe_leaf), patch.object(
                     device_domain('ready_poll'), "find_ready_poll_profile",
                     wraps=device_domain('ready_poll').find_ready_poll_profile) as downstream:
                 config = firmware.detect(path, argparse.Namespace(flash_size=0x100000, image_offset=0))
@@ -136,7 +139,7 @@ class DualStageRamTests(unittest.TestCase):
                 self.assertEqual(config.flash_size, 0x100000)
                 self.assertTrue(downstream.call_args_list)
                 self.assertLessEqual(max(len(call.args[0]) for call in downstream.call_args_list), 0x100000)
-            with patch.object(firmware, "dual_stage_ram_profile", wraps=real_leaf) as leaf:
+            with patch.object(memory_capture, "dual_stage_ram_profile", wraps=real_leaf) as leaf:
                 config = firmware.detect(path, argparse.Namespace(
                     flash_size=0x100000, image_offset=0,
                     ram_base=0x01800000, ram_size=0x00800000))
