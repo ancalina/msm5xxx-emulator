@@ -812,6 +812,18 @@ class DisplayControllerMixin:
             self._lcd_packed_cursor_reason = "unsupported-bus"
             return False
         command = self._lcd_command
+        source_cursor = getattr(self, "_lcd_source_packed_cursor", False)
+        if source_cursor:
+            coordinate = source_cursor.coordinate(
+                command, value, self._lcd_x, self._lcd_y,
+                (self.config.width, self.config.height))
+            if coordinate is not None and self._lcd_window_axis_mask == 0xf:
+                self._lcd_cursor[:] = coordinate
+                self._lcd_gram_cursor[:] = coordinate
+                self._lcd_gram_addressed = True
+                self._lcd_packed_cursor_accepts = getattr(self, "_lcd_packed_cursor_accepts", 0) + 1
+                self._lcd_packed_cursor_reason = "source-linked-packed-xy"
+                return True
         stage = getattr(self, "_lcd_packed_cursor_stage", 0)
         if command == 1:
             stage = 1 if value == 0x0113 else 0
@@ -975,6 +987,18 @@ class DisplayControllerMixin:
             return
         self.lcd_writes += 1
         self.lcd_port_writes[(address, size)] += 1
+        source_cursor = getattr(self, "_lcd_source_packed_cursor", False)
+        if source_cursor and size == 2 and self._lcd_protocol == "parallel-2":
+            if address == 0x02000000:
+                self._lcd_source_cursor_command = value
+                if value == 0:
+                    source_cursor.coordinate(0, 0, self._lcd_x, self._lcd_y,
+                                             (self.config.width, self.config.height))
+            elif address == 0x02000002:
+                command = getattr(self, "_lcd_source_cursor_command", None)
+                if command in (1, 2, 3):
+                    source_cursor.coordinate(command, value, self._lcd_x, self._lcd_y,
+                                             (self.config.width, self.config.height))
         fast = getattr(self, "_lcd_fast_write", None)
         if fast is not None:
             port, width, write = fast
@@ -994,6 +1018,8 @@ class DisplayControllerMixin:
         the binding before processing the event. Admitted observers retain the
         complete path, since they can independently own the same aperture.
         """
+        if getattr(getattr(self, "_lcd_b0_source_page", None), "disable_fast", False):
+            return
         panel = getattr(self, "_lcd_secondary_panel", None)
         if getattr(panel, "gpio_raster", False):
             return
@@ -1086,6 +1112,35 @@ class DisplayControllerMixin:
                     panel.write(address, size, value)
                     if panel.sequence != previous:
                         self._lcd_secondary_reason = "complete-copied-gpio-raster"
+                return
+        observer = getattr(self, "_lcd_packed_window2", False)
+        if observer:
+            completed = observer.write(address, size, value)
+            if completed is not None:
+                width, height, frame = completed
+                self._set_display_geometry(width, height,
+                                           source="runtime:packed-window2", force=True)
+                if ((self.config.width, self.config.height) == (width, height)
+                        and getattr(self.config, "display_geometry_source", "")
+                        == "runtime:packed-window2"):
+                    self.framebuffer[:] = frame
+                    self._lcd_protocol = "packed-window2"
+                    self._publish_frame()
+            if observer.window is not None or completed is not None:
+                return
+        page = getattr(self, "_lcd_b0_source_page", False)
+        if page:
+            consumed, frame = page.write(address, size, value)
+            if frame is not None:
+                self._set_display_geometry(page.width, page.height,
+                                           source=getattr(page, "geometry_source", "runtime:source-b0-page"),
+                                           force=True)
+                if (self.config.width, self.config.height) == (page.width, page.height):
+                    with self._display_lock:
+                        self.framebuffer[:] = frame
+                    self._lcd_protocol = getattr(page, "protocol", "source-b0-page")
+                    self._publish_frame()
+            if consumed:
                 return
         if self._lcd_legacy_write(address, size, value):
             return

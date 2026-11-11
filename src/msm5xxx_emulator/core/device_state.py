@@ -93,6 +93,10 @@ class DeviceStateMixin:
         self._init_display_capture_state(config)
         self._init_nand_state(config)
         self._init_display_protocol_state(config)
+        from ..devices.display.source_plan import apply_source_plan
+        plan = device_domain("display.source_writers").machine_plan(self.original_image, self.image, config
+        )
+        apply_source_plan(self, plan)
         self._init_input_state(config)
         self._init_audio_state()
 

@@ -718,6 +718,21 @@ class Transport:
             firmware_image, self.config.image_offset,
             supplied=getattr(loaded_firmware, 'image_view', None)
         )
+        from ..devices.storage.descriptor_state import load_truncated_nor_state
+        original_flash_size = self.config.flash_size
+        truncated_bank_profile = truncated_legacy_state = None
+        extent_plan = device_domain('storage.descriptor_plan').early_plan(detector_image, self.config)
+        if extent_plan.capabilities:
+            extent_options = dict(extent_plan.capabilities[0].parameters)
+            extent, profile = extent_options['extent'], extent_options['profile']
+            state = load_truncated_nor_state(detector_image, original_flash_size, profile, Path(self.config.flash_state))
+            if state is not None:
+                self.config.flash_size = extent
+                missing = extent - len(detector_image)
+                self.config.dump_status = f"partial NOR; padded 0x{missing:X} erased bytes"
+                self.config.detection_notes.append(
+                    f"source-linked NOR extent 0x{extent:X}; 0x{missing:X} unprovided bytes are erased")
+                truncated_bank_profile, truncated_legacy_state = profile, state
         self.boot_format_nor_profile = find_boot_format_nor(
             detector_image, self.config.ram_base, self.config.ram_size)
         find_row734_input_profile = device_domain('input.row734').find_row734_input_profile
@@ -1155,9 +1170,19 @@ class Transport:
         machine = device_domain('rex.selection').project_controller(self, machine, detector_image)
         (amd_profile, amd_reject, direct_protocol_conflict, find_sharp_intel_profile, intel_profile, intel_reject, mapped_primary_profile, mapped_primary_reject, primary_profile, primary_regions, probe_profile, probe_reject, profile_reject, sharp_intel,) = device_domain('storage.selection').select_primary(self, detector_image)
         (record_profile, catalog_profile,) = device_domain('storage.selection').select_record(self, detector_image, primary_profile, intel_profile, amd_profile, profile_reject, probe_reject, intel_reject, amd_reject, mapped_primary_reject)
-        primary_seed, primary_imported = load_legacy_nor_state(
-            bytes(self.decoder.flash.data), (legacy_primary_state,)
-        )
+        primary_seed = bytes(self.decoder.flash.data)
+        if truncated_bank_profile is not None:
+            legacy_seed, primary_imported = truncated_legacy_state
+            primary_seed = legacy_seed + primary_seed[original_flash_size:]
+        else:
+            primary_seed, primary_imported = load_legacy_nor_state(primary_seed, (legacy_primary_state,))
+        bank_plan = device_domain('storage.descriptor_plan').bank_plan(
+            detector_image, primary_seed, self.config,
+            claimed=(primary_profile is not None or intel_profile is not None or amd_profile is not None
+                     or mapped_primary_profile is not None or profile_reject is not None or direct_protocol_conflict),
+            profile=truncated_bank_profile)
+        if bank_plan.capabilities:
+            primary_profile = dict(bank_plan.capabilities[0].parameters)['profile']
         eeprom_profile, eeprom_reject = eeprom_gpio_profile(detector_image, self.config)
         ma2_patch = ma2_silent_boot_loader_patch(
             primary_seed, self.config,
@@ -1294,6 +1319,9 @@ class Transport:
             self.decoder.close()
             self.temporary.cleanup()
             raise
+        from ..devices.display.source_plan import apply_source_plan
+        display_plan = device_domain("display.source_writers").machine_plan(detector_image, primary_seed, self.config)
+        apply_source_plan(self.decoder, display_plan)
         gpio_lcd_property = device_domain('display.binding').bind_loaded_sources(
             self.decoder, detector_image, primary_seed, allowed_patch=dmd_patch,
             ram_claimed=any(value is not None for value in (

@@ -13,7 +13,10 @@ class SharpIntelProfileTests(unittest.TestCase):
         root = Path(os.environ.get("MSM5XXX_TEST_FIRMWARE_ROOT", "/nonexistent"))
         names = ("T030TEDT09_5.177_JTAG*.bin", "T050VMDM01_3.191_JTAG.bin",
                  "T000VEDW00_0.000_JTAG.bin")
-        paths = [next(root.rglob(name), None) for name in names]
+        paths = [next(root.rglob(name), None) for name in names[:2]]
+        paths.append(root / 'incoming-msm5xxx-all-manufacturers-20260726' / 'Audiovox' /
+                     'CDM-8500' / 'T050VMDT09_2.191_JTAG_1' / names[2])
+        paths = [path if path is not None and path.is_file() else None for path in paths]
         if any(path is None for path in paths):
             self.skipTest("Sharp firmware captures unavailable")
         for path in paths:
