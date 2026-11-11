@@ -150,6 +150,17 @@ final class PythonRuntime {
         }
     }
 
+    static synchronized void backgroundPause(boolean paused) throws IOException {
+        try {
+            JSONObject result = new JSONObject(nativeBackgroundPause(
+                    new JSONObject().put("paused", paused).toString()));
+            if (result.getInt("schema") != 1 || result.getBoolean("paused") != paused)
+                throw new JSONException("pause rejected");
+        } catch (JSONException | RuntimeException error) {
+            throw new IOException("Unable to change background state", error);
+        }
+    }
+
     static synchronized String status() {
         return nativeStatus();
     }
@@ -272,6 +283,7 @@ final class PythonRuntime {
     private static native String nativeFold(String request);
     private static native String nativeNetworkTime(String request);
     private static native String nativeStatus();
+    private static native String nativeBackgroundPause(String request);
     private static native String nativeCanKey(String request);
     private static native String nativeKey(String request);
     private static native String nativeStop();

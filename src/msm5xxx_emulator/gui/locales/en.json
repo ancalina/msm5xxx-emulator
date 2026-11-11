@@ -568,6 +568,8 @@
   "english_language": "English",
   "library_title": "Firmware library",
   "library_empty": "Add firmware to your library",
+  "experimental_rex": "Experimental static REX controller",
+  "library_remove_folder": "Remove folder",
   "library_add_folder": "Add folder",
   "library_import": "Import file",
   "library_refresh": "Refresh",

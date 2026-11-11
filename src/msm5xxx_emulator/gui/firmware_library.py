@@ -94,12 +94,27 @@ class FirmwareLibrary:
             self.folders.append(folder)
         self.save()
 
+    def remove_folder(self, path: Path) -> None:
+        folder = str(path.expanduser().resolve())
+        if folder not in self.folders:
+            return
+        self.folders.remove(folder)
+        self.entries = [entry for entry in self.entries
+                        if entry.get("imported") or entry.get("explicit")
+                        or (entry.get("folder") != folder
+                            and (entry.get("folder") is not None
+                                 or Path(entry.get("path", "")).parent != Path(folder)))]
+        self.save()
+
     def add_file(self, path: Path, *, imported: bool = False) -> None:
         name = str(path.expanduser().resolve())
         if name in self.excluded:
             self.excluded.remove(name)
-        if not any(entry.get('path') == name for entry in self.entries):
-            self.entries.append({'path': name, 'imported': imported})
+        entry = next((entry for entry in self.entries if entry.get('path') == name), None)
+        if entry is None:
+            self.entries.append({'path': name, 'imported': imported, 'explicit': True})
+        else:
+            entry['explicit'] = True
         self.save()
 
     def remove(self, path: Path) -> None:
@@ -129,7 +144,7 @@ class FirmwareLibrary:
                         continue
                     name = str(child.resolve())
                     if name not in known and name not in self.excluded:
-                        self.entries.append({'path': name, 'imported': False})
+                        self.entries.append({'path': name, 'imported': False, 'folder': folder})
                         known.add(name)
                 except OSError:
                     continue

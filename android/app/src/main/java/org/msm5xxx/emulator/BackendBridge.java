@@ -254,6 +254,7 @@ final class BackendBridge {
         byte[] secondaryFrame() throws IOException;
         void setFold(boolean opened) throws IOException;
         void refreshNetworkTime(boolean hostTime, Double startTime) throws IOException;
+        void backgroundPause(boolean paused) throws IOException;
         Status status() throws IOException;
         String identity();
         boolean supportsKey(int bit);
@@ -274,6 +275,12 @@ final class BackendBridge {
         private PythonSession(String identity, boolean[] inputBits) {
             this.identity = identity;
             this.inputBits = inputBits;
+        }
+
+        @Override
+        public synchronized void backgroundPause(boolean paused) throws IOException {
+            requireOpen();
+            PythonRuntime.backgroundPause(paused);
         }
 
         @Override

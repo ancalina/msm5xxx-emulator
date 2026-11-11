@@ -230,4 +230,10 @@
     <string name="time_device_clock">기기 시계</string>
     <string name="time_set_manually">직접 지정…</string>
     <string name="refresh_network_time">통신망 시간 새로고침</string>
+    <string name="keep_running_background">백그라운드에서 계속 실행</string>
+    <string name="capture_share">공유</string>
+    <string name="capture_save_as">다른 이름으로 저장…</string>
+    <string name="apply_restart_prompt">설정을 적용하고 지금 세션을 다시 시작할까요?</string>
+    <string name="apply_restart">적용 후 다시 시작</string>
+    <string name="next_start">다음 시작</string>
 </resources>

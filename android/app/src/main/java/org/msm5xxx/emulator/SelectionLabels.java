@@ -8,9 +8,12 @@ final class SelectionLabels {
     private SelectionLabels() {}
 
     static String displayName(Context context, String source) {
-        if (source == null || source.trim().isEmpty()) {
-            return context.getString(R.string.unnamed_firmware);
-        }
+        String result = cleanName(source);
+        return result == null ? context.getString(R.string.unnamed_firmware) : result;
+    }
+
+    static String cleanName(String source) {
+        if (source == null || source.trim().isEmpty()) return null;
         StringBuilder clean = new StringBuilder();
         int count = 0;
         for (int offset = 0; offset < source.length()
@@ -23,8 +26,7 @@ final class SelectionLabels {
                     new String(Character.toChars(codePoint)));
         }
         String result = clean.toString().trim();
-        return result.isEmpty()
-                ? context.getString(R.string.unnamed_firmware) : result;
+        return result.isEmpty() ? null : result;
     }
 
     static String size(Context context, long bytes) {

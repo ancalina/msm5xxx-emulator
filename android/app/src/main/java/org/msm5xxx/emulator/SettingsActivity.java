@@ -81,6 +81,7 @@ public final class SettingsActivity extends Activity {
         toggle(session, "virtual_network", false, R.string.virtual_network);
         startTime(session);
         toggle(session, "persistent_state", true, R.string.persistent_state);
+        toggle(session, "keep_running_background", false, R.string.keep_running_background);
     }
 
     private void header(int text) {

@@ -4,6 +4,7 @@ import json
 import os
 import time
 import platform
+import signal
 import struct
 import sys
 import threading
@@ -19,6 +20,7 @@ _original_stderr = None
 _log_offset = 0
 _log_next = 0
 _scanout_sent = {}
+_background_paused = False
 _PCM_PACKET = struct.Struct("<4sIQQQ")
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -388,9 +390,20 @@ def set_session_key(request_json):
     })
 
 
+def _background_pause(request_json):
+    global _background_paused
+    request = json.loads(request_json)
+    if not isinstance(request, dict) or set(request) != {"paused"} or type(request["paused"]) is not bool:
+        raise ValueError("invalid pause request")
+    transport = _require_session()
+    transport.process.send_signal(signal.SIGSTOP if request["paused"] else signal.SIGCONT)
+    _background_paused = request["paused"]
+    return _json({"schema": 1, "paused": request["paused"]})
+
+
 def stop_session():
     global _session, _session_stop, _session_thread, _session_error
-    global _scanout_sent, _session_socket, _session_log, _original_stderr
+    global _scanout_sent, _session_socket, _session_log, _original_stderr, _background_paused
     transport = _session
     stop = _session_stop
     thread = _session_thread
@@ -399,6 +412,9 @@ def stop_session():
     if stop is not None:
         stop.set()
     try:
+        if _background_paused and transport.process.poll() is None:
+            transport.process.send_signal(signal.SIGCONT)
+            _background_paused = False
         transport.interrupt()
         if thread is not None:
             thread.join(3)

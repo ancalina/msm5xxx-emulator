@@ -79,6 +79,65 @@ class FirmwareLibraryTest(unittest.TestCase):
                 lib.remove(external)
             self.assertTrue(external.exists())
 
+    def test_remove_folder_preserves_files_and_explicit_entries(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / 'sources'
+            folder.mkdir()
+            scanned = folder / 'scanned.bin'
+            explicit = folder / 'explicit.bin'
+            scanned.write_bytes(b'scanned')
+            explicit.write_bytes(b'explicit')
+            lib = FirmwareLibrary(root / 'library.json', detector=Mock(return_value=SimpleNamespace(model=None, chipset=None)))
+            lib.add_folder(folder)
+            lib.scan()
+            lib.add_file(explicit)
+            lib.remove_folder(folder)
+            reloaded = FirmwareLibrary(root / 'library.json', detector=lib.detector)
+            self.assertEqual(reloaded.folders, [])
+            self.assertEqual([row['path'] for row in reloaded.scan()], [str(explicit)])
+            self.assertTrue(scanned.exists())
+            self.assertTrue(explicit.exists())
+            reloaded.add_folder(folder)
+            self.assertEqual({row['path'] for row in reloaded.scan()}, {str(scanned), str(explicit)})
+
+    def test_remove_folder_for_symlinked_child(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / 'sources'
+            folder.mkdir()
+            source = root / 'image.bin'
+            source.write_bytes(b'synthetic')
+            (folder / 'link.bin').symlink_to(source)
+            lib = FirmwareLibrary(root / 'library.json', detector=Mock(return_value=SimpleNamespace(model=None, chipset=None)))
+            lib.add_folder(folder)
+            self.assertEqual(len(lib.scan()), 1)
+            lib.remove_folder(folder)
+            self.assertEqual(lib.scan(), [])
+            self.assertTrue(source.exists())
+
+    def test_groups_only_detected_models(self):
+        from msm5xxx_emulator.gui.library_view import group_rows
+        rows = [{'model': ' Example ', 'name': 'one'}, {'model': 'example', 'name': 'two'},
+                {'model': None, 'name': 'example'}, {'model': None, 'name': 'example'}]
+        self.assertEqual(group_rows(rows), [[0, 1], [2], [3]])
+
+    def test_library_session_settings_preserve_other_preferences(self):
+        import json
+        from msm5xxx_emulator.gui.library_view import save_session_settings
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'settings.json'
+            path.write_text('{"profiles": {"test": {}}}', encoding='utf-8')
+            save_session_settings(path, True, False, '2024-01-02 03:04', False)
+            values = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(values['profiles'], {'test': {}})
+            self.assertEqual(values['network_start_time'], '2024-01-02 03:04')
+            self.assertTrue(values['virtual_network'])
+            self.assertFalse(values['persistent_state'])
+            with self.assertRaises(ValueError):
+                save_session_settings(path, True, False, 'bad', True)
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')), values)
+
     def test_hash_read_is_bounded(self):
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / 'sample.bin'
@@ -98,6 +157,30 @@ class FirmwareLibraryTest(unittest.TestCase):
 
 @unittest.skipUnless(__import__('os').environ.get('DISPLAY'), 'Tk display unavailable')
 class LibraryViewTest(unittest.TestCase):
+    def test_group_expands_and_selects_a_file(self):
+        import tkinter as tk
+        from msm5xxx_emulator.gui.library_view import LibraryDialog
+        root = tk.Tk()
+        self.addCleanup(root.destroy)
+        library = Mock()
+        library.scan.return_value = [
+            {'path': '/tmp/first.bin', 'model': 'Example', 'name': 'Example', 'available': True},
+            {'path': '/tmp/second.bin', 'model': 'example', 'name': 'example', 'available': True},
+            {'path': '/tmp/third.bin', 'model': None, 'name': 'third.bin', 'available': True},
+        ]
+        dialog = LibraryDialog(root, library, 'en')
+        dialog.window.update()
+        dialog.poll()
+        self.assertEqual(len(dialog.list.get_children()), 2)
+        group = dialog.list.get_children()[0]
+        self.assertEqual(len(dialog.list.get_children(group)), 2)
+        dialog.list.selection_set(group)
+        dialog.boot()
+        self.assertTrue(dialog.list.item(group, 'open'))
+        dialog.list.selection_set(dialog.list.get_children(group)[1])
+        dialog.boot()
+        self.assertEqual(dialog.selected, Path('/tmp/second.bin'))
+
     def test_select_boot_and_remove_without_starting_emulator(self):
         import tkinter as tk
         from msm5xxx_emulator.gui.library_view import LibraryDialog
@@ -111,7 +194,7 @@ class LibraryViewTest(unittest.TestCase):
         dialog.poll()
         self.assertEqual(dialog.window.title(), 'Firmware library — MSM5XXX Emulator')
         self.assertEqual(dialog.list['columns'], ('chipset', 'size', 'last'))
-        self.assertEqual(len(dialog.buttons), 3)
+        self.assertEqual(len(dialog.buttons), 5)
         self.assertEqual(len(dialog.list.get_children()), 1)
         dialog.list.selection_set('0')
         dialog.boot()

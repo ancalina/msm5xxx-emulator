@@ -48,7 +48,7 @@ class LiveWindow(Window):
         self.state_dir = state_dir
         self.library = FirmwareLibrary(DEFAULT_STATE_ROOT / "firmware_library.json")
         self.persistent_state_enabled = self._load_persistent_state()
-        self.experimental_c80 = experimental_c80
+        self.experimental_c80 = experimental_c80 or self._load_virtual_network("experimental_rex")
         self.virtual_network_enabled = self._load_virtual_network()
         self._active_virtual_network = self.virtual_network_enabled
         self.network_host_time_enabled = self._load_virtual_network("network_host_time")
@@ -58,10 +58,7 @@ class LiveWindow(Window):
         self.transport: Transport | None = None
         self._active_firmware: Path | None = None
         self._active_overrides: dict[str, object] = {}
-        super().__init__(
-            root, firmware,
-            experimental_c80_controller=experimental_c80,
-        )
+        super().__init__(root, firmware)
         self.root.after(100, self._refresh_qemu_metrics)
         self.root.after(5, self._forward_qemu_keys)
 
@@ -79,6 +76,7 @@ class LiveWindow(Window):
             "fold_access_close" if self._fold_is_open else "fold_access_open"))
         self._bind_text_tooltip(self.settings_button, lambda: self._text("menu_access"))
         self.persistent_state_var = tk.BooleanVar(master=self.root, value=self.persistent_state_enabled)
+        self.experimental_rex_var = tk.BooleanVar(master=self.root, value=self.experimental_c80)
         self.virtual_network_var = tk.BooleanVar(
             master=self.root, value=self.virtual_network_enabled)
         self.network_host_time_var = tk.BooleanVar(
@@ -113,6 +111,9 @@ class LiveWindow(Window):
         ttk.Checkbutton(page, text=self._text("persistent_state"),
                         variable=self.persistent_state_var,
                         command=self._set_persistent_state).pack(anchor="w")
+        ttk.Checkbutton(page, text=self._text("experimental_rex"),
+                        variable=self.experimental_rex_var,
+                        command=self._set_experimental_rex).pack(anchor="w")
 
     def _settings_display_controls(self, page) -> None:
         ttk.Button(page, text=self._text("additional_display"),
@@ -178,6 +179,15 @@ class LiveWindow(Window):
 
     def _choose_firmware_from_menu(self) -> None:
         chosen = choose_from_library(self.root, self.library, self.ui_language)
+        if hasattr(self, "persistent_state_var"):
+            self.persistent_state_enabled = self._load_persistent_state()
+            self.persistent_state_var.set(self.persistent_state_enabled)
+            self.virtual_network_enabled = self._load_virtual_network()
+            self.virtual_network_var.set(self.virtual_network_enabled)
+            self.network_host_time_enabled = self._load_virtual_network("network_host_time")
+            self.network_host_time_var.set(self.network_host_time_enabled)
+            self.network_start_time = self._load_network_start_time()
+            self.network_start_time_var.set(self.network_start_time)
         if chosen is None:
             return
         if self.transport is not None and not messagebox.askokcancel(
@@ -207,6 +217,19 @@ class LiveWindow(Window):
         self.network_host_time_enabled = host
         self.network_host_time_var.set(host)
         self._save_config()
+
+    def _set_experimental_rex(self) -> None:
+        old = self.experimental_c80
+        self.experimental_c80 = self.experimental_rex_var.get()
+        try:
+            self._save_config()
+        except OSError as error:
+            self.experimental_c80 = old
+            self.experimental_rex_var.set(old)
+            messagebox.showerror(self._text("settings_save_error"), str(error), parent=self.root)
+            return
+        if old != self.experimental_c80 and self.transport is not None:
+            self._restart()
 
     def _set_persistent_state(self) -> None:
         old = self.persistent_state_enabled

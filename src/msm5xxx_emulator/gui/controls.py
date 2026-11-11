@@ -726,6 +726,10 @@ class ControlsMixin:
             for key in ("virtual_network", "network_host_time", "persistent_state"):
                 if hasattr(self, key + "_enabled") or key in data:
                     settings[key] = getattr(self, key + "_enabled", data.get(key) is True)
+            if hasattr(self, "experimental_c80"):
+                settings["experimental_rex"] = self.experimental_c80
+            elif "experimental_rex" in data:
+                settings["experimental_rex"] = data["experimental_rex"]
             if hasattr(self, "network_start_time") or "network_start_time" in data:
                 settings["network_start_time"] = getattr(self, "network_start_time", data.get("network_start_time", ""))
             atomic_write_text(path, json.dumps(

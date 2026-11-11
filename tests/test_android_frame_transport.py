@@ -27,6 +27,39 @@ class AndroidFrameTransportTests(unittest.TestCase):
         self.assertTrue(json.loads(result)['accepted'])
         transport.update_network_time.assert_called_once_with(1700000000, True)
 
+    def test_background_pause_uses_session_process(self):
+        import signal
+        path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
+        spec = importlib.util.spec_from_file_location('android_pause_runtime', path)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        process = SimpleNamespace(poll=lambda: None, send_signal=mock.Mock())
+        runtime._session = SimpleNamespace(process=process)
+        self.assertTrue(json.loads(runtime._background_pause('{"paused": true}'))['paused'])
+        self.assertFalse(json.loads(runtime._background_pause('{"paused": false}'))['paused'])
+        self.assertEqual(process.send_signal.call_args_list,
+                         [mock.call(signal.SIGSTOP), mock.call(signal.SIGCONT)])
+        with self.assertRaises(ValueError):
+            runtime._background_pause('{"paused": 1}')
+        self.assertEqual(process.send_signal.call_count, 2)
+
+    def test_stop_resumes_a_paused_process_before_shutdown(self):
+        import signal
+        path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
+        spec = importlib.util.spec_from_file_location('android_stop_pause_runtime', path)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        events = []
+        process = SimpleNamespace(poll=lambda: None,
+                                  send_signal=lambda value: events.append(value))
+        runtime._session = SimpleNamespace(process=process,
+                                          interrupt=lambda: events.append('interrupt'),
+                                          close=lambda: events.append('close'))
+        runtime._background_paused = True
+        runtime.stop_session()
+        self.assertEqual(events, [signal.SIGCONT, 'interrupt', 'close'])
+        self.assertFalse(runtime._background_paused)
+
     def test_android_session_keeps_common_guest_cadence(self) -> None:
         path = JAVA.parents[4] / 'python/msm5xxx_android_runtime.py'
         spec = importlib.util.spec_from_file_location('android_cadence_runtime', path)

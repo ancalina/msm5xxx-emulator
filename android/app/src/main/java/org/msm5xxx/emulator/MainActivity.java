@@ -30,6 +30,7 @@ import android.provider.OpenableColumns;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.KeyEvent;
 import android.view.Display;
 import android.hardware.display.DisplayManager;
 import android.view.View;
@@ -54,10 +55,13 @@ import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -204,6 +208,9 @@ public final class MainActivity extends Activity {
     private volatile boolean sessionStarting;
     private boolean canStartSession;
     private boolean editingInputMapping;
+    private final Map<String, Integer> inputSources = new HashMap<>();
+    private final Map<Integer, Integer> inputCounts = new HashMap<>();
+    private final Map<Integer, Integer> inputCodes = new HashMap<>();
     private int heldKeyBit = -1;
     private Integer heldEventCode;
     private int mappingTapBit = -1;
@@ -313,6 +320,7 @@ public final class MainActivity extends Activity {
         updateSecondaryPresentation();
         handler.removeCallbacks(refreshWhileCopying);
         releaseHeldKey(false);
+        releaseKeyboardKeys();
         updateSessionKeepScreenOn(false, sessionGeneration);
         // Focus loss must not destroy guest RAM/state. Explicit stop/destroy owns it.
         super.onPause();
@@ -1032,6 +1040,7 @@ public final class MainActivity extends Activity {
         PcmAudioSink audioSink = new PcmAudioSink();
         boolean audioStarted = false;
         boolean audioRejected = false;
+        boolean backgroundPaused = false;
         boolean failed = false;
         try {
             opened = BackendBridge.open(context, firmware, profile,
@@ -1060,6 +1069,20 @@ public final class MainActivity extends Activity {
             long publishedInputEvents = -1;
             long publishedRejections = -1;
             while (generation == sessionGeneration) {
+                boolean shouldPause = !activityResumed && !preferences().getBoolean("keep_running_background", false);
+                if (shouldPause != backgroundPaused) {
+                    if (shouldPause) {
+                        audioSink.close();
+                        audioStarted = false;
+                    }
+                    opened.backgroundPause(shouldPause);
+                    backgroundPaused = shouldPause;
+                    if (!shouldPause && !audioRejected) audioSink = new PcmAudioSink();
+                }
+                if (backgroundPaused) {
+                    Thread.sleep(50);
+                    continue;
+                }
                 long now = SystemClock.elapsedRealtimeNanos();
                 if (now < nextBackendUpdate) {
                     TimeUnit.NANOSECONDS.sleep(nextBackendUpdate - now);
@@ -1311,6 +1334,94 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static int hardwareBit(int code) {
+        if (code >= KeyEvent.KEYCODE_0 && code <= KeyEvent.KEYCODE_9) {
+            int digit = code - KeyEvent.KEYCODE_0;
+            return digit == 0 ? 21 : 10 + digit;
+        }
+        if (code >= KeyEvent.KEYCODE_NUMPAD_0 && code <= KeyEvent.KEYCODE_NUMPAD_9) {
+            int digit = code - KeyEvent.KEYCODE_NUMPAD_0;
+            return digit == 0 ? 21 : 10 + digit;
+        }
+        switch (code) {
+            case KeyEvent.KEYCODE_DPAD_UP: return 1;
+            case KeyEvent.KEYCODE_DPAD_DOWN: return 9;
+            case KeyEvent.KEYCODE_DPAD_LEFT: return 4;
+            case KeyEvent.KEYCODE_DPAD_RIGHT: return 6;
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER: return 5;
+            case KeyEvent.KEYCODE_ESCAPE: return 7;
+            case KeyEvent.KEYCODE_PLUS:
+            case KeyEvent.KEYCODE_NUMPAD_ADD: return 10;
+            case KeyEvent.KEYCODE_MINUS:
+            case KeyEvent.KEYCODE_NUMPAD_SUBTRACT: return 8;
+            default: return -1;
+        }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        String source = "keyboard:" + event.getDeviceId() + ":" + event.getKeyCode();
+        if (event.getAction() == KeyEvent.ACTION_UP && inputSources.containsKey(source)) {
+            releaseInput(source, session, true);
+            return true;
+        }
+        int bit = event.getKeyCode() == KeyEvent.KEYCODE_EQUALS && event.isShiftPressed()
+                ? 10 : hardwareBit(event.getKeyCode());
+        BackendBridge.Session current = session;
+        if (bit < 0 || current == null || editingInputMapping) {
+            return super.dispatchKeyEvent(event);
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (inputSources.containsKey(source)) return true;
+            Integer mapped = manualKeyEvent(current.identity(), bit);
+            if (mapped != null || current.supportsKey(bit)) {
+                pressInput(source, current, bit, mapped);
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) {
+            releaseHeldKey(false);
+            releaseKeyboardKeys();
+        }
+    }
+
+    private void pressInput(String source, BackendBridge.Session current, int bit, Integer code) {
+        if (inputSources.containsKey(source)) return;
+        inputSources.put(source, bit);
+        int count = inputCounts.containsKey(bit) ? inputCounts.get(bit) : 0;
+        inputCounts.put(bit, count + 1);
+        if (count == 0) {
+            inputCodes.put(bit, code);
+            sendSessionKey(current, bit, code, true, true);
+        }
+    }
+
+    private void releaseInput(String source, BackendBridge.Session current, boolean reportFailure) {
+        Integer bit = inputSources.remove(source);
+        if (bit == null) return;
+        int count = inputCounts.get(bit) - 1;
+        if (count > 0) {
+            inputCounts.put(bit, count);
+        } else {
+            inputCounts.remove(bit);
+            Integer code = inputCodes.remove(bit);
+            if (current != null) sendSessionKey(current, bit, code, false, reportFailure);
+        }
+    }
+
+    private void releaseKeyboardKeys() {
+        for (String source : new ArrayList<>(inputSources.keySet())) {
+            if (source.startsWith("keyboard:")) releaseInput(source, session, false);
+        }
+    }
+
     private boolean onKeyTouch(int bit, MotionEvent event) {
         BackendBridge.Session current = session;
         int action = event.getActionMasked();
@@ -1334,7 +1445,7 @@ public final class MainActivity extends Activity {
             heldKeyBit = bit;
             heldEventCode = mapped;
             keyButtons[bit].setPressed(true);
-            sendSessionKey(current, bit, mapped, true, true);
+            pressInput("touch", current, bit, mapped);
             return true;
         }
         if (action == MotionEvent.ACTION_UP
@@ -1400,7 +1511,7 @@ public final class MainActivity extends Activity {
         if (bit < 0 || current == null) {
             return;
         }
-        sendSessionKey(current, bit, eventCode, false, reportFailure);
+        releaseInput("touch", current, reportFailure);
     }
 
     private void showKeyMapping(int bit) {
@@ -1564,6 +1675,7 @@ public final class MainActivity extends Activity {
             if (current != null && libraryScreen != null && frameView != null)
                 libraryScreen.recordFrame(preferences().getString(KEY_URI, null), frameView.bitmap);
             releaseHeldKey(false);
+            releaseKeyboardKeys();
             session = null;
             sessionStarting = false;
         }
@@ -1794,6 +1906,7 @@ public final class MainActivity extends Activity {
             return;
         }
         releaseHeldKey(false);
+        releaseKeyboardKeys();
         editingInputMapping = editing;
         moreButton.setText(editing ? R.string.done_editing : R.string.more);
         moreButton.setTextSize(editing ? 11 : 20);
@@ -1802,17 +1915,53 @@ public final class MainActivity extends Activity {
         updateKeypad(session);
     }
 
+    private static final int SAVE_CAPTURE = 73;
+
     private void saveCapture() {
         Bitmap bitmap = frameView.bitmap;
-        File directory = getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES);
-        if (bitmap == null || directory == null) return;
-        File file = new File(directory, "MSM5xEmu-" + System.currentTimeMillis() + ".png");
+        if (bitmap == null) return;
+        File file = CaptureProvider.captureFile(this);
         try (FileOutputStream output = new FileOutputStream(file)) {
             if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new IOException("PNG encoding failed");
-            String savedMessage = getString(R.string.capture_saved, file.getAbsolutePath());
-            android.widget.Toast.makeText(this, savedMessage, android.widget.Toast.LENGTH_LONG).show();
-            moreButton.announceForAccessibility(savedMessage);
         } catch (IOException error) {
+            showError(getString(R.string.error_capture));
+            return;
+        }
+        new AlertDialog.Builder(this).setTitle(R.string.capture)
+                .setItems(new String[]{getString(R.string.capture_share), getString(R.string.capture_save_as)},
+                        (dialog, choice) -> {
+            try {
+                if (choice == 0) {
+                    Uri uri = new Uri.Builder().scheme("content")
+                            .authority(getPackageName() + ".capture").appendPath(CaptureProvider.NAME).build();
+                    Intent share = new Intent(Intent.ACTION_SEND).setType("image/png")
+                            .putExtra(Intent.EXTRA_STREAM, uri)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    share.setClipData(android.content.ClipData.newRawUri("", uri));
+                    startActivity(Intent.createChooser(share, getString(R.string.capture_share)));
+                } else {
+                    Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("image/png").putExtra(Intent.EXTRA_TITLE, "capture.png");
+                    startActivityForResult(save, SAVE_CAPTURE);
+                }
+            } catch (ActivityNotFoundException error) {
+                showError(getString(R.string.error_no_picker));
+            }
+        }).show();
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != SAVE_CAPTURE || result != RESULT_OK || data == null || data.getData() == null) return;
+        try (InputStream input = new FileInputStream(CaptureProvider.captureFile(this));
+             OutputStream output = getContentResolver().openOutputStream(data.getData())) {
+            if (output == null) throw new IOException("Destination unavailable");
+            byte[] bytes = new byte[8192];
+            int count;
+            while ((count = input.read(bytes)) != -1) output.write(bytes, 0, count);
+            Toast.makeText(this, getString(R.string.capture_saved, data.getData().toString()), Toast.LENGTH_LONG).show();
+        } catch (IOException | SecurityException error) {
             showError(getString(R.string.error_capture));
         }
     }
@@ -1867,6 +2016,10 @@ public final class MainActivity extends Activity {
         experimental.setChecked(preferences.getBoolean(
                 KEY_EXPERIMENTAL_REX, false));
         body.addView(persistent, matchWidth());
+        Switch background = new Switch(this);
+        background.setText(R.string.keep_running_background);
+        background.setChecked(preferences.getBoolean("keep_running_background", false));
+        body.addView(background, matchWidth());
         TextView languageTitle = text(getString(R.string.ui_language), 14);
         body.addView(languageTitle, matchWidth());
         android.widget.Spinner language = new android.widget.Spinner(this);
@@ -1903,6 +2056,9 @@ public final class MainActivity extends Activity {
         JSONObject saved;
         try { saved = new JSONObject(settingsIdentity == null ? "{}" : detailPrefs.getString(settingsIdentity, "{}")); }
         catch (JSONException error) { saved = new JSONObject(); }
+        final JSONObject initialDetails = saved;
+        final boolean initialExperimental = experimental.isChecked();
+        final boolean initialPersistent = persistent.isChecked();
         ArrayList<EditText> detailInputs = new ArrayList<>();
         String[] labels = getResources().getStringArray(R.array.detail_labels);
         String[] sections = getResources().getStringArray(R.array.detail_sections);
@@ -1931,11 +2087,14 @@ public final class MainActivity extends Activity {
                 .setPositiveButton(R.string.save, null)
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            boolean changed = initialExperimental != experimental.isChecked()
+                    || initialPersistent != persistent.isChecked();
             if (settingsIdentity != null) {
                 JSONObject edits = new JSONObject();
                 try {
                     for (int i = 0; i < DETAIL_FIELDS.length; i++) {
                         String value = detailInputs.get(i).getText().toString().trim();
+                        if (!value.equals(initialDetails.optString(DETAIL_FIELDS[i], "").trim())) changed = true;
                         if (!value.isEmpty()) edits.put(DETAIL_FIELDS[i], value);
                     }
                     detailPrefs.edit().putString(settingsIdentity, edits.toString()).apply();
@@ -1943,9 +2102,17 @@ public final class MainActivity extends Activity {
             }
             String newLanguage = languageValues[language.getSelectedItemPosition()];
             preferences.edit().putString("ui_language", newLanguage).putBoolean(KEY_PERSISTENT_STATE, persistent.isChecked())
-                    .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked()).apply();
+                    .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked())
+                    .putBoolean("keep_running_background", background.isChecked()).apply();
             dialog.dismiss();
-            if (!newLanguage.equals(selectedLanguage)) recreate();
+            if (changed && session != null && !sessionStarting) {
+                new AlertDialog.Builder(this).setMessage(R.string.apply_restart_prompt)
+                        .setPositiveButton(R.string.apply_restart, (prompt, which) ->
+                                stopSession(false, this::startSession))
+                        .setNegativeButton(R.string.next_start, (prompt, which) -> {
+                            if (!newLanguage.equals(selectedLanguage)) recreate();
+                        }).show();
+            } else if (!newLanguage.equals(selectedLanguage)) recreate();
         }));
         dialog.show();
         if (dialog.getWindow() != null) {
@@ -2096,8 +2263,8 @@ public final class MainActivity extends Activity {
                 showKeyMapping(bit);
                 return;
             }
-            sendSessionKey(current, bit, mapped, true, true);
-            sendSessionKey(current, bit, mapped, false, true);
+            pressInput("accessibility", current, bit, mapped);
+            releaseInput("accessibility", current, true);
         });
         FrameLayout.LayoutParams visual = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,

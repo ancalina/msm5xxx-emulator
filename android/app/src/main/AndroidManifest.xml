@@ -9,6 +9,9 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
+        <provider android:name=".CaptureProvider"
+            android:authorities="${applicationId}.capture"
+            android:exported="false" android:grantUriPermissions="true" />
         <activity
             android:name=".MainActivity"
             android:exported="false"

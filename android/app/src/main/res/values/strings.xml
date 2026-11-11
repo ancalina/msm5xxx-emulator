@@ -230,4 +230,10 @@
     <string name="time_device_clock">Device clock</string>
     <string name="time_set_manually">Set manually…</string>
     <string name="refresh_network_time">Refresh network time</string>
+    <string name="keep_running_background">Keep running in background</string>
+    <string name="capture_share">Share</string>
+    <string name="capture_save_as">Save as…</string>
+    <string name="apply_restart_prompt">Apply these settings and restart the session now?</string>
+    <string name="apply_restart">Apply and restart</string>
+    <string name="next_start">Next start</string>
 </resources>

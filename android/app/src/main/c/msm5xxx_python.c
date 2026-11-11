@@ -288,6 +288,17 @@ Java_org_msm5xxx_emulator_PythonRuntime_nativeNetworkTime(
     return result;
 }
 
+JNIEXPORT jstring JNICALL
+Java_org_msm5xxx_emulator_PythonRuntime_nativeBackgroundPause(
+        JNIEnv *env, jclass type, jstring request_value) {
+    (void)type;
+    const char *request = (*env)->GetStringUTFChars(env, request_value, NULL);
+    if (request == NULL) return NULL;
+    jstring result = call_python(env, "_background_pause", request);
+    (*env)->ReleaseStringUTFChars(env, request_value, request);
+    return result;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_org_msm5xxx_emulator_PythonRuntime_nativeAudio(
         JNIEnv *env, jclass type) {

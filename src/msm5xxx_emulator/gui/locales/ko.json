@@ -568,6 +568,8 @@
   "english_language": "영어",
   "library_title": "펌웨어 목록",
   "library_empty": "펌웨어를 추가하세요",
+  "experimental_rex": "실험적 정적 REX 컨트롤러",
+  "library_remove_folder": "폴더 제거",
   "library_add_folder": "폴더 추가",
   "library_import": "파일 가져오기",
   "library_refresh": "새로고침",
