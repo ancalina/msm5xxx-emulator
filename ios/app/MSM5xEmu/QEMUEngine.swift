@@ -10,15 +10,23 @@ final class QEMUEngine: ObservableObject {
     typealias Entry = @convention(c) (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
 
     private(set) var entry: Entry?
+    private var runtimeAvailable = false
+    private var reusable = false
+    var usesFreshSessions: Bool { reusable }
+    private var restartRequest: (() -> Void)?
     @Published private(set) var status = "Loading runtime"
     @Published private(set) var frame: CGImage?
     @Published private(set) var secondaryFrame: CGImage?
     @Published private(set) var secondaryAvailable = false
     @Published private(set) var secondaryPreview = false
+    @Published private(set) var virtualNetworkAvailable = false
     @Published private(set) var foldSupported = false
     @Published private(set) var foldOpen = false
     @Published private(set) var metrics = "Run —  PC —\nLCD —  Frame —"
     @Published private(set) var inputBits = Set<Int>()
+    @Published private(set) var activeSettings: [String: String] = [:]
+    @Published private(set) var activePersistentState = true
+    @Published private(set) var activeExperimentalRex = false
     @Published private(set) var identity = ""
     @Published private(set) var running = false
     @Published private(set) var starting = false
@@ -29,6 +37,8 @@ final class QEMUEngine: ObservableObject {
     @Published private(set) var sessionFailed = false
     @Published private(set) var refreshInterval = 0.1
     private let queue = DispatchQueue(label: "me.ancal.msm5xemu.python")
+    // UI input is owned by the main thread; Python receives only edge transitions.
+    private var inputState = HandsetInputState()
     private var runtimeReady = false
     private var polling = false
     // All Python entry points stay on `queue`; it also services audio packets at
@@ -81,6 +91,15 @@ final class QEMUEngine: ObservableObject {
     }
 
     init() {
+        #if compiler(>=6.2)
+        if #available(iOS 26, *) {
+            PythonBridge.configureProcessHost(IsolatedQEMUHost())
+            reusable = true
+            runtimeAvailable = true
+            status = "Ready"
+            return
+        }
+        #endif
         let name = QEMUEngine.jitAvailable ? "QEMU" : "QEMUTCI"
         guard let dir = Bundle.main.privateFrameworksPath,
               let handle = dlopen("\(dir)/\(name).framework/\(name)", RTLD_NOW) else {
@@ -101,6 +120,7 @@ final class QEMUEngine: ObservableObject {
         }
         PythonBridge.configureQEMUEntry(symbol, requestQuit: quit)
         entry = unsafeBitCast(symbol, to: Entry.self)
+        runtimeAvailable = true
         status = "Ready"
         NSLog("MSM5xEmu engine: %@; JIT %@; cs flags 0x%08x", name, QEMUEngine.jitAvailable ? "available" : "unavailable", QEMUEngine.codeSigningFlags)
         // Readable over SSH for device checks: which engine this process loaded.
@@ -136,14 +156,24 @@ final class QEMUEngine: ObservableObject {
     func start(_ firmware: URL, persistentState: Bool = true, experimentalRex: Bool = false,
                virtualNetwork: Bool = false, networkHostTime: Bool = true,
                networkStartTime: Double? = nil) {
-        guard entry != nil, !used else {
+        guard !running, !starting else { return }
+        guard runtimeAvailable, !used else {
             clearDisplay()
-            status = "Unable to start. Force-close and reopen the app to try again."
-            errorDetail = entry == nil ? "QEMU unavailable" : "QEMU already used"
+            status = "Unable to start."
+            errorDetail = !runtimeAvailable ? "QEMU unavailable" : "QEMU already used"
             sessionFailed = true
             return
         }
-        used = true
+        used = !reusable
+        restartRequest = { [weak self] in
+            self?.start(firmware,
+                        persistentState: UserDefaults.standard.object(forKey: "persistent_state") as? Bool ?? persistentState,
+                        experimentalRex: UserDefaults.standard.object(forKey: "experimental_rex") as? Bool ?? experimentalRex,
+                        virtualNetwork: UserDefaults.standard.bool(forKey: "virtual_network"),
+                        networkHostTime: !UserDefaults.standard.bool(forKey: "network_start_time_enabled"),
+                        networkStartTime: UserDefaults.standard.bool(forKey: "network_start_time_enabled")
+                            ? UserDefaults.standard.double(forKey: "network_start_time") : nil)
+        }
         starting = true
         sessionFailed = false
         errorDetail = ""
@@ -169,16 +199,21 @@ final class QEMUEngine: ObservableObject {
                 // iOS drops stderr; keep QEMU/Python diagnostics next to the state for inspection.
                 let log = support.appendingPathComponent("session.log").path
                 freopen(log, "w", stderr); freopen(log, "a", stdout); setvbuf(stderr, nil, _IONBF, 0)
+                let settings = UserDefaults.standard.dictionary(forKey: "details.\(identity)") as? [String: String] ?? [:]
                 let request: [String: Any] = ["firmware": firmware.path, "profile": profile,
                     "qemu": "qemu-system-arm",
                     "state": persistentState ? support.appendingPathComponent("state").path : NSNull(),
-                    "settings": UserDefaults.standard.dictionary(forKey: "details.\(identity)") as? [String: String] ?? [:],
+                    "settings": settings,
                     "experimental_rex": experimentalRex, "virtual_network": virtualNetwork,
                     "network_host_time": networkHostTime, "network_start_time": networkStartTime as Any? ?? NSNull()]
                 let json = try JSONSerialization.data(withJSONObject: request)
                 let result = try PythonBridge.call("start_session", argument: String(decoding: json, as: UTF8.self))
                 let started = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any]
                 self.sessionStarted = true
+                self.unchangedPolls = 0
+                self.audioPackets = 0
+                self.audioNonzeroPackets = 0
+                self.audioMalformedPackets = 0
                 let bits = Set(started?["input_bits"] as? [Int] ?? [])
                 self.audioDiagnostics = FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path)
                 if started?["audio_admitted"] as? Bool == true {
@@ -198,25 +233,36 @@ final class QEMUEngine: ObservableObject {
                 DispatchQueue.main.async {
                     self.starting = false
                     self.running = true
+                    self.activeSettings = settings
+                    self.activePersistentState = persistentState
+                    self.activeExperimentalRex = experimentalRex
                     self.inputBits = bits
                     self.status = "Running (detector-admitted input only)"; NSLog("MSM5xEmu running, input bits %@", String(describing: bits.sorted()))
                 }
             } catch {
                 DispatchQueue.main.async { self.starting = false }
-                self.failSession(error, message: "Unable to start. Force-close and reopen the app to try again.")
+                self.failSession(error, message: "Unable to start.")
             }
         }
     }
 
-    func key(_ bit: Int, pressed: Bool) {
-        let mapped = UserDefaults.standard.object(forKey: "keymap.\(identity).\(bit)") != nil
-        guard running, inputBits.contains(bit) || mapped else { return }
+    func key(_ bit: Int, pressed: Bool, source: String = "touch") {
+        let eventCode = UserDefaults.standard.object(forKey: "keymap.\(identity).\(bit)") as? Int
+        if pressed && (!running || starting || (!inputBits.contains(bit) && eventCode == nil)) { return }
+        if let edge = inputState.transition(bit, pressed: pressed, source: source, eventCode: eventCode) {
+            sendKey(edge.bit, pressed: edge.pressed, eventCode: edge.eventCode)
+        }
+    }
+
+    func releaseAllKeys() {
+        for edge in inputState.releaseAll() { sendKey(edge.bit, pressed: false, eventCode: edge.eventCode) }
+    }
+
+    private func sendKey(_ bit: Int, pressed: Bool, eventCode: Int?) {
         if refreshInterval != 0.1 { refreshInterval = 0.1 }
         queue.async {
             self.unchangedPolls = 0
             do {
-                let key = "keymap.\(self.identity).\(bit)"
-                let eventCode = UserDefaults.standard.object(forKey: key) as? Int
                 let json = try JSONSerialization.data(withJSONObject:
                     ["bit": bit, "event_code": eventCode as Any? ?? NSNull(), "pressed": pressed])
                 _ = try PythonBridge.call("set_session_key", argument: String(decoding: json, as: UTF8.self))
@@ -226,6 +272,7 @@ final class QEMUEngine: ObservableObject {
 
     func setMapping(_ bit: Int, value: Int?, completion: @escaping (Bool) -> Void) {
         guard running, !identity.isEmpty else { completion(false); return }
+        releaseAllKeys()
         let identity = self.identity
         guard let value = value else {
             UserDefaults.standard.removeObject(forKey: "keymap.\(identity).\(bit)")
@@ -270,7 +317,7 @@ final class QEMUEngine: ObservableObject {
     }
 
     func refreshNetworkTime() {
-        guard running else { return }
+        guard running, virtualNetworkAvailable else { return }
         let request = networkRequest(refresh: true)
         queue.async {
             do { _ = try PythonBridge.call("refresh_network_time", argument: request) }
@@ -278,8 +325,61 @@ final class QEMUEngine: ObservableObject {
         }
     }
 
+    // A false success means the saved edits require a new application process.
+    func applySettings(_ settings: [String: String], persistentState: Bool, experimentalRex: Bool,
+                       completion: @escaping (Result<Bool, Error>) -> Void) {
+        guard running, !starting else {
+            completion(.failure(NSError(domain: "MSM5xEmu", code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Session is not running"])))
+            return
+        }
+        starting = true
+        errorDetail = ""
+        let request: [String: Any] = ["settings": settings, "persistent_state": persistentState,
+                                      "experimental_rex": experimentalRex]
+        queue.async {
+            do {
+                let data = try JSONSerialization.data(withJSONObject: request)
+                let json = String(decoding: data, as: UTF8.self)
+                let prepared = try PythonBridge.call("prepare_session_settings", argument: json)
+                guard let result = try JSONSerialization.jsonObject(with: Data(prepared.utf8)) as? [String: Any],
+                      let action = result["action"] as? String, ["reset", "reopen"].contains(action) else {
+                    throw NSError(domain: "MSM5xEmu", code: 5,
+                        userInfo: [NSLocalizedDescriptionKey: "Invalid settings response"])
+                }
+                if self.reusable {
+                    DispatchQueue.main.async {
+                        self.starting = false
+                        self.reboot()
+                        completion(.success(true))
+                    }
+                } else if action == "reset" {
+                    _ = try PythonBridge.call("apply_reset_settings", argument: json)
+                    DispatchQueue.main.async {
+                        self.activeSettings = settings
+                        self.activePersistentState = persistentState
+                        self.activeExperimentalRex = experimentalRex
+                        self.frame = nil; self.secondaryFrame = nil
+                        self.starting = false
+                        completion(.success(true))
+                    }
+                } else {
+                    DispatchQueue.main.async { self.starting = false; completion(.success(false)) }
+                }
+            } catch {
+                DispatchQueue.main.async { self.starting = false; completion(.failure(error)) }
+            }
+        }
+    }
+
     func reboot() {
-        guard running else { return }
+        guard running, !starting else { return }
+        errorDetail = ""
+        releaseAllKeys()
+        if reusable {
+            stop { success in if success { self.restartRequest?() } }
+            return
+        }
         let request = networkRequest(refresh: false, includeEnabled: true)
         queue.async {
             do {
@@ -289,13 +389,16 @@ final class QEMUEngine: ObservableObject {
                     self.secondaryFrame = nil
                 }
             } catch {
-                self.failSession(error, message: "Unable to reboot. Force-close and reopen the app to try again.")
+                self.failSession(error, message: "Unable to reboot.")
             }
         }
     }
 
     func powerOff(completion: @escaping (Bool) -> Void) {
         guard running, !starting else { completion(false); return }
+        errorDetail = ""
+        if reusable { stop(completion: completion); return }
+        releaseAllKeys()
         starting = true
         queue.async {
             do {
@@ -308,7 +411,7 @@ final class QEMUEngine: ObservableObject {
                     completion(true)
                 }
             } catch {
-                self.failSession(error, message: "Unable to stop. Force-close and reopen the app to try again.")
+                self.failSession(error, message: "Unable to stop.")
                 DispatchQueue.main.async { completion(false) }
             }
         }
@@ -316,6 +419,7 @@ final class QEMUEngine: ObservableObject {
 
     func powerOn(completion: @escaping (Bool) -> Void) {
         guard poweredOff, !starting else { completion(false); return }
+        errorDetail = ""
         starting = true
         let request = networkRequest(refresh: false, includeEnabled: true)
         queue.async {
@@ -332,14 +436,16 @@ final class QEMUEngine: ObservableObject {
                     completion(true)
                 }
             } catch {
-                self.failSession(error, message: "Unable to start. Force-close and reopen the app to try again.")
+                self.failSession(error, message: "Unable to start.")
                 DispatchQueue.main.async { completion(false) }
             }
         }
     }
 
     func stop(completion: ((Bool) -> Void)? = nil) {
-        guard running else { completion?(false); return }
+        guard (running || poweredOff), !starting else { completion?(false); return }
+        errorDetail = ""
+        releaseAllKeys()
         running = false
         starting = true
         inputBits = []
@@ -348,25 +454,30 @@ final class QEMUEngine: ObservableObject {
                 self.stopAudio()
                 _ = try PythonBridge.call("stop_session", argument: nil)
                 self.sessionStarted = false
+                self.monitorPaused = false
+                self.parked = false
                 DispatchQueue.main.async {
+                    self.poweredOff = false
+                    if self.reusable { self.used = false }
                     self.starting = false
                     self.clearDisplay()
-                    self.status = "Stopped. Force-close and reopen the app to run again."
+                    self.status = self.reusable ? "Stopped" : "Stopped. Force-close and reopen the app to run again."
                     completion?(true)
                 }
             } catch {
-                self.failSession(error, message: "Unable to stop. Force-close and reopen the app to try again.")
+                self.failSession(error, message: "Unable to stop.")
                 DispatchQueue.main.async { completion?(false) }
             }
         }
     }
 
     func setSceneActive(_ active: Bool) {
+        if !active { releaseAllKeys() }
         queue.async {
             do {
                 try self.applySceneActive(active)
             } catch {
-                self.failSession(error, message: "Unable to pause or resume. Force-close and reopen the app to try again.")
+                self.failSession(error, message: "Unable to pause or resume.")
             }
         }
     }
@@ -467,6 +578,7 @@ final class QEMUEngine: ObservableObject {
                     NSLog("MSM5xEmu Run %lld PC %llx LCD %lld Frame %lld", Int64(run), UInt64(bitPattern: Int64(pc)), Int64(lcd), Int64(frame))
                 }
                 DispatchQueue.main.async {
+                    self.virtualNetworkAvailable = value?["virtual_cell_status"] as? String == "configured"
                     self.secondaryAvailable = value?["secondary_available"] as? Bool ?? false
                     self.secondaryPreview = value?["secondary_preview"] as? Bool ?? false
                     self.foldSupported = supported
@@ -485,7 +597,7 @@ final class QEMUEngine: ObservableObject {
                     throw NSError(domain: "MSM5xEmu", code: 2, userInfo: [NSLocalizedDescriptionKey: "QEMU exited"])
                 }
             } catch {
-                self.failSession(error, message: "Emulation stopped. Force-close and reopen the app to try again.")
+                self.failSession(error, message: "Emulation stopped.")
             }
         }
     }
@@ -538,7 +650,9 @@ final class QEMUEngine: ObservableObject {
     }
 
     private func clearDisplay() {
+        _ = inputState.releaseAll()
         frame = nil; secondaryFrame = nil; secondaryAvailable = false
+        virtualNetworkAvailable = false
         secondaryPreview = false; foldSupported = false; foldOpen = false
         inputBits = []; metrics = "Run —  PC —\nLCD —  Frame —"; paused = false
     }
@@ -554,7 +668,16 @@ final class QEMUEngine: ObservableObject {
             self.status = message
             self.sessionFailed = true
         }
-        if runtimeReady { _ = try? PythonBridge.call("stop_session", argument: nil) }
+        if runtimeReady {
+            _ = try? PythonBridge.call("stop_session", argument: nil)
+            if let result = try? PythonBridge.call("host_status", argument: nil),
+               let value = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any],
+               let used = value["used"] as? Bool {
+                DispatchQueue.main.async { self.used = used }
+            }
+        } else {
+            DispatchQueue.main.async { self.used = false }
+        }
         DispatchQueue.main.async { self.starting = false }
     }
 

@@ -20,6 +20,8 @@ from msm5xxx_android_runtime import (  # noqa: F401: exported native bridge API
 
 _PCM_PACKET = struct.Struct("<4sIQQQ")
 _control = None
+_session_spec = None
+_display_update_lock = None
 
 
 class _ControlLauncher:
@@ -109,6 +111,12 @@ def _audio_admitted(transport, *, require_native_ma5=False):
                 and callable(getattr(transport, "take_native_audio", None)))
 
 
+def host_status():
+    """Distinguish a rejected selection from an entered native initialization."""
+    import _msm5xxx_ios_host as host
+    return shared._json({"schema": 1, "used": host.has_started()})
+
+
 def probe():
     from msm5xxx_emulator.qemu.transport import Transport
     from msm5xxx_emulator.qemu.decoder import QemuDecoder
@@ -118,7 +126,7 @@ def probe():
 
 
 def start_session(request_json):
-    global _control
+    global _control, _session_spec, _display_update_lock
     from msm5xxx_emulator.core.constants import HANDSET_KEY_COUNT
     from msm5xxx_emulator.detection import detect
     from msm5xxx_emulator.qemu.transport import Transport, IOSLauncher
@@ -159,6 +167,18 @@ def start_session(request_json):
         control.close()
         raise
     _control = control
+    # Serialize display replay with the one decoder setting that can be changed
+    # without replacing the machine. Other transport operations remain independent.
+    _display_update_lock = threading.RLock()
+    replay_batch = getattr(transport, "_replay_batch", None)
+    if replay_batch is not None:
+        display_lock = _display_update_lock
+        def locked_replay_batch(pending, complete):
+            with display_lock:
+                return replay_batch(pending, complete)
+        transport._replay_batch = locked_replay_batch
+    _session_spec = {"firmware": str(firmware), "settings": dict(request.get("settings", {})),
+                     "persistent_state": state is not None, "experimental_rex": request["experimental_rex"]}
     stop = threading.Event()
     thread = threading.Thread(target=shared._replay, args=(transport, stop),
                               name="msm5xxx-ios-replay", daemon=True)
@@ -226,9 +246,71 @@ def reset_session(request_json=None):
     return shared._json({"schema": 1, "reset": True})
 
 
+
+def _settings_plan(request_json):
+    from msm5xxx_emulator.detection import detect
+    if shared._session is None or _control is None or _session_spec is None:
+        raise RuntimeError("session is not running")
+    if shared._session.process.poll() is not None or shared._session_error is not None:
+        raise RuntimeError("session is not running")
+    request = json.loads(request_json)
+    if (not isinstance(request, dict)
+            or set(request) != {"settings", "persistent_state", "experimental_rex"}
+            or not isinstance(request["settings"], dict)
+            or type(request["persistent_state"]) is not bool
+            or type(request["experimental_rex"]) is not bool):
+        raise ValueError("invalid settings request")
+    firmware = Path(_session_spec["firmware"])
+    candidate = shared._apply_settings(firmware, detect(firmware), request["settings"])
+    active = _session_spec["settings"]
+    edits = {key for key in active.keys() | request["settings"].keys()
+             if active.get(key) != request["settings"].get(key)}
+    same_options = (request["persistent_state"] == _session_spec["persistent_state"]
+                    and request["experimental_rex"] == _session_spec["experimental_rex"])
+    current = shared._session.config
+    live_format = (edits <= {"framebuffer_format"} and same_options
+                   and getattr(current, "framebuffer_address", None) is not None
+                   and getattr(candidate, "framebuffer_address", None) == current.framebuffer_address
+                   and getattr(candidate, "framebuffer_stride", None) == current.framebuffer_stride
+                   and getattr(candidate, "width", None) == current.width
+                   and getattr(candidate, "height", None) == current.height
+                   and getattr(candidate, "framebuffer_format", "none") != "none")
+    unchanged = not edits and same_options
+    return request, candidate, "reset" if unchanged or live_format else "reopen"
+
+
+def prepare_session_settings(request_json):
+    """Validate before disturbing a live session and classify its reset path."""
+    _, _, action = _settings_plan(request_json)
+    return shared._json({"schema": 1, "action": action})
+
+
+def apply_reset_settings(request_json):
+    """Apply a decoder-only edit and reset the existing machine."""
+    request, candidate, action = _settings_plan(request_json)
+    if action != "reset":
+        raise ValueError("settings require a new session")
+    if _display_update_lock is None:
+        raise RuntimeError("display synchronization is unavailable")
+    decoder = shared._session.decoder
+    previous = decoder.config.framebuffer_format
+    new_format = candidate.framebuffer_format
+    with _display_update_lock:
+        try:
+            if new_format != previous:
+                decoder.set_framebuffer_format(new_format)
+            reset_session()
+        except Exception:
+            if decoder.config.framebuffer_format != previous:
+                decoder.set_framebuffer_format(previous)
+            raise
+    _session_spec["settings"] = dict(request["settings"])
+    shared._scanout_sent.clear()
+    return shared._json({"schema": 1, "applied": True})
+
 def stop_session():
     """Keep resources owned if a worker cannot stop; never close beneath replay."""
-    global _control
+    global _control, _session_spec, _display_update_lock
     transport = shared._session
     if transport is None:
         return shared._json({"schema": 1, "stopped": True})
@@ -249,4 +331,6 @@ def stop_session():
     shared._session_thread = None
     shared._session_error = None
     shared._scanout_sent.clear()
+    _session_spec = None
+    _display_update_lock = None
     return shared._json({"schema": 1, "stopped": True})

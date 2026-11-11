@@ -99,7 +99,8 @@ emulation loop. Native NAND's existing QMP quit uses the same safe cleanup path.
 The process-like handle never sends POSIX signals or cancels native threads.
 If shutdown times out, resources remain owned and the app must be relaunched.
 
-One QEMU invocation is allowed per app lifetime, including failed initialization.
+On the older embedded path, one entered QEMU invocation is allowed per app lifetime.
+Detector rejection and failure to create the native thread can be retried.
 QEMU globals, remaining worker threads and fatal-path allocations cannot safely be
 reinitialized or unloaded. Fatal exits on other native threads may leave QEMU
 unusable; this protects QEMU's direct exit calls, not assertions/abort, crashes,
@@ -108,7 +109,19 @@ or longjmp across QEMU frames is used. Device validation of clean quit and NAND
 persistence is required. The iOS adapter plays native PCM for statically admitted
 tone-generator firmware; virtual networking remains optional.
 
-After a signed device build, choose firmware, tap Run, check display progress and
-supported keys (including release), then Stop. The app must stay open; relaunch
-before the next session. Check both TCI without JIT and TCG with JIT, rejected and
+On iOS 26 and later, `PythonBridge` instead delegates the process-like launcher
+to `IsolatedQEMUHost`. A bundled ExtensionFoundation process owns the QEMU entry
+and exits after that one invocation. The app retains the extension until the
+system confirms exit, then can start another. Arguments, the session log handle,
+and ephemeral scoped bookmarks for copied media/state and temporary files cross
+XPC; original imported documents are not passed to QEMU. Graceful entry status is
+acknowledged before helper exit so qualified NAND saves can distinguish a clean
+close from failure. This path uses the TCI framework and needs Xcode 26 to build.
+
+After a signed device build, validate using synthetic admitted fixtures: Run,
+physical/touch key release, Stop/Start, Reboot and fixture A/B/A switching while
+the app remains open. Verify distinct helper PIDs, clean zero exit before NAND
+state persistence, startup-failure retry, and background/focus transitions.
+On earlier systems validate park/reset/resume separately; switching fixtures
+still needs a new application process under that compatibility path. Check both TCI without JIT and TCG with JIT, rejected and
 accepted detector inputs, extension imports, and writable-state restoration.

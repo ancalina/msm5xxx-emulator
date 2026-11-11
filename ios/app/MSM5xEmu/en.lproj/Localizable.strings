@@ -183,3 +183,10 @@
 "Set manually" = "Set manually";
 "Start time" = "Start time";
 "Refresh network time" = "Refresh network time";
+"Unable to capture display" = "Unable to capture display";
+"Apply and restart session" = "Apply and restart session";
+"Settings require reopening" = "These settings are saved. Reopen the app to apply them.";
+"Settings saved for next start" = "Changes are saved for the next session. Apply and restart to use them now.";
+"Older iOS settings notice" = "Changes are saved. Apply and restart works for compatible display changes; other changes apply after reopening the app.";
+"Older iOS failure notice" = "On iOS 15–25, you may need to reopen the app before starting another session.";
+"Settings saved while stopped" = "Changes are saved for the next session.";

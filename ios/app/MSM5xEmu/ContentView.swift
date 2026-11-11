@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import CryptoKit
 import AVFoundation
+import UIKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -17,11 +18,15 @@ struct ContentView: View {
     @State private var lastMaintenance = Date.distantPast
     @State private var jit = QEMUEngine.jitAvailable
     @State private var showingSettings = false
+    @State private var showingSettingsNotice = false
+    @State private var settingsNotice = ""
     @State private var showingCapture = false
+    @State private var captureData: Data?
     @State private var showingTime = false
     @State private var timeDraft = Date()
     @AppStorage("show_secondary") private var showingSecondary = false
     @State private var showingSwitchAlert = false
+    @State private var pendingFirmwareSwitch: (() -> Void)?
     @State private var editingMapping = false
     @State private var mappingBit = 0
     @State private var mappingValue = ""
@@ -57,6 +62,11 @@ struct ContentView: View {
         !firmwareIdentity.isEmpty && engine.identity == firmwareIdentity
     }
 
+    private var settingsNeedApply: Bool {
+        detailedValues != engine.activeSettings || persistentState != engine.activePersistentState
+            || experimentalRex != engine.activeExperimentalRex
+    }
+
     private func text(_ key: String) -> String {
         let language = uiLanguage == "auto"
             ? (Locale.preferredLanguages.first?.hasPrefix("ko") == true ? "ko" : "en") : uiLanguage
@@ -67,11 +77,16 @@ struct ContentView: View {
 
     private func detailLabel(_ key: String) -> String { text("detail." + key) }
 
+    private var keyboardEnabled: Bool {
+        engine.running && !engine.starting && !engine.paused && scenePhase == .active && !showingLibrary
+            && !editingMapping && !showingSettings && !showingMapping && !showingTime && !showingCapture
+    }
+
     var body: some View {
         Group {
             if showingLibrary {
                 FirmwareLibraryView(store: library, engine: engine, text: text,
-                    canClose: engine.running,
+                    canClose: firmware != nil && !engine.starting,
                     preparing: preparingFirmware,
                     close: { showingLibrary = false },
                     boot: { entry in
@@ -102,19 +117,25 @@ struct ContentView: View {
                             if !found { library.error = "Library unavailable" }
                         }
                         if engine.running {
-                            engine.powerOff { success in if success { select() } }
+                            pendingFirmwareSwitch = {
+                                engine.powerOff { success in if success { select() } }
+                            }
                         } else { select() }
                     })
             } else {
                 emulatorView
             }
         }
-        .alert(text("Reopen the app to switch firmware"), isPresented: $showingSwitchAlert) {
-            Button(text("OK"), role: .cancel) { }
+        .background(HardwareKeyboardInput(enabled: keyboardEnabled, transition: { bit, pressed, source in
+            engine.key(bit, pressed: pressed, source: source)
+        }, focusLost: { engine.releaseAllKeys() }).frame(width: 0, height: 0))
+        .onChange(of: keyboardEnabled) { enabled in if !enabled { engine.releaseAllKeys() } }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            engine.releaseAllKeys()
         }
         .onAppear(perform: pickStoredFirmware)
         .onAppear { engine.setSceneActive(scenePhase == .active); updateRefreshTimer() }
-        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil }
+        .onDisappear { engine.releaseAllKeys(); refreshTimer?.invalidate(); refreshTimer = nil }
         .onChange(of: engine.running) { running in
             if running {
                 runningLibraryID = activeLibraryID
@@ -132,6 +153,8 @@ struct ContentView: View {
             engine.setSceneActive(phase == .active)
             updateRefreshTimer()
         }
+        .onChange(of: networkHostTime) { _ in engine.refreshNetworkTime() }
+        .onChange(of: networkStartTime) { _ in engine.refreshNetworkTime() }
         .onChange(of: engine.paused) { _ in updateRefreshTimer() }
         .onChange(of: engine.refreshInterval) { _ in updateRefreshTimer() }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
@@ -142,6 +165,27 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in
             engine.resetAudioServices()
+        }
+        .onChange(of: engine.errorDetail) { detail in
+            if !detail.isEmpty { message = detail }
+        }
+        .alert(text(showingSwitchAlert ? "Reopen the app to switch firmware"
+                    : pendingFirmwareSwitch != nil ? "Choose firmware" : "Error"),
+               isPresented: Binding(
+                get: { showingSwitchAlert || pendingFirmwareSwitch != nil || !message.isEmpty },
+                set: { if !$0 { showingSwitchAlert = false; pendingFirmwareSwitch = nil; message = "" } })) {
+            if let select = pendingFirmwareSwitch {
+                Button(text("Start")) { pendingFirmwareSwitch = nil; select() }
+                Button(text("Cancel"), role: .cancel) { pendingFirmwareSwitch = nil }
+            } else {
+                Button(text("OK"), role: .cancel) { showingSwitchAlert = false; message = "" }
+            }
+        } message: {
+            if pendingFirmwareSwitch != nil { Text(text("Confirm firmware")) }
+            else if !message.isEmpty {
+                Text(text(message) + (engine.sessionFailed && engine.used && !engine.usesFreshSessions
+                    ? "\n\n" + text("Older iOS failure notice") : ""))
+            }
         }
         .onChange(of: message) { value in
             if !value.isEmpty { UIAccessibility.post(notification: .announcement, argument: value) }
@@ -199,13 +243,17 @@ struct ContentView: View {
                         guard value != virtualNetwork else { return }
                         virtualNetwork = value
                     }))
-                Button(text("Start")) { run() }.disabled(engine.running || engine.used || firmware == nil)
+                Button(text("Start")) { run() }.disabled(engine.running || engine.starting || (engine.used && !engine.poweredOff) || firmware == nil)
                 Button(text("Stop emulator")) {
                     engine.powerOff { success in if success { showingLibrary = true } }
                 }.disabled(!engine.running)
                 Button(text("Reboot emulator")) { engine.reboot() }.disabled(!engine.running)
                 Button(text("Choose firmware…")) { showingLibrary = true }
-                Button(text("Capture")) { showingCapture = true }.disabled(engine.frame == nil)
+                Button(text("Capture")) {
+                    captureData = engine.frame.flatMap { UIImage(cgImage: $0).pngData() }
+                    if captureData != nil { showingCapture = true }
+                    else { message = text("Unable to capture display") }
+                }.disabled(engine.frame == nil)
                 Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)
                 Menu(text("Time")) {
                     Button {
@@ -256,7 +304,8 @@ struct ContentView: View {
                         key(text("Vol+"), 10).frame(height: 44)
                         key(text("Vol-"), 8).frame(height: 44)
                         Button(text(engine.foldOpen ? "Close fold" : "Open fold")) { engine.toggleFold() }
-                            .buttonStyle(HandsetKeyStyle(dimmed: !engine.running))
+                            .buttonStyle(HandsetKeyStyle(dimmed: !engine.running || !engine.foldSupported))
+                            .disabled(!engine.running || !engine.foldSupported)
                             .frame(height: 44)
                         statusBlock
                         moreControl
@@ -282,7 +331,9 @@ struct ContentView: View {
         .overlay {
             if showingSecondary && engine.secondaryAvailable {
                 GeometryReader { proxy in
-                    FloatingDisplay(frame: engine.secondaryFrame, title: text("Additional display"), bounds: proxy.size)
+                    FloatingDisplay(frame: engine.secondaryFrame,
+                        title: engine.secondaryPreview ? text("Preview: colors and orientation unverified") : text("Additional display"),
+                        bounds: proxy.size)
                 }
             }
             if preparingFirmware { ProgressView(text("Library loading")) }
@@ -324,7 +375,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingCapture) {
-            if let frame = engine.frame, let data = UIImage(cgImage: frame).pngData() {
+            if let data = captureData {
                 CaptureShare(data: data, savedMessage: text("Screenshot saved"))
             }
         }
@@ -342,6 +393,30 @@ struct ContentView: View {
                     Section(text("Detailed settings")) {
                         Toggle(text("Experimental static REX controller"), isOn: $experimentalRex)
                     }.disabled(!hasProfile)
+                    if hasProfile {
+                        Section {
+                            if engine.running {
+                                Button(text("Apply and restart session")) {
+                                    engine.applySettings(detailedValues, persistentState: persistentState,
+                                                         experimentalRex: experimentalRex) { result in
+                                        switch result {
+                                        case .success(true): showingSettings = false
+                                        case .success(false):
+                                            settingsNotice = "Settings require reopening"
+                                            showingSettingsNotice = true
+                                        case .failure(let error):
+                                            settingsNotice = error.localizedDescription
+                                            showingSettingsNotice = true
+                                        }
+                                    }
+                                }.disabled(!settingsNeedApply)
+                            }
+                            Text(text(!engine.usesFreshSessions && engine.used
+                                      ? "Older iOS settings notice"
+                                      : engine.running ? "Settings saved for next start" : "Settings saved while stopped"))
+                                .font(.footnote).foregroundColor(.secondary)
+                        }
+                    }
                     ForEach(0..<7, id: \.self) { section in
                         Section(text("section." + String(section))) {
                             ForEach(Self.detailFields[Self.detailBounds[section]..<Self.detailBounds[section + 1]], id: \.self) { name in
@@ -356,8 +431,12 @@ struct ContentView: View {
                         }.disabled(!hasProfile)
                     }
                 }
+                .disabled(engine.starting)
                 .navigationTitle(text("Settings"))
-                .toolbar { Button(text("Done")) { showingSettings = false } }
+                .toolbar { Button(text("Done")) { showingSettings = false }.disabled(engine.starting) }
+                .alert(text("Settings"), isPresented: $showingSettingsNotice) {
+                    Button(text("OK"), role: .cancel) { }
+                } message: { Text(text(settingsNotice)) }
             }
         }
 
@@ -391,7 +470,12 @@ struct ContentView: View {
     }
 
     private func run() {
+        message = ""
         guard let firmware = firmware else { return }
+        if engine.poweredOff && engine.identity == firmwareIdentity {
+            engine.powerOn { _ in }
+            return
+        }
         engine.start(firmware, persistentState: persistentState, experimentalRex: experimentalRex,
                      virtualNetwork: virtualNetwork, networkHostTime: networkHostTime,
                      networkStartTime: networkStartTimeEnabled ? networkStartTime : nil)
@@ -410,7 +494,7 @@ struct ContentView: View {
                 .accessibilityLabel(spokenKey(bit, fallback: label))
                 .accessibilityHint(text("Reassign hint"))
         } else {
-            PhoneKey(label: label, accessibilityName: spokenKey(bit, fallback: label), enabled: engine.running && (engine.inputBits.contains(bit) || UserDefaults.standard.object(forKey: "keymap.\(engine.identity).\(bit)") != nil),
+            PhoneKey(label: label, accessibilityName: spokenKey(bit, fallback: label), enabled: engine.running && !engine.starting && !engine.paused && (engine.inputBits.contains(bit) || UserDefaults.standard.object(forKey: "keymap.\(engine.identity).\(bit)") != nil),
                      transition: { engine.key(bit, pressed: $0) })
         }
     }
@@ -591,6 +675,9 @@ private struct PhoneKey: View {
                 if enabled { transition(true); transition(false) }
             }
             .onDisappear { if pressed { pressed = false; transition(false) } }
+            .onChange(of: enabled) { enabled in
+                if !enabled && pressed { pressed = false; transition(false) }
+            }
     }
 }
 
@@ -685,6 +772,115 @@ private struct FloatingDisplay: View {
             loaded = true
             size = clamped(CGSize(width: savedWidth, height: savedHeight))
             origin = clamped(CGPoint(x: savedX, y: savedY), size)
+        }
+    }
+}
+
+// A responder in this scene receives physical keyboard edges without installing
+// global shortcuts that could consume typing in settings or library dialogs.
+private struct HardwareKeyboardInput: UIViewRepresentable {
+    let enabled: Bool
+    let transition: (Int, Bool, String) -> Void
+    let focusLost: () -> Void
+
+    func makeUIView(context: Context) -> KeyboardView { KeyboardView() }
+    func updateUIView(_ view: KeyboardView, context: Context) {
+        view.transition = transition
+        view.focusLost = focusLost
+        view.inputEnabled = enabled
+        view.updateFocus()
+    }
+    static func dismantleUIView(_ view: KeyboardView, coordinator: ()) {
+        view.inputEnabled = false
+        view.releaseKeys()
+        view.resignFirstResponder()
+    }
+
+    final class KeyboardView: UIView {
+        var transition: ((Int, Bool, String) -> Void)?
+        var focusLost: (() -> Void)?
+        var inputEnabled = false
+        private var held: [Int: Int] = [:]
+        private var observers: [NSObjectProtocol] = []
+        override var canBecomeFirstResponder: Bool { inputEnabled }
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = true
+            let center = NotificationCenter.default
+            observers.append(center.addObserver(forName: UIApplication.willResignActiveNotification,
+                object: nil, queue: .main) { [weak self] _ in self?.releaseKeys() })
+            observers.append(center.addObserver(forName: UIWindow.didResignKeyNotification,
+                object: nil, queue: .main) { [weak self] notification in
+                    guard let self = self, let window = notification.object as? UIWindow,
+                          window === self.window else { return }
+                    self.releaseKeys()
+                    self.focusLost?()
+                })
+            observers.append(center.addObserver(forName: UIWindow.didBecomeKeyNotification,
+                object: nil, queue: .main) { [weak self] _ in self?.updateFocus() })
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+        deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil { releaseKeys() }
+            updateFocus()
+        }
+        func updateFocus() {
+            if inputEnabled && window?.isKeyWindow == true {
+                if !isFirstResponder { becomeFirstResponder() }
+            } else {
+                releaseKeys()
+                if isFirstResponder { resignFirstResponder() }
+            }
+        }
+        override func resignFirstResponder() -> Bool {
+            releaseKeys()
+            focusLost?()
+            return super.resignFirstResponder()
+        }
+        func releaseKeys() {
+            let keys = held
+            held.removeAll()
+            for (code, bit) in keys { transition?(bit, false, "keyboard.\(code)") }
+        }
+        private func bit(for key: UIKey) -> Int? {
+            if !key.modifierFlags.intersection([.command, .control, .alternate]).isEmpty { return nil }
+            return HandsetInputState.keyboardBit(usage: key.keyCode.rawValue, characters: key.characters)
+        }
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            var remaining = Set<UIPress>()
+            for press in presses {
+                guard inputEnabled, let key = press.key, let bit = bit(for: key) else {
+                    remaining.insert(press); continue
+                }
+                let code = key.keyCode.rawValue
+                if held[code] == nil {
+                    held[code] = bit
+                    transition?(bit, true, "keyboard.\(code)")
+                }
+            }
+            if !remaining.isEmpty { super.pressesBegan(remaining, with: event) }
+        }
+        private func end(_ presses: Set<UIPress>) -> Set<UIPress> {
+            var remaining = Set<UIPress>()
+            for press in presses {
+                if let code = press.key?.keyCode.rawValue, let bit = held.removeValue(forKey: code) {
+                    transition?(bit, false, "keyboard.\(code)")
+                } else { remaining.insert(press) }
+            }
+            return remaining
+        }
+        override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            let remaining = end(presses)
+            if !remaining.isEmpty { super.pressesEnded(remaining, with: event) }
+        }
+        override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            let remaining = end(presses)
+            if !remaining.isEmpty { super.pressesCancelled(remaining, with: event) }
         }
     }
 }

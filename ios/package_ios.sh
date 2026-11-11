@@ -19,7 +19,8 @@ APP="$WORK/build/Release-iphoneos/MSM5xEmu.app"
 for kind in ipa tipa; do
     rm -rf "$WORK/Payload"; mkdir "$WORK/Payload"; cp -R "$APP" "$WORK/Payload/"
     A="$WORK/Payload/MSM5xEmu.app"
-    for fw in "$A"/Frameworks/*.framework; do codesign --force --sign - "$fw"; done
+    find "$A" -type d -name '*.framework' -prune -exec codesign --force --sign - {} \;
+    find "$A" -type d -name '*.appex' -prune -exec codesign --force --sign - {} \;
     codesign --force --sign - --entitlements "$APP_DIR/$kind.entitlements" "$A"
     rm -f "$OUT/MSM5xEmu.$kind"; (cd "$WORK" && zip -qry "$OUT/MSM5xEmu.$kind" Payload)
 done

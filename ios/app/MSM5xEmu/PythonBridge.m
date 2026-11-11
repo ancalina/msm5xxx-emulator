@@ -9,6 +9,7 @@
 
 typedef int (*QEMUEntry)(int, char **);
 typedef void (*QEMUQuit)(void);
+static id<QEMUProcessHost> processHost;
 static QEMUEntry qemuEntry;
 static QEMUQuit qemuQuit;
 static pthread_mutex_t engineLock = PTHREAD_MUTEX_INITIALIZER;
@@ -47,6 +48,23 @@ static PyObject *hostStart(PyObject *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "O!:start", &PyList_Type, &values)) return NULL;
     Py_ssize_t count = PyList_Size(values);
     if (count < 1 || count > 4096) return PyErr_Format(PyExc_ValueError, "invalid QEMU argv");
+    if (processHost) {
+        NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
+        for (Py_ssize_t i = 0; i < count; ++i) {
+            Py_ssize_t length;
+            const char *value = PyUnicode_AsUTF8AndSize(PyList_GetItem(values, i), &length);
+            if (!value) return NULL;
+            if ((Py_ssize_t)strlen(value) != length) return PyErr_Format(PyExc_ValueError, "invalid QEMU argument");
+            [arguments addObject:[[NSString alloc] initWithBytes:value length:(NSUInteger)length encoding:NSUTF8StringEncoding]];
+        }
+        NSError *error = nil;
+        BOOL success;
+        Py_BEGIN_ALLOW_THREADS
+        success = [processHost startArguments:arguments error:&error];
+        Py_END_ALLOW_THREADS
+        if (!success) return PyErr_Format(PyExc_RuntimeError, "%s", error.localizedDescription.UTF8String ?: "QEMU session start failed");
+        Py_RETURN_NONE;
+    }
     pthread_mutex_lock(&engineLock);
     if (attempted || !qemuEntry || !qemuQuit) {
         pthread_mutex_unlock(&engineLock);
@@ -69,7 +87,7 @@ static PyObject *hostStart(PyObject *self, PyObject *args) {
     pthread_t thread;
     int status = pthread_create(&thread, NULL, engineWorker, NULL);
     if (status) {
-        running = NO;
+        running = NO; attempted = NO;
         for (int i = 0; i < engineArgc; ++i) free(engineArgv[i]);
         free(engineArgv); engineArgv = NULL;
         pthread_mutex_unlock(&engineLock);
@@ -80,8 +98,21 @@ static PyObject *hostStart(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *hostHasStarted(PyObject *self, PyObject *unused) {
+    (void)self; (void)unused;
+    pthread_mutex_lock(&engineLock);
+    BOOL used = processHost ? NO : attempted;
+    pthread_mutex_unlock(&engineLock);
+    return PyBool_FromLong(used);
+}
+
 static PyObject *hostPoll(PyObject *self, PyObject *unused) {
     (void)self; (void)unused;
+    if (processHost) {
+        NSNumber *result = [processHost poll];
+        if (!result) Py_RETURN_NONE;
+        return PyLong_FromLong(result.intValue);
+    }
     pthread_mutex_lock(&engineLock);
     BOOL active = running; int code = resultCode;
     pthread_mutex_unlock(&engineLock);
@@ -91,11 +122,17 @@ static PyObject *hostPoll(PyObject *self, PyObject *unused) {
 
 static PyObject *hostTerminate(PyObject *self, PyObject *unused) {
     (void)self; (void)unused;
+    if (processHost) { [processHost requestQuit]; Py_RETURN_NONE; }
     pthread_mutex_lock(&engineLock);
     BOOL active = running;
     pthread_mutex_unlock(&engineLock);
     if (active && qemuQuit) qemuQuit();
     Py_RETURN_NONE;
+}
+
+static PyObject *hostKill(PyObject *self, PyObject *unused) {
+    if (processHost) { [processHost requestKill]; Py_RETURN_NONE; }
+    return hostTerminate(self, unused);
 }
 
 static PyObject *hostWait(PyObject *self, PyObject *args) {
@@ -105,6 +142,15 @@ static PyObject *hostWait(PyObject *self, PyObject *args) {
     double seconds = timeout == Py_None ? 30.0 : PyFloat_AsDouble(timeout);
     if (PyErr_Occurred()) return NULL;
     if (!isfinite(seconds) || seconds < 0) return PyErr_Format(PyExc_ValueError, "invalid timeout");
+    if (processHost) {
+        NSError *error = nil;
+        NSNumber *result;
+        Py_BEGIN_ALLOW_THREADS
+        result = [processHost waitForExit:seconds error:&error];
+        Py_END_ALLOW_THREADS
+        if (!result) return PyErr_Format(PyExc_TimeoutError, "%s", error.localizedDescription.UTF8String ?: "QEMU session did not stop");
+        return PyLong_FromLong(result.intValue);
+    }
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
     deadline.tv_sec += (time_t)seconds;
@@ -124,7 +170,8 @@ static PyObject *hostWait(PyObject *self, PyObject *args) {
 
 static PyMethodDef hostMethods[] = {
     {"start", hostStart, METH_VARARGS, NULL}, {"poll", hostPoll, METH_NOARGS, NULL},
-    {"terminate", hostTerminate, METH_NOARGS, NULL}, {"kill", hostTerminate, METH_NOARGS, NULL},
+    {"has_started", hostHasStarted, METH_NOARGS, NULL},
+    {"terminate", hostTerminate, METH_NOARGS, NULL}, {"kill", hostKill, METH_NOARGS, NULL},
     {"wait", hostWait, METH_VARARGS, NULL}, {NULL, NULL, 0, NULL}
 };
 static struct PyModuleDef hostModule = {PyModuleDef_HEAD_INIT, "_msm5xxx_ios_host", NULL, -1, hostMethods};
@@ -143,6 +190,9 @@ static void pythonError(NSError **error) {
 }
 
 @implementation PythonBridge
++ (void)configureProcessHost:(id<QEMUProcessHost>)host {
+    processHost = host;
+}
 + (void)configureQEMUEntry:(void *)entry requestQuit:(void *)requestQuit {
     pthread_mutex_lock(&engineLock);
     if (!attempted) { qemuEntry = (QEMUEntry)entry; qemuQuit = (QEMUQuit)requestQuit; }
