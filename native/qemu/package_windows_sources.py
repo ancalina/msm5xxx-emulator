@@ -103,6 +103,9 @@ def main() -> int:
     mapped = {dll["file"]: dll["sha256"] for package in packages for dll in package["bundled_dlls"]}
     actual = {f"bin/{path.name}": sha256(path) for path in (bundle / "bin").glob("*.dll")}
     if actual != mapped:
+        for name in sorted(set(actual) | set(mapped)):
+            if actual.get(name) != mapped.get(name):
+                print(f"{name}: bundled={actual.get(name)} pinned={mapped.get(name)}", file=sys.stderr)
         raise RuntimeError("bundled DLL set or hashes differ from windows_dependency_sources.json; refresh pins explicitly")
 
     with tempfile.TemporaryDirectory(prefix="windows-source-companion-", dir=output.parent) as temp:
