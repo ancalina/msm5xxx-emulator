@@ -116,8 +116,10 @@ int main(void)
             source = Path(directory) / "legacy.c"
             binary = Path(directory) / "legacy"
             source.write_text(harness)
+            sanitizers = ([] if os.name == "nt" else
+                          ["-fsanitize=undefined", "-fno-sanitize-recover=all"])
             subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+                            *sanitizers,
                             "-I", str(core.parent), str(source), str(waveform),
                             "-lm", "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
