@@ -15,6 +15,26 @@ DUAL_PLANE_5X6_KEY_EVENTS = { 0: 0x5B, 2: 0x52, 3: 0x50, 4: 0x65, 6: 0x66, 8: 0x
 def evidenced_key_events(profile: dict[str, object]) -> dict[int, int]:
     family = profile.get("event_sink_family", profile.get("family"))
     if family == SAMSUNG_RING32:
+        mappings = profile.get("provisional_mappings")
+        confirm = mappings.get(5) if isinstance(mappings, dict) else None
+        if not isinstance(confirm, dict) or confirm.get("rule") != "same-image-ring32-confirm-consumer-v1":
+            confirm = profile.get("side_key_converter")
+        events = profile.get("event_codes", ())
+        if (profile.get("grammar") == "direct-low-nibble-6-row-v1"
+            and (profile.get("rows"), profile.get("columns"), profile.get("register")) == (6, 4, 0x03000694)
+            and profile.get("single_key_column_sense") == [14, 13, 11, 7]
+            and profile.get("event_sink_validation") == "required-queue-features"
+            and type(profile.get("event_sink")) is int
+            and type(profile.get("raw_dequeue")) is int
+            and isinstance(events, (list, tuple)) and len(events) == 24
+            and events.count(0x54) == events.count(0x55) == 1
+            and events.count(0x63) == events.count(0x64) == 1
+            and (events[6], events[19]) == (0x63, 0x64)
+            and tuple(events[22:24]) == (0x54, 0x55)
+            and isinstance(confirm, dict) and confirm.get("rule") == "same-image-ring32-confirm-consumer-v1"
+            and confirm.get("raw_dequeue") == profile.get("raw_dequeue")
+            and type(confirm.get("converter")) is int):
+            return {**SAMSUNG_RING32_KEY_EVENTS, 8: 0x55, 10: 0x54}
         # The event table distinguishes navigation from volume contacts.
         if (profile.get("grammar") == "direct-low-nibble-6-row-v1" and tuple(profile.get("event_codes", ())) == (0x63, 0x66, 0x31, 0x34, 0x37, 0x2A, 0x5B, 0x53,
             0x32, 0x35, 0x38, 0x30, 0x65, 0x50, 0x33, 0x36, 0x39, 0x23, 0x87, 0x64, 0x52, 0x00, 0x54, 0x55)):

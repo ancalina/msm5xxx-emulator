@@ -366,6 +366,14 @@ def resolve_direct_matrix_input(image: bytes, load_address: int = 0) -> tuple[di
             profile.update(ok_metadata)
         if mappings:
             profile["provisional_mappings"] = mappings
+            confirm = mappings.get(5, {})
+            if (confirm.get("rule") == "same-image-exact-keyemul-O-unique-cell"
+                and profile.get("grammar") == "direct-low-nibble-6-row-v1"
+                and (profile["event_codes"][6], profile["event_codes"][19]) == (0x63, 0x64)
+                and tuple(profile["event_codes"][-2:]) == (0x54, 0x55)):
+                converter, _ = _same_image_ring32_confirm_mapping(image, profile, load_address)
+                if converter:
+                    profile["side_key_converter"] = converter[5]
         return profile, "accepted", rejected
     if len(accepted) > 1:
         rejected.extend({ "function": scanner["function"], "grammar_fingerprint": scanner["grammar_fingerprint"], "reasons":["multiple-accepted-scanners"], }
