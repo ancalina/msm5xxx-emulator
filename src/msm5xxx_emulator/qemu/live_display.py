@@ -33,8 +33,12 @@ def parse_network_start_time(value: str) -> float | None:
     parsed = datetime.strptime(value, "%Y-%m-%d %H:%M")
     if parsed.strftime("%Y-%m-%d %H:%M") != value:
         raise ValueError("invalid date format")
-    timestamp = parsed.timestamp()
-    if datetime.fromtimestamp(timestamp) != parsed:
+    try:
+        timestamp = parsed.timestamp()
+        local = datetime.fromtimestamp(timestamp)
+    except (OSError, OverflowError) as error:  # Windows rejects times near the epoch
+        raise ValueError("invalid local time") from error
+    if local != parsed:
         raise ValueError("invalid local time")
     virtual_cell_scenario(False, start_time=timestamp)
     return timestamp
