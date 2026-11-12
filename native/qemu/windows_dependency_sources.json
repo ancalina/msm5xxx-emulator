@@ -47,18 +47,18 @@
     },
     {
       "package": "mingw-w64-x86_64-libiconv",
-      "version": "1.19-1",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
-      "source_archive": "sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
-      "source_archive_sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
-      "source_archive_bytes": 5131029,
+      "version": "1.19.1-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libiconv-1.19.1-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-libiconv-1.19.1-1.src.tar.zst",
+      "source_archive_sha256": "ed46bb1b524ad9bd9d843091bf7b18ab23e5cd21fef6de743c8c943bdc11dabe",
+      "source_archive_bytes": 5104269,
       "source_root": "mingw-w64-libiconv",
-      "recipe_sha256": "9b3212d06910560fb59e017e0b73a29d392a5082d3a47a613e61509bd7dcd475",
+      "recipe_sha256": "f3956b46a5197680575f1da66209e9ccec78942a7bf6aea736d015706c5a33f1",
       "pkgbuild_license": "('spdx:GPL-3.0-or-later')",
       "bundled_dlls": [
         {
           "file": "bin/libiconv-2.dll",
-          "sha256": "7a282a854e01be726c6cccfe46f548c716aa45b3014818468253aaa4efbcd067"
+          "sha256": "587bd8c780e89f5d834c251accc6053f479713184c433e0f1bab898ee0aa3751"
         }
       ],
       "runtime_license_files": [
@@ -70,18 +70,18 @@
     },
     {
       "package": "mingw-w64-x86_64-libwinpthread",
-      "version": "14.0.0.r569.g34eeafb7d-1",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r569.g34eeafb7d-1.src.tar.zst",
-      "source_archive": "sources/mingw-w64-winpthreads-14.0.0.r569.g34eeafb7d-1.src.tar.zst",
-      "source_archive_sha256": "8f43ac029183d5afea64dfbb4692729bd7fd8c087de550d32deab1d061fe2a36",
-      "source_archive_bytes": 59742929,
+      "version": "14.0.0.r598.ge3d18511f-1",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst",
+      "source_archive": "sources/mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst",
+      "source_archive_sha256": "1da3dad4f6916d0c23e8fe76c38ed79946fb32078f94047c0475229b8112a1db",
+      "source_archive_bytes": 59897216,
       "source_root": "mingw-w64-winpthreads",
-      "recipe_sha256": "ce977f0a06848c55cfdea7bdcbaa49036ca204eb4f1a1d11788712d355996367",
+      "recipe_sha256": "b533e6c7a634ceb574ad3e8db356bb9dbf63bb0d59e944f880be1d640c644c61",
       "pkgbuild_license": "('spdx:MIT AND BSD-3-Clause')",
       "bundled_dlls": [
         {
           "file": "bin/libwinpthread-1.dll",
-          "sha256": "69d7bb54bfa7502501b8cda3e09ae9d0a7ae3325d7419aeaeb55c13f4ae8dddb"
+          "sha256": "98a4fea591385952cad1c532f4a92606358630976e9ede5fcf115ab945305a09"
         }
       ],
       "runtime_license_files": [
@@ -90,18 +90,18 @@
     },
     {
       "package": "mingw-w64-x86_64-pcre2",
-      "version": "10.49-1",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-1.src.tar.zst",
-      "source_archive": "sources/mingw-w64-pcre2-10.49-1.src.tar.zst",
-      "source_archive_sha256": "b02f0d5070b7d7f6db5c8ba9b009f28c1a07b9b52aaf7964dc0c8b098e4088d1",
-      "source_archive_bytes": 2183818,
+      "version": "10.49-2",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-2.src.tar.zst",
+      "source_archive": "sources/mingw-w64-pcre2-10.49-2.src.tar.zst",
+      "source_archive_sha256": "a0834cd8808867aaa3d0065eefcb12a2be09735a6c398c3da9301187e8517ead",
+      "source_archive_bytes": 2184385,
       "source_root": "mingw-w64-pcre2",
-      "recipe_sha256": "19e2827b5ffd57b7981ec9678258107e5737f520229d36b4d15d71c24267eb19",
+      "recipe_sha256": "84a6c8899b4ff68a726340e1bc391b0f20432e3223bb5029c7600178dab7c547",
       "pkgbuild_license": "(\"spdx:BSD-3-Clause\")",
       "bundled_dlls": [
         {
           "file": "bin/libpcre2-8-0.dll",
-          "sha256": "68a7cee2acc36d6a61d73f78825d17dfd32f8580f4bb1bc399134719518213d5"
+          "sha256": "26fb276dc3a6179d889684a8ec0e3f012a7da60d9bf4c755822340c5268cb8dc"
         }
       ],
       "runtime_license_files": [
@@ -111,18 +111,18 @@
     },
     {
       "package": "mingw-w64-x86_64-zlib",
-      "version": "1.3.2-3",
-      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-3.src.tar.zst",
-      "source_archive": "sources/mingw-w64-zlib-1.3.2-3.src.tar.zst",
-      "source_archive_sha256": "4b7839ab2826d3e3d27fe46150d2180a1f561f4d03c9e82aeb4b056180561f00",
-      "source_archive_bytes": 1326411,
+      "version": "1.4-2",
+      "source_only_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-zlib-1.4-2.src.tar.zst",
+      "source_archive": "sources/mingw-w64-zlib-1.4-2.src.tar.zst",
+      "source_archive_sha256": "28415621a0f6c16bc20b0ce50cd1ae3632dd9f27bdc5776ab3ec18e8d2f00dcd",
+      "source_archive_bytes": 1324155,
       "source_root": "mingw-w64-zlib",
-      "recipe_sha256": "64c6315e3825a295aa82c3218017d5a700381711bfc58a5cbceb9f6bc685b55e",
+      "recipe_sha256": "0b3e1662608719a4a2f32134de74d361e39a2609d610a3cf0ed89b04104f61d4",
       "pkgbuild_license": "('spdx:Zlib')",
       "bundled_dlls": [
         {
-          "file": "bin/zlib1.dll",
-          "sha256": "a2efc7d0985a82364e79e0fdde3570f7ad66cb8cf5d60d54355a80c2504325fe"
+          "file": "bin/libz-1.dll",
+          "sha256": "b82cab3e02b60e664c19eb3459f6e6ca7f6165a727bbb18f48dee0474b42a920"
         }
       ],
       "runtime_license_files": [
