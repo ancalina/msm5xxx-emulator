@@ -14,7 +14,7 @@ from pathlib import Path
 
 import msm5xxx_android_runtime as shared
 from msm5xxx_android_runtime import (  # noqa: F401: exported native bridge API
-    detect_profile, library_describe, session_frame, session_secondary_frame, session_fold,
+    detect_cached, detect_profile, library_describe, session_frame, session_secondary_frame, session_fold,
     session_status, can_session_key, set_session_key,
 )
 
@@ -142,7 +142,7 @@ def start_session(request_json):
     if type(request.get("network_host_time", True)) is not bool:
         raise ValueError("invalid network time setting")
     firmware = Path(request["firmware"])
-    config = detect(firmware)
+    config = detect_cached(firmware)
     # Apply the same fail-closed admission policy used by Android before starting.
     admission = json.loads(detect_profile(str(firmware)))
     if not admission["accepted"]:
@@ -261,7 +261,7 @@ def _settings_plan(request_json):
             or type(request["experimental_rex"]) is not bool):
         raise ValueError("invalid settings request")
     firmware = Path(_session_spec["firmware"])
-    candidate = shared._apply_settings(firmware, detect(firmware), request["settings"])
+    candidate = shared._apply_settings(firmware, detect_cached(firmware), request["settings"])
     active = _session_spec["settings"]
     edits = {key for key in active.keys() | request["settings"].keys()
              if active.get(key) != request["settings"].get(key)}

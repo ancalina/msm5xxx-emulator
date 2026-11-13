@@ -46,14 +46,63 @@ def probe():
     })
 
 
+_detector_fingerprint_value = None
+_detect_memo = {}
+
+
+def _detector_fingerprint():
+    """Hash of the installed detector source; an app update changes it and forces re-detection."""
+    global _detector_fingerprint_value
+    if _detector_fingerprint_value is None:
+        import hashlib
+        import msm5xxx_emulator
+        root = Path(msm5xxx_emulator.__file__).parent
+        digest = hashlib.sha256()
+        for path in sorted(root.rglob("*.py")):
+            digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+        _detector_fingerprint_value = digest.hexdigest()
+    return _detector_fingerprint_value
+
+
+def detect_cached(firmware):
+    """detect() reused per firmware content and detector version (memory, then a file beside the private copy)."""
+    import copy
+    import hashlib
+    import pickle
+    from msm5xxx_emulator.detection import detect
+    firmware = Path(firmware)
+    try:
+        content = firmware.read_bytes()
+    except OSError:
+        return detect(firmware)  # let the detector report the unreadable input
+    key = (_detector_fingerprint(), hashlib.sha256(content).hexdigest(), str(firmware.resolve()))
+    if key in _detect_memo:
+        return copy.deepcopy(_detect_memo[key])  # callers (Transport) append notes to their config
+    cache = firmware.with_name(firmware.name + ".detect-cache")
+    try:
+        stored_key, config = pickle.loads(cache.read_bytes())  # app-private file written below
+        if stored_key != key:
+            config = None
+    except Exception:
+        config = None
+    if config is None:
+        config = detect(firmware)
+        try:
+            temporary = cache.with_name(cache.name + ".tmp")
+            temporary.write_bytes(pickle.dumps((key, config)))
+            os.replace(temporary, cache)
+        except Exception:
+            pass  # unwritable location or unpicklable config: memory cache only
+    _detect_memo[key] = config
+    return copy.deepcopy(config)
+
+
 def detect_profile(firmware_path):
     # The existing JNI entry point accepts absolute paths for ordinary detection.
     # An explicit protocol prefix carries library requests without changing JNI.
     if firmware_path.startswith("library-v1:"):
         return library_describe(firmware_path[len("library-v1:"):])
-    from msm5xxx_emulator.detection import detect
-
-    config = detect(Path(firmware_path))
+    config = detect_cached(Path(firmware_path))
     profile = config.diagnostic_config()
     if config.image_kind != "firmware":
         accepted = False
@@ -151,7 +200,7 @@ def start_session(request_json):
     expected = request["profile"]
     if not firmware.is_file() or not qemu.is_file():
         raise ValueError("session file unavailable")
-    config = detect(firmware)
+    config = detect_cached(firmware)
     if config.diagnostic_config() != expected:
         raise ValueError("selected profile no longer matches firmware")
     config = _apply_settings(firmware, config, request.get("settings", {}))

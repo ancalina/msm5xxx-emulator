@@ -18,6 +18,7 @@ class HostStatusTests(unittest.TestCase):
                      "session_secondary_frame", "session_fold", "session_status",
                      "can_session_key", "set_session_key"):
             setattr(shared, name, lambda *args: None)
+        shared.detect_cached = lambda path: __import__("msm5xxx_emulator.detection", fromlist=["detect"]).detect(path)
         state = {"used": False}
         host = SimpleNamespace(has_started=lambda: state["used"])
         with patch.dict(sys.modules, {"msm5xxx_android_runtime": shared,
