@@ -76,6 +76,9 @@ def machine_plan(original: bytes, loaded: bytes, config):
             or getattr(config, 'file_size', len(original)) != len(original)
             or getattr(config, 'board_revision_register', None) is not None
             or getattr(config, 'board_revision_value', None) is not None
+            # The GPIO PMIC serial contract owns the whole MSM GPIO block natively.
+            or ((getattr(config, 'external_bus', None) or {}).get('machine_properties') or {}).get(
+                'experimental-contract-gpio-pmic-serial')
             or any(getattr(config, name, None) for name in (
                 'missing_overlays', 'ram_bootstrap_profile', 'native_nand_profile',
                 'nand_image', 'secondary_flash_image', 'secondary_flash_address',

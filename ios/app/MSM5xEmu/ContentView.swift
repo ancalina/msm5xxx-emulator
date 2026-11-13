@@ -654,6 +654,9 @@ private struct PhoneKey: View {
     let enabled: Bool
     let transition: (Bool) -> Void
     @State private var pressed = false
+    @State private var touching = false
+    @State private var downAt = Date.distantPast
+    @State private var touchCount = 0
     var body: some View {
         Text(label)
             .font(.system(size: 13))
@@ -664,10 +667,18 @@ private struct PhoneKey: View {
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { _ in
-                    if enabled && !pressed { pressed = true; transition(true) }
+                    guard enabled && !touching else { return }
+                    touching = true; touchCount += 1
+                    if !pressed { pressed = true; downAt = Date(); transition(true) }
                 }
                 .onEnded { _ in
-                    if pressed { pressed = false; transition(false) }
+                    touching = false
+                    let touch = touchCount
+                    // Quick taps stay down 150 ms (as on Android) so periodic keypad scans see them.
+                    let wait = max(0, 0.15 - Date().timeIntervalSince(downAt))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+                        if touch == touchCount && !touching && pressed { pressed = false; transition(false) }
+                    }
                 })
             .accessibilityLabel(accessibilityName)
             .accessibilityAddTraits(.isButton)

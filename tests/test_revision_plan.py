@@ -73,7 +73,9 @@ class CachedRevisionPlanTests(unittest.TestCase):
         for config in (_config(board_revision_register=0x0300075c),
                        _config(board_revision_value=0x20f5),
                        _config(load_address=0x1000),
-                       _config(image_offset=0x200)):
+                       _config(image_offset=0x200),
+                       _config(external_bus={'machine_properties': {
+                           'experimental-contract-gpio-pmic-serial': True}})):
             with self.subTest(config=config):
                 self.assertFalse(self.plan(config=config).capabilities)
 
