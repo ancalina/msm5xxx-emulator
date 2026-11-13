@@ -192,7 +192,7 @@ def _upload_protocols(facts):
     protocols = []
     for address in targets:
         entry = CodeAddress(address, 'thumb')
-        head = [facts.decode(CodeAddress(address + offset, 'thumb'))
+        head = [facts.decode(CodeAddress(address + offset, 'thumb'), cache=False)
                 for offset in (0, 2, 4, 6)]
         if (any(ins is None for ins in head) or head[0].id != a.ARM_INS_PUSH
                 or head[1].id != a.ARM_INS_CMP

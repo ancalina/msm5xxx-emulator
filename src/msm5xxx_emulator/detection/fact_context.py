@@ -43,7 +43,8 @@ class FirmwareFacts(FactIndexes, FactQueries, FactReferences):
         return self.memo('after-loads', (operations, source_phase, phase, bank), lambda: FirmwareFacts(self.image, self.base, self.view.materialize(operations,
             source_phase=source_phase, phase=phase, bank= bank)))
 
-    def decode(self, pc: CodeAddress):
+    def decode(self, pc: CodeAddress, *, cache: bool = True):
+        """Decode supplied code, optionally without retaining a candidate probe."""
         if pc.isa not in ('arm', 'thumb'):
             raise ValueError('unsupported instruction set')
         with self._lock:
@@ -53,13 +54,16 @@ class FirmwareFacts(FactIndexes, FactQueries, FactReferences):
                 if raw is None and pc.isa == 'thumb':
                     raw = self.view.read(pc.address, 2, phase=pc.phase, bank=pc.bank)
                 if pc.address % alignment or raw is None:
-                    self._decoded[pc] = None
+                    decoded = None
                 else:
                     if pc.isa not in self._engines:
                         engine = cs.Cs(cs.CS_ARCH_ARM, cs.CS_MODE_ARM if pc.isa == 'arm' else cs.CS_MODE_THUMB)
                         engine.detail = True
                         self._engines[pc.isa] = engine
-                    self._decoded[pc] = next(self._engines[pc.isa].disasm(raw, pc.address, count=1), None)
+                    decoded = next(self._engines[pc.isa].disasm(raw, pc.address, count=1), None)
+                if cache:
+                    self._decoded[pc] = decoded
+                return decoded
             return self._decoded[pc]
 
     def literal(self, pc: CodeAddress) -> Literal | None:

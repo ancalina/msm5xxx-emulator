@@ -462,7 +462,7 @@ def _flat_parser(facts, entry):
 
 def _parser_candidate(facts, address):
     for offset in range(0, 24, 2):
-        ins = facts.decode(CodeAddress(address + offset, 'thumb'))
+        ins = facts.decode(CodeAddress(address + offset, 'thumb'), cache=False)
         if (ins is not None and ins.id == a.ARM_INS_LDM and ins.writeback
                 and ins.operands and ins.operands[0].type == a.ARM_OP_REG
                 and ins.operands[0].reg == a.ARM_REG_R0):
