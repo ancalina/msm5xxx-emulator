@@ -1555,31 +1555,10 @@ public final class MainActivity extends Activity {
                 showError(getString(R.string.mapping_invalid));
                 return;
             }
-            button.setEnabled(false);
-            controlExecutor.execute(() -> {
-                boolean accepted = false;
-                try {
-                    accepted = current.canSetKey(bit, eventCode);
-                } catch (IOException | RuntimeException ignoredError) {
-                    // The same concise rejection covers an unavailable session.
-                }
-                boolean mappingAccepted = accepted;
-                handler.post(() -> {
-                    if (session != current || !identity.equals(
-                            current.identity())) {
-                        dialog.dismiss();
-                        return;
-                    }
-                    button.setEnabled(true);
-                    if (!mappingAccepted) {
-                        showError(getString(R.string.mapping_rejected));
-                        return;
-                    }
-                    saveManualKeyEvent(identity, bit, eventCode);
-                    updateKeypad(current);
-                    dialog.dismiss();
-                });
-            });
+            // A user mapping is kept as entered, even where detection found no evidence for it.
+            saveManualKeyEvent(identity, bit, eventCode);
+            updateKeypad(current);
+            dialog.dismiss();
         }));
         dialog.show();
     }

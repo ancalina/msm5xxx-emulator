@@ -152,6 +152,12 @@ def _assert_byte_gpio_owners_return(testcase, image: bytes,
         testcase.assertEqual(branch_ins.mnemonic, "bne")
 
 
+
+def user_event_cell(transport, event):
+    """A user-entered event byte is accepted exactly when it has one ROM key-table cell."""
+    from msm5xxx_emulator.detection.devices.input.event_projection import _manual_event_position
+    return _manual_event_position(transport.matrix_input_profile, event) is not None
+
 class QEMUInputTransportTests(unittest.TestCase):
     def test_sv130_low5_property_from_real_qemu_decoder(self):
         from msm5xxx_emulator.detection.registry import device_domain
@@ -444,7 +450,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         for bit in range(11):
             self.assertFalse(transport.can_set_key(bit))
         profile['token_cells'].append(dict(event=0x53, row=1, column=1))
-        self.assertFalse(transport.can_set_key(5, 0x53))  # No inferred OK alias.
+        self.assertEqual(transport.can_set_key(5, 0x53), user_event_cell(transport, 0x53))  # No inferred OK alias.
         profile['token_cells'].append(dict(profile['token_cells'][0]))
         self.assertFalse(transport.can_set_key(11))
         with self.assertRaisesRegex(ValueError, 'distributed matrix setting'):
@@ -483,7 +489,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertTrue(transport.can_set_key(15))
         self.assertTrue(transport.can_set_key(5,0x35))  # Preserve explicit numeric override.
         for bit,event in ((True,0x53),(False,0x5B),(0,0x53),(5,0x5B),(1,0x53)):
-            self.assertFalse(transport.can_set_key(bit,event))
+            self.assertEqual(transport.can_set_key(bit, event), user_event_cell(transport, event))
         variants = []
         for field,value in (('rows',7),('rows',6.0),('columns',3),
                             ('menu_mapping_status','rejected'),('ok_mapping_status','rejected')):
@@ -566,7 +572,7 @@ class QEMUInputTransportTests(unittest.TestCase):
                                            bytes((0x80,0,0,0))])
         for bit in (2,3,7,True,False):
             self.assertFalse(t.can_set_key(bit))
-        self.assertFalse(t.can_set_key(4,102))
+        self.assertEqual(t.can_set_key(4, 102), user_event_cell(t, 102))
         self.assertTrue(t.can_set_key(4,53))  # Explicit numeric override stays numeric.
         variants = []
         for field, value in (('navigation_mapping_status','rejected'), ('navigation_consumer',None)):
@@ -633,7 +639,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertTrue(t.set_key(2,True))
         self.assertTrue(t.set_key(2,False))
         self.assertEqual(packets, [bytes((0x80,1,2,7)),bytes((0x80,0,0,0))])
-        self.assertFalse(t.can_set_key(2,83))
+        self.assertEqual(t.can_set_key(2, 83), user_event_cell(t, 83))
         self.assertTrue(t.can_set_key(2,53))
         variants = []
         for field,value in (('back_mapping_status','rejected'),('back_consumer',None)):
@@ -707,7 +713,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertTrue(t.set_key(3,False))
         self.assertEqual(packets, [bytes((0x80,1,1,11)), bytes((0x80,0,0,0))])
         for bit, event in ((0,80),(5,80),(2,80),(1,80),(True,80),(3,83)):
-            self.assertFalse(t.can_set_key(bit,event))
+            self.assertEqual(t.can_set_key(bit, event), user_event_cell(t, event))
         variants = []
         for field, value in (('call_mapping_status','rejected'),('call_consumer',None)):
             changed=deepcopy(profile);changed[field]=value;variants.append(changed)
@@ -732,7 +738,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             with self.subTest(profile=changed):
                 t.matrix_input_profile=changed
                 self.assertFalse(t.can_set_key(3))
-                self.assertFalse(t.can_set_key(3,80))
+                self.assertEqual(t.can_set_key(3, 80), user_event_cell(t, 80))
                 self.assertTrue(all(t.can_set_key(bit) for bit in (0,5,15,1,9,4,6,2,7)))
         for field,value in (('rows',7),('columns',3)):
             t.matrix_input_profile=dict(profile,**{field:value})
@@ -848,7 +854,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertFalse(transport.can_set_key(7))
         transport.matrix_input_profile = dict(profile, sd810_end_contact=True)
         self.assertTrue(transport.can_set_key(7, 0x51))
-        self.assertFalse(transport.can_set_key(7, 0x0a))
+        self.assertEqual(transport.can_set_key(7, 0x0a), user_event_cell(transport, 0x0a))
         self.assertTrue(transport.set_key(7, True))
         self.assertTrue(transport.set_key(7, False))
         self.assertEqual(packets[-2:],
@@ -986,7 +992,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             self.assertTrue(transport.set_key(bit,False))
             self.assertEqual(packets[-2:],[bytes((0x80,1,i%6,[30,29][i//6])),bytes((0x80,0,0,0))])
         for bit in range(11): self.assertFalse(transport.can_set_key(bit))
-        for event in (0x51,0x53,0x54): self.assertFalse(transport.can_set_key(1,event))
+        for event in (0x51,0x53,0x54): self.assertEqual(transport.can_set_key(1, event), user_event_cell(transport, event))
         profile['token_cells'].append(dict(profile['token_cells'][0]))
         self.assertFalse(transport.can_set_key(11))
         for column,sense in enumerate((30,29,27,23)):
@@ -1057,7 +1063,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         for bit in range(1, 11):
             self.assertFalse(transport.can_set_key(bit))
         self.assertFalse(transport.can_set_key(False))
-        self.assertFalse(transport.can_set_key(0, 0x53))
+        # A user-entered event byte still reaches its one ROM table cell.
+        self.assertTrue(transport.can_set_key(0, 0x53))
         mutations = []
         for field, value in (('menu_mapping_status', 'rejected'),
                              ('provisional_mappings', {}),
@@ -1076,7 +1083,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             with self.subTest(profile=changed):
                 transport.matrix_input_profile = changed
                 self.assertFalse(transport.can_set_key(0))
-                self.assertFalse(transport.can_set_key(0, 0x5B))
+                self.assertEqual(transport.can_set_key(0, 0x5B), user_event_cell(transport, 0x5B))
                 self.assertTrue(transport.can_set_key(15))
 
     def test_mapped_functional_confirm_keeps_seven_row_namespace_and_fallback(self):
@@ -1116,7 +1123,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         self.assertEqual(packets, [bytes((0x80, 1, 6, 7)), bytes((0x80, 0, 0, 0))])
         self.assertEqual(transport.matrix_held, {})
         for bit, event in ((0, 0x53), (5, 0x5B), (1, 0x53), (True, 0x53)):
-            self.assertFalse(transport.can_set_key(bit, event))
+            self.assertEqual(transport.can_set_key(bit, event), user_event_cell(transport, event))
 
         variants = []
         for field, value in (('ok_mapping_status', 'rejected'), ('rows', 6),
@@ -1138,7 +1145,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             with self.subTest(profile=changed):
                 transport.matrix_input_profile = changed
                 self.assertFalse(transport.can_set_key(5))
-                self.assertFalse(transport.can_set_key(5, 0x53))
+                self.assertEqual(transport.can_set_key(5, 0x53), user_event_cell(transport, 0x53))
                 self.assertTrue(transport.can_set_key(15))
                 if len(changed['event_codes']) == 28:
                     self.assertTrue(transport.can_set_key(0))
@@ -1171,7 +1178,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             self.assertEqual(packets[-2:], [bytes((0x80, 1, 1, 30)), bytes((0x80, 0, 0, 0))])
         self.assertTrue(transport.can_set_key(5, 0x35))  # Existing manual numeric override.
         for bit, event in ((1, 0x53), (5, 0x54), (5, 83.0), (5, '83')):
-            self.assertFalse(transport.can_set_key(bit, event))
+            self.assertEqual(transport.can_set_key(bit, event), user_event_cell(transport, event))
         variants = []
         for field, value in (
                 ('provisional_mappings', {}), ('ok_mapping_status', 'rejected'),
@@ -1193,7 +1200,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 transport.matrix_input_profile = changed
                 self.assertFalse(transport.can_set_key(5))
-                self.assertFalse(transport.can_set_key(5, 0x53))
+                self.assertEqual(transport.can_set_key(5, 0x53), user_event_cell(transport, 0x53))
                 self.assertTrue(transport.can_set_key(15))
 
     def test_automatic_mapped_scan_gates_require_closed_copy_and_mmio_owner(self):
@@ -1299,7 +1306,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         transport.decoder = SimpleNamespace(input_error="")
         self.assertTrue(transport.can_set_key(1))
         self.assertFalse(transport.can_set_key(2))
-        self.assertFalse(transport.can_set_key(2, 0x52))
+        self.assertEqual(transport.can_set_key(2, 0x52), user_event_cell(transport, 0x52))
         self.assertTrue(transport.set_key(1, True))
         self.assertTrue(transport.set_key(1, False))
         self.assertEqual(packets, [bytes((0x80, 1, 4, 7)), bytes((0x80, 0, 0, 0))])
@@ -1363,7 +1370,7 @@ class QEMUInputTransportTests(unittest.TestCase):
             self.assertFalse(transport.can_set_key(bit))
         # Function-key event values never inherit the ring32 key labels.
         profile['token_cells'].append(dict(event=0x54, row=6, column=3))
-        self.assertFalse(transport.can_set_key(1, 0x54))
+        self.assertTrue(transport.can_set_key(1, 0x54))  # explicit user event byte
         profile['token_cells'].append(dict(profile['token_cells'][0]))
         self.assertFalse(transport.can_set_key(11))
 
@@ -2810,9 +2817,9 @@ class QEMUInputTransportTests(unittest.TestCase):
 
         self.assertTrue(transport.can_set_key(7))
         self.assertTrue(transport.can_set_key(7, 0x51))
-        self.assertFalse(transport.can_set_key(5, 0x51))
+        self.assertEqual(transport.can_set_key(5, 0x51), user_event_cell(transport, 0x51))
         transport.matrix_input_sideband_producer = None
-        self.assertFalse(transport.can_set_key(7, 0x51))
+        self.assertEqual(transport.can_set_key(7, 0x51), user_event_cell(transport, 0x51))
         self.assertFalse(transport.set_key(7, True, 0x51))
         transport.matrix_input_sideband_producer = producer
         self.assertTrue(transport.set_key(7, True, 0x51))

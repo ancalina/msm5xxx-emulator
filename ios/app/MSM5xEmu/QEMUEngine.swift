@@ -278,20 +278,9 @@ final class QEMUEngine: ObservableObject {
             completion(true)
             return
         }
-        queue.async {
-            do {
-                let json = try JSONSerialization.data(withJSONObject: ["bit": bit, "event_code": value])
-                let result = try PythonBridge.call("can_session_key", argument: String(decoding: json, as: UTF8.self))
-                let data = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any]
-                let accepted = data?["accepted"] as? Bool == true
-                DispatchQueue.main.async {
-                    if accepted && self.identity == identity && self.running {
-                        UserDefaults.standard.set(value, forKey: "keymap.\(identity).\(bit)")
-                        completion(true)
-                    } else { completion(false) }
-                }
-            } catch { DispatchQueue.main.async { completion(false) } }
-        }
+        // A user mapping is kept as entered, even where detection found no evidence for it.
+        UserDefaults.standard.set(value, forKey: "keymap.\(identity).\(bit)")
+        completion(true)
     }
 
     func toggleFold() {

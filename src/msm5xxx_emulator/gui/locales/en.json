@@ -556,7 +556,7 @@
   "firmware_file_type": "Firmware images",
   "all_file_types": "All files",
   "mapping_invalid": "Enter a valid key value",
-  "mapping_rejected": "This key value is unavailable",
+  "mapping_rejected": "This value is not in the firmware key table",
   "detection_not_ready": "Firmware check is not complete",
   "language_invalid": "UI language selection is invalid",
   "settings_restored": "Settings failed; previous firmware restored",

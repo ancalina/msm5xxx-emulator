@@ -556,7 +556,7 @@
   "firmware_file_type": "펌웨어 이미지",
   "all_file_types": "모든 파일",
   "mapping_invalid": "유효한 키 값을 입력하세요",
-  "mapping_rejected": "이 키 값은 사용할 수 없습니다",
+  "mapping_rejected": "이 펌웨어의 키 표에 없는 값입니다",
   "detection_not_ready": "펌웨어 확인이 아직 끝나지 않았습니다",
   "language_invalid": "화면 언어 선택이 올바르지 않습니다",
   "settings_restored": "설정 실패; 이전 펌웨어를 복원했습니다",

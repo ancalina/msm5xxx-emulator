@@ -12,6 +12,7 @@ Compatibility and individual features continue to depend on the firmware.
 - Improved detection of firmware hardware, storage, keypad, display and lid
   behavior. Model identity no longer depends on the file name.
 - Removed the legacy Unicorn execution mode; QEMU is the execution backend.
+  The earlier Unicorn-based history remains on the `unicorn-legacy` branch.
 - Improved virtual radio behavior and added host-clock and custom network-time options.
 
 ### Display
@@ -25,6 +26,7 @@ Compatibility and individual features continue to depend on the firmware.
 - Added keypad, navigation, side-key and lid mappings for more detected layouts,
   including six- and seven-row matrices. Improved Android tap timing.
 - Added physical keyboard input on iOS and editable per-firmware mappings.
+- Key mappings you enter are kept as entered, even for keys detection did not find.
 
 ### Audio
 
@@ -48,6 +50,5 @@ Compatibility and individual features continue to depend on the firmware.
 
 ### Compatibility numbers
 
-- TODO: total surveyed models.
-- TODO: counts for boots to idle, logo only and no frame from the final survey.
-- TODO: input and audio results from the final survey.
+Of 635 surveyed MSM5xxx firmware images, 145 improved over r17.1 and none
+regressed; 250 now draw a screen. See [compatibility](docs/COMMUNITY_COMPATIBILITY_SHEET.md).

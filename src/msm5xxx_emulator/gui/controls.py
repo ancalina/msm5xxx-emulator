@@ -301,7 +301,8 @@ class ControlsMixin:
             return self._edit_key_mapping(label)
         bit = KEYS[label]
         event_code = self._manual_key_event(bit)
-        if not self._key_supported(bit, event_code):
+        # A user mapping is used as entered, even where detection found no evidence for it.
+        if event_code is None and not self._key_supported(bit, event_code):
             self._edit_key_mapping(label)
             return "break"
         self._key(bit, True, f"mouse:{bit}", event_code)
@@ -400,10 +401,10 @@ class ControlsMixin:
             return "break"
         event_code: int | None = None
         try:
-            event_code = parse_manual_key_event(value) if value.strip() else None
-            if (event_code is not None
-                    and not self._key_supported(bit, event_code)):
-                raise ValueError(self._text("mapping_rejected"))
+            try:
+                event_code = parse_manual_key_event(value) if value.strip() else None
+            except ValueError:
+                raise ValueError(self._text("mapping_invalid")) from None
             self._save_manual_key_event(bit, event_code)
         except (OSError, ValueError) as error:
             reason = (
@@ -426,7 +427,7 @@ class ControlsMixin:
             )
             messagebox.showerror(
                 self._text("settings_error"),
-                self._text("mapping_invalid") if isinstance(error, ValueError) else str(error),
+                str(error),
                 parent=self.root
             )
         return "break"

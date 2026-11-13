@@ -431,7 +431,7 @@ class SourceClassTransportTests(unittest.TestCase):
                     self.assertEqual(Transport._matrix_input_position(transport,bit,None),position)
                     self.assertEqual(Transport._matrix_input_position(transport,bit,position[0]),position)
                     self.assertIsNone(Transport._matrix_input_position(transport,bit,0xd2))
-                self.assertIsNone(Transport._matrix_input_position(transport,0,0x31))
+                self.assertEqual(Transport._matrix_input_position(transport,0,0x31),positions[11])  # user-entered byte
                 position=positions[11]
                 self.assertEqual(position,(0x31,1,2))
                 self.assertEqual(matrix_input_command(row,position,True),bytes((HOST_INPUT,1,1,0x1b)))

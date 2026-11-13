@@ -4,6 +4,24 @@ from __future__ import annotations
 REQUIRES = { "SAMSUNG_RING32_KEY_EVENTS": ("input.selection", "SAMSUNG_RING32_KEY_EVENTS"), }
 
 def _matrix_input_position(self, bit: int, event_code: int | None,) -> tuple[int, int, int] | None:
+    position = _evidenced_matrix_position(self, bit, event_code)
+    return position if position is not None or event_code is None else _manual_event_position(self.matrix_input_profile, event_code)
+
+def _manual_event_position(profile, event_code: int) -> tuple[int, int, int] | None:
+    """A user-entered event byte goes to its one cell in the detected ROM key table, even
+    when no key semantics were proven for it."""
+    if profile is None or type(event_code) is not int or event_code in {0, 0xFF, profile.get("no_key")}:
+        return None
+    cells = [cell for cell in profile.get("token_cells") or () if isinstance(cell, dict) and cell.get("event") == event_code]
+    if len(cells) == 1 and type(cells[0].get("row")) is int and type(cells[0].get("column")) is int:
+        return event_code, cells[0]["row"], cells[0]["column"]
+    events, rows = profile.get("event_codes"), profile.get("rows")
+    if not isinstance(events, (list, tuple)) or type(rows) is not int or rows <= 0 or list(events).count(event_code) != 1:
+        return None
+    index = list(events).index(event_code)
+    return event_code, index % rows, index // rows
+
+def _evidenced_matrix_position(self, bit: int, event_code: int | None,) -> tuple[int, int, int] | None:
         profile = self.matrix_input_profile
         if profile is not None and profile.get("grammar") == "distributed-seven-byte-v1":
             mapping = profile["provisional_mappings"].get(bit)
