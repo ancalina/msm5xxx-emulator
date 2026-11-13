@@ -43,6 +43,19 @@ if [[ ${1:-} == --install-bundle ]]; then
     mkdir -p "$CODESIGNING_FOLDER_PATH/python/lib/python3.14/site-packages"
     rsync -a "$CODESIGNING_FOLDER_PATH/app/" "$CODESIGNING_FOLDER_PATH/python/lib/python3.14/site-packages/"
     rm -rf "$CODESIGNING_FOLDER_PATH/app"
+    # The detector needs capstone; its binding loads lib/libcapstone.so from its own package.
+    CAPSTONE="$APP_DIR/Frameworks/iphoneos"
+    [[ -d "$CAPSTONE/Capstone.framework" && -d "$CAPSTONE/capstone-python" ]] \
+        || fail 'Missing capstone; run ios/build_capstone_ios.sh first.'
+    mkdir -p "$CODESIGNING_FOLDER_PATH/Frameworks"
+    rsync -a --delete "$CAPSTONE/Capstone.framework/" "$CODESIGNING_FOLDER_PATH/Frameworks/Capstone.framework/"
+    /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none \
+        "$CODESIGNING_FOLDER_PATH/Frameworks/Capstone.framework"
+    SITE="$CODESIGNING_FOLDER_PATH/python/lib/python3.14/site-packages"
+    rsync -a --delete --exclude __pycache__ "$CAPSTONE/capstone-python/" "$SITE/capstone/"
+    mkdir -p "$SITE/capstone/lib"
+    ln -sf ../../../../../../Frameworks/Capstone.framework/Capstone "$SITE/capstone/lib/libcapstone.so"
+    [[ -f "$SITE/capstone/lib/libcapstone.so" ]] || fail 'capstone library link does not resolve.'
     exit 0
 fi
 

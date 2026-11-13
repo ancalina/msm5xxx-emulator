@@ -69,12 +69,9 @@ final class QEMUEngine: ObservableObject {
         return true
         #else
         if UserDefaults.standard.bool(forKey: "internal_force_tci") { return false }
-        let size = Int(getpagesize())
-        guard let page = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0),
-              page != MAP_FAILED else { return false }
-        defer { munmap(page, size) }
-        page.storeBytes(of: UInt32(0xD65F03C0), as: UInt32.self)  // ret
-        return mprotect(page, size, PROT_READ | PROT_EXEC) == 0
+        // An RX mprotect can succeed while executing the page is still fatal (iOS 27 kills the app
+        // with CODESIGNING/Invalid Page). Only an attached JIT enabler (CS_DEBUGGED) makes it safe.
+        return codeSigningFlags & 0x1000_0000 != 0
         #endif
     }
 
@@ -92,7 +89,8 @@ final class QEMUEngine: ObservableObject {
 
     init() {
         #if compiler(>=6.2)
-        if #available(iOS 26, *) {
+        // shortcut: fresh-process sessions fail on device (helper connection reset); internal opt-in only until fixed.
+        if #available(iOS 26, *), UserDefaults.standard.bool(forKey: "isolated_qemu_sessions") {
             PythonBridge.configureProcessHost(IsolatedQEMUHost())
             reusable = true
             runtimeAvailable = true

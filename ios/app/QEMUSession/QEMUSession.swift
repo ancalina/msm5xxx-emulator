@@ -109,16 +109,14 @@ private final class QEMUSessionController: NSObject, QEMUSessionService {
                 var stale = false
                 let url = try URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil,
                                   bookmarkDataIsStale: &stale)
-                guard !stale, url.startAccessingSecurityScopedResource() else {
-                    throw NSError(domain: "MSM5xEmu.QEMUSession", code: 2,
-                                  userInfo: [NSLocalizedDescriptionKey: "QEMU session directory is unavailable"])
-                }
-                accessed.append(url)
+                // A stale flag only advises re-creating the bookmark; the URL still resolves.
+                // Implicit (non security-scoped) grants report false here yet still give access.
+                if url.startAccessingSecurityScopedResource() { accessed.append(url) }
                 var isDirectory: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
                       isDirectory.boolValue else {
                     throw NSError(domain: "MSM5xEmu.QEMUSession", code: 2,
-                                  userInfo: [NSLocalizedDescriptionKey: "QEMU session directory is unavailable"])
+                                  userInfo: [NSLocalizedDescriptionKey: "QEMU session directory is unavailable: \(url.path)"])
                 }
             }
             return accessed
