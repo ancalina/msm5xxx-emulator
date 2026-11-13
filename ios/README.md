@@ -12,9 +12,8 @@ ios/build_qemu_ios.sh iphoneos arm64 tcg /path/to/qemu-10.2.1.tar.xz /path/to/dt
 `tcg` needs JIT on the device (for example enabled through StikJIT) and runs with
 `-accel tcg,split-wx=on`; `tci` is the slower interpreter that works without JIT.
 QEMU is relinked as an embeddable framework exporting `qemu_entry(argc, argv)`:
-On iOS 26 and later it runs in a fresh bundled extension process per session.
-Earlier systems load the framework in the app because their public APIs do not
-provide that process-isolation facility.
+The app loads the framework in its own process. A per-session extension process
+for iOS 26 and later is built but disabled until it works on devices.
 
 ```sh
 ios/build_qemu_framework.sh /new/qemu-work/build ios/app/Frameworks/iphoneos QEMU   # QEMUTCI for a tci build
@@ -45,11 +44,8 @@ Build the app with Xcode 26 and the iOS 26 SDK. The project embeds the
 and the extension before the application. The application's existing iOS 15
 minimum has not been raised.
 
-On iOS 26+, Stop, Start, Reboot and firmware changes use fresh QEMU helper
-processes while the app stays open. The helper uses TCI independently of the
-app's executable-memory permissions. On earlier systems Stop parks the current
-machine; Start resets/resumes that same firmware. Arbitrary firmware switching
-on those earlier systems still requires reopening the app. If a stopped session
+Stop parks the current machine; Start resets/resumes that same firmware.
+Switching to another firmware requires reopening the app. If a stopped session
 cannot resume or a session ends unexpectedly, reopen the app before starting it again.
 The minimum supported version remains iOS 15.
 
@@ -64,8 +60,7 @@ swiftc ios/app/MSM5xEmu/HandsetInputState.swift ios/tests/input/main.swift -o /t
 ```
 
 Detailed settings are saved per firmware. While a session is running, choose
-**Apply and restart session** to validate and apply changes. On iOS 26 and later
-this starts a fresh session. On iOS 15–25, a compatible framebuffer color-format
+**Apply and restart session** to validate and apply changes. A compatible framebuffer color-format
 change can be applied with a reset; changes to machine configuration or device
 state take effect after reopening the app. When no session is running, edits
 are saved for the next fresh start. Backgrounding still pauses the session.

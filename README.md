@@ -1,93 +1,59 @@
-# MSM5xxx QEMU Emulator
+# MSM5xxx QEMU Emulator 0.1.0
 
 [한국어](README.ko.md)
 
-Experimental Qualcomm MSM5000/MSM5100/MSM5500 feature-phone emulator using
-QEMU TCG. Firmware is detected from its contents; model names and filenames do
-not select hardware behavior.
+An experimental QEMU-based emulator for preserving and exploring feature phones
+using Qualcomm MSM5000, MSM5100, MSM5105 and MSM5500 chipsets. Compatibility
+varies by firmware; a supported chipset does not guarantee a successful boot.
 
-## Download
+**Use your own firmware dump.** No firmware or saved state is included.
 
-Download the archive or Android APK for your OS and `SHA256SUMS` from
-[Releases](https://github.com/ancalina/msm5xxx-emulator/releases). Extract the
-entire desktop archive. Keep the launcher, `bin/`, and bundled DLLs together.
+## Features
 
-Firmware and saved state are not included.
+- Main and secondary displays, where supported by the detected hardware.
+- On-screen keypad and side keys, host keyboard input, and editable input mappings.
+- Emulated audio, including tone generation and supported Yamaha audio hardware.
+- Optional virtual network and configurable network time; this is an emulated
+  network, not a connection to a real mobile network.
+- Persistent writable device state and a firmware library with per-device settings.
 
-The installed desktop command is `msm5xxx-qemu` (QEMU live display).
+## Install and run
 
-## Start
+Get the package for your platform from [Releases](https://github.com/ancalina/msm5xxx-emulator/releases).
+Import or select your own firmware dump in the library, then select it to start.
 
-Run the launcher without arguments to open the firmware chooser:
+- **Windows x86-64:** Extract the complete archive and double-click `run_windows.bat`.
+  You can also drag a firmware file onto the launcher. The binary is unsigned.
+- **Linux x86-64:** Extract the complete archive and run `./run_linux.sh`.
+- **Intel macOS 15 or later:** Extract the complete archive and open
+  `run_macos.command`. The bundle is ad-hoc signed and not notarized.
+- **Android 9 or later, arm64:** Install the APK, open the app, and import a
+  dump using the system file picker.
+- **iOS 15 or later:** Install a suitably signed and provisioned IPA, or install
+  the TIPA using TrollStore. Open the app and import a dump. The IPA uses the
+  interpreter; the TIPA can use debugger-assisted JIT when available. See the
+  [iOS instructions](ios/README.md).
 
-- Windows: double-click `run_windows.bat`.
-- Linux: run `./run_linux.sh`.
-- Intel macOS: double-click `run_macos.command` or run it in Terminal.
-- Android arm64: install the APK and open it.
+Desktop requires Python 3.10 or newer with Tcl/Tk and may need network access
+on first launch to install Python packages. Linux may need `python3-tk`; macOS
+may need a Tcl/Tk-enabled Python. Keep the desktop launcher, `bin/` and bundled
+libraries together.
 
-On Windows, one firmware file can also be dragged onto `run_windows.bat`.
-Command-line paths work on every platform:
+Writable NOR and EEPROM state is kept separately for each firmware; the original
+dump remains read-only. Desktop defaults to `~/.msm5xxx-emulator/qemu-state` and
+accepts `--state-dir` to change the state root. Mobile apps use app storage.
 
-```sh
-./run_linux.sh /path/to/phone.bin
-./run_macos.command /path/to/phone.bin
-```
+## Known limits
 
-```bat
-run_windows.bat "C:\path\phone.bin"
-```
+- Some firmware stops at a logo or produces no frame, and working features vary
+  by device. See the [compatibility sheet](docs/COMMUNITY_COMPATIBILITY_SHEET.md).
+- On iOS, Stop parks the current machine; Start can reset and resume the same
+  firmware. Reopen the app to switch firmware or if a stopped session cannot
+  resume. Some settings also require reopening the app.
+- Android secondary display output can use an available Presentation display;
+  cover screens that Android does not expose fall back to the app.
 
-The firmware file is read-only.
-
-## Persistent state
-
-Writable NOR and EEPROM data persist across restarts in a firmware SHA-256
-scoped directory. Use `--state-dir` to choose a different state root:
-
-```sh
-./run_linux.sh /path/to/phone.bin --state-dir /path/to/qemu-state
-```
-
-The desktop default is `~/.msm5xxx-emulator/qemu-state`. Android uses
-app-private storage. The original firmware file remains read-only.
-
-## Requirements
-
-- Desktop: Python 3.10 or newer with Tcl/Tk.
-- Desktop: Linux x86-64, Windows x86-64, or Intel macOS 15.0 or newer.
-- Android: Android 9 or newer on arm64-v8a.
-- Desktop network access on first start if Python packages must be installed.
-
-Linux may need `python3-tk`. On macOS, install a Tcl/Tk-enabled Python such as
-`brew install python-tk@3.14`. The Windows binary is unsigned. The macOS bundle
-is ad-hoc signed and not notarized.
-
-## Current compatibility
-
-| Firmware | Current QEMU result |
-|---|---|
-| SCH-X350 | Persistent warm boot reaches the verified idle consumer; END input reaches the input task |
-| KTFT-X3500 | Stable standby frame; handset-idle path remains incomplete |
-| SCH-X250 / X250RUS | Splash and boot animation; idle remains incomplete |
-| SD810 | Reaches the 120×160 boot splash; idle remains incomplete |
-
-This is a developer preview. Unsupported firmware may stop before idle, but
-detectors fail closed instead of selecting behavior by model name.
-
-## Troubleshooting
-
-- Missing Tk: install Tcl/Tk support for the selected Python.
-- Dependency installation failed: check Python `pip` and network access.
-- Missing QEMU or DLL: extract the complete archive again.
-- Nonzero exit: run the launcher from a terminal and keep the full error text.
-
-## Development and license
-
-Build details and backend boundaries are in
-[docs/QEMU_TCG_BACKEND.md](docs/QEMU_TCG_BACKEND.md).
-
-The project is `GPL-2.0-or-later`. QEMU and bundled-library source archives and
-notices accompany binary releases. Do not redistribute manufacturer firmware.
-The preview uses the project's GPLv2 option; dependency licenses remain intact.
-See [binary/source correspondence](docs/SOURCE_DISTRIBUTION.md) for source
-companions, compilation recipes and redistribution details.
+For build information and licenses, see [QEMU backend](docs/QEMU_TCG_BACKEND.md),
+[third-party notices](THIRD_PARTY_NOTICES.md), and
+[source distribution](docs/SOURCE_DISTRIBUTION.md). The project is
+GPL-2.0-or-later; bundled components retain their own licenses.

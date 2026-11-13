@@ -1,92 +1,57 @@
-# MSM5xxx QEMU 에뮬레이터
+# MSM5xxx QEMU 에뮬레이터 0.1.0
 
 [English](README.md)
 
-QEMU TCG 기반 Qualcomm MSM5000/MSM5100/MSM5500 피처폰 실험용
-에뮬레이터입니다. 하드웨어 동작은 모델명이나 파일명이 아니라 펌웨어 내용으로
-탐지합니다.
+Qualcomm MSM5000, MSM5100, MSM5105, MSM5500 칩셋을 사용하는 피처폰을 보존하고
+살펴보기 위한 실험적인 QEMU 기반 에뮬레이터입니다. 호환성은 펌웨어마다 다르며,
+지원 칩셋이라고 해서 부팅을 보장하지는 않습니다.
 
-## 다운로드
+**직접 덤프한 펌웨어를 사용하세요.** 펌웨어와 저장 상태는 포함되어 있지 않습니다.
 
-[Releases](https://github.com/ancalina/msm5xxx-emulator/releases)에서 운영체제용
-압축 파일 또는 Android APK와 `SHA256SUMS`를 받습니다. Desktop 압축 전체를
-풉니다. Launcher, `bin/`, 동봉 DLL을 분리하지 마십시오.
+## 기능
 
-펌웨어와 저장 state는 포함되지 않습니다.
+- 탐지된 하드웨어가 지원하는 경우 메인 및 보조 디스플레이.
+- 화면 키패드와 측면 키, 호스트 키보드 입력 및 편집 가능한 입력 매핑.
+- 톤 생성기와 지원되는 Yamaha 오디오 하드웨어를 포함한 오디오 에뮬레이션.
+- 선택 가능한 가상 네트워크와 네트워크 시간 설정. 실제 이동통신망에 연결하지는 않습니다.
+- 쓰기 가능한 장치 상태의 저장과 기기별 설정을 제공하는 펌웨어 라이브러리.
 
-설치 후 Desktop 명령은 `msm5xxx-qemu` (QEMU live display)입니다.
+## 설치와 실행
 
-## 실행
+[Releases](https://github.com/ancalina/msm5xxx-emulator/releases)에서 플랫폼에 맞는
+패키지를 받습니다. 라이브러리에서 직접 덤프한 펌웨어를 가져오거나 선택한 후 실행합니다.
 
-인자 없이 launcher를 실행하면 펌웨어 선택창이 뜹니다.
+- **Windows x86-64:** 압축을 모두 풀고 `run_windows.bat`를 더블클릭합니다.
+  펌웨어 파일을 실행기에 끌어다 놓을 수도 있습니다. 바이너리는 서명되지 않았습니다.
+- **Linux x86-64:** 압축을 모두 풀고 `./run_linux.sh`를 실행합니다.
+- **Intel macOS 15 이상:** 압축을 모두 풀고 `run_macos.command`를 엽니다.
+  번들은 임시 서명되었으며 공증되지 않았습니다.
+- **Android 9 이상, arm64:** APK를 설치하고 앱을 열어 시스템 파일 선택기로
+  덤프를 가져옵니다.
+- **iOS 15 이상:** 적절하게 서명하고 프로비저닝한 IPA를 설치하거나 TrollStore로
+  TIPA를 설치합니다. 앱을 열어 덤프를 가져옵니다. IPA는 인터프리터를 사용하며,
+  TIPA는 가능한 경우 디버거를 이용한 JIT를 사용할 수 있습니다.
+  [iOS 안내](ios/README.md)를 참고하세요.
 
-- Windows: `run_windows.bat`를 더블클릭합니다.
-- Linux: `./run_linux.sh`를 실행합니다.
-- Intel macOS: `run_macos.command`를 더블클릭하거나 Terminal에서 실행합니다.
-- Android arm64: APK를 설치하고 실행합니다.
+데스크톱에는 Tcl/Tk가 포함된 Python 3.10 이상이 필요하며, 처음 실행할 때 Python
+패키지 설치를 위한 네트워크 연결이 필요할 수 있습니다. Linux에는 `python3-tk`,
+macOS에는 Tcl/Tk가 포함된 Python이 필요할 수 있습니다. 데스크톱 실행기와 `bin/`,
+동봉된 라이브러리를 함께 보관하세요.
 
-Windows에서는 펌웨어 하나를 `run_windows.bat`에 drag-and-drop해도 됩니다.
-모든 플랫폼에서 경로를 직접 줄 수도 있습니다.
+쓰기 가능한 NOR 및 EEPROM 상태는 펌웨어별로 별도 저장되며 원본 덤프는 읽기
+전용입니다. 데스크톱 기본 위치는 `~/.msm5xxx-emulator/qemu-state`이며
+`--state-dir`로 상태 저장 위치를 바꿀 수 있습니다. 모바일 앱은 앱 저장 공간을 사용합니다.
 
-```sh
-./run_linux.sh /path/to/phone.bin
-./run_macos.command /path/to/phone.bin
-```
+## 알려진 제한
 
-```bat
-run_windows.bat "C:\path\phone.bin"
-```
+- 일부 펌웨어는 로고에서 멈추거나 화면을 표시하지 않으며 작동하는 기능은 기기마다
+  다릅니다. [호환성 시트](docs/COMMUNITY_COMPATIBILITY_SHEET.md)를 참고하세요.
+- iOS에서 Stop은 현재 기기를 대기 상태로 둡니다. Start로 같은 펌웨어를
+  초기화하여 재개할 수 있습니다. 펌웨어를 바꾸거나 중지된 세션이 재개되지 않으면
+  앱을 다시 여세요. 일부 설정도 앱을 다시 열어야 적용됩니다.
+- Android 보조 디스플레이는 사용 가능한 Presentation 디스플레이를 이용할 수 있습니다.
+  Android가 노출하지 않는 커버 화면 대신 앱 안에 표시합니다.
 
-펌웨어 원본은 읽기 전용입니다.
-
-## 영속 state
-
-Writable NOR와 EEPROM은 firmware SHA-256별 directory에 자동 보존됩니다.
-다른 state root를 쓰려면 `--state-dir`를 지정합니다.
-
-```sh
-./run_linux.sh /path/to/phone.bin --state-dir /path/to/qemu-state
-```
-
-Desktop 기본 경로는 `~/.msm5xxx-emulator/qemu-state`입니다. Android는
-app-private storage를 사용합니다. Firmware 원본은 계속 read-only입니다.
-
-## 요구사항
-
-- Desktop: Tcl/Tk를 포함한 Python 3.10 이상.
-- Desktop: Linux x86-64, Windows x86-64, Intel macOS 15.0 이상.
-- Android: arm64-v8a Android 9 이상.
-- Python package 설치가 필요한 desktop 첫 실행에서는 network access.
-
-Linux는 `python3-tk`가 필요할 수 있습니다. macOS는
-`brew install python-tk@3.14`처럼 Tcl/Tk가 포함된 Python을 설치하십시오.
-Windows binary는 unsigned입니다. macOS bundle은 ad-hoc signed이며
-notarization되지 않았습니다.
-
-## 현재 호환성
-
-| 펌웨어 | 현재 QEMU 결과 |
-|---|---|
-| SCH-X350 | 영속 warm boot에서 검증된 idle consumer 도달; END 입력은 input task 도달 |
-| KTFT-X3500 | 안정된 standby frame; handset-idle 경로는 미완성 |
-| SCH-X250 / X250RUS | Splash와 boot animation; idle은 미완성 |
-| SD810 | 120×160 boot splash 도달; idle은 미완성 |
-
-현재 developer preview입니다. 지원되지 않는 펌웨어는 idle 전에 멈출 수 있습니다.
-Detector는 모델명 분기 대신 근거가 불완전한 동작을 fail closed합니다.
-
-## 문제 해결
-
-- Tk 없음: 선택한 Python에 Tcl/Tk support를 설치합니다.
-- Dependency 설치 실패: Python `pip`와 network를 확인합니다.
-- QEMU 또는 DLL 없음: 압축 전체를 다시 풉니다.
-- Nonzero exit: terminal에서 launcher를 실행하고 전체 error text를 보존합니다.
-
-## 개발과 license
-
-Build 방법과 backend 경계는
-[docs/QEMU_TCG_BACKEND.md](docs/QEMU_TCG_BACKEND.md)에 있습니다.
-
-프로젝트 license는 `GPL-2.0-or-later`입니다. Binary release에는 QEMU와 동봉
-library의 source archive와 notice가 함께 제공됩니다. 제조사 펌웨어는 재배포하지
-마십시오.
+빌드 정보와 라이선스는 [QEMU 백엔드](docs/QEMU_TCG_BACKEND.md),
+[서드파티 고지](THIRD_PARTY_NOTICES.md), [소스 배포](docs/SOURCE_DISTRIBUTION.md)를
+참고하세요. 프로젝트는 GPL-2.0-or-later이며 동봉 구성요소에는 각자의 라이선스가 적용됩니다.
