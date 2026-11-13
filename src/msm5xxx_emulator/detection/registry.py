@@ -43,3 +43,37 @@ def device_domain(name: str) -> ModuleType:
                 _bound.discard(module.__name__)
                 raise
         return _modules[name]
+
+
+class _RequiresFinder:
+    """Resolve REQUIRES on first use for rule modules imported outside device_domain()."""
+    prefix = f"{__package__}.devices."
+
+    def find_spec(self, name, path=None, target=None):
+        if not name.startswith(self.prefix):
+            return None
+        from importlib.machinery import PathFinder
+        spec = PathFinder.find_spec(name, path)
+        if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+            return spec
+        execute = spec.loader.exec_module
+
+        def exec_module(module):
+            execute(module)
+            requires = getattr(module, "REQUIRES", None)
+            if requires and "__getattr__" not in vars(module):
+                def lazy(symbol, module=module, requires=requires):
+                    if symbol not in requires:
+                        raise AttributeError(f"module {module.__name__!r} has no attribute {symbol!r}")
+                    provider, attribute = requires[symbol]
+                    dependency = device_domain(provider)
+                    value = dependency if attribute is None else getattr(dependency, attribute)
+                    setattr(module, symbol, value)
+                    return value
+                module.__getattr__ = lazy
+        spec.loader.exec_module = exec_module
+        return spec
+
+
+if not any(isinstance(finder, _RequiresFinder) for finder in sys.meta_path):
+    sys.meta_path.insert(0, _RequiresFinder())
