@@ -35,7 +35,8 @@ final class QEMUEngine: ObservableObject {
     @Published private(set) var poweredOff = false
     @Published private(set) var errorDetail = ""
     @Published private(set) var sessionFailed = false
-    @Published private(set) var refreshInterval = 0.1
+    static let activeRefresh = 1.0 / 30  // same display rate as desktop and Android
+    @Published private(set) var refreshInterval = activeRefresh
     private let queue = DispatchQueue(label: "me.ancal.msm5xemu.python")
     // UI input is owned by the main thread; Python receives only edge transitions.
     private var inputState = HandsetInputState()
@@ -257,7 +258,7 @@ final class QEMUEngine: ObservableObject {
     }
 
     private func sendKey(_ bit: Int, pressed: Bool, eventCode: Int?) {
-        if refreshInterval != 0.1 { refreshInterval = 0.1 }
+        if refreshInterval != Self.activeRefresh { refreshInterval = Self.activeRefresh }
         queue.async {
             self.unchangedPolls = 0
             do {
@@ -541,10 +542,10 @@ final class QEMUEngine: ObservableObject {
                 let secondary = try PythonBridge.bytes("session_secondary_frame")
                 if packet.count > 16 || secondary.count > 16 {
                     self.unchangedPolls = 0
-                    DispatchQueue.main.async { if self.refreshInterval != 0.1 { self.refreshInterval = 0.1 } }
+                    DispatchQueue.main.async { if self.refreshInterval != Self.activeRefresh { self.refreshInterval = Self.activeRefresh } }
                 } else {
                     self.unchangedPolls += 1
-                    if self.unchangedPolls == 8 {
+                    if self.unchangedPolls == 24 {  // ~0.8 s without changes
                         DispatchQueue.main.async { self.refreshInterval = 0.5 }
                     }
                 }
