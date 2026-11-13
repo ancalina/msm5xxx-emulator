@@ -22,6 +22,39 @@ from msm5xxx_emulator.detection.startup_sdram import reset_copy_ram_profile
 from msm5xxx_emulator.detection.layout_queries import (infer_ram_base, high_ram_bootstrap_profile, dual_stage_ram_profile, has_dual_sdram_bootstrap,
     has_high_bank_reader_bootstrap, find_high_ram_readback_tests)
 
+def _source_proven_two_bank_linker_span(primary_image, linker, requested_load_address):
+    """Accept only a linker row whose complete source and destination span is in evidence."""
+    if linker is None:
+        return False
+    fields = (linker.data_source, linker.data_target, linker.data_size,
+              linker.bss_target, linker.bss_size)
+    if (type(linker.table_offset) is not int or linker.table_offset < 0
+            or linker.table_offset & 3
+            or any(type(value) is not int or not 0 <= value <= 0xffffffff
+                   or value & 3 for value in fields)):
+        return False
+    if (linker.data_size == 0 or linker.bss_size == 0
+            or linker.table_offset + 20 > len(primary_image)):
+        return False
+
+    import struct
+    if struct.unpack_from("<5I", primary_image, linker.table_offset) != fields:
+        return False
+
+    source_offset = linker.data_source - requested_load_address
+    source_end = linker.data_source + linker.data_size
+    data_end = linker.data_target + linker.data_size
+    bss_end = linker.bss_target + linker.bss_size
+    return (
+        source_offset >= 0
+        and source_offset + linker.data_size <= len(primary_image)
+        and source_end <= 0x01000000
+        and data_end <= 0xffffffff
+        and bss_end <= 0xffffffff
+        and data_end == linker.bss_target
+        and 0x01000000 <= linker.data_target < 0x01800000 < bss_end <= 0x02000000
+    )
+
 def capture_layout(primary_image, linker, chipset, requested_load_address, requested_ram_base, requested_ram_size, image_kind, detection_notes):
     ram_base = infer_ram_base(linker, chipset, primary_image)
     if requested_ram_base is not None:
@@ -56,6 +89,12 @@ def capture_layout(primary_image, linker, chipset, requested_load_address, reque
             ram_base = 0x01000000
             ram_size = 0x01000000
             detection_notes.append("closed high-bank reader bootstrap detected")
+        elif (image_kind == "firmware"
+                and _source_proven_two_bank_linker_span(
+                    primary_image, linker, requested_load_address)):
+            ram_base = 0x01000000
+            ram_size = 0x01000000
+            detection_notes.append("source-proven linker RAM envelope detected; capacity unverified")
         elif find_high_ram_readback_tests(primary_image):
             detection_notes.append("high-RAM candidate rejected: no unique reset-linked " "readback/extent proof or conflicting linker; native fallback")
         if dual_stage_reject is not None:

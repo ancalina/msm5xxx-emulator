@@ -202,6 +202,15 @@ bool msm5xxx_protected_nor_write(MSM5xxxProtectedNOR *p, uint32_t address, unsig
         return true;
     }
     if (p->phase == MSM5XXX_PROTECTED_NOR_ARRAY) {
+        if (value == 0x70 && p->idle_status_reads) {
+            p->target = address;
+            p->operation = MSM5XXX_PROTECTED_NOR_NONE;
+            p->complete = true;
+            p->array_selected = false;
+            p->error = 0;
+            p->phase = MSM5XXX_PROTECTED_NOR_STATUS;
+            return true;
+        }
         if (value != 0x60) {
             return msm5xxx_protected_nor_reject(p, MSM5XXX_PROTECTED_NOR_REJECT_PROTOCOL);
         }
@@ -212,7 +221,8 @@ bool msm5xxx_protected_nor_write(MSM5xxxProtectedNOR *p, uint32_t address, unsig
     if (address != p->target) {
         return msm5xxx_protected_nor_reject(p, MSM5XXX_PROTECTED_NOR_REJECT_PROTOCOL);
     }
-    mask = address >= 0x800000 ? 0x3f : 0x7f;
+    mask = p->sector_mask ? p->sector_mask :
+           (address >= 0x800000 ? 0x3f : 0x7f);
     switch (p->phase) {
     case MSM5XXX_PROTECTED_NOR_INDEX:
         if (value != ((address >> 16) & mask)) { break; }

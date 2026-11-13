@@ -161,24 +161,28 @@ def concrete_status_flags(instruction, operands, value, previous):
         result = total & 0xFFFFFFFF
         return { _FLAG_N: result >> 31, _FLAG_Z: int(result == 0), _FLAG_C: int(left >= right if subtract else total > 0xFFFFFFFF), _FLAG_V: (((left ^ right) if
             subtract else ~(left ^ right)) & (left ^ result)) >> 31 & 1, }
-    if ins_id in (a.ARM_INS_LSL, a.ARM_INS_LSR):
-        if len(operands) != 3:
+    if ins_id in (a.ARM_INS_LSL, a.ARM_INS_LSR, a.ARM_INS_ASR):
+        if len(operands) not in (2, 3):
             return {**unknown((_FLAG_N, _FLAG_Z, _FLAG_C)), **preserved({_FLAG_V})}
-        source, amount_value = value(operands[1]), value(operands[2])
+        source, amount_value = value(operands[-2]), value(operands[-1])
         if type(source) is not int or type(amount_value) is not int:
             return {**unknown((_FLAG_N, _FLAG_Z, _FLAG_C)), **preserved({_FLAG_V})}
         source &= 0xFFFFFFFF
-        register_amount = operands[2].type == a.ARM_OP_REG
+        register_amount = operands[-1].type == a.ARM_OP_REG
         amount = amount_value & (0xFF if register_amount else 0xFFFFFFFF)
         if amount == 0 and register_amount:
             result = source
             carry = previous.get(_FLAG_C)
         else:
-            if ins_id == a.ARM_INS_LSR and amount == 0:
+            if ins_id in (a.ARM_INS_LSR, a.ARM_INS_ASR) and amount == 0:
                 amount = 32
             if ins_id == a.ARM_INS_LSL:
                 result = 0 if amount >= 32 else (source << amount) & 0xFFFFFFFF
                 carry = 0 if amount > 32 else (source & 1) if amount == 32 else ((source >> (32 - amount)) & 1 if 0 < amount < 32 else previous.get(_FLAG_C))
+            elif ins_id == a.ARM_INS_ASR:
+                signed = source - 0x100000000 if source & 0x80000000 else source
+                result = (signed >> min(amount, 32)) & 0xFFFFFFFF
+                carry = source >> 31 if amount >= 32 else (source >> (amount - 1)) & 1
             else:
                 result = 0 if amount >= 32 else source >> amount
                 carry = 0 if amount > 32 else (source >> 31) & 1 if amount == 32 else ((source >> (amount - 1)) & 1 if 0 < amount < 32 else previous.get(_FLAG_C))

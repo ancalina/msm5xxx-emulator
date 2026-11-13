@@ -19,6 +19,8 @@ _literal_window_accesses_many = device_domain('external_bus.observations')._lite
 detect_boot_gpio_bit9 = device_domain('external_bus.observations').detect_boot_gpio_bit9
 from msm5xxx_emulator.detection.registry import device_domain
 detect_external_bus = device_domain('external_bus.rules').detect_external_bus
+external_bus_plan = device_domain('external_bus.projection').external_bus_plan
+external_bus_property = device_domain('external_bus.projection').external_bus_property
 from msm5xxx_emulator.detection.facts import bind_facts, fact_scope, source_prefix
 from msm5xxx_emulator.detection.image_view import ImageView
 
@@ -72,6 +74,28 @@ def _external_status_image() -> bytearray:
           0x4770)
     put32(image, 0x100, 0x0B000400)
     return image
+
+
+def _returning_uart_poll_image(*, status_load: int = 0x791C,
+                               watchdog: int = 0x030006D0,
+                               backedge: int = 0xD5FA,
+                               called_poll: int | None = None) -> bytes:
+    image = bytearray(0x200)
+    init, poll = 0x20, 0x80
+    call_target = poll if called_poll is None else called_poll
+    call_hi, call_lo = _thumb_bl(init + 2, call_target)
+    put16(image, init, 0xB500, call_hi, call_lo, 0x2020,
+          ldr_literal(1, init + 8, 0x60), 0x7308, 0x7308, 0xBD00)
+    put16(image, poll,
+          0x2200, 0x2001, 0xB410,
+          ldr_literal(1, poll + 6, 0xA0),
+          ldr_literal(3, poll + 8, 0xA4),
+          0xE001, 0x7008, 0x700A, status_load, 0x0724,
+          backedge, 0xBC10, 0x4770)
+    put32(image, 0x60, 0x03000B10)
+    put32(image, 0xA0, watchdog)
+    put32(image, 0xA4, 0x03000B10)
+    return bytes(image)
 
 
 def _ram_readback_image(*, independent_terminal_helper: bool,
@@ -245,6 +269,20 @@ def _external_cs0a_reset_image() -> bytes:
     return bytes(image)
 
 
+def _external_cs0a_computed_reset_image() -> bytes:
+    """Synthetic reset-linked CS0A writes through a computed base address."""
+    image = bytearray(0x4000)
+    put32(image, 0, 0xEA000006)
+    _reset_helper(image, 0x20, 0x1001, 0x200)
+    put16(image, 0x1000,
+          ldr_literal(1, 0x1000, 0x1200),
+          0x2000, 0x6208, 0x6288, 0x6248,
+          0x2001, 0x0400, 0x6308,
+          0x2007, 0x3130, 0x7208, 0x4770)
+    put32(image, 0x1200, 0x0A000080)
+    return bytes(image)
+
+
 class ExternalDeviceDetectionTests(unittest.TestCase):
     def test_boot_gpio_bit9_requires_linked_status_and_panel_branches(self) -> None:
         image = _boot_gpio_bit9_image()
@@ -350,6 +388,32 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
         image = bytearray(_external_cs0a_reset_image())
         put16(image, 0x1006, 0x6B11)  # Read from +0x30 instead of programming it.
         self.assertIsNone(detect_external_cs0a(bytes(image))[0])
+
+    def test_external_cs0a_accepts_complete_reset_linked_computed_writes(self) -> None:
+        image = _external_cs0a_computed_reset_image()
+        profile, reason = detect_external_cs0a(image)
+        self.assertEqual(reason, "accepted")
+        writes = [site for site in profile["sites"]
+                  if site["kind"] == "literal-access"]
+        self.assertEqual({(site["address"], site["access_size"])
+                          for site in writes},
+                         {(0x0A0000A0, 4), (0x0A0000A4, 4),
+                          (0x0A0000A8, 4), (0x0A0000B0, 4),
+                          (0x0A0000B8, 1)})
+        self.assertTrue(all(site["operation"] == "write" for site in writes))
+        plan, reason = detect_external_bus(image)
+        self.assertEqual(reason, "accepted")
+        self.assertTrue(plan["machine_properties"]["external-cs0a"])
+        self.assertNotIn("external-ram-base", plan["machine_properties"])
+
+        mutations = ((0x1004, 0x6A08),  # Read instead of clearing the first register.
+                     (0x100C, 0x03C0),  # B0 configuration value is too small.
+                     (0x1012, 0x2008))  # B8 control byte does not match.
+        for offset, word in mutations:
+            with self.subTest(offset=offset):
+                changed = bytearray(image)
+                put16(changed, offset, word)
+                self.assertIsNone(detect_external_cs0a(bytes(changed))[0])
 
     def test_boot_gpio_bit9_rejects_base_writeback_and_unreachable_reader(self) -> None:
         for instruction in (0xC601, 0xBA0E, 0xE7FE):
@@ -673,6 +737,38 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
         malformed = bytearray(image)
         put32(malformed, 0x88, 0x03000720)
         self.assertIsNone(detect_boot_uart(bytes(malformed))[0])
+
+    def test_returning_uart_poll_is_linked_to_command_init(self) -> None:
+        image = _returning_uart_poll_image()
+        profile, reason = detect_boot_uart(image)
+        self.assertEqual(reason, "accepted")
+        self.assertEqual(profile["polls"], [0x80])
+        self.assertTrue(any(item["span"] == [0x80, 26]
+                            for item in profile["evidence"]))
+
+        plan, reason = detect_external_bus(image)
+        self.assertEqual(reason, "accepted")
+        self.assertTrue(plan["machine_properties"]["external-uart"])
+        self.assertEqual(external_bus_property(plan, image, None, None),
+                         ("external-uart=on", None))
+        resolution, reason = external_bus_plan(plan, image, None, None)
+        self.assertIsNone(reason)
+        self.assertIn(("external-uart", True), resolution.plan.properties)
+
+        changed_image = bytearray(image)
+        put16(changed_image, 0x90, 0x681C)
+        _, reason = external_bus_plan(plan, bytes(changed_image), None, None)
+        self.assertEqual(reason, "source-guard-mismatch")
+
+        mutations = (
+            ("wrong status width", _returning_uart_poll_image(status_load=0x681C)),
+            ("wrong watchdog", _returning_uart_poll_image(watchdog=0x03000720)),
+            ("wrong loop branch", _returning_uart_poll_image(backedge=0xD4FA)),
+            ("unlinked initializer", _returning_uart_poll_image(called_poll=0xC0)),
+        )
+        for name, changed in mutations:
+            with self.subTest(name=name):
+                self.assertIsNone(detect_boot_uart(changed)[0])
 
     def test_boot_strap_direct_and_adjusted_literals(self) -> None:
         for base, add in ((0x09000070, None), (0x09000060, 0x10),

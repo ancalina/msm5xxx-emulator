@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 def select_controller(self, detector_image, experimental_c80, source_limit):
+    self.rex_a80_plan = None
     self.rex_c80_profile = c80_rex_irq_profile(self.config, experimental_c80 or self.boot_format_nor_profile is not None)
     controller = getattr(self.config, "rex_static_controller_candidate", None)
     if (self.rex_c80_profile is not None and isinstance(controller, dict) and controller.get("vector_source_chain") is not None and (source_limit is None or
@@ -59,6 +60,16 @@ def project_controller(self, machine, detector_image):
         machine += f",rex-irq={self.rex_stack_w1c_profile}"
         self.config.detection_notes.append("QEMU source-closed stack W1C timer route enabled; "
             "firmware enable/acknowledgement retained, physical cadence approximated at 5 ms")
+    if (self.rex_c80_profile is None and self.rex_read_consume_profile is None
+            and self.rex_w1c_profile is None and self.rex_stack_w1c_profile is None):
+        a80_plan = a80_machine_plan(detector_image, detector_image, self.config)
+        a80_property = a80_machine_properties(a80_plan)
+        if a80_property:
+            self.rex_a80_plan = a80_plan
+            machine += a80_property
+            self.config.detection_notes.append(
+                'source-linked A80 timer IRQ enabled; firmware enable/acknowledgement '
+                'retained, physical cadence approximated at 5 ms')
     return machine
 
 def loaded_controller_matches(self, loaded, limit, controller):
@@ -72,9 +83,17 @@ def revalidate_loaded_stack(self, machine, original, loaded):
         machine = machine.replace(',rex-irq=' + self.rex_stack_w1c_profile, '', 1)
         self.rex_stack_w1c_profile = None
         self.config.detection_notes.append('W1C source IRQ rejected: loaded route changed')
+    if self.rex_a80_plan is not None:
+        original_property = a80_machine_properties(self.rex_a80_plan)
+        loaded_plan = a80_machine_plan(original, loaded, self.config)
+        if a80_machine_properties(loaded_plan) != original_property:
+            machine = machine.replace(original_property, '', 1)
+            self.rex_a80_plan = None
+            self.config.detection_notes.append('A80 source IRQ rejected: loaded code changed')
     return machine
 
-REQUIRES = {'c80_rex_irq_profile': ('rex.transport_projection', 'c80_rex_irq_profile'), 'find_rex_static_controller_callback_candidate': ('rex.rules',
+REQUIRES = {'a80_machine_plan': ('rex.a80_plan', 'machine_plan'),
+    'a80_machine_properties': ('rex.a80_plan', 'machine_properties'), 'c80_rex_irq_profile': ('rex.transport_projection', 'c80_rex_irq_profile'), 'find_rex_static_controller_callback_candidate': ('rex.rules',
     'find_rex_static_controller_callback_candidate'), 'qemu_stack_w1c_property': ('rex.transport_projection', 'qemu_stack_w1c_property'),
     'read_consume_rex_irq_profile': ('rex.transport_projection', 'read_consume_rex_irq_profile'), 'w1c_rex_irq_profile': ('rex.transport_projection',
     'w1c_rex_irq_profile'), 'qemu_basic_row0_property': ('rex.transport_projection', 'qemu_basic_row0_property')}

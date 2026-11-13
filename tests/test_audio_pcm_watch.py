@@ -246,6 +246,12 @@ typedef struct {
     struct { void *image; } spi_nv;
     struct { bool initialized; void *image; } protected_nor;
     void *protected_nor_blk;
+    void *boot_nand_blk, *boot_nand_media;
+    bool signal_memory_realized;
+    unsigned signal_memory_count;
+    bool external_indexed_18;
+    bool external_lcd_18_window, external_lcd_18_dcs;
+    unsigned external_lcd_18_register_offset;
     CharFrontend audio_stream_chr;
     uint8_t audio_pcm_packet[MSM5XXX_POC_AUDIO_PACKET_SIZE];
     unsigned audio_pcm_length, audio_pcm_offset;
@@ -316,6 +322,7 @@ typedef struct {
     bool ma3_gpio_irq_callback_seen;
     uint16_t ma3_gpio_pending[3], ma3_parent_pending;
     uint16_t rex_irq_pending[3];
+    void *a80_timer;
     void *watchdog_timer;
 } MSM5xxxPOCMachineState;
 typedef MSM5xxxPOCMachineState Object;
@@ -381,8 +388,14 @@ static void msm5xxx_poc_sbi_raw_input_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_uart_console_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_dmd5100_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_small_nand_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_boot_nand_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_signal_memory_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_protected_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_a80_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_watchdog_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_external_lcd_18_window_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_external_lcd_register_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_indexed_18_reset(void *opaque) { assert(false); }
 static void qemu_unregister_reset(void (*reset)(void *), void *opaque) {
     assert(false);
 }

@@ -29,7 +29,11 @@ class ProtectedNorNativeTests(unittest.TestCase):
                  "msm5xxx_poc_protected_read", "msm5xxx_poc_protected_write",
                  "msm5xxx_poc_protected_reset", "msm5xxx_poc_get_protected_stats",
                  "msm5xxx_poc_set_protected", "msm5xxx_poc_set_protected_source",
-                 "msm5xxx_poc_get_protected_source")
+                 "msm5xxx_poc_get_protected_source",
+                 "msm5xxx_poc_protected_bank_read", "msm5xxx_poc_protected_bank_write",
+                 "msm5xxx_poc_set_protected_bank", "msm5xxx_poc_get_protected_bank",
+                 "msm5xxx_poc_protected_bank_needs_overlay",
+                 "msm5xxx_poc_protected_bank_available")
         realize = function(source, "msm5xxx_poc_protected_realize")
         begin = realize.index("    s->protected_nor_realized = true;")
         end = realize.index("    if (!s->protected_nor_enabled)", begin)
@@ -66,9 +70,12 @@ typedef struct { uint64_t ram_size; } MachineState;
 typedef struct {
     bool protected_nor_enabled,protected_nor_realized,protected_nor_source_enabled;
     bool memory_profile_enabled;
+    bool protected_nor_bank_identify;
+    uint32_t protected_nor_bank_base,protected_nor_bank_id;
     uint32_t protected_nor_base,protected_nor_length,msm5xxx_protected_nor_sector,protected_nor_ticks;
     uint32_t protected_nor_source[6],protected_nor_source_reason;
     uint32_t ram_base,primary_nor_size;
+    uint32_t external_ram_base,external_ram_size;
     uint64_t protected_nor_persist_writes,protected_nor_persist_skips;
     uint64_t protected_nor_source_checks,protected_nor_source_rejections;
     int64_t protected_nor_clock;
@@ -170,6 +177,67 @@ static void prefix(MSM5xxxPOCMachineState *s) {
 static void array(MSM5xxxPOCMachineState *s) { write_word(s,0,0x50);write_word(s,0,0xff); }
 int main(void) {
     MSM5xxxPOCMachineState s;Error *err=NULL;char *text;
+    setup(&s,2,false);
+    s.protected_nor_bank_base=s.protected_nor_base;
+    assert(!msm5xxx_poc_protected_bank_needs_overlay(&s));
+    s.protected_nor_bank_base=s.protected_nor_base+s.protected_nor_length-4;
+    assert(!msm5xxx_poc_protected_bank_needs_overlay(&s));
+    s.protected_nor_bank_base-=s.protected_nor_length;
+    assert(msm5xxx_poc_protected_bank_needs_overlay(&s));
+    s.protected_nor_bank_base=0;
+    assert(!msm5xxx_poc_protected_bank_needs_overlay(&s));
+    assert(!msm5xxx_poc_protected_bank_available(&s));
+    s.protected_nor_base=0x12000000;s.protected_nor_length=0x400000;
+    assert(msm5xxx_poc_protected_bank_available(&s));
+    s.ram_base=0x12010000;
+    assert(!msm5xxx_poc_protected_bank_available(&s));
+    s.ram_base=RAM_BASE;s.external_ram_base=0x123f0000;s.external_ram_size=0x20000;
+    assert(!msm5xxx_poc_protected_bank_available(&s));
+    s.external_ram_base=0x12400000;
+    assert(msm5xxx_poc_protected_bank_available(&s));
+    /* A bank may expose a source-described partition within its array. */
+    setup(&s,4,true);s.protected_nor_bank_base=BASE;
+    put32(rom+0x104,2);put32(rom+0x1b0,(BASE+0x100)/2);
+    put32(rom+0x1b4,0x1000);
+    assert(msm5xxx_poc_protected_source_check(&s));
+    put32(rom+0x1b0,(BASE+0x180)/2);
+    assert(!msm5xxx_poc_protected_source_check(&s));
+    put32(rom+0x1b0,(BASE+0x300)/2);
+    assert(!msm5xxx_poc_protected_source_check(&s));
+    setup(&s,2,false);
+    msm5xxx_poc_set_protected_bank(&s,"12000000:563412",&err);assert(!err);
+    text=msm5xxx_poc_get_protected_bank(&s,&err);
+    assert(!strcmp(text,"12000000:563412"));free(text);
+    assert(msm5xxx_poc_protected_bank_read(&s,0,2)==0xffff);
+    msm5xxx_poc_protected_bank_write(&s,0,0x90,2);
+    assert(msm5xxx_poc_protected_bank_read(&s,0,2)==0x3412);
+    assert(msm5xxx_poc_protected_bank_read(&s,2,2)==0x56);
+    msm5xxx_poc_protected_bank_write(&s,2,0xff,2);
+    assert(s.protected_nor_bank_identify);
+    msm5xxx_poc_protected_bank_write(&s,0,0xf3,2);
+    assert(!s.protected_nor_bank_identify);
+    setup(&s,2,false);s.protected_nor_bank_base=0x12000000;
+    s.protected_nor_bank_id=0x563412;s.protected_nor.base=0x12000000;
+    s.protected_nor.idle_status_reads=true;
+    write_word(&s,0,0x70);
+    assert(read_word(&s,0)==0x80);
+    assert(!s.protected_nor.programs && !s.protected_nor.erases);
+    array(&s);
+    write_word(&s,0,0x90);
+    assert(s.protected_nor_bank_identify);
+    assert(read_word(&s,0)==0x3412 && read_word(&s,2)==0x56);
+    write_word(&s,0,0xff);
+    assert(!s.protected_nor_bank_identify && read_word(&s,0)==0xffff);
+    write_word(&s,0,0x60);write_word(&s,0,0);write_word(&s,0,0xac);
+    write_word(&s,0,0x3f);write_word(&s,0,0x7b);write_word(&s,0,0x40);
+    write_word(&s,0,0x90);
+    assert(!s.protected_nor_bank_identify);
+    write_word(&s,0,0x70);assert(read_word(&s,0)==0x80);
+    array(&s);assert(read_word(&s,0)==0x90);
+    assert(backend[0] == 0xff && !s.protected_nor_persist_writes);
+    msm5xxx_poc_protected_reset(&s);
+    assert(read_word(&s,0)==0x90 && s.protected_nor.programs==1);
+    assert(backend[0] == 0xff && seed[0] == 0xff);
     for(unsigned count=2;count<=4;count+=2) {
         setup(&s,count,true);assert(msm5xxx_poc_protected_source_bounds(&s));assert(!final_rejected(&s));
         assert(msm5xxx_poc_protected_source_check(&s));

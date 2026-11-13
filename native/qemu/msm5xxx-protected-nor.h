@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MSM5XXX_PROTECTED_NOR_MAX_SECTORS 64
+#define MSM5XXX_PROTECTED_NOR_MAX_SECTORS 128
 
 enum MSM5xxxProtectedNORPhase {
     MSM5XXX_PROTECTED_NOR_ARRAY, MSM5XXX_PROTECTED_NOR_INDEX, MSM5XXX_PROTECTED_NOR_AC, MSM5XXX_PROTECTED_NOR_COMPLEMENT, MSM5XXX_PROTECTED_NOR_7B, MSM5XXX_PROTECTED_NOR_GRANT,
@@ -19,7 +19,7 @@ enum MSM5xxxProtectedNORReject { MSM5XXX_PROTECTED_NOR_REJECT_NONE, MSM5XXX_PROT
 typedef struct MSM5xxxProtectedNOR {
     uint8_t *image;
     uint32_t base, length, starts[MSM5XXX_PROTECTED_NOR_MAX_SECTORS + 1];
-    unsigned sector_count;
+    unsigned sector_count, sector_mask;
     uint64_t erase_ticks, remaining;
     enum MSM5xxxProtectedNORPhase phase;
     enum MSM5xxxProtectedNOROperation operation;
@@ -27,6 +27,7 @@ typedef struct MSM5xxxProtectedNOR {
     uint8_t staged[256];
     unsigned count;
     bool initialized, suspended, complete, array_selected, last_erase_valid;
+    bool idle_status_reads;
     uint16_t error;
     uint64_t programs, erases, verifies, rejections;
     enum MSM5xxxProtectedNORReject reason;

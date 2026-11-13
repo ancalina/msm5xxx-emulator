@@ -1319,9 +1319,37 @@ class Transport:
             self.decoder.close()
             self.temporary.cleanup()
             raise
+        if revision_property is None and revision_reject is None:
+            revision_domain = device_domain('boot.revision_plan')
+            revision_plan = revision_domain.machine_plan(
+                detector_image, primary_seed, self.config)
+            cached_revision = revision_domain.project(revision_plan)
+            if cached_revision is not None:
+                machine += ',' + cached_revision
+                self.config.detection_notes.append(
+                    'source-linked cached halfword revision register enabled')
+        bootstrap_plan = device_domain('storage.boot_nand').machine_plan(
+            detector_image, firmware_image, self.config)
+        bootstrap_binding = device_domain('storage.boot_nand_projection').project(bootstrap_plan)
+        if bootstrap_binding is not None:
+            machine += bootstrap_binding.machine
+            self.config.detection_notes.append(
+                "source-linked high-vector NAND bootstrap and private split-page media enabled")
+        signal_domain = device_domain('external_bus.signal_memory_plan')
+        signal_plan = signal_domain.machine_plan(
+            detector_image, firmware_image if bootstrap_binding is not None else primary_seed,
+            self.config, bootstrap_plan=bootstrap_plan)
+        signal_property = signal_domain.project(signal_plan)
+        if signal_property is not None:
+            machine += ',' + signal_property
+            self.config.detection_notes.append(
+                'source-linked upload-table memory apertures enabled')
         from ..devices.display.source_plan import apply_source_plan
-        display_plan = device_domain("display.source_writers").machine_plan(detector_image, primary_seed, self.config)
+        display_plan = device_domain("display.source_writers").machine_plan(
+            detector_image, firmware_image if bootstrap_binding is not None else primary_seed,
+            self.config)
         apply_source_plan(self.decoder, display_plan)
+        machine += device_domain('display.source_writers').machine_properties(display_plan)
         gpio_lcd_property = device_domain('display.binding').bind_loaded_sources(
             self.decoder, detector_image, primary_seed, allowed_patch=dmd_patch,
             ram_claimed=any(value is not None for value in (
@@ -1735,6 +1763,22 @@ class Transport:
                 self.protected_nor_reject_reason = nor_reject
                 self.config.detection_notes.append(
                     f"QEMU protected NOR rejected: {nor_reject}; native fallback retained")
+            secondary_domain = device_domain('storage.secondary_protected_plan')
+            secondary_plan = secondary_domain.machine_plan(
+                detector_image, primary_seed, self.config,
+                claimed=bool(storage_args) or upper_nor_present
+                or secondary_base is not None or bool(secondary_ids))
+            secondary_binding = secondary_domain.project(secondary_plan)
+            if secondary_binding is not None:
+                from ..devices.storage.secondary_media import prepare_secondary_media
+                storage_args.extend(prepare_secondary_media(
+                    secondary_binding, temporary, source_image=primary_seed))
+                machine += secondary_binding.machine
+                self.config.detection_notes.append(
+                    'source-linked secondary protected NOR with erased private media enabled'
+                    if getattr(secondary_binding, 'source_offset', None) is None else
+                    'source-linked secondary protected NOR initialized from supplied '
+                    f'image offset 0x{secondary_binding.source_offset:x} in private media')
         except Exception:
             for channel in (lcd_listener, input_listener, gdb_listener,
                             audio_listener, audio_host_socket, audio_qemu_socket):
@@ -1858,6 +1902,12 @@ class Transport:
                 )
         self.stderr = tempfile.TemporaryFile(mode="w+t")
         try:
+            bootstrap_loader_args = None
+            if bootstrap_binding is not None:
+                from ..devices.storage.boot_media import prepare_boot_media
+                bootstrap_loader_args, bootstrap_drive_args = prepare_boot_media(
+                    bootstrap_binding, firmware, temporary, source_image=firmware_image)
+                storage_args.extend(bootstrap_drive_args)
             nand_monitor_args = []
             if native_nand is not None:
                 if self.config.firmware_sha256 != loaded_firmware.source_sha256:
@@ -1882,13 +1932,16 @@ class Transport:
             )
             self.process = launch_qemu(
                 [
-                    *qemu_prefix, str(qemu), "-M", machine, "-cpu", "ti925t",
+                    *qemu_prefix, str(qemu), "-M", machine, "-cpu",
+                    bootstrap_binding.cpu if bootstrap_binding is not None else "ti925t",
                     "-m", qemu_ram_argument(native_ram_size),
-                    *raw_loader_arguments(
-                        loader, self.config.ram_size, temporary, loader_size,
-                        loader_exclude,
-                    ),
-                    *getattr(self, "ram_seed_loader_args", ()),
+                    *(bootstrap_loader_args if bootstrap_binding is not None else (
+                        *raw_loader_arguments(
+                            loader, self.config.ram_size, temporary, loader_size,
+                            loader_exclude,
+                        ),
+                        *getattr(self, "ram_seed_loader_args", ()),
+                    )),
                     *storage_args,
                     *(
                         ("-audiodev",

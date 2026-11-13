@@ -2,11 +2,13 @@
 from __future__ import annotations
 from .arm import thumb_bl_target as thumb_call_target
 from .values import CodeAddress
+from capstone import arm as a
 import re
 import struct
 
 _THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(.[\x48-\x4f]..))', re.S)
 _ARM_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(..(?:\x1f|\x9f)(?:\x05|\x15|\x25|\x35|\x45|\x55|\x65|\x75' rb'|\x85|\x95|\xa5|\xb5|\xc5|\xd5|\xe5)))', re.S)
+_THUMB_BLX_CANDIDATE = re.compile(rb'(?=(.[\xf0-\xf7].([\xc0-\xcf]|[\xe0-\xef])))', re.S)
 
 class FactIndexes:
     def _search_regions(self, phase, bank):
@@ -37,6 +39,56 @@ class FactIndexes:
                             calls.append((base + at, base + at + 8 + (delta - (1 << 26) if delta & (1 << 25) else delta)))
             return tuple(calls)
         return self.memo('call-candidates', (isa, phase, bank), extract)
+
+    def interworking_call_candidates(self, *, phase='reset', bank='primary', limit=None):
+        """Index immediate BLX instructions, validating each with shared decode.
+
+        Returned source and target addresses retain the requested execution
+        phase and bank. The limit, when supplied, bounds source addresses from
+        this facts view's base; target ISA is the opposite of source ISA.
+        """
+        if limit is not None and (type(limit) is not int or limit < 0):
+            raise ValueError('limit must be a nonnegative integer or None')
+        end = (1 << 32) if limit is None else min(self.base + limit, 1 << 32)
+        def extract():
+            calls = []
+            for base, data in self._search_regions(phase, bank):
+                scan_end = min(len(data), max(0, end - base))
+                if scan_end < 4:
+                    continue
+                for match in _THUMB_BLX_CANDIDATE.finditer(data, 0, scan_end):
+                    offset = match.start()
+                    address = base + offset
+                    if address & 1 or offset + 4 > scan_end:
+                        continue
+                    source = CodeAddress(address, 'thumb', phase, bank)
+                    instruction = self.decode(source)
+                    if (instruction is None or instruction.id != a.ARM_INS_BLX
+                            or not instruction.operands
+                            or instruction.operands[0].type != a.ARM_OP_IMM):
+                        continue
+                    target = instruction.operands[0].imm & 0xFFFFFFFF
+                    if target & 3:
+                        continue
+                    calls.append((source, CodeAddress(target, 'arm', phase, bank)))
+                for offset in range((-base) & 3, scan_end - 3, 4):
+                    word = struct.unpack_from('<I', data, offset)[0]
+                    if word & 0xFE000000 != 0xFA000000:
+                        continue
+                    address = base + offset
+                    source = CodeAddress(address, 'arm', phase, bank)
+                    instruction = self.decode(source)
+                    if (instruction is None or instruction.id != a.ARM_INS_BLX
+                            or not instruction.operands
+                            or instruction.operands[0].type != a.ARM_OP_IMM):
+                        continue
+                    target = instruction.operands[0].imm & 0xFFFFFFFF
+                    if target & 1:
+                        continue
+                    calls.append((source, CodeAddress(target, 'thumb', phase, bank)))
+            return tuple(sorted(set(calls), key=lambda item:
+                (item[0].address, item[0].isa, item[1].address, item[1].isa)))
+        return self.memo('interworking-call-candidates', (phase, bank, limit), extract)
 
     def string_candidates(self, value: bytes, *, phase='reset', bank='primary'):
         """Index supplied byte candidates, including copied code and data."""

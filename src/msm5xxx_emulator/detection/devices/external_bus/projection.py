@@ -21,7 +21,7 @@ def _mapping(role, base, size=0x1000, *, shared=None, allocation=True, allocatio
 def _pin(role, bit):
     return ExternalProperty("boolean", role, claim=ResourceClaim("gpio", role, 0x03000720, 0x03000724, mask=1 << bit))
 
-EXTERNAL_BUS_CONTRACTS = MappingProxyType({ "external-cs09": _mapping("external_cs09", 0x09000000, shared= "cs09-strap"), "external-cs0a": _mapping("external_cs0a",
+EXTERNAL_BUS_CONTRACTS = MappingProxyType({ "external-lcd-18-dcs": ExternalProperty("boolean", "lcd_18_window"), "external-lcd-18-window": ExternalProperty("boolean", "lcd_18_window"), "external-lcd-18-data-offset": ExternalProperty("integer", "lcd_18_window"), "external-indexed-18": ExternalProperty("boolean", "indexed_18"), "external-cs09": _mapping("external_cs09", 0x09000000, shared= "cs09-strap"), "external-cs0a": _mapping("external_cs0a",
     0x0A000000), "external-window-08c": _mapping("window_08c", 0x08C00000), "external-window-1a": _mapping("window_1a", 0x1A000000, shared="window-panel-1a"),
     "experimental-contract-status-0b408": _mapping("status_0b000408", 0x0B000408, 2, shared= "window-status-0b", allocation_base=0x0B000000),
     "experimental-contract-window-0b": _mapping("window_0b", 0x0B000000, shared="window-status-0b"), "experimental-contract-window-18": _mapping("window_18",
@@ -77,6 +77,10 @@ def _validated_properties(profile: object, image: bytes, ram_base: int, ram_size
             if name == "experimental-contract-gpio-pmic-serial" and parameters != { "ports":[0x030006e8, 0x03000720, 0x030006f4], "register_count": 64,
                 "reset_value": 0, "write_policy": "readback"}:
                 return None, "serial-contract-parameter-mismatch"
+            if name == "external-indexed-18" and parameters != {
+                    "ports": [0x18080000, 0x180C0000], "width": 2,
+                    "register_count": 65536, "reset_value": 0, "write_policy": "readback"}:
+                return None, "indexed-contract-parameter-mismatch"
             if (name == "experimental-contract-lcd-1c-selector" and parameters.get("mode") != "selector-data"):
                 return None, "selector-contract-parameter-mismatch"
             if name in ("external-ram-base", "external-ram-size"):
@@ -90,6 +94,25 @@ def _validated_properties(profile: object, image: bytes, ram_base: int, ram_size
         return None, "invalid-external-ram-allocation"
     if (properties.get("experimental-contract-lcd-1c-selector") and not properties.get("external-lcd-1c")):
         return None, "selector-without-lcd"
+    if properties.get("external-lcd-18-window") and properties.get("external-lcd-18-dcs"):
+        return None, "conflicting-lcd-protocols"
+    if properties.get("external-lcd-18-window") or properties.get("external-lcd-18-dcs"):
+        if not properties.get("external-lcd-18"):
+            return None, "window-without-lcd"
+        offset = properties.get("external-lcd-18-data-offset")
+        parameters = capabilities["lcd_18_window"]["parameters"]
+        expected_protocol = "dcs" if properties.get("external-lcd-18-dcs") else "window51"
+        if parameters.get("protocol") != expected_protocol:
+            return None, "window-protocol-mismatch"
+        pool = parameters.get("data_literal")
+        if (offset not in (0x40000, 0x80000)
+                or parameters.get("command_port") != 0x18000000
+                or parameters.get("data_port") != 0x18000000 + offset
+                or type(pool) is not int or not 0 <= pool <= len(image) - 4
+                or int.from_bytes(image[pool:pool + 4], "little") != parameters["data_port"]):
+            return None, "window-data-port-mismatch"
+    elif "external-lcd-18-data-offset" in properties:
+        return None, "window-data-without-lcd"
     if properties.get("external-uart-tx-log") and not properties.get("external-uart"):
         return None, "uart-log-without-uart"
     if "external-strap-value" in properties and not 0 < properties["external-strap-value"] <= 0xff:
@@ -117,6 +140,12 @@ def _validated_properties(profile: object, image: bytes, ram_base: int, ram_size
     return properties, None
 
 def _resource_claims(role, properties):
+    if role == "lcd_18_window":
+        base = 0x18000000 + properties["external-lcd-18-data-offset"]
+        return (ResourceClaim("address", role, base, base + 2),)
+    if role == "indexed_18":
+        return tuple(ResourceClaim("address", role, base, base + 2)
+                     for base in (0x18080000, 0x180C0000))
     if role == "external_ram" and properties.get("external-ram-size"):
         base = properties["external-ram-base"]
         return (ResourceClaim("address", role, base, base + properties["external-ram-size"]),)

@@ -3,6 +3,7 @@
  * -fno-sanitize-recover=all test_protected_nor.c -o test_protected_nor */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "msm5xxx-protected-nor.h"
 
@@ -32,7 +33,8 @@ static uint16_t rd(uint32_t address)
 }
 static void prefix(uint32_t address)
 {
-    unsigned mask = address >= 0x800000 ? 0x3f : 0x7f;
+    unsigned mask = p.sector_mask ? p.sector_mask :
+                    (address >= 0x800000 ? 0x3f : 0x7f);
     assert(wr(address, 0x60));
     assert(wr(address, (address >> 16) & mask));
     assert(wr(address, 0xac));
@@ -75,7 +77,7 @@ static void test_init(void)
     BAD_INIT(seed,image,LENGTH-1,BASE,sectors,15,10);
     BAD_INIT(seed,image,LENGTH,0xffff0000,sectors,15,10);
     BAD_INIT(seed,image,LENGTH,BASE,sectors,0,10);
-    BAD_INIT(seed,image,LENGTH,BASE,sectors,65,10);
+    BAD_INIT(seed,image,LENGTH,BASE,sectors,MSM5XXX_PROTECTED_NOR_MAX_SECTORS + 1,10);
     BAD_INIT(seed,seed,LENGTH,BASE,sectors,15,10);
     BAD_INIT(seed,seed+2,LENGTH-256,BASE,sectors,15,10);
     BAD_INIT((const uint8_t *)&p,image,LENGTH,BASE,sectors,15,10);
@@ -193,10 +195,68 @@ static void test_erase_suspend_verify(void)
     prefix(BASE);assert(wr(BASE,0x20));assert(wr(BASE,0xd0));assert(!wr(BASE,0x90));msm5xxx_protected_nor_advance(&p,UINT64_MAX);untouched();
     assert(seed[0]==0xff && seed[0x10000]==0xff);
 }
+static void test_full_external_sector_index(void)
+{
+    const uint32_t length = 0x800000, base = 0x12000000;
+    uint32_t geometry[128];
+    uint8_t *source = malloc(length), *working = malloc(length);
+    const uint32_t upper = base + 0x650000, last = base + length - 2;
+
+    assert(source && working);
+    memset(source, 0xff, length);
+    for (unsigned i = 0; i < 128; i++) {
+        geometry[i] = 0x10000;
+    }
+    assert(msm5xxx_protected_nor_init(&p, source, working, length, base,
+                                     geometry, 128, 10));
+    p.sector_mask = 0x7f;
+    assert(wr(upper, 0x60));
+    assert(!wr(upper, (upper >> 16) & 0x3f));
+    assert(p.sector_mask == 0x7f);
+    single(upper, 0x1234);
+    single(last, 0x5678);
+    assert(working[0x650000] == 0x34 && working[0x650001] == 0x12);
+    assert(working[length - 2] == 0x78 && working[length - 1] == 0x56);
+    prefix(upper);
+    assert(wr(upper, 0x20) && wr(upper, 0xd0));
+    msm5xxx_protected_nor_advance(&p, 10);
+    finish(upper, 0x80);
+    assert(working[0x650000] == 0xff && working[length - 2] == 0x78);
+    assert(source[0x650000] == 0xff && source[length - 2] == 0xff);
+    msm5xxx_protected_nor_reset(&p);
+    assert(p.sector_mask == 0x7f && p.sector_count == 128);
+    free(working);
+    free(source);
+}
+
+static void test_idle_status_reads(void)
+{
+    setup();
+    assert(!wr(BASE, 0x70));
+    p.idle_status_reads = true;
+    memcpy(before, image, sizeof(image));
+    assert(wr(BASE, 0x70));
+    assert(rd(BASE) == 0x80);
+    assert(!p.programs && !p.erases && !p.verifies);
+    finish(BASE, 0x80);
+    untouched();
+    prefix(BASE);
+    assert(wr(BASE, 0x20) && wr(BASE, 0xd0));
+    assert(wr(BASE, 0x70) && rd(BASE) == 0);
+    msm5xxx_protected_nor_advance(&p, 5);
+    assert(wr(BASE, 0x70) && rd(BASE) == 0);
+    msm5xxx_protected_nor_advance(&p, 5);
+    finish(BASE, 0x80);
+    msm5xxx_protected_nor_reset(&p);
+    assert(p.idle_status_reads);
+}
+
 int main(void)
 {
     test_init();test_single_and_source_checkpoint();test_stream();
     test_prefix_and_foreign();test_errors();test_erase_suspend_verify();
+    test_full_external_sector_index();
+    test_idle_status_reads();
     puts("protected NOR virtual contract selfcheck PASS");
     return 0;
 }

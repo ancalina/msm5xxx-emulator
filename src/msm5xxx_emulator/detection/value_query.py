@@ -5,7 +5,7 @@ from .values import (CodeAddress, SymbolicValue, UNKNOWN_VALUE, _FLAGS, _conditi
 from .instruction_values import adr_target
 
 _OPERATIONS = { a.ARM_INS_ADD: 'add', a.ARM_INS_SUB: 'sub', a.ARM_INS_AND: 'and', a.ARM_INS_ORR: 'or', a.ARM_INS_EOR: 'xor', a.ARM_INS_LSL: 'lsl', a.ARM_INS_LSR:
-    'lsr', }
+    'lsr', a.ARM_INS_ASR: 'asr', }
 _LOADS = {a.ARM_INS_LDR: (4, False), a.ARM_INS_LDRB: (1, False), a.ARM_INS_LDRH: (2, False), a.ARM_INS_LDRSB: (1, True), a.ARM_INS_LDRSH: (2, True)}
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +242,7 @@ def register_value(facts, function, use, register, *, cut_edges=(), follow_stack
             if ins.id in _OPERATIONS and len(ops) in (2, 3):
                 left, right = ops[-2:]
                 result_right = operand(right, site, active)
-                if ins.id in (a.ARM_INS_LSL, a.ARM_INS_LSR) and right.type == a.ARM_OP_REG:
+                if ins.id in (a.ARM_INS_LSL, a.ARM_INS_LSR, a.ARM_INS_ASR) and right.type == a.ARM_OP_REG:
                     result_right = operation('and', result_right, SymbolicValue.const(0xFF))
                 return operation(_OPERATIONS[ins.id], operand(left, site, active), result_right)
             return UNKNOWN_VALUE

@@ -63,6 +63,7 @@ typedef struct {
     uint32_t rex_irq_handler_slot, rex_irq_bank_count, rex_irq_mask, rex_irq_acks;
     uint16_t rex_irq_pending[3];
     uint8_t rex_irq_backing[256];
+    bool a80_irq_level;
     bool rex_irq_level, irq_level;
     unsigned rex_irq_assertions;
     void *cpu_irq;

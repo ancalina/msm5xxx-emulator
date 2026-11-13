@@ -2,7 +2,7 @@ from __future__ import annotations
 
 def detect_external_cs0a(image: bytes) -> tuple[dict | None, str]:
     """Detect linked configuration writes through the 0x0A000080 block."""
-    from . import _cs_ctrl_sites, _cs_store_sites, _literal_window_accesses_many, _reset_called, _reset_helper_source_spans, _thumb_reset_function_end, source_prefix
+    from . import CodeAddress, a, _cs_ctrl_sites, _cs_store_sites, _literal_window_accesses_many, _reset_called, _reset_helper_source_spans, _thumb_reset_function_end, facts_for, source_prefix
     if not isinstance(image, (bytes, bytearray)):
         return None, "external-cs0a-image-not-bytes"
     sites = ([{"kind": "chip-select", "at": at} for at in _cs_store_sites(image)] +[{"kind": "controller-config", "at": at} for at in _cs_ctrl_sites(image)])
@@ -28,6 +28,56 @@ def detect_external_cs0a(image: bytes) -> tuple[dict | None, str]:
                 for item in found:
                     sites.append({ "kind": "literal-access", **item, "span":[item["load"], item["use"] + item["instruction_width"] - item["load"]],
                         "extra_spans":[[item["literal"], 4],[entry, end - entry], *guards], })
+        facts = facts_for(bytes(image))
+        required = {
+            (0x0A0000A0, 4): 0,
+            (0x0A0000A4, 4): 0,
+            (0x0A0000A8, 4): 0,
+            (0x0A0000B0, 4): 0x10000,
+            (0x0A0000B8, 1): 7,
+        }
+        for target in reset_called:
+            if not target & 1:
+                continue
+            entry = target & ~1
+            end = _thumb_reset_function_end(image, entry)
+            if end is None:
+                continue
+            function = facts.function(CodeAddress(entry, "thumb"), budget=256)
+            if not function.complete or function.truncated or function.unresolved:
+                continue
+            writes = {}
+            for access in function.accesses:
+                key = (access.address, access.width)
+                if (key in required and access.operation == "write" and access.value == required[key]
+                    and access.predicate == a.ARM_CC_AL):
+                    writes.setdefault(key, []).append(access)
+            if not all(writes.get(key) for key in required):
+                continue
+            uses = [access.instruction for matches in writes.values() for access in matches]
+            path = function.linear_path(function.entry, max(uses, key=lambda pc: pc.address))
+            if path is None or not set(uses) <= set(path):
+                continue
+            bases = [literal for literal in function.literals if literal.value == 0x0A000080
+                     and entry <= literal.instruction.address < end]
+            if not bases:
+                continue
+            base = min(bases, key=lambda literal: literal.instruction.address)
+            literal_spans = [[literal.pool, 4] for literal in function.literals
+                             if entry <= literal.instruction.address < end]
+            guards = _reset_helper_source_spans(image, target)
+            for key in required:
+                for access in writes[key]:
+                    use = access.instruction.address
+                    load = base.instruction.address
+                    sites.append({
+                        "kind": "literal-access", "load": load, "use": use,
+                        "literal": base.pool, "thumb": True,
+                        "instruction_width": 2, "address": access.address,
+                        "access_size": access.width, "operation": "write",
+                        "span": [load, use + 2 - load],
+                        "extra_spans": [[entry, end - entry], *literal_spans, *guards],
+                    })
     if not sites:
         return None, "external-cs0a-controller-write-absent"
     return {"sites": sites}, "accepted"
@@ -128,6 +178,22 @@ def _bit3_polls(image: bytes) -> list[dict]:
     """Infinite poll of UART status +4 bit 3, kicking 0x030006D0."""
     from . import _DOG, _UART_BASE, _find_all, _thumb_b_target, _thumb_literal, _u16, struct
     polls = []
+    # A separate returning poll keeps the watchdog and status pointers live
+    # across the loop, rather than reloading them on every iteration.
+    for at in _find_all(image, bytes.fromhex("0022012010b4")):
+        if at & 1 or at + 26 > len(image):
+            continue
+        words = struct.unpack_from("<13H", image, at)
+        if (words[3] & 0xff00 != 0x4900 or words[4] & 0xff00 != 0x4b00
+                or words[5:] != (0xe001, 0x7008, 0x700a, 0x791c, 0x0724,
+                                 0xd5fa, 0xbc10, 0x4770)
+                or _thumb_literal(image, at + 6, 1) != _DOG
+                or _thumb_literal(image, at + 8, 3) != _UART_BASE):
+            continue
+        pools = [((at + delta + 4) & ~3) + (_u16(image, at + delta) & 0xff) * 4
+                 for delta in (6, 8)]
+        polls.append({"at": at, "watchdog": _DOG, "span": [at, 26],
+                      "extra_spans": [[pool, 4] for pool in pools]})
     for at in _find_all(image, bytes.fromhex("00790007")):
         # The back-branch is a halfword at at+16, so the image must
         # cover at+18. at+16 alone stops one byte short.
@@ -246,7 +312,12 @@ def detect_boot_uart(image: bytes) -> tuple[dict | None, str]:
                     break
     if not linked:
         return None, "boot-uart-init-poll-unlinked"
-    return { "behaviour": "boot_uart", "reason": "accepted", "links": linked, "polls":[item["at"] for item in polls], "inits": inits, }, "accepted"
+    result = {"behaviour": "boot_uart", "reason": "accepted", "links": linked,
+              "polls": [item["at"] for item in polls], "inits": inits}
+    evidence = [item for item in polls if "span" in item]
+    if evidence:
+        result["evidence"] = evidence
+    return result, "accepted"
 
 def _reset_push(image: bytes, at: int, called: set[int]) -> int | None:
     """Nearest ``PUSH`` of ``lr`` at or before ``at`` that reset actually calls."""

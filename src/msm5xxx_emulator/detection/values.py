@@ -84,7 +84,8 @@ def _symbolic_operation(operation: str, left, right, *, budget_exhausted=None):
     if left.kind == right.kind == 'const':
         a_value, b_value = left.value, right.value
         operations = { 'add': lambda: a_value + b_value, 'sub': lambda: a_value - b_value, 'and': lambda: a_value & b_value, 'or': lambda: a_value | b_value,
-            'xor': lambda: a_value ^ b_value, 'lsl': lambda: a_value << min(b_value, 32), 'lsr': lambda: a_value >> min(b_value, 32), }
+            'xor': lambda: a_value ^ b_value, 'lsl': lambda: a_value << min(b_value, 32), 'lsr': lambda: a_value >> min(b_value, 32),
+            'asr': lambda: (a_value - 0x100000000 if a_value & 0x80000000 else a_value) >> min(b_value, 32), }
         folded = operations[operation]() & 0xFFFFFFFF
         if type(a_value) is int and type(b_value) is int:
             return folded
@@ -93,7 +94,7 @@ def _symbolic_operation(operation: str, left, right, *, budget_exhausted=None):
     # No equality of separate loads or mutable memory is assumed here.
     if right.kind == 'const':
         constant = right.value
-        if constant == 0 and operation in ('add', 'sub', 'or', 'xor', 'lsl', 'lsr'):
+        if constant == 0 and operation in ('add', 'sub', 'or', 'xor', 'lsl', 'lsr', 'asr'):
             return left
         if operation == 'and':
             if constant == 0xFFFFFFFF:
@@ -162,7 +163,7 @@ def evaluate_value(value: SymbolicValue, *, arguments=None, reads=None) -> int |
             if item.signed and result & (1 << (bits - 1)):
                 result -= 1 << bits
             return result & 0xFFFFFFFF
-        if (item.kind != 'op' or item.value not in ('add', 'sub', 'and', 'or', 'xor', 'lsl', 'lsr') or len(item.operands) != 2):
+        if (item.kind != 'op' or item.value not in ('add', 'sub', 'and', 'or', 'xor', 'lsl', 'lsr', 'asr') or len(item.operands) != 2):
             return None
         operands = tuple(visit(child, depth + 1) for child in item.operands)
         if any(child is None for child in operands):

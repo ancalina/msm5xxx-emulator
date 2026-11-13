@@ -113,6 +113,7 @@ typedef struct {
     uint8_t rex_irq_backing[0x60],rex_irq_bank_count;
     uint16_t rex_irq_pending[3],rex_irq_mask;
     bool rex_irq_c80,rex_irq_read_consume,rex_irq_route_active;
+    bool a80_irq_level;
     bool rex_irq_level,irq_level,ma5_irq_configured,ma5_irq_qualified,ma5_irq_level;
     bool ma3_gpio_irq_configured,ma3_gpio_irq_qualified;
     bool sd810_fold_irq_enabled; bool *cpu_irq; unsigned rex_irq_assertions,rex_irq_acks;

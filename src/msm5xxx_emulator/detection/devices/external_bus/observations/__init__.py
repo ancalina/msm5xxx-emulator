@@ -17,3 +17,6 @@ from .windows import (detect_external_cs0a, _literal_window_accesses_many, _lite
 from .contacts import (_thumb_nearest_push_lr, _thumb_calls_to, _status_zero_branch, _status_panel_branch, detect_boot_gpio_bit9, _boot_gpio_bit9_panel_sites,
     detect_external_status, _shift_stores, _bit21_spins, _external_lcd_writers)
 from .lcd import detect_external_lcd
+
+reset_called = _reset_called
+reset_helper_source_spans = _reset_helper_source_spans

@@ -52,6 +52,8 @@
 #include "msm5xxx-search2.h"
 #include "msm5xxx-ma5-audio.h"
 #include "msm5xxx-small-page-nand.h"
+#include "msm5xxx-boot-nand.h"
+#include "msm5xxx-timer-irq.h"
 #include "msm5xxx-spi-nv.h"
 #include "msm5xxx-protected-nor.h"
 #include "msm5xxx-ma5-wt-engine.h"
@@ -250,14 +252,51 @@ static const hwaddr dmd5100_ports[] = {
 struct MSM5xxxPOCMachineState {
     MachineState parent_obj;
     uint32_t external_ram_base, external_ram_size;
+    uint32_t signal_memory_ranges[16];
+    unsigned signal_memory_count;
+    bool signal_memory_realized;
+    MemoryRegion signal_memory[8];
+    uint32_t boot_nand_size, boot_nand_word, boot_nand_identity, boot_nand_peripherals;
+    uint32_t boot_nand_data_port, boot_nand_lcd_id;
+    bool a80_timer_enabled, a80_irq_level;
+    uint8_t a80_arm, a80_clock_regs[0x18];
+    MSM5xxxTimerIRQ a80_irq;
+    MemoryRegion a80_controller, a80_arm_region;
+    QEMUTimer *a80_timer;
+    int64_t a80_clock_ns;
+    uint32_t boot_control_ranges[32];
+    unsigned boot_control_count;
+    MSM5xxxBootNand boot_nand;
+    BlockBackend *boot_nand_blk;
+    uint8_t *boot_nand_media;
+    MemoryRegion boot_low_ram, boot_high_ram, boot_control[16];
+    MemoryRegion boot_presence, boot_nand_region, boot_events_region;
+    MemoryRegion boot_lcd_region[2];
+    struct { MSM5xxxPOCMachineState *machine; bool data; } boot_lcd_context[2];
+    uint8_t boot_nand_backing[0x1000], boot_events_backing[0x10000];
+    uint16_t boot_lcd_selector, boot_lcd_registers[65536];
+    uint16_t boot_lcd_control;
+    uint16_t boot_bridge_registers[32768];
     uint32_t external_strap_value;
     bool external_cs09_enabled, external_cs0a_enabled;
+    bool external_indexed_18;
+    uint16_t external_indexed_18_selector;
+    uint16_t external_indexed_18_registers[65536];
+    MemoryRegion external_indexed_18_regions[2];
+    struct { MSM5xxxPOCMachineState *machine; bool data; }
+        external_indexed_18_context[2];
     bool external_window_08c, external_window_1a;
     bool experimental_contract_status_0b408;
     bool experimental_contract_window_0b;
     bool experimental_contract_window_18, experimental_contract_window_1c;
     bool external_uart, external_uart_tx_log;
     bool external_lcd_18, external_lcd_1a, external_lcd_1c;
+    bool external_lcd_18_window;
+    bool external_lcd_18_dcs;
+    uint32_t external_lcd_18_data_offset;
+    uint32_t external_lcd_18_register_offset;
+    uint16_t external_lcd_18_register_selector;
+    uint16_t external_lcd_18_registers[65536];
     bool experimental_contract_lcd_1c_selector;
     bool gpio_ready_bit21;
     bool experimental_contract_gpio_bit9_low;
@@ -278,6 +317,15 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion external_uart_region, external_lcd_region[3];
     struct { MSM5xxxPOCMachineState *machine; unsigned index; } external_lcd_context[3];
     uint8_t external_lcd_backing[3][0x1000];
+    MemoryRegion external_lcd_18_window_region;
+    uint8_t external_lcd_18_bounds[4];
+    uint8_t external_lcd_18_bounds_seen;
+    uint8_t external_lcd_18_cursor_x, external_lcd_18_cursor_y;
+    uint16_t external_lcd_18_command;
+    uint8_t external_lcd_18_parameter_index;
+    uint8_t external_lcd_18_parameters_left;
+    bool external_lcd_18_parameter_valid;
+    bool external_lcd_18_window_valid;
     uint8_t experimental_contract_status_0b408_backing[2];
 
     ARMCPU *cpu;
@@ -966,6 +1014,9 @@ struct MSM5xxxPOCMachineState {
     int64_t protected_nor_clock;
     MSM5xxxProtectedNOR protected_nor;
     MemoryRegion protected_nor_region;
+    MemoryRegion protected_nor_bank_region;
+    uint32_t protected_nor_bank_base, protected_nor_bank_id;
+    bool protected_nor_bank_identify;
     BlockBackend *protected_nor_blk;
     uint64_t protected_nor_persist_writes, protected_nor_persist_skips;
     bool protected_nor_source_enabled;
@@ -1146,7 +1197,7 @@ static bool msm5xxx_poc_lcd_stream_append(MSM5xxxPOCMachineState *s,
     uint8_t record[MSM5XXX_POC_LCD_STREAM_RECORD_SIZE] = { kind, size };
 
     if (s->lcd_trace_buffer->len + sizeof(record) >
-        MSM5XXX_POC_LCD_STREAM_SIZE) {
+        (s->boot_nand_word ? 8u : 1u) * MSM5XXX_POC_LCD_STREAM_SIZE) {
         s->lcd_trace_overflow = true;
         return false;
     }
@@ -7052,7 +7103,7 @@ static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s)
         s->rex_irq_assertions++;
     }
     s->rex_irq_level = level;
-    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level);
+    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level || s->a80_irq_level);
 }
 
 static void msm5xxx_poc_rex_irq_schedule(MSM5xxxPOCMachineState *s)
@@ -12202,7 +12253,7 @@ static void msm5xxx_poc_write(void *opaque, hwaddr offset,
         break;
     case 0x0c:
         s->irq_level = value & 1;
-        qemu_set_irq(s->cpu_irq, s->irq_level);
+        qemu_set_irq(s->cpu_irq, s->irq_level || s->a80_irq_level);
         break;
     default:
         break;
@@ -13734,7 +13785,7 @@ static bool msm5xxx_poc_protected_source_check(MSM5xxxPOCMachineState *s)
     const uint32_t *v = s->protected_nor_source;
     MSM5xxxProtectedNOR *p = &s->protected_nor;
     uint8_t object[0xd0], state[12], ram_probe[20], rom_probe[20], bytes[4];
-    uint32_t count;
+    uint32_t count, first_sector = 0;
     unsigned i, reason = 0;
     if (!s->protected_nor_source_enabled) {
         return true;
@@ -13756,13 +13807,26 @@ static bool msm5xxx_poc_protected_source_check(MSM5xxxPOCMachineState *s)
         reason = 4;
     } else {
         count = ldl_le_p(object + 4);
-        if (count != p->sector_count || count > (0xb0 - 8) / 4 ||
-            (uint64_t)ldl_le_p(object + 0xb0) * 2 != p->base ||
-            (uint64_t)ldl_le_p(object + 0xb4) * 2 != p->length) {
+        uint64_t begin = (uint64_t)ldl_le_p(object + 0xb0) * 2;
+        if (s->protected_nor_bank_base && begin >= p->base) {
+            while (first_sector < p->sector_count &&
+                   (uint64_t)p->base + p->starts[first_sector] < begin) {
+                first_sector++;
+            }
+        }
+        if (!count || count > (0xb0 - 8) / 4 ||
+            first_sector + count > p->sector_count ||
+            begin != (uint64_t)p->base + p->starts[first_sector] ||
+            (!s->protected_nor_bank_base && count != p->sector_count) ||
+            (s->protected_nor_bank_base ?
+             (uint64_t)ldl_le_p(object + 0xb4) * 2 <
+                 p->starts[first_sector + count] - p->starts[first_sector] :
+             (uint64_t)ldl_le_p(object + 0xb4) * 2 != p->length)) {
             reason = 4;
         }
         for (i = 0; !reason && i < count; i++) {
-            if (ldl_le_p(object + 8 + 4 * i) != p->starts[i + 1] - p->starts[i]) {
+            if (ldl_le_p(object + 8 + 4 * i) !=
+                p->starts[first_sector + i + 1] - p->starts[first_sector + i]) {
                 reason = 4;
             }
         }
@@ -13775,7 +13839,7 @@ static bool msm5xxx_poc_protected_source_check(MSM5xxxPOCMachineState *s)
     return true;
 }
 
-/* Private, explicit virtual provider. No physical ID or automatic admission. */
+/* Persist completed array operations to the private backing file. */
 static void msm5xxx_poc_protected_persist(MSM5xxxPOCMachineState *s,
                                           uint64_t programs, uint64_t erases)
 {
@@ -13783,6 +13847,12 @@ static void msm5xxx_poc_protected_persist(MSM5xxxPOCMachineState *s,
     uint32_t start, length;
     uint8_t previous[256];
     int sector, ret;
+
+    /* The external bank's disposable backing supplies only the initial array.
+     * Completed operations live in p->image, including across guest reset. */
+    if (s->protected_nor_bank_base) {
+        return;
+    }
     if (p->programs != programs) {
         start = p->target - p->base;
         length = p->staged_length;
@@ -13846,6 +13916,16 @@ static MemTxResult msm5xxx_poc_protected_read(void *opaque, hwaddr offset,
         return MEMTX_OK;
     }
     msm5xxx_poc_protected_sync(s);
+    if (s->protected_nor_bank_base && s->protected_nor_bank_identify) {
+        *value = 0;
+        for (i = 0; i < size; i++) {
+            unsigned lane = (p->base + offset + i) & 0xffff;
+            uint8_t byte = lane < 4 ? s->protected_nor_bank_id >> (lane * 8) : 0xff;
+
+            *value |= (uint64_t)byte << (i * 8);
+        }
+        return MEMTX_OK;
+    }
     if (p->phase == MSM5XXX_PROTECTED_NOR_ARRAY ||
         (p->phase == MSM5XXX_PROTECTED_NOR_STATUS && p->suspended && p->array_selected)) {
         /* Array bus reads are not command/status width violations. */
@@ -13880,6 +13960,23 @@ static MemTxResult msm5xxx_poc_protected_write(void *opaque, hwaddr offset,
     msm5xxx_poc_protected_sync(s);
     if (size > 8 || offset > p->length || size > p->length - offset) {
         return MEMTX_ERROR;
+    }
+    if (s->protected_nor_bank_base && size == 2 && !(offset & 1)) {
+        if (s->protected_nor_bank_identify && (value == 0xff || value == 0xf3)) {
+            s->protected_nor_bank_identify = false;
+            msm5xxx_protected_nor_reset(p);
+            return MEMTX_OK;
+        }
+        if (p->phase == MSM5XXX_PROTECTED_NOR_ARRAY) {
+            if (value == 0x90) {
+                s->protected_nor_bank_identify = true;
+                return MEMTX_OK;
+            }
+            if (value == 0xff || value == 0xf3) {
+                msm5xxx_protected_nor_reset(p);
+                return MEMTX_OK;
+            }
+        }
     }
     programs = p->programs;
     erases = p->erases;
@@ -13918,6 +14015,7 @@ static void msm5xxx_poc_protected_reset(void *opaque)
     MSM5xxxPOCMachineState *s = opaque;
     /* Explicit virtual power reset: uncommitted operation is aborted. */
     msm5xxx_protected_nor_reset(&s->protected_nor);
+    s->protected_nor_bank_identify = false;
     s->protected_nor_source_checks = s->protected_nor_source_rejections = 0;
     s->protected_nor_source_reason = 0;
     s->protected_nor_clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -14001,6 +14099,96 @@ invalid:
     error_setg(errp, "protected-nor-source requires six aligned, nonoverflowing hex fields before realization");
 }
 
+static char *msm5xxx_poc_get_protected_bank(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    (void)errp;
+    return s->protected_nor_bank_base ?
+        g_strdup_printf("%x:%x", s->protected_nor_bank_base,
+                         s->protected_nor_bank_id) : g_strdup("");
+}
+
+static void msm5xxx_poc_set_protected_bank(Object *obj, const char *value,
+                                           Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t fields[2];
+
+    if (s->protected_nor_realized || s->protected_nor_bank_base ||
+        !msm5xxx_poc_boot_storage_hex(value, fields, 2) ||
+        fields[0] < 0x10000000 || (fields[0] & 0xffff) ||
+        fields[0] > UINT32_MAX - 4) {
+        error_setg(errp, "protected-nor-bank requires aligned BASE:PACKED_ID before realization");
+        return;
+    }
+    s->protected_nor_bank_base = fields[0];
+    s->protected_nor_bank_id = fields[1];
+}
+
+static bool msm5xxx_poc_protected_bank_needs_overlay(MSM5xxxPOCMachineState *s)
+{
+    return s->protected_nor_bank_base &&
+        (s->protected_nor_bank_base < s->protected_nor_base ||
+         (uint64_t)s->protected_nor_bank_base + 4 >
+         (uint64_t)s->protected_nor_base + s->protected_nor_length);
+}
+
+static uint64_t msm5xxx_poc_protected_bank_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value;
+
+    if (!s->protected_nor_bank_identify) {
+        return size == 2 ? 0xffff : 0xff;
+    }
+    value = s->protected_nor_bank_id >> (8 * offset);
+    return value & (size == 2 ? 0xffff : 0xff);
+}
+
+static void msm5xxx_poc_protected_bank_write(void *opaque, hwaddr offset,
+                                             uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (offset || size != 2) {
+        return;
+    }
+    if (value == 0x90) {
+        s->protected_nor_bank_identify = true;
+    } else if (value == 0xff || value == 0xf3) {
+        s->protected_nor_bank_identify = false;
+        msm5xxx_protected_nor_reset(&s->protected_nor);
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_protected_bank_ops = {
+    .read = msm5xxx_poc_protected_bank_read,
+    .write = msm5xxx_poc_protected_bank_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 2 },
+    .impl = { .min_access_size = 1, .max_access_size = 2 },
+};
+
+static bool msm5xxx_poc_protected_bank_available(MSM5xxxPOCMachineState *s)
+{
+    uint64_t base = s->protected_nor_base;
+    uint64_t end = base + s->protected_nor_length;
+    MemoryRegionSection section = memory_region_find(
+        get_system_memory(), base, s->protected_nor_length);
+    bool conflict = section.mr != NULL;
+
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    return !conflict && base >= s->primary_nor_size &&
+        !(base < (uint64_t)s->ram_base + MACHINE(s)->ram_size &&
+          s->ram_base < end) &&
+        !(s->external_ram_size &&
+          base < (uint64_t)s->external_ram_base + s->external_ram_size &&
+          s->external_ram_base < end);
+}
+
 static void msm5xxx_poc_protected_realize(MSM5xxxPOCMachineState *s)
 {
     uint32_t sectors[MSM5XXX_PROTECTED_NOR_MAX_SECTORS], count, i;
@@ -14012,17 +14200,25 @@ static void msm5xxx_poc_protected_realize(MSM5xxxPOCMachineState *s)
         exit(EXIT_FAILURE);
     }
     if (!s->protected_nor_enabled) {
+        if (s->protected_nor_bank_base) {
+            error_report("external protected NOR control requires an array aperture");
+            exit(EXIT_FAILURE);
+        }
         return;
     }
     if (!s->memory_profile_enabled ||
-        s->protected_nor_base + (uint64_t)s->protected_nor_length >
-            MIN(s->primary_nor_size, s->ram_base) ||
+        (s->protected_nor_bank_base &&
+         !msm5xxx_poc_protected_bank_available(s)) ||
+        (s->protected_nor_bank_base ?
+         s->protected_nor_base < s->protected_nor_bank_base :
+         s->protected_nor_base + (uint64_t)s->protected_nor_length >
+             MIN(s->primary_nor_size, s->ram_base)) ||
         s->primary_x16_nor_enabled || s->whole_primary_x16_enabled ||
         s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
         s->intel_x16_nor_enabled || s->amd_x16_nor_enabled ||
         s->fujitsu_x16_nor_enabled || s->upper_x8_nor_enabled ||
         s->upper_x16_nor_enabled) {
-        error_report("protected NOR requires an exclusive seeded primary-ROM window");
+        error_report("protected NOR requires an exclusive source-bound array window");
         exit(EXIT_FAILURE);
     }
     s->protected_nor_blk = blk_by_name("msm5xxx-protected-nor-state");
@@ -14060,12 +14256,38 @@ static void msm5xxx_poc_protected_realize(MSM5xxxPOCMachineState *s)
         error_report("protected NOR initialization failed");
         exit(EXIT_FAILURE);
     }
+    if (s->protected_nor_bank_base &&
+        s->msm5xxx_protected_nor_sector == 0x10000 &&
+        (count == 64 || count == 128)) {
+        s->protected_nor.sector_mask = count - 1;
+    }
+    s->protected_nor.idle_status_reads = s->protected_nor_bank_base != 0;
     s->protected_nor_clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     memory_region_init_io(&s->protected_nor_region, OBJECT(s),
         &msm5xxx_poc_protected_ops, s, "msm5xxx-poc.protected-nor",
         s->protected_nor_length);
     memory_region_add_subregion_overlap(get_system_memory(),
         s->protected_nor_base, &s->protected_nor_region, 2);
+    if (msm5xxx_poc_protected_bank_needs_overlay(s)) {
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), s->protected_nor_bank_base, 4);
+        bool conflict = section.mr != NULL &&
+                        section.mr != &s->protected_nor_region;
+
+        memory_region_unref(section.mr);
+        if (conflict || (s->external_ram_size &&
+            (uint64_t)s->external_ram_base <
+                (uint64_t)s->protected_nor_base + s->protected_nor_length &&
+            (uint64_t)s->protected_nor_bank_base <
+                (uint64_t)s->external_ram_base + s->external_ram_size)) {
+            error_report("external protected NOR overlaps an existing memory route");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_io(&s->protected_nor_bank_region, OBJECT(s),
+            &msm5xxx_poc_protected_bank_ops, s, "protected-nor-bank", 4);
+        memory_region_add_subregion_overlap(get_system_memory(),
+            s->protected_nor_bank_base, &s->protected_nor_bank_region, 3);
+    }
     qemu_register_reset(msm5xxx_poc_protected_reset, s);
 }
 
@@ -14513,6 +14735,204 @@ static const MemoryRegionOps msm5xxx_poc_external_uart_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 1 },
 };
 
+static uint64_t msm5xxx_poc_indexed_18_read(void *opaque, hwaddr offset,
+                                          unsigned size)
+{
+    typeof(((MSM5xxxPOCMachineState *)0)->external_indexed_18_context[0]) *port = opaque;
+    MSM5xxxPOCMachineState *s = port->machine;
+
+    if (offset || size != 2) {
+        return 0;
+    }
+    return port->data ? s->external_indexed_18_registers[s->external_indexed_18_selector]
+                      : s->external_indexed_18_selector;
+}
+
+static void msm5xxx_poc_indexed_18_write(void *opaque, hwaddr offset,
+                                       uint64_t value, unsigned size)
+{
+    typeof(((MSM5xxxPOCMachineState *)0)->external_indexed_18_context[0]) *port = opaque;
+    MSM5xxxPOCMachineState *s = port->machine;
+
+    if (offset || size != 2) {
+        return;
+    }
+    if (port->data) {
+        s->external_indexed_18_registers[s->external_indexed_18_selector] = value;
+    } else {
+        s->external_indexed_18_selector = value;
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_indexed_18_ops = {
+    .read = msm5xxx_poc_indexed_18_read,
+    .write = msm5xxx_poc_indexed_18_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+    .impl = { .min_access_size = 2, .max_access_size = 2 },
+};
+
+static void msm5xxx_poc_indexed_18_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    s->external_indexed_18_selector = 0;
+    memset(s->external_indexed_18_registers, 0,
+           sizeof(s->external_indexed_18_registers));
+}
+
+static void msm5xxx_poc_external_lcd_18_window_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    memset(s->external_lcd_18_bounds, 0, sizeof(s->external_lcd_18_bounds));
+    s->external_lcd_18_bounds_seen = 0;
+    s->external_lcd_18_cursor_x = 0;
+    s->external_lcd_18_cursor_y = 0;
+    s->external_lcd_18_command = 0;
+    s->external_lcd_18_parameter_index = 0;
+    s->external_lcd_18_parameters_left = 0;
+    s->external_lcd_18_parameter_valid = false;
+    s->external_lcd_18_window_valid = false;
+}
+
+static void msm5xxx_poc_external_lcd_register_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    s->external_lcd_18_register_selector = 0;
+    memset(s->external_lcd_18_registers, 0, sizeof(s->external_lcd_18_registers));
+}
+
+static void msm5xxx_poc_external_lcd_18_window_command(
+    MSM5xxxPOCMachineState *s, uint16_t value)
+{
+    if (s->external_lcd_18_parameters_left) {
+        if (s->external_lcd_18_command == 0x42) {
+            unsigned index = 2 + s->external_lcd_18_parameter_index;
+
+            if (value > UINT8_MAX) {
+                s->external_lcd_18_parameter_valid = false;
+            } else {
+                s->external_lcd_18_bounds[index] = value;
+            }
+        } else if (s->external_lcd_18_command == 0x43) {
+            unsigned index = s->external_lcd_18_parameter_index;
+
+            if (value > UINT8_MAX) {
+                s->external_lcd_18_parameter_valid = false;
+            } else {
+                s->external_lcd_18_bounds[index] = value;
+            }
+        }
+        s->external_lcd_18_parameter_index++;
+        s->external_lcd_18_parameters_left--;
+        if (!s->external_lcd_18_parameters_left) {
+            if (s->external_lcd_18_command != 0x42 &&
+                s->external_lcd_18_command != 0x43) {
+                return;
+            }
+            if (s->external_lcd_18_command == 0x42) {
+                if (s->external_lcd_18_parameter_valid) {
+                    s->external_lcd_18_bounds_seen |= 2;
+                } else {
+                    s->external_lcd_18_bounds_seen &= ~2;
+                }
+            } else if (s->external_lcd_18_command == 0x43) {
+                if (s->external_lcd_18_parameter_valid) {
+                    s->external_lcd_18_bounds_seen |= 1;
+                } else {
+                    s->external_lcd_18_bounds_seen &= ~1;
+                }
+            }
+            if (s->external_lcd_18_bounds_seen == 3 &&
+                s->external_lcd_18_bounds[0] <= s->external_lcd_18_bounds[1] &&
+                s->external_lcd_18_bounds[2] <= s->external_lcd_18_bounds[3]) {
+                s->external_lcd_18_window_valid = true;
+                s->external_lcd_18_cursor_x = s->external_lcd_18_bounds[0];
+                s->external_lcd_18_cursor_y = s->external_lcd_18_bounds[2];
+            } else {
+                s->external_lcd_18_window_valid = false;
+            }
+        }
+        return;
+    }
+
+    s->external_lcd_18_command = value;
+    s->external_lcd_18_parameter_index = 0;
+    switch (value) {
+    case 0x42:
+    case 0x43:
+        s->external_lcd_18_parameters_left = 2;
+        s->external_lcd_18_parameter_valid = true;
+        break;
+    case 0x60:
+    case 0x61:
+        s->external_lcd_18_parameters_left = 1;
+        break;
+    case 0x51:
+        s->external_lcd_18_parameters_left = 0;
+        if (s->external_lcd_18_window_valid) {
+            s->external_lcd_18_cursor_x = s->external_lcd_18_bounds[0];
+            s->external_lcd_18_cursor_y = s->external_lcd_18_bounds[2];
+        }
+        break;
+    default:
+        s->external_lcd_18_parameters_left = 0;
+        break;
+    }
+}
+
+static void msm5xxx_poc_external_lcd_18_window_advance(
+    MSM5xxxPOCMachineState *s)
+{
+    if (s->external_lcd_18_cursor_x < s->external_lcd_18_bounds[1]) {
+        s->external_lcd_18_cursor_x++;
+    } else {
+        s->external_lcd_18_cursor_x = s->external_lcd_18_bounds[0];
+        if (s->external_lcd_18_cursor_y < s->external_lcd_18_bounds[3]) {
+            s->external_lcd_18_cursor_y++;
+        } else {
+            s->external_lcd_18_cursor_y = s->external_lcd_18_bounds[2];
+        }
+    }
+}
+
+static uint64_t msm5xxx_poc_external_lcd_18_window_read(
+    void *opaque, hwaddr offset, unsigned size)
+{
+    /* The selected source contracts establish pixel writes only. */
+    return 0;
+}
+
+static void msm5xxx_poc_external_lcd_18_window_write(
+    void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    if (s->external_lcd_18_dcs) {
+        if (offset || size != 2) {
+            return;
+        }
+        msm5xxx_poc_lcd_trace_write(s, 0x02000002,
+                                    (uint16_t)value, 2);
+        return;
+    }
+    if (offset || size != 2 || !s->external_lcd_18_window_valid) {
+        return;
+    }
+    msm5xxx_poc_lcd_trace_write(s, 0x02000002, (uint16_t)value, 2);
+    msm5xxx_poc_external_lcd_18_window_advance(s);
+}
+
+static const MemoryRegionOps msm5xxx_poc_external_lcd_18_window_ops = {
+    .read = msm5xxx_poc_external_lcd_18_window_read,
+    .write = msm5xxx_poc_external_lcd_18_window_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+    .impl = { .min_access_size = 2, .max_access_size = 2 },
+};
+
 static uint64_t msm5xxx_poc_external_lcd_read(void *opaque, hwaddr offset,
                                               unsigned size)
 {
@@ -14520,6 +14940,16 @@ static uint64_t msm5xxx_poc_external_lcd_read(void *opaque, hwaddr offset,
 
     if (offset >= 0x1000 || size > 0x1000 - offset) {
         return 0;
+    }
+    if (lcd->index == 0 && lcd->machine->external_lcd_18_register_offset && size == 2) {
+        MSM5xxxPOCMachineState *s = lcd->machine;
+
+        if (offset == 0) {
+            return s->external_lcd_18_register_selector;
+        }
+        if (offset == s->external_lcd_18_register_offset) {
+            return s->external_lcd_18_registers[s->external_lcd_18_register_selector];
+        }
     }
     return msm5xxx_poc_backing_read(
         lcd->machine->external_lcd_backing[lcd->index], offset, size);
@@ -14535,7 +14965,25 @@ static void msm5xxx_poc_external_lcd_write(void *opaque, hwaddr offset,
     if (offset >= 0x1000 || size > 0x1000 - offset || size > 4) {
         return;
     }
+    if (lcd->index == 0 && lcd->machine->external_lcd_18_window &&
+        offset == 0 && size == 2) {
+        msm5xxx_poc_external_lcd_18_window_command(lcd->machine,
+                                                    (uint16_t)value);
+    }
     msm5xxx_poc_backing_write(backing, offset, value, size);
+    if (lcd->index == 0 && lcd->machine->external_lcd_18_register_offset) {
+        MSM5xxxPOCMachineState *s = lcd->machine;
+
+        if (size == 2 && offset == 0) {
+            s->external_lcd_18_register_selector = value;
+        } else if (size == 2 && offset == s->external_lcd_18_register_offset) {
+            s->external_lcd_18_registers[s->external_lcd_18_register_selector] = value;
+        } else {
+            return;
+        }
+        msm5xxx_poc_lcd_trace_write(s, 0x18000000 + offset, value, size);
+        return;
+    }
     if (lcd->index == 1 &&
         lcd->machine->experimental_contract_lcd_1c_selector) {
         uint64_t selector;
@@ -14846,6 +15294,705 @@ static const MemoryRegionOps msm5xxx_poc_experimental_status_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 2, .unaligned = true },
 };
 
+static uint64_t msm5xxx_poc_boot_nand_read(void *opaque, hwaddr offset,
+                                          unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value;
+
+    if (!size || size > 4 || offset > sizeof(s->boot_nand_backing) ||
+        size > sizeof(s->boot_nand_backing) - offset) {
+        return 0;
+    }
+    if (msm5xxx_boot_nand_read(&s->boot_nand, offset, size, &value)) {
+        return value;
+    }
+    return msm5xxx_poc_backing_read(s->boot_nand_backing, offset, size);
+}
+
+static void msm5xxx_poc_boot_nand_write(void *opaque, hwaddr offset,
+                                       uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t address = s->boot_nand.address;
+    int ret = 0;
+
+    if (!size || size > 4 || offset > sizeof(s->boot_nand_backing) ||
+        size > sizeof(s->boot_nand_backing) - offset) {
+        return;
+    }
+    if (!msm5xxx_boot_nand_write(&s->boot_nand, offset, size, value)) {
+        msm5xxx_poc_backing_write(s->boot_nand_backing, offset, value, size);
+        return;
+    }
+    if (offset == 0x300 && !s->boot_nand.status &&
+        (s->boot_nand.command == 3 || s->boot_nand.command == 4)) {
+        size_t length = s->boot_nand.command == 3 ? 512 : 16384;
+        size_t spare_offset = s->boot_nand_size + (size_t)address / 32;
+
+        ret = blk_pwrite(s->boot_nand_blk, address, length,
+                         s->boot_nand_media + address, 0);
+        if (ret >= 0) {
+            ret = blk_pwrite(s->boot_nand_blk, spare_offset, length / 32,
+                             s->boot_nand_media + spare_offset, 0);
+        }
+        if (ret < 0) {
+            s->boot_nand.status = 0x80;
+            error_report("bootstrap NAND write failed: %s", strerror(-ret));
+        }
+    }
+}
+
+static uint64_t msm5xxx_poc_boot_events_read(void *opaque, hwaddr offset,
+                                             unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t result = 0;
+    unsigned i;
+
+    if (!size || size > 4 || offset > sizeof(s->boot_events_backing) ||
+        size > sizeof(s->boot_events_backing) - offset) {
+        return 0;
+    }
+    for (i = 0; i < size; i++) {
+        hwaddr at = offset + i;
+        uint8_t value = s->boot_events_backing[at];
+
+        hwaddr pending = s->boot_nand_word ? 0x950 : 0xc84;
+
+        if (at >= pending && at < pending + 4) {
+            value = s->boot_nand.pending >> (8 * (at - pending));
+
+        } else if (!s->boot_nand_word &&
+                   ((at >= 0xf14 && at < 0xf18) ||
+                    (at >= 0xe94 && at < 0xe98))) {
+            value = (at == 0xf14 || at == 0xe94) ? 8 : 0;
+        } else if (s->boot_nand_word && (s->boot_nand_peripherals & 2) &&
+                   ((at >= 0x1408 && at < 0x140c) ||
+                    (at >= 0x1508 && at < 0x150c))) {
+            value = (at == 0x1408 || at == 0x1508) ? 8 : 0;
+        }
+        result |= (uint64_t)value << (8 * i);
+    }
+    return result;
+}
+
+static void msm5xxx_poc_boot_events_write(void *opaque, hwaddr offset,
+                                          uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    unsigned i;
+
+    if (!size || size > 4 || offset > sizeof(s->boot_events_backing) ||
+        size > sizeof(s->boot_events_backing) - offset) {
+        return;
+    }
+    for (i = 0; i < size; i++) {
+        hwaddr at = offset + i;
+        uint8_t byte = value >> (8 * i);
+
+        hwaddr acknowledge = s->boot_nand_word ? 0x904 : 0xc84;
+
+        if (at >= acknowledge && at < acknowledge + 4) {
+            msm5xxx_boot_nand_irq_ack(&s->boot_nand,
+                                      (uint32_t)byte << (8 * (at - acknowledge)));
+        } else {
+            s->boot_events_backing[at] = byte;
+        }
+    }
+}
+
+static uint64_t msm5xxx_poc_boot_presence_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    return offset ? 0 : 0x1f;
+}
+
+static void msm5xxx_poc_boot_presence_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size)
+{
+}
+
+static uint64_t msm5xxx_poc_boot_lcd_read(void *opaque, hwaddr offset,
+                                         unsigned size)
+{
+    const typeof(((MSM5xxxPOCMachineState *)0)->boot_lcd_context[0]) *port = opaque;
+    MSM5xxxPOCMachineState *s = port->machine;
+
+    (void)size;
+    if (!port->data && offset) {
+        if (offset != 4) {
+            return 0;
+        }
+        return s->boot_nand_word ?
+            (s->boot_lcd_selector >> 1 == 0 && s->boot_nand_lcd_id ?
+             s->boot_nand_lcd_id :
+             s->boot_bridge_registers[s->boot_lcd_selector >> 1]) :
+            s->boot_lcd_control;
+    }
+    return port->data ? s->boot_lcd_registers[s->boot_lcd_selector] :
+                        s->boot_lcd_selector;
+}
+
+static void msm5xxx_poc_boot_lcd_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size)
+{
+    const typeof(((MSM5xxxPOCMachineState *)0)->boot_lcd_context[0]) *port = opaque;
+    MSM5xxxPOCMachineState *s = port->machine;
+
+    if (!port->data && offset) {
+        if (offset == 4) {
+            s->boot_lcd_control = value;
+            if (s->boot_lcd_selector >> 1 || !s->boot_nand_lcd_id) {
+                s->boot_bridge_registers[s->boot_lcd_selector >> 1] = value;
+            }
+            msm5xxx_poc_lcd_trace_write(s, 0x20000004, value, size);
+        }
+        return;
+    } else if (port->data) {
+        s->boot_lcd_registers[s->boot_lcd_selector] = value;
+    } else {
+        s->boot_lcd_selector = value;
+    }
+    msm5xxx_poc_lcd_trace_write(s, s->boot_nand_word ?
+        (port->data ? s->boot_nand_data_port : 0x20000000) :
+        (port->data ? 0x28000100 : 0x28000000), value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_boot_nand_ops = {
+    .read = msm5xxx_poc_boot_nand_read,
+    .write = msm5xxx_poc_boot_nand_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static const MemoryRegionOps msm5xxx_poc_boot_events_ops = {
+    .read = msm5xxx_poc_boot_events_read,
+    .write = msm5xxx_poc_boot_events_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static const MemoryRegionOps msm5xxx_poc_boot_presence_ops = {
+    .read = msm5xxx_poc_boot_presence_read,
+    .write = msm5xxx_poc_boot_presence_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
+static const MemoryRegionOps msm5xxx_poc_boot_lcd_ops = {
+    .read = msm5xxx_poc_boot_lcd_read,
+    .write = msm5xxx_poc_boot_lcd_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+    .impl = { .min_access_size = 2, .max_access_size = 2 },
+};
+
+static uint64_t msm5xxx_poc_boot_video_read(void *opaque, hwaddr offset,
+                                           unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value = s->boot_lcd_registers[s->boot_lcd_selector];
+
+    (void)offset;
+    return size == 4 ? value | (value << 16) : value;
+}
+
+static void msm5xxx_poc_boot_video_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    s->boot_lcd_registers[s->boot_lcd_selector] =
+        size == 4 ? value >> 16 : value;
+    msm5xxx_poc_lcd_trace_write(s, s->boot_nand_data_port + offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_boot_video_ops = {
+    .read = msm5xxx_poc_boot_video_read,
+    .write = msm5xxx_poc_boot_video_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 4 },
+    .impl = { .min_access_size = 2, .max_access_size = 4 },
+};
+
+static void msm5xxx_poc_boot_nand_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    unsigned i;
+
+    msm5xxx_boot_nand_reset(&s->boot_nand);
+    memset(s->boot_nand_backing, 0, sizeof(s->boot_nand_backing));
+    memset(s->boot_events_backing, 0, sizeof(s->boot_events_backing));
+    memset(s->boot_lcd_registers, 0, sizeof(s->boot_lcd_registers));
+    s->boot_lcd_selector = 0;
+    s->boot_lcd_control = 0;
+    memset(s->boot_bridge_registers, 0, sizeof(s->boot_bridge_registers));
+    for (i = 0; i < s->boot_control_count; i++) {
+        memset(memory_region_get_ram_ptr(&s->boot_control[i]), 0,
+               memory_region_size(&s->boot_control[i]));
+    }
+}
+
+static char *msm5xxx_poc_get_signal_memory(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *value = g_string_new(NULL);
+    unsigned i;
+
+    (void)errp;
+    for (i = 0; i < s->signal_memory_count * 2; i++) {
+        g_string_append_printf(value, "%s%x", i ? ":" : "",
+                               s->signal_memory_ranges[i]);
+    }
+    return g_string_free(value, false);
+}
+
+static void msm5xxx_poc_set_signal_memory(Object *obj, const char *value,
+                                          Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t fields[16];
+    const char *cursor;
+    unsigned count = 1, i, j;
+
+    for (cursor = value; *cursor; cursor++) {
+        count += *cursor == ':';
+    }
+    if (s->signal_memory_realized || s->signal_memory_count || count < 2 ||
+        count > ARRAY_SIZE(fields) || count % 2 ||
+        !msm5xxx_poc_boot_storage_hex(value, fields, count)) {
+        goto invalid;
+    }
+    for (i = 0; i < count; i += 2) {
+        uint64_t end = (uint64_t)fields[i] + fields[i + 1];
+
+        if (!fields[i] || !fields[i + 1] || fields[i + 1] > 0x100000 ||
+            ((fields[i] | fields[i + 1]) & 0xfff) ||
+            end > UINT64_C(0x100000000)) {
+            goto invalid;
+        }
+        for (j = 0; j < i; j += 2) {
+            if ((uint64_t)fields[j] < end &&
+                fields[i] < (uint64_t)fields[j] + fields[j + 1]) {
+                goto invalid;
+            }
+        }
+    }
+    memcpy(s->signal_memory_ranges, fields, count * sizeof(fields[0]));
+    s->signal_memory_count = count / 2;
+    return;
+invalid:
+    error_setg(errp, "signal memory requires up to eight disjoint page-aligned BASE:LENGTH pairs before realization");
+}
+
+static void msm5xxx_poc_signal_memory_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    unsigned i;
+
+    for (i = 0; i < s->signal_memory_count; i++) {
+        memset(memory_region_get_ram_ptr(&s->signal_memory[i]), 0,
+               s->signal_memory_ranges[i * 2 + 1]);
+    }
+}
+
+static void msm5xxx_poc_signal_memory_init(MachineState *machine,
+                                           MSM5xxxPOCMachineState *s)
+{
+    unsigned i;
+
+    (void)machine;
+    s->signal_memory_realized = true;
+    for (i = 0; i < s->signal_memory_count; i++) {
+        uint32_t base = s->signal_memory_ranges[i * 2];
+        uint32_t length = s->signal_memory_ranges[i * 2 + 1];
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), base, length);
+        bool conflict = section.mr != NULL;
+        g_autofree char *name = g_strdup_printf("signal-memory-%u", i);
+
+        memory_region_unref(section.mr);
+        if (conflict || !s->memory_profile_enabled) {
+            error_report("signal memory requires an unclaimed memory-profile aperture");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_ram(&s->signal_memory[i], NULL, name,
+                               length, &error_fatal);
+        memory_region_add_subregion(get_system_memory(), base,
+                                     &s->signal_memory[i]);
+    }
+    if (s->signal_memory_count) {
+        qemu_register_reset(msm5xxx_poc_signal_memory_reset, s);
+    }
+}
+
+static char *msm5xxx_poc_get_boot_control_windows(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    GString *value = g_string_new(NULL);
+    unsigned i;
+
+    (void)errp;
+    for (i = 0; i < s->boot_control_count * 2; i++) {
+        g_string_append_printf(value, "%s%x", i ? ":" : "",
+                               s->boot_control_ranges[i]);
+    }
+    return g_string_free(value, false);
+}
+
+static void msm5xxx_poc_set_boot_control_windows(Object *obj, const char *value,
+                                          Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t fields[32];
+    const char *cursor;
+    unsigned count = 1, i, j;
+
+    for (cursor = value; *cursor; cursor++) {
+        count += *cursor == ':';
+    }
+    if (s->msm.name || s->boot_control_count || count < 2 ||
+        count > ARRAY_SIZE(fields) || count % 2 ||
+        !msm5xxx_poc_boot_storage_hex(value, fields, count)) {
+        goto invalid;
+    }
+    for (i = 0; i < count; i += 2) {
+        uint64_t end = (uint64_t)fields[i] + fields[i + 1];
+
+        if (!fields[i] || !fields[i + 1] || fields[i + 1] > 0x100000 ||
+            ((fields[i] | fields[i + 1]) & 0xfff) ||
+            end > UINT64_C(0x100000000)) {
+            goto invalid;
+        }
+        for (j = 0; j < i; j += 2) {
+            if ((uint64_t)fields[j] < end &&
+                fields[i] < (uint64_t)fields[j] + fields[j + 1]) {
+                goto invalid;
+            }
+        }
+    }
+    memcpy(s->boot_control_ranges, fields, count * sizeof(fields[0]));
+    s->boot_control_count = count / 2;
+    return;
+invalid:
+    error_setg(errp, "bootstrap control requires up to sixteen disjoint page-aligned BASE:LENGTH pairs before realization");
+}
+
+static void msm5xxx_poc_a80_update(MSM5xxxPOCMachineState *s)
+{
+    int64_t now = s->a80_clock_ns;
+
+    s->a80_irq_level = msm5xxx_timer_irq_level(&s->a80_irq);
+    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level || s->a80_irq_level);
+    if (s->a80_irq.armed) {
+        uint64_t remaining = s->a80_irq.remaining_ns;
+        int64_t next = remaining > INT64_MAX - now ? INT64_MAX :
+                       now + remaining;
+        timer_mod(s->a80_timer, next);
+    } else {
+        timer_del(s->a80_timer);
+    }
+}
+
+static void msm5xxx_poc_a80_sync(MSM5xxxPOCMachineState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    assert(now >= s->a80_clock_ns);
+    msm5xxx_timer_irq_advance(&s->a80_irq, now - s->a80_clock_ns);
+    s->a80_clock_ns = now;
+    msm5xxx_poc_a80_update(s);
+}
+
+static void msm5xxx_poc_a80_tick(void *opaque)
+{
+    msm5xxx_poc_a80_sync(opaque);
+}
+
+static uint64_t msm5xxx_poc_a80_read(void *opaque, hwaddr offset,
+                                    unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint32_t value = 0;
+
+    msm5xxx_poc_a80_sync(s);
+    msm5xxx_timer_irq_read(&s->a80_irq, offset, size, &value);
+    return value;
+}
+
+static void msm5xxx_poc_a80_write(void *opaque, hwaddr offset,
+                                 uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_poc_a80_sync(s);
+    msm5xxx_timer_irq_write(&s->a80_irq, offset, size, value);
+    msm5xxx_poc_a80_update(s);
+}
+
+static uint64_t msm5xxx_poc_a80_arm_read(void *opaque, hwaddr offset,
+                                        unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    uint64_t value = 0;
+    unsigned i;
+
+    if ((size != 1 && size != 2 && size != 4) ||
+        offset >= sizeof(s->a80_clock_regs) ||
+        size > sizeof(s->a80_clock_regs) - offset) {
+        return 0;
+    }
+    for (i = 0; i < size; i++) {
+        value |= (uint64_t)s->a80_clock_regs[offset + i] << (8 * i);
+    }
+    return value;
+}
+
+static void msm5xxx_poc_a80_arm_write(void *opaque, hwaddr offset,
+                                     uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    unsigned i;
+    bool configured;
+
+    if ((size != 1 && size != 2 && size != 4) ||
+        offset >= sizeof(s->a80_clock_regs) ||
+        size > sizeof(s->a80_clock_regs) - offset) {
+        return;
+    }
+    msm5xxx_poc_a80_sync(s);
+    for (i = 0; i < size; i++) {
+        s->a80_clock_regs[offset + i] = value >> (8 * i);
+    }
+    s->a80_arm = s->a80_clock_regs[0];
+    configured = s->a80_arm == 2 &&
+        (s->a80_clock_regs[0x0c] & 0x33) == 3 &&
+        s->a80_clock_regs[0x10] == 0x80 && s->a80_clock_regs[0x14] == 0x80;
+    msm5xxx_timer_irq_set_armed(&s->a80_irq, configured);
+    msm5xxx_poc_a80_update(s);
+}
+
+static const MemoryRegionOps msm5xxx_poc_a80_ops = {
+    .read = msm5xxx_poc_a80_read,
+    .write = msm5xxx_poc_a80_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static const MemoryRegionOps msm5xxx_poc_a80_arm_ops = {
+    .read = msm5xxx_poc_a80_arm_read,
+    .write = msm5xxx_poc_a80_arm_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static void msm5xxx_poc_a80_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    msm5xxx_timer_irq_reset(&s->a80_irq);
+    s->a80_arm = 0;
+    memset(s->a80_clock_regs, 0, sizeof(s->a80_clock_regs));
+    s->a80_clock_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    msm5xxx_poc_a80_update(s);
+}
+
+static char *msm5xxx_poc_get_a80_timer_stats(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t enabled = 0;
+    (void)errp;
+
+    msm5xxx_timer_irq_read(&s->a80_irq, 0x14, 4, &enabled);
+    return g_strdup_printf("enabled=%u,armed=%u,mode=%x,control=%x,reload0=%x,reload1=%x,pending=%x,mask=%x,level=%u,remaining=%" PRIu64 ",clock=%" PRId64,
+        s->a80_timer_enabled, s->a80_irq.armed, s->a80_arm,
+        s->a80_clock_regs[0x0c], s->a80_clock_regs[0x10], s->a80_clock_regs[0x14],
+        s->a80_irq.pending[0], enabled, s->a80_irq_level,
+        s->a80_irq.remaining_ns, s->a80_clock_ns);
+}
+
+static void msm5xxx_poc_a80_init(MachineState *machine,
+                                MSM5xxxPOCMachineState *s)
+{
+    if (!s->a80_timer_enabled) {
+        return;
+    }
+    if (s->rex_irq_enabled) {
+        error_report("A80 timer and legacy IRQ controllers overlap CPU ownership");
+        exit(EXIT_FAILURE);
+    }
+    msm5xxx_timer_irq_init(&s->a80_irq, 0x200, 5000000);
+    s->a80_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, msm5xxx_poc_a80_tick, s);
+    memory_region_init_io(&s->a80_controller, OBJECT(machine),
+                          &msm5xxx_poc_a80_ops, s, "msm5xxx-poc.a80-irq", 0x20);
+    memory_region_add_subregion_overlap(get_system_memory(), 0x03000a80,
+                                         &s->a80_controller, 2);
+    memory_region_init_io(&s->a80_arm_region, OBJECT(machine),
+                          &msm5xxx_poc_a80_arm_ops, s, "msm5xxx-poc.a80-clock",
+                          sizeof(s->a80_clock_regs));
+    memory_region_add_subregion_overlap(get_system_memory(), 0x030007a0,
+                                         &s->a80_arm_region, 2);
+    qemu_register_reset(msm5xxx_poc_a80_reset, s);
+    msm5xxx_poc_a80_reset(s);
+}
+
+static void msm5xxx_poc_boot_nand_init(MachineState *machine,
+                                       MSM5xxxPOCMachineState *s)
+{
+    size_t raw_size;
+    int ret;
+    unsigned i;
+
+    if (!s->boot_nand_size) {
+        if (s->boot_nand_word || s->boot_nand_identity ||
+            s->boot_nand_peripherals || s->boot_control_count || s->boot_nand_data_port ||
+            s->boot_nand_lcd_id) {
+            error_report("bootstrap NAND peripherals require split-page media");
+            exit(EXIT_FAILURE);
+        }
+        return;
+    }
+    if ((s->boot_nand_word ?
+         (s->boot_nand_size != 0x04000000 && s->boot_nand_size != 0x08000000) ||
+         !s->boot_nand_identity || (s->boot_nand_identity & 0x80007fff) ||
+         ((s->boot_nand_peripherals & 1) ?
+          (s->boot_nand_data_port != 0x20040000 && s->boot_nand_data_port != 0x20080000) :
+          s->boot_nand_data_port != 0 || s->boot_nand_lcd_id) ||
+         (s->boot_nand_lcd_id && s->boot_nand_lcd_id != 0x7068) :
+         s->boot_nand_identity || s->boot_nand_peripherals || s->boot_control_count ||
+         s->boot_nand_data_port || s->boot_nand_lcd_id) ||
+        s->boot_nand_size % 16384 || !s->memory_profile_enabled ||
+        s->ram_base != 0x01000000 || s->ram_reserved_size ||
+        s->external_ram_size || s->primary_x16_nor_enabled ||
+        s->record_x16_nor_enabled || s->mapped_primary_x16_nor_enabled ||
+        s->intel_x16_nor_enabled || s->amd_x16_nor_enabled ||
+        s->fujitsu_x16_nor_enabled || s->upper_x8_nor_enabled ||
+        s->upper_x16_nor_enabled || s->raw_nand_main_enabled ||
+        s->small_nand_enabled || s->whole_primary_x16_enabled ||
+        s->protected_nor_enabled) {
+        error_report("bootstrap NAND conflicts with the selected memory or storage route");
+        exit(EXIT_FAILURE);
+    }
+    s->boot_nand_blk = blk_by_name("msm5xxx-bootstrap-nand");
+    if (!s->boot_nand_blk) {
+        error_report("bootstrap NAND requires a named split-page raw backend");
+        exit(EXIT_FAILURE);
+    }
+    blk_ref(s->boot_nand_blk);
+    ret = blk_set_perm(s->boot_nand_blk,
+                       BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE, 0,
+                       &error_fatal);
+    if (ret < 0) {
+        exit(EXIT_FAILURE);
+    }
+    raw_size = s->boot_nand_size + (size_t)s->boot_nand_size / 32;
+    if (blk_getlength(s->boot_nand_blk) != raw_size) {
+        error_report("bootstrap NAND backend length does not match main/spare geometry");
+        exit(EXIT_FAILURE);
+    }
+    s->boot_nand_media = g_malloc(raw_size);
+    ret = blk_pread(s->boot_nand_blk, 0, raw_size, s->boot_nand_media, 0);
+    if (ret < 0 || !msm5xxx_boot_nand_init(&s->boot_nand,
+            s->boot_nand_media, s->boot_nand_size, raw_size, 0x6000, 0x2000)) {
+        error_report("bootstrap NAND media initialization failed");
+        exit(EXIT_FAILURE);
+    }
+    s->boot_nand.identity_status = s->boot_nand_word ? s->boot_nand_identity : 0;
+    s->boot_nand.raw_spare_window = s->boot_nand_word;
+    memory_region_init_ram(&s->boot_low_ram, NULL,
+        "boot-low-ram", s->boot_nand_word ? 0x04000000 : 0x02000000,
+        &error_fatal);
+    memory_region_add_subregion_overlap(get_system_memory(), 0,
+                                         &s->boot_low_ram, 100);
+    memory_region_init_ram(&s->boot_high_ram, NULL,
+                            "boot-high-ram", 0x10000, &error_fatal);
+    memory_region_add_subregion_overlap(get_system_memory(), 0xffff0000,
+                                         &s->boot_high_ram, 100);
+    if (!s->boot_nand_word) {
+        const uint32_t ranges[] = { 0x60000000, 0x1000, 0x63800000,
+                                   0x1000, 0x58000000, 0x1000 };
+        memcpy(s->boot_control_ranges, ranges, sizeof(ranges));
+        s->boot_control_count = 3;
+    }
+    for (i = 0; i < s->boot_control_count; i++) {
+        uint32_t base = s->boot_control_ranges[i * 2];
+        uint32_t length = s->boot_control_ranges[i * 2 + 1];
+        g_autofree char *name = g_strdup_printf("boot-control-%u", i);
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), base, length);
+        bool conflict = section.mr != NULL;
+
+        memory_region_unref(section.mr);
+        if (conflict) {
+            error_report("bootstrap control bank overlaps an existing route");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_ram(&s->boot_control[i], NULL, name, length, &error_fatal);
+        memory_region_add_subregion(get_system_memory(), base, &s->boot_control[i]);
+    }
+    {
+        const uint32_t bases[] = { 0x64000000, 0x80000000,
+            s->boot_nand_word ? 0x20000000 : 0x28000000,
+            s->boot_nand_word ? s->boot_nand_data_port : 0x28000100 };
+        const uint32_t sizes[] = { 0x1000, 0x10000,
+            s->boot_nand_word ? 8 : 2,
+            s->boot_nand_word ? 0x20 : 2 };
+        for (i = 0; i < ARRAY_SIZE(bases); i++) {
+            if (i >= 2 && s->boot_nand_word && !(s->boot_nand_peripherals & 1)) {
+                continue;
+            }
+            MemoryRegionSection section = memory_region_find(
+                get_system_memory(), bases[i], sizes[i]);
+            bool conflict = section.mr != NULL;
+
+            memory_region_unref(section.mr);
+            if (conflict) {
+                error_report("bootstrap peripheral overlaps an existing route");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    if (!s->boot_nand_word || (s->boot_nand_peripherals & 4)) {
+        memory_region_init_io(&s->boot_presence, OBJECT(machine),
+                               &msm5xxx_poc_boot_presence_ops, s,
+                               "boot-presence-input", s->boot_nand_word ? 4 : 2);
+        memory_region_add_subregion_overlap(get_system_memory(),
+            s->boot_nand_word ? 0x48000050 : 0x58000070, &s->boot_presence, 10);
+    }
+    memory_region_init_io(&s->boot_nand_region, OBJECT(machine),
+                           &msm5xxx_poc_boot_nand_ops, s, "boot-nand", 0x1000);
+    memory_region_add_subregion(get_system_memory(), 0x64000000,
+                                 &s->boot_nand_region);
+    memory_region_init_io(&s->boot_events_region, OBJECT(machine),
+                           &msm5xxx_poc_boot_events_ops, s,
+                           "boot-events", sizeof(s->boot_events_backing));
+    memory_region_add_subregion(get_system_memory(), 0x80000000,
+                                 &s->boot_events_region);
+    for (i = 0; i < 2 && (!s->boot_nand_word || (s->boot_nand_peripherals & 1)); i++) {
+        s->boot_lcd_context[i].machine = s;
+        s->boot_lcd_context[i].data = i != 0;
+        memory_region_init_io(&s->boot_lcd_region[i], OBJECT(machine),
+                               i && s->boot_nand_word ?
+                               &msm5xxx_poc_boot_video_ops : &msm5xxx_poc_boot_lcd_ops,
+                               i && s->boot_nand_word ?
+                               (void *)s : (void *)&s->boot_lcd_context[i],
+                               i ? "boot-lcd-data" : "boot-lcd-command",
+                               s->boot_nand_word ?
+                               (i ? 0x20 : 8) : 2);
+        memory_region_add_subregion(get_system_memory(),
+            s->boot_nand_word ? (i ? s->boot_nand_data_port : 0x20000000) :
+                               (i ? 0x28000100 : 0x28000000),
+                                     &s->boot_lcd_region[i]);
+    }
+    qemu_register_reset(msm5xxx_poc_boot_nand_reset, s);
+}
+
 #define EXTERNAL_U32_PROPERTY(suffix, field, limit, message) \
 static void msm5xxx_poc_get_##suffix(Object *obj, Visitor *v, \
     const char *propname, void *opaque, Error **errp) \
@@ -14866,12 +16013,30 @@ static void msm5xxx_poc_set_##suffix(Object *obj, Visitor *v, \
     s->field = value; \
 }
 
+EXTERNAL_U32_PROPERTY(boot_nand_size, boot_nand_size, 0x08000000,
+                      "bootstrap-nand-main-size must be at most 128 MiB and set before realization")
+EXTERNAL_U32_PROPERTY(boot_nand_word, boot_nand_word, 1,
+                      "bootstrap-nand-word-interface must be zero or one and set before realization")
+EXTERNAL_U32_PROPERTY(boot_nand_identity, boot_nand_identity, 0x7fffffff,
+                      "bootstrap NAND identity must be set before realization")
+EXTERNAL_U32_PROPERTY(boot_nand_peripherals, boot_nand_peripherals, 7,
+                      "bootstrap NAND peripheral flags must be at most seven")
+EXTERNAL_U32_PROPERTY(boot_nand_data_port, boot_nand_data_port, 0,
+                      "bootstrap NAND LCD data port must be set before realization")
+EXTERNAL_U32_PROPERTY(boot_nand_lcd_id, boot_nand_lcd_id, UINT16_MAX,
+                      "bootstrap NAND LCD identity must be set before realization")
 EXTERNAL_U32_PROPERTY(external_ram_base, external_ram_base, 0,
                       "external-ram-base must be set before realization")
 EXTERNAL_U32_PROPERTY(external_ram_size, external_ram_size, UINT32_MAX,
                       "external-ram-size must be set before realization")
 EXTERNAL_U32_PROPERTY(external_strap_value, external_strap_value, UINT8_MAX,
                       "external-strap-value must be a byte set before realization")
+EXTERNAL_U32_PROPERTY(external_lcd_18_data_offset,
+                      external_lcd_18_data_offset, 0x80000,
+                      "external-lcd-18-data-offset must be set before realization")
+EXTERNAL_U32_PROPERTY(external_lcd_18_register_offset,
+                      external_lcd_18_register_offset, 0xffe,
+                      "external-lcd-18-register-offset must be set before realization")
 
 #define EXTERNAL_BOOL_PROPERTY(suffix, field) \
 static bool msm5xxx_poc_get_##suffix(Object *obj, Error **errp) \
@@ -14883,8 +16048,10 @@ static void msm5xxx_poc_set_##suffix(Object *obj, bool value, Error **errp) \
     s->field = value; \
 }
 
+EXTERNAL_BOOL_PROPERTY(a80_timer, a80_timer_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs09, external_cs09_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs0a, external_cs0a_enabled)
+EXTERNAL_BOOL_PROPERTY(external_indexed_18, external_indexed_18)
 EXTERNAL_BOOL_PROPERTY(external_window_08c, external_window_08c)
 EXTERNAL_BOOL_PROPERTY(external_window_1a, external_window_1a)
 EXTERNAL_BOOL_PROPERTY(experimental_contract_status_0b408,
@@ -14898,6 +16065,8 @@ EXTERNAL_BOOL_PROPERTY(experimental_contract_window_1c,
 EXTERNAL_BOOL_PROPERTY(external_uart, external_uart)
 EXTERNAL_BOOL_PROPERTY(external_uart_tx_log, external_uart_tx_log)
 EXTERNAL_BOOL_PROPERTY(external_lcd_18, external_lcd_18)
+EXTERNAL_BOOL_PROPERTY(external_lcd_18_window, external_lcd_18_window)
+EXTERNAL_BOOL_PROPERTY(external_lcd_18_dcs, external_lcd_18_dcs)
 EXTERNAL_BOOL_PROPERTY(external_lcd_1a, external_lcd_1a)
 EXTERNAL_BOOL_PROPERTY(external_lcd_1c, external_lcd_1c)
 EXTERNAL_BOOL_PROPERTY(experimental_contract_lcd_1c_selector,
@@ -14917,6 +16086,24 @@ static bool msm5xxx_poc_external_ram_overlaps(MSM5xxxPOCMachineState *s,
 
     return s->external_ram_size && s->external_ram_base < window_end &&
            base < ram_end;
+}
+
+static bool msm5xxx_poc_external_lcd_18_data_configuration_valid(
+    MSM5xxxPOCMachineState *s)
+{
+    return (s->external_lcd_18_data_offset == 0 ||
+            s->external_lcd_18_data_offset == 0x40000 ||
+            s->external_lcd_18_data_offset == 0x80000) &&
+           !(s->external_lcd_18_window && s->external_lcd_18_dcs) &&
+           (!(s->external_lcd_18_window || s->external_lcd_18_dcs) ||
+            s->external_lcd_18) &&
+           (!s->external_lcd_18_data_offset ||
+            s->external_lcd_18_window || s->external_lcd_18_dcs) &&
+           (!s->external_lcd_18_register_offset ||
+            (s->external_lcd_18 && !(s->external_lcd_18_register_offset & 1) &&
+             s->external_lcd_18_register_offset <= 0xffe &&
+             !s->external_lcd_18_window && !s->external_lcd_18_dcs &&
+             !s->external_lcd_18_data_offset));
 }
 
 static void msm5xxx_poc_init(MachineState *machine)
@@ -15742,6 +16929,8 @@ static void msm5xxx_poc_init(MachineState *machine)
                            MSM5XXX_POC_MSM_SIZE, &error_fatal);
     memory_region_add_subregion(get_system_memory(), MSM5XXX_POC_MSM_BASE,
                                 &s->msm);
+    msm5xxx_poc_boot_nand_init(machine, s);
+    msm5xxx_poc_a80_init(machine, s);
     if (!!s->external_ram_base != !!s->external_ram_size ||
         (s->external_ram_size &&
          ((uint64_t)s->external_ram_base + s->external_ram_size >
@@ -15765,6 +16954,7 @@ static void msm5xxx_poc_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(), s->external_ram_base,
                                     &s->external_ram);
     }
+    msm5xxx_poc_signal_memory_init(machine, s);
     {
         const struct { hwaddr base; uint64_t size; bool enabled; } windows[] = {
             { 0x09000000, 0x1000, s->external_cs09_enabled },
@@ -15801,6 +16991,31 @@ static void msm5xxx_poc_init(MachineState *machine)
                 exit(EXIT_FAILURE);
             }
         }
+    }
+    if (s->external_indexed_18) {
+        static const hwaddr addresses[] = { 0x18080000, 0x180c0000 };
+
+        for (i = 0; i < ARRAY_SIZE(addresses); i++) {
+            MemoryRegionSection section = memory_region_find(
+                get_system_memory(), addresses[i], 2);
+            bool conflict = section.mr != NULL;
+
+            memory_region_unref(section.mr);
+            if (conflict) {
+                error_report("indexed register port conflicts with another memory owner");
+                exit(EXIT_FAILURE);
+            }
+            s->external_indexed_18_context[i].machine = s;
+            s->external_indexed_18_context[i].data = i == 1;
+            memory_region_init_io(&s->external_indexed_18_regions[i],
+                OBJECT(machine), &msm5xxx_poc_indexed_18_ops,
+                &s->external_indexed_18_context[i],
+                i ? "msm5xxx-poc.indexed-18-data" : "msm5xxx-poc.indexed-18-selector", 2);
+            memory_region_add_subregion(get_system_memory(), addresses[i],
+                                       &s->external_indexed_18_regions[i]);
+        }
+        qemu_register_reset(msm5xxx_poc_indexed_18_reset, s);
+        msm5xxx_poc_indexed_18_reset(s);
     }
     if (s->external_cs09_enabled) {
         memory_region_init_ram(&s->external_cs09, NULL,
@@ -15875,6 +17090,18 @@ static void msm5xxx_poc_init(MachineState *machine)
         error_report("experimental-contract-lcd-1c-selector requires external-lcd-1c=on");
         exit(EXIT_FAILURE);
     }
+    if (s->external_lcd_18_window && !s->external_lcd_18) {
+        error_report("external-lcd-18-window requires external-lcd-18=on");
+        exit(EXIT_FAILURE);
+    }
+    if (s->external_lcd_18_dcs && !s->external_lcd_18) {
+        error_report("external-lcd-18-dcs requires external-lcd-18=on");
+        exit(EXIT_FAILURE);
+    }
+    if (!msm5xxx_poc_external_lcd_18_data_configuration_valid(s)) {
+        error_report("external-lcd-18 window and DCS modes are exclusive; data offset must be 0x40000 or 0x80000 and requires either mode");
+        exit(EXIT_FAILURE);
+    }
     if (!msm5xxx_poc_external_uart_configuration_valid(s)) {
         error_report("external UART aperture conflicts with uart-console");
         exit(EXIT_FAILURE);
@@ -15906,6 +17133,32 @@ static void msm5xxx_poc_init(MachineState *machine)
                                                     &s->external_lcd_region[i], 50);
             }
         }
+    }
+    if (s->external_lcd_18_register_offset) {
+        qemu_register_reset(msm5xxx_poc_external_lcd_register_reset, s);
+        msm5xxx_poc_external_lcd_register_reset(s);
+    }
+    if (s->external_lcd_18_window || s->external_lcd_18_dcs) {
+        uint32_t data_address = 0x18000000 +
+            (s->external_lcd_18_data_offset ?
+             s->external_lcd_18_data_offset : 0x40000);
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), data_address, 2);
+        bool conflict = section.mr != NULL;
+
+        memory_region_unref(section.mr);
+        if (conflict || msm5xxx_poc_external_ram_overlaps(
+                s, data_address, 2)) {
+            error_report("external LCD pixel port conflicts with another memory owner");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_io(&s->external_lcd_18_window_region,
+            OBJECT(machine), &msm5xxx_poc_external_lcd_18_window_ops, s,
+            "msm5xxx-poc.external-lcd-18-window", 2);
+        memory_region_add_subregion(get_system_memory(), data_address,
+                                    &s->external_lcd_18_window_region);
+        qemu_register_reset(msm5xxx_poc_external_lcd_18_window_reset, s);
+        msm5xxx_poc_external_lcd_18_window_reset(s);
     }
     if (s->experimental_contract_gpio_pmic_serial) {
         unsigned offset;
@@ -21297,6 +22550,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add(oc, "external-ram-base", "uint32",
         msm5xxx_poc_get_external_ram_base,
         msm5xxx_poc_set_external_ram_base, NULL, NULL);
+    object_class_property_add_str(oc, "signal-memory",
+        msm5xxx_poc_get_signal_memory, msm5xxx_poc_set_signal_memory);
     object_class_property_set_description(oc, "external-ram-base",
         "Base address of optional detector-selected external RAM");
     object_class_property_add(oc, "external-ram-size", "uint32",
@@ -21309,6 +22564,26 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         msm5xxx_poc_set_external_strap_value, NULL, NULL);
     object_class_property_set_description(oc, "external-strap-value",
         "Experimental contract: initial value at 0x09000070; maps only that byte unless external-cs09 is selected");
+    object_class_property_add(oc, "bootstrap-nand-main-size", "uint32",
+        msm5xxx_poc_get_boot_nand_size, msm5xxx_poc_set_boot_nand_size, NULL, NULL);
+    object_class_property_set_description(oc, "bootstrap-nand-main-size",
+        "Source-bound high-vector bootstrap with split 512+16 byte NAND media");
+    object_class_property_add(oc, "bootstrap-nand-word-interface", "uint32",
+        msm5xxx_poc_get_boot_nand_word, msm5xxx_poc_set_boot_nand_word, NULL, NULL);
+    object_class_property_add(oc, "bootstrap-nand-id-status", "uint32",
+        msm5xxx_poc_get_boot_nand_identity, msm5xxx_poc_set_boot_nand_identity, NULL, NULL);
+    object_class_property_add(oc, "bootstrap-nand-word-peripherals", "uint32",
+        msm5xxx_poc_get_boot_nand_peripherals, msm5xxx_poc_set_boot_nand_peripherals, NULL, NULL);
+    object_class_property_add(oc, "bootstrap-nand-lcd-data-port", "uint32",
+        msm5xxx_poc_get_boot_nand_data_port, msm5xxx_poc_set_boot_nand_data_port, NULL, NULL);
+    object_class_property_add(oc, "bootstrap-nand-lcd-id", "uint32",
+        msm5xxx_poc_get_boot_nand_lcd_id, msm5xxx_poc_set_boot_nand_lcd_id, NULL, NULL);
+    object_class_property_add_str(oc, "bootstrap-nand-control-windows",
+        msm5xxx_poc_get_boot_control_windows, msm5xxx_poc_set_boot_control_windows);
+    object_class_property_add_bool(oc, "legacy-a80-timer",
+        msm5xxx_poc_get_a80_timer, msm5xxx_poc_set_a80_timer);
+    object_class_property_add_str(oc, "a80-timer-stats",
+        msm5xxx_poc_get_a80_timer_stats, NULL);
     object_class_property_add_bool(oc, "external-cs09",
         msm5xxx_poc_get_external_cs09, msm5xxx_poc_set_external_cs09);
     object_class_property_set_description(oc, "external-cs09",
@@ -21317,6 +22592,10 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         msm5xxx_poc_get_external_cs0a, msm5xxx_poc_set_external_cs0a);
     object_class_property_set_description(oc, "external-cs0a",
         "Experimental contract: enable the 4 KiB 0x0a000000 chip-select RAM window");
+    object_class_property_add_bool(oc, "external-indexed-18",
+        msm5xxx_poc_get_external_indexed_18, msm5xxx_poc_set_external_indexed_18);
+    object_class_property_set_description(oc, "external-indexed-18",
+        "Enable halfword selector/data register readback at 0x18080000/0x180c0000");
     object_class_property_add_bool(oc, "external-window-08c",
         msm5xxx_poc_get_external_window_08c,
         msm5xxx_poc_set_external_window_08c);
@@ -21360,6 +22639,24 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         msm5xxx_poc_get_external_lcd_18, msm5xxx_poc_set_external_lcd_18);
     object_class_property_set_description(oc, "external-lcd-18",
         "Experimental contract: route the 0x18000000 panel bus into the existing LCD trace stream");
+    object_class_property_add_bool(oc, "external-lcd-18-window",
+        msm5xxx_poc_get_external_lcd_18_window,
+        msm5xxx_poc_set_external_lcd_18_window);
+    object_class_property_set_description(oc, "external-lcd-18-window",
+        "Experimental contract: model a windowed halfword LCD bus; data port offset is configurable");
+    object_class_property_add_bool(oc, "external-lcd-18-dcs",
+        msm5xxx_poc_get_external_lcd_18_dcs,
+        msm5xxx_poc_set_external_lcd_18_dcs);
+    object_class_property_set_description(oc, "external-lcd-18-dcs",
+        "Experimental contract: bridge source-qualified LCD DCS data writes");
+    object_class_property_add(oc, "external-lcd-18-data-offset", "uint32",
+        msm5xxx_poc_get_external_lcd_18_data_offset,
+        msm5xxx_poc_set_external_lcd_18_data_offset, NULL, NULL);
+    object_class_property_set_description(oc, "external-lcd-18-data-offset",
+        "Data FIFO offset from 0x18000000: 0 (default 0x40000), 0x40000, or 0x80000");
+    object_class_property_add(oc, "external-lcd-18-register-offset", "uint32",
+        msm5xxx_poc_get_external_lcd_18_register_offset,
+        msm5xxx_poc_set_external_lcd_18_register_offset, NULL, NULL);
     object_class_property_add_bool(oc, "external-lcd-1a",
         msm5xxx_poc_get_external_lcd_1a, msm5xxx_poc_set_external_lcd_1a);
     object_class_property_set_description(oc, "external-lcd-1a",
@@ -21679,6 +22976,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         msm5xxx_poc_get_protected, msm5xxx_poc_set_protected);
     object_class_property_add_str(oc, "protected-nor-source",
         msm5xxx_poc_get_protected_source, msm5xxx_poc_set_protected_source);
+    object_class_property_add_str(oc, "protected-nor-bank",
+        msm5xxx_poc_get_protected_bank, msm5xxx_poc_set_protected_bank);
     object_class_property_add_str(oc, "protected-nor-stats",
         msm5xxx_poc_get_protected_stats, NULL);
     object_class_property_add_str(oc, "experimental-whole-primary-x16-nor",
@@ -21847,7 +23146,27 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
 static void msm5xxx_poc_instance_finalize(Object *obj)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
-
+    if (s->a80_timer) {
+        qemu_unregister_reset(msm5xxx_poc_a80_reset, s);
+        timer_free(s->a80_timer);
+    }
+    if (s->boot_nand_blk) {
+        qemu_unregister_reset(msm5xxx_poc_boot_nand_reset, s);
+        blk_unref(s->boot_nand_blk);
+    }
+    g_free(s->boot_nand_media);
+    if (s->signal_memory_realized && s->signal_memory_count) {
+        qemu_unregister_reset(msm5xxx_poc_signal_memory_reset, s);
+    }
+    if (s->external_lcd_18_window || s->external_lcd_18_dcs) {
+        qemu_unregister_reset(msm5xxx_poc_external_lcd_18_window_reset, s);
+    }
+    if (s->external_lcd_18_register_offset) {
+        qemu_unregister_reset(msm5xxx_poc_external_lcd_register_reset, s);
+    }
+    if (s->external_indexed_18) {
+        qemu_unregister_reset(msm5xxx_poc_indexed_18_reset, s);
+    }
     if (s->watchdog_timer) {
         qemu_unregister_reset(msm5xxx_poc_watchdog_reset, s);
         timer_free(s->watchdog_timer);

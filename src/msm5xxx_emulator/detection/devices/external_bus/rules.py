@@ -6,6 +6,8 @@ from msm5xxx_emulator.detection.devices.external_bus.observations import (detect
 from msm5xxx_emulator.detection.devices.external_bus.projection import EXTERNAL_BUS_CONTRACTS, _resolve_external_claims
 from msm5xxx_emulator.detection.fact_memory_map import detect_linker_memory_map
 from msm5xxx_emulator.detection.devices.external_bus.gpio_pmic import find_gpio_pmic_profile
+from msm5xxx_emulator.detection.devices.external_bus.indexed import find_indexed_18
+from msm5xxx_emulator.detection.devices.external_bus.boot_presence import find_boot_presence
 
 def _capability(evidence: list[dict], **parameters: object) -> dict:
     return { "status": "experimental-contract", "parameters": parameters, "evidence": evidence, }
@@ -200,17 +202,44 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
             elif available[1]:
                 ram_allocation = available
     selector_lcd, _ = find_selector_lcd_profile(image)
+    indexed = find_indexed_18(image)
+    window51 = find_window51(image)
+    dcs = find_dcs_window(image)
+    if window51 is not None and dcs is not None:
+        window51 = None
+    elif dcs is not None:
+        window51 = dcs
     pmic, _ = find_gpio_pmic_profile(image)
     cs0a, _ = detect_external_cs0a(image)
     cs09, _ = detect_external_cs09(image)
     uart, _ = detect_boot_uart(image)
     gpio_boot, _ = detect_boot_gpio_bit9(image)
     strap, _ = detect_boot_strap(image)
+    presence = find_boot_presence(image)
+    if presence is not None:
+        strap = presence
     status, _ = detect_external_status(image)
     lcd, _ = detect_external_lcd(image)
     windows, _ = detect_external_windows(image)
     windows = windows or {}
     capabilities: dict[str, dict] = {}
+    bootstrap_nand = find_boot_nand(image)
+    if bootstrap_nand is not None:
+        capabilities['bootstrap_nand'] = _capability(
+            bootstrap_nand['evidence'], blocks=bootstrap_nand['blocks'],
+            page_size=bootstrap_nand['page_size'], spare_size=bootstrap_nand['spare_size'],
+            pages_per_block=bootstrap_nand['pages_per_block'],
+            stage_source=bootstrap_nand['stage_source'], stage_size=bootstrap_nand['stage_size'])
+    if indexed is not None:
+        capabilities["indexed_18"] = _capability(
+            indexed["evidence"], ports=[0x18080000, 0x180C0000],
+            width=2, register_count=65536, reset_value=0, write_policy="readback")
+    if window51 is not None:
+        capabilities["lcd_18_window"] = _capability(
+            window51["evidence"], width=window51["width"], height=window51["height"],
+            x_origin=window51["x_origin"], y_origin=window51["y_origin"],
+            command_port=0x18000000, data_port=window51["data_port"],
+            data_literal=window51["data_literal"], protocol=window51["protocol"])
     if ram is not None:
         capabilities["external_ram"] = _capability(ram["evidence"], base=ram["base"], size=ram["size"], source= ram["source"], allocation=list(ram_allocation)
             if ram_allocation else None)
@@ -242,12 +271,15 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
     if strap is not None:
         evidence = []
         for item in strap["sites"]:
-            evidence_item = {**item, "span":[item["at"], item["branch"] + 2 - item["at"]]}
+            evidence_item = {**item}
+            evidence_item.setdefault("span", [item["at"], item["branch"] + 2 - item["at"]])
+            extras = list(item.get("extra_spans", []))
             literal = _literal_span(image, item["at"])
             if literal is not None:
-                evidence_item["extra_spans"] = [literal]
+                extras.append(literal)
+            evidence_item["extra_spans"] = extras
             evidence.append(evidence_item)
-        capabilities["strap_bit2"] = _capability(evidence, value=4)
+        capabilities["strap_bit2"] = _capability(evidence, value=strap.get("value", 4))
     if status is not None:
         evidence = []
         for item in status["sites"]:
@@ -285,7 +317,7 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
     if gpio_boot is not None:
         capabilities["boot_gpio_bit9"] = _capability(gpio_boot["sites"], gpio=0x03000720, bit=9, read_value=0)
     if uart is not None:
-        uart_evidence = []
+        uart_evidence = list(uart.get("evidence", []))
         for at in uart["polls"]:
             uart_evidence.append({"span":[at, 20]})
             for pc in (at, at + 10):
@@ -348,13 +380,20 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
                 evidence_item["extra_spans"] = extras
                 evidence.append(evidence_item)
             capabilities["gpio_ready_bit21"] = _capability(evidence, gpio=0x03000720, bit=21)
+    if window51 is not None:
+        capabilities.setdefault("lcd_trace_18", _capability(window51["evidence"], base=0x18000000))
     props: dict[str, bool | int] = {}
+    if indexed is not None:
+        props["external-indexed-18"] = True
+    if window51 is not None:
+        props["external-lcd-18-dcs" if window51["protocol"] == "dcs" else "external-lcd-18-window"] = True
+        props["external-lcd-18-data-offset"] = window51["data_port"] - 0x18000000
     if ram_allocation is not None:
         props["external-ram-base"], props["external-ram-size"] = ram_allocation
     props["external-cs09"] = cs09 is not None
     props["external-cs0a"] = cs0a is not None
     if strap is not None:
-        props["external-strap-value"] = 4
+        props["external-strap-value"] = strap.get("value", 4)
     if status is not None:
         props["experimental-contract-status-0b408"] = True
     if windows.get("08c00000"):
@@ -364,6 +403,8 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
     if lcd is not None:
         for address, prop in ((0x18000000, "external-lcd-18"), (0x1A000000, "external-lcd-1a"), (0x1C000000, "external-lcd-1c")):
             props[prop] = any(item["address"] == address for item in lcd["writers"])
+    if window51 is not None:
+        props["external-lcd-18"] = True
     for address, name in ((0x0B000000, "0b"), (0x18000000, "18"), (0x1C000000, "1c")):
         accesses = windows.get(f"{address:08x}", [])
         if address == 0x0B000000:
@@ -379,8 +420,11 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
         props["experimental-contract-lcd-1c-selector"] = True
     window_rejections = {}
     if ram_base is not None and ram_size is not None:
-        window_properties = ((prop, contract.capability, contract.allocation_base) for prop, contract in EXTERNAL_BUS_CONTRACTS.items() if contract.allocation_base
-            is not None)
+        window_properties = [(prop, contract.capability, contract.allocation_base) for prop, contract in EXTERNAL_BUS_CONTRACTS.items() if contract.allocation_base
+            is not None]
+        if window51 is not None:
+            prop = "external-lcd-18-dcs" if window51["protocol"] == "dcs" else "external-lcd-18-window"
+            window_properties.append((prop, "lcd_18_window", window51["data_port"]))
         for prop, name, base in window_properties:
             if not props.get(prop):
                 continue
@@ -393,6 +437,9 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
             capabilities[name]["parameters"]["mapping_rejection"] = reason
             if prop == "external-strap-value":
                 del props[prop]
+            elif prop in ("external-lcd-18-window", "external-lcd-18-dcs"):
+                props[prop] = False
+                props.pop("external-lcd-18-data-offset", None)
             else:
                 props[prop] = False
     if not any(props.values()):
@@ -435,4 +482,7 @@ def detect_external_bus(image: bytes, *, ram_base: int | None = None, ram_size: 
     return plan, "accepted"
 
 # Required evidence providers are bound by registry discovery.
-REQUIRES = {'find_selector_lcd_profile': ('display.selector_lcd', 'find_selector_lcd_profile')}
+REQUIRES = {'find_selector_lcd_profile': ('display.selector_lcd', 'find_selector_lcd_profile'),
+            'find_boot_nand': ('storage.boot_nand', 'find_bootstrap_nand'),
+            'find_window51': ('display.window51_writer', 'find_window51'),
+            'find_dcs_window': ('display.dcs_window_writer', 'find_dcs_window')}

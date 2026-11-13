@@ -159,17 +159,17 @@ def analyze_function(self, entry: CodeAddress, budget=1024, *, initial_memory: b
                     source = source_value(operands[1], value(operands[1]))
                     if isinstance(source, SymbolicValue) and _contains_symbolic_load(source):
                         source_assigned[operands[0].reg] = source
-            elif ins.id in (a.ARM_INS_ADD, a.ARM_INS_SUB, a.ARM_INS_AND, a.ARM_INS_ORR, a.ARM_INS_EOR, a.ARM_INS_LSL, a.ARM_INS_LSR) and len(operands) in (2, 3):
+            elif ins.id in (a.ARM_INS_ADD, a.ARM_INS_SUB, a.ARM_INS_AND, a.ARM_INS_ORR, a.ARM_INS_EOR, a.ARM_INS_LSL, a.ARM_INS_LSR, a.ARM_INS_ASR) and len(operands) in (2, 3):
                 left, right = ((value(operands[0]), value(operands[1])) if len(operands) == 2 else (value(operands[1]), value(operands[2])))
                 if left is not None and right is not None:
                     operation = { a.ARM_INS_ADD: 'add', a.ARM_INS_SUB: 'sub', a.ARM_INS_AND: 'and', a.ARM_INS_ORR: 'or', a.ARM_INS_EOR: 'xor', a.ARM_INS_LSL:
-                        'lsl', a.ARM_INS_LSR: 'lsr', }[ins.id]
+                        'lsl', a.ARM_INS_LSR: 'lsr', a.ARM_INS_ASR: 'asr', }[ins.id]
                     source_operands = ((operands[0], operands[1]) if len(operands) == 2 else (operands[1], operands[2]))
                     source_inputs = (source_value(source_operands[0], left), source_value(source_operands[1], right))
                     if any(op.shift.type for op in operands):
                         assigned[operands[0].reg] = None
                     else:
-                        if (ins.id in (a.ARM_INS_LSL, a.ARM_INS_LSR) and operands[-1].type == a.ARM_OP_REG):
+                        if (ins.id in (a.ARM_INS_LSL, a.ARM_INS_LSR, a.ARM_INS_ASR) and operands[-1].type == a.ARM_OP_REG):
                             right = _symbolic_operation('and', right, 0xFF, budget_exhausted= symbolic_budget_exhausted)
                         assigned[operands[0].reg] = _symbolic_operation(operation, left, right, budget_exhausted=symbolic_budget_exhausted)
                         if symbolic_mode:

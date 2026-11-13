@@ -11,6 +11,10 @@ class ExternalDeviceNativeTests(unittest.TestCase):
     def test_uart_gpio_lcd_and_status_callbacks(self):
         repo = Path(__file__).resolve().parents[1]
         source = (repo / 'native/qemu/msm5xxx-poc.c').read_text()
+        self.assertIn('"external-lcd-18-data-offset", "uint32"', source)
+        self.assertIn('"external-lcd-18-dcs"', source)
+        self.assertIn('s->external_lcd_18_data_offset ?', source)
+        self.assertIn(': 0x40000);', source)
 
         def function(name):
             match = re.search(r'^static [^;{}]*\b' + name +
@@ -37,8 +41,25 @@ typedef struct MSM5xxxPOCMachineState MSM5xxxPOCMachineState;
 struct MSM5xxxPOCMachineState {
     MemoryRegion msm;
     bool external_uart, external_uart_tx_log, uart_console_enabled;
+    bool external_cs09_enabled;
+    MemoryRegion external_cs09;
     bool gpio_ready_bit21;
     bool experimental_contract_lcd_1c_selector;
+    bool external_lcd_18, external_lcd_18_window, external_lcd_18_dcs;
+    uint32_t external_lcd_18_data_offset;
+    uint32_t external_lcd_18_register_offset;
+    uint16_t external_lcd_18_register_selector;
+    uint16_t external_lcd_18_registers[65536];
+    MemoryRegion external_lcd_18_window_region;
+    uint8_t external_lcd_18_bounds[4], external_lcd_18_bounds_seen;
+    uint8_t external_lcd_18_cursor_x, external_lcd_18_cursor_y;
+    uint16_t external_lcd_18_command;
+    uint8_t external_lcd_18_parameter_index;
+    uint8_t external_lcd_18_parameters_left;
+    bool external_lcd_18_parameter_valid, external_lcd_18_window_valid;
+    bool external_indexed_18;
+    uint16_t external_indexed_18_selector;
+    uint16_t external_indexed_18_registers[65536];
     bool experimental_contract_gpio_bit9_low;
     bool experimental_contract_gpio_pmic_serial;
     uint8_t gpio_pmic_serial_registers[64];
@@ -56,8 +77,10 @@ struct MSM5xxxPOCMachineState {
     uint8_t raw_nand_status;
     MSM5xxxNAND small_nand;
     uint8_t external_lcd_backing[3][0x1000];
+    MemoryRegion external_indexed_18_regions[2];
     uint8_t experimental_contract_status_0b408_backing[2];
     struct { MSM5xxxPOCMachineState *machine; unsigned index; } external_lcd_context[3];
+    struct { MSM5xxxPOCMachineState *machine; bool data; } external_indexed_18_context[2];
 };
 #define MSM5XXX_POC_MSM_BASE 0x03000000
 #define LOG_GUEST_ERROR 1
@@ -128,11 +151,21 @@ static uint64_t pmic_read_value(MSM5xxxPOCMachineState *s, unsigned offset,
     return msm5xxx_poc_gpio_bank_read(s, offset, size);
 }
 ''' + '\n'.join(function(name) for name in (
+            'msm5xxx_poc_external_lcd_18_window_reset',
+            'msm5xxx_poc_external_lcd_register_reset',
+            'msm5xxx_poc_external_lcd_18_window_command',
+            'msm5xxx_poc_external_lcd_18_window_advance',
+            'msm5xxx_poc_external_lcd_18_window_read',
+            'msm5xxx_poc_external_lcd_18_window_write',
+            'msm5xxx_poc_external_lcd_18_data_configuration_valid',
             'msm5xxx_poc_external_uart_read',
             'msm5xxx_poc_external_uart_configuration_valid',
             'msm5xxx_poc_external_uart_write',
             'msm5xxx_poc_external_lcd_read',
             'msm5xxx_poc_external_lcd_write',
+            'msm5xxx_poc_indexed_18_read',
+            'msm5xxx_poc_indexed_18_write',
+            'msm5xxx_poc_indexed_18_reset',
             'msm5xxx_poc_gpio_input_merge',
             'msm5xxx_poc_gpio_pmic_serial_reset',
             'msm5xxx_poc_gpio_pmic_serial_abort_frame',
@@ -143,6 +176,37 @@ static uint64_t pmic_read_value(MSM5xxxPOCMachineState *s, unsigned offset,
             'msm5xxx_poc_experimental_status_write')) + r'''
 int main(void) {
     MSM5xxxPOCMachineState s = {0};
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_data_offset = 0x40000;
+    assert(!msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18 = true;
+    s.external_lcd_18_window = true;
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_data_offset = 0x80000;
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_data_offset = 0x60000;
+    assert(!msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_data_offset = 0;
+    s.external_lcd_18_window = false;
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_data_offset = 0x40000;
+    s.external_lcd_18_dcs = true;
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_dcs = false;
+    s.external_lcd_18_data_offset = 0x80000;
+    s.external_lcd_18_dcs = true;
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_window = true;
+    assert(!msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_window = false;
+    s.external_lcd_18 = false;
+    assert(!msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18 = true;
+    s.external_lcd_18_dcs = false;
+    s.external_lcd_18_data_offset = 0x60000;
+    assert(!msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_data_offset = 0;
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
     assert(msm5xxx_poc_external_uart_configuration_valid(&s));
     s.external_uart_tx_log = true;
     assert(!msm5xxx_poc_external_uart_configuration_valid(&s));
@@ -245,6 +309,156 @@ int main(void) {
     msm5xxx_poc_external_lcd_write(&s.external_lcd_context[1], 2, 0xffff, 2);
     msm5xxx_poc_external_lcd_write(&s.external_lcd_context[1], 6, 1, 2);
     assert(lcd_writes == selector_trace_start + 2);
+
+    s.external_lcd_context[0].machine = &s;
+    s.external_lcd_context[0].index = 0;
+    unsigned default_window_trace = lcd_writes;
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[0], 0, 0x42, 2);
+    assert(lcd_writes == default_window_trace + 1);
+    assert(lcd_address == 0x02000000);
+    assert(s.external_lcd_18_parameters_left == 0);
+
+    s.external_lcd_18 = true;
+    s.external_lcd_18_window = true;
+    msm5xxx_poc_external_lcd_18_window_reset(&s);
+    unsigned window_trace_start = lcd_writes;
+    const uint16_t window_commands[] = {
+        0x42, 3, 4, 0x43, 5, 6, 0x60, 0, 0x61, 0, 0x51
+    };
+    for (unsigned i = 0; i < sizeof(window_commands) / sizeof(window_commands[0]); i++) {
+        msm5xxx_poc_external_lcd_write(&s.external_lcd_context[0], 0,
+                                       window_commands[i], 2);
+    }
+    assert(s.external_lcd_18_window_valid);
+    assert(s.external_lcd_18_cursor_x == 5 && s.external_lcd_18_cursor_y == 3);
+    assert(lcd_writes == window_trace_start + 11);
+    assert(lcd_address == 0x02000000);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0x12345678, 2);
+    assert(lcd_address == 0x02000002 && lcd_value == 0x5678 && lcd_size == 2);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0x2222, 2);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0x3333, 2);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0x4444, 2);
+    assert(s.external_lcd_18_cursor_x == 5 && s.external_lcd_18_cursor_y == 3);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+
+
+    assert(s.external_lcd_18_cursor_x == 5 && s.external_lcd_18_cursor_y == 3);
+    unsigned pixel_trace = lcd_writes;
+    msm5xxx_poc_external_lcd_18_window_write(&s, 2, 0xaaaa, 2);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0xbbbb, 1);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0xcccc, 4);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 2, 2) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 1) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 4) == 0);
+    assert(lcd_writes == pixel_trace);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x51);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    msm5xxx_poc_external_lcd_18_window_reset(&s);
+    assert(!s.external_lcd_18_window_valid);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    pixel_trace = lcd_writes;
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0xffff, 2);
+    assert(lcd_writes == pixel_trace);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x42);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 3);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 4);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x43);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 5);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 6);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x51);
+    assert(s.external_lcd_18_window_valid);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    msm5xxx_poc_external_lcd_18_window_reset(&s);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x42);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x100);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 1);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x43);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 1);
+    assert(!s.external_lcd_18_window_valid);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+
+    msm5xxx_poc_external_lcd_18_window_reset(&s);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x42);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 1);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x43);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 1);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x51);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0xf800, 2);
+    assert(s.external_lcd_18_cursor_x == 1 &&
+           s.external_lcd_18_cursor_y == 0);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x60);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x61);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0);
+    assert(s.external_lcd_18_cursor_x == 1 &&
+           s.external_lcd_18_cursor_y == 0);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0x07e0, 2);
+    assert(s.external_lcd_18_cursor_x == 0 &&
+           s.external_lcd_18_cursor_y == 1);
+    msm5xxx_poc_external_lcd_18_window_command(&s, 0x51);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+
+    s.external_lcd_18_dcs = true;
+    msm5xxx_poc_external_lcd_18_window_reset(&s);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    unsigned dcs_trace_start = lcd_writes;
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0x12345678, 2);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    assert(lcd_writes == dcs_trace_start + 1);
+    assert(lcd_address == 0x02000002 && lcd_value == 0x5678 && lcd_size == 2);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0xabcd, 2);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    assert(lcd_writes == dcs_trace_start + 2);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 2, 0x1111, 2);
+    msm5xxx_poc_external_lcd_18_window_write(&s, 0, 0x2222, 1);
+    assert(lcd_writes == dcs_trace_start + 2);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 2, 2) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 1) == 0);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    msm5xxx_poc_external_lcd_18_window_reset(&s);
+    assert(msm5xxx_poc_external_lcd_18_window_read(&s, 0, 2) == 0);
+    s.external_lcd_18_dcs = false;
+
+    s.external_indexed_18_context[0].machine = &s;
+    s.external_indexed_18_context[0].data = false;
+    s.external_indexed_18_context[1].machine = &s;
+    s.external_indexed_18_context[1].data = true;
+    msm5xxx_poc_indexed_18_reset(&s);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[0], 0, 2) == 0);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[0], 0, 0x12345, 2);
+    assert(s.external_indexed_18_selector == 0x2345);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[1], 0, 0x12345678, 2);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[1], 0, 2) == 0x5678);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[0], 0, 0x3456, 2);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[1], 0, 0x1beef, 2);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[1], 0, 2) == 0xbeef);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[0], 0, 0x2345, 2);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[1], 0, 2) == 0x5678);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[0], 0, 0x3456, 2);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[1], 0, 2) == 0xbeef);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[0], 0, 0x1ffff, 2);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[1], 0, 0x1beef, 2);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[0], 1, 0x1111, 2);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[0], 0, 0x2222, 1);
+    msm5xxx_poc_indexed_18_write(&s.external_indexed_18_context[1], 0, 0x3333, 4);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[0], 1, 2) == 0);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[1], 0, 1) == 0);
+    assert(msm5xxx_poc_indexed_18_read(&s.external_indexed_18_context[1], 0, 4) == 0);
+    assert(s.external_indexed_18_selector == 0xffff);
+    assert(s.external_indexed_18_registers[0x2345] == 0x5678);
+    assert(s.external_indexed_18_registers[0xffff] == 0xbeef);
+    msm5xxx_poc_indexed_18_reset(&s);
+    assert(s.external_indexed_18_selector == 0);
+    assert(s.external_indexed_18_registers[0x2345] == 0);
+    assert(s.external_indexed_18_registers[0xffff] == 0);
     assert(msm5xxx_poc_experimental_status_read(&s, 0, 2) == 0);
     msm5xxx_poc_experimental_status_write(&s, 0, 0xffff, 2);
     assert(msm5xxx_poc_experimental_status_read(&s, 0, 2) == 0xffff);
@@ -256,6 +470,32 @@ int main(void) {
     assert(msm5xxx_poc_experimental_status_read(&s, 2, 1) == 0);
     msm5xxx_poc_experimental_status_write(&s, 2, 0xffff, 2);
     assert(msm5xxx_poc_experimental_status_read(&s, 0, 2) == 0xff00);
+
+    s.external_lcd_18 = true;
+    s.external_lcd_18_window = s.external_lcd_18_dcs = false;
+    s.external_lcd_18_data_offset = 0;
+    s.external_lcd_18_register_offset = 0x10;
+    assert(msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_register_offset = 0x11;
+    assert(!msm5xxx_poc_external_lcd_18_data_configuration_valid(&s));
+    s.external_lcd_18_register_offset = 0x10;
+    s.external_lcd_context[0].machine = &s;
+    s.external_lcd_context[0].index = 0;
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[0], 0, 0x44, 2);
+    assert(lcd_address == 0x18000000 && lcd_value == 0x44);
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[0], 0x10, 0x1234, 2);
+    assert(lcd_address == 0x18000010 && lcd_value == 0x1234);
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[0], 0, 0x45, 2);
+    assert(msm5xxx_poc_external_lcd_read(&s.external_lcd_context[0], 0x10, 2) == 0);
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[0], 0, 0x44, 2);
+    assert(msm5xxx_poc_external_lcd_read(&s.external_lcd_context[0], 0x10, 2) == 0x1234);
+    unsigned indexed_trace = lcd_writes;
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[0], 0x10, 0xff, 1);
+    assert(lcd_writes == indexed_trace);
+    assert(msm5xxx_poc_external_lcd_read(&s.external_lcd_context[0], 0x10, 2) == 0x1234);
+    msm5xxx_poc_external_lcd_register_reset(&s);
+    assert(!s.external_lcd_18_register_selector && !s.external_lcd_18_registers[0x44]);
+    s.external_lcd_18_register_offset = 0;
 
     s.experimental_contract_gpio_pmic_serial = true;
     s.experimental_contract_gpio_bit9_low = false;
@@ -320,7 +560,7 @@ int main(void) {
     assert(s.gpio_pmic_serial_read_bits == 0);
     assert(!s.gpio_pmic_serial_read && s.gpio_pmic_serial_command_bits == 0);
     assert(msm5xxx_poc_gpio_bank_read(&s, 0x39, 1) == 0xa5);
-    puts("external-device actual-C callbacks: UART/GPIO/LCD/status/PMIC serial PASS");
+    puts("external-device actual-C callbacks: UART/GPIO/LCD-window/indexed/status/PMIC serial PASS");
     return 0;
 }
 '''

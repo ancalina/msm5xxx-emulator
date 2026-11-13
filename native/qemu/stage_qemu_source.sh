@@ -51,6 +51,10 @@ SMALL_NAND_CORE="$ROOT/msm5xxx-small-page-nand.c"
 SPI_NV_CORE="$ROOT/msm5xxx-spi-nv.c"
 SMALL_NAND_HEADER="$ROOT/msm5xxx-small-page-nand.h"
 SPI_NV_HEADER="$ROOT/msm5xxx-spi-nv.h"
+BOOT_NAND_CORE="$ROOT/msm5xxx-boot-nand.c"
+BOOT_NAND_HEADER="$ROOT/msm5xxx-boot-nand.h"
+TIMER_IRQ_CORE="$ROOT/msm5xxx-timer-irq.c"
+TIMER_IRQ_HEADER="$ROOT/msm5xxx-timer-irq.h"
 PROTECTED_NOR_CORE="$ROOT/msm5xxx-protected-nor.c"
 PROTECTED_NOR_HEADER="$ROOT/msm5xxx-protected-nor.h"
 SEARCH2_CORE="$ROOT/msm5xxx-search2.c"
@@ -91,6 +95,8 @@ for file in "$ARCHIVE" "$PATCH" "$CFI02_PATCH" "$CFI01_SHARP_PCR_PATCH" "$DSOUND
         "$MA5_PCM_QUEUE_HEADER" "$MA5_RATECONV_CORE" "$MA5_RATECONV_HEADER" \
         "$MA5_PCM_OUTPUT_CORE" "$MA5_PCM_OUTPUT_HEADER" \
         "$SMALL_NAND_CORE" "$SMALL_NAND_HEADER" \
+        "$BOOT_NAND_CORE" "$BOOT_NAND_HEADER" \
+        "$TIMER_IRQ_CORE" "$TIMER_IRQ_HEADER" \
         "$SPI_NV_CORE" "$SPI_NV_HEADER" \
         "$PROTECTED_NOR_CORE" "$PROTECTED_NOR_HEADER" \
         "$SEARCH2_CORE" "$SEARCH2_HEADER" "$TONE_CORE" "$TONE_HEADER" "$TRANSPORT"; do
@@ -142,6 +148,10 @@ check_sha256 "$MSM5XXX_MA5_RATECONV_HEADER_SHA256" "$MA5_RATECONV_HEADER"
 check_sha256 "$MSM5XXX_MA5_PCM_OUTPUT_CORE_SHA256" "$MA5_PCM_OUTPUT_CORE"
 check_sha256 "$MSM5XXX_MA5_PCM_OUTPUT_HEADER_SHA256" "$MA5_PCM_OUTPUT_HEADER"
 check_sha256 "$MSM5XXX_SMALL_NAND_CORE_SHA256" "$SMALL_NAND_CORE"
+check_sha256 "$MSM5XXX_BOOT_NAND_CORE_SHA256" "$BOOT_NAND_CORE"
+check_sha256 "$MSM5XXX_BOOT_NAND_HEADER_SHA256" "$BOOT_NAND_HEADER"
+check_sha256 "$MSM5XXX_TIMER_IRQ_CORE_SHA256" "$TIMER_IRQ_CORE"
+check_sha256 "$MSM5XXX_TIMER_IRQ_HEADER_SHA256" "$TIMER_IRQ_HEADER"
 check_sha256 "$MSM5XXX_SPI_NV_CORE_SHA256" "$SPI_NV_CORE"
 check_sha256 "$MSM5XXX_SMALL_NAND_HEADER_SHA256" "$SMALL_NAND_HEADER"
 check_sha256 "$MSM5XXX_SPI_NV_HEADER_SHA256" "$SPI_NV_HEADER"
@@ -200,6 +210,10 @@ cp "$MA5_RATECONV_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma5-rateconv.h"
 cp "$MA5_PCM_OUTPUT_CORE" "$OUTPUT/hw/arm/msm5xxx-ma5-pcm-output.c"
 cp "$MA5_PCM_OUTPUT_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma5-pcm-output.h"
 cp "$SMALL_NAND_CORE" "$OUTPUT/hw/arm/msm5xxx-small-page-nand.c"
+cp "$BOOT_NAND_CORE" "$OUTPUT/hw/arm/msm5xxx-boot-nand.c"
+cp "$BOOT_NAND_HEADER" "$OUTPUT/hw/arm/msm5xxx-boot-nand.h"
+cp "$TIMER_IRQ_CORE" "$OUTPUT/hw/arm/msm5xxx-timer-irq.c"
+cp "$TIMER_IRQ_HEADER" "$OUTPUT/hw/arm/msm5xxx-timer-irq.h"
 cp "$SPI_NV_CORE" "$OUTPUT/hw/arm/msm5xxx-spi-nv.c"
 cp "$SMALL_NAND_HEADER" "$OUTPUT/hw/arm/msm5xxx-small-page-nand.h"
 cp "$SPI_NV_HEADER" "$OUTPUT/hw/arm/msm5xxx-spi-nv.h"
@@ -214,9 +228,9 @@ cp "$TONE_HEADER" "$OUTPUT/hw/arm/msm5xxx-tone.h"
     cat "$OUTPUT/hw/arm/meson.build"
 } > "$OUTPUT/hw/arm/meson.build.msm5xxx"
 mv "$OUTPUT/hw/arm/meson.build.msm5xxx" "$OUTPUT/hw/arm/meson.build"
-printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma3-audio.c', 'msm5xxx-ma3-render.c', 'msm5xxx-ma3-stream.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
+printf "\narm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma3-audio.c', 'msm5xxx-ma3-render.c', 'msm5xxx-ma3-stream.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-boot-nand.c', 'msm5xxx-timer-irq.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))\n" >> "$OUTPUT/hw/arm/meson.build"
 
-test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma3-audio.c', 'msm5xxx-ma3-render.c', 'msm5xxx-ma3-stream.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
+test "$(grep -Fc "arm_common_ss.add(files('msm5xxx-poc.c', 'msm5xxx-audio-request.c', 'msm5xxx-audio-synth.c', 'msm5xxx-ma2-audio.c', 'msm5xxx-ma3-audio.c', 'msm5xxx-ma3-render.c', 'msm5xxx-ma3-stream.c', 'msm5xxx-ma5-audio.c', 'msm5xxx-ma5-gain.c', 'msm5xxx-ma5-wt-engine.c', 'msm5xxx-ma5-fm-voice.c', 'msm5xxx-ma5-operator.c', 'msm5xxx-ma5-waveform.c', 'msm5xxx-ma5-pcm-queue.c', 'msm5xxx-ma5-rateconv.c', 'msm5xxx-ma5-pcm-output.c', 'msm5xxx-tone.c', 'msm5xxx-search2.c', 'msm5xxx-small-page-nand.c', 'msm5xxx-boot-nand.c', 'msm5xxx-timer-irq.c', 'msm5xxx-spi-nv.c', 'msm5xxx-protected-nor.c'))" "$OUTPUT/hw/arm/meson.build")" -eq 1
 cmp "$MACHINE" "$OUTPUT/hw/arm/msm5xxx-poc.c"
 cmp "$AUDIO_REQUEST_CORE" "$OUTPUT/hw/arm/msm5xxx-audio-request.c"
 cmp "$MA2_CORE" "$OUTPUT/hw/arm/msm5xxx-ma2-audio.c"
@@ -249,6 +263,10 @@ cmp "$MA5_RATECONV_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma5-rateconv.h"
 cmp "$MA5_PCM_OUTPUT_CORE" "$OUTPUT/hw/arm/msm5xxx-ma5-pcm-output.c"
 cmp "$MA5_PCM_OUTPUT_HEADER" "$OUTPUT/hw/arm/msm5xxx-ma5-pcm-output.h"
 cmp "$SMALL_NAND_CORE" "$OUTPUT/hw/arm/msm5xxx-small-page-nand.c"
+cmp "$BOOT_NAND_CORE" "$OUTPUT/hw/arm/msm5xxx-boot-nand.c"
+cmp "$BOOT_NAND_HEADER" "$OUTPUT/hw/arm/msm5xxx-boot-nand.h"
+cmp "$TIMER_IRQ_CORE" "$OUTPUT/hw/arm/msm5xxx-timer-irq.c"
+cmp "$TIMER_IRQ_HEADER" "$OUTPUT/hw/arm/msm5xxx-timer-irq.h"
 cmp "$SPI_NV_CORE" "$OUTPUT/hw/arm/msm5xxx-spi-nv.c"
 cmp "$SMALL_NAND_HEADER" "$OUTPUT/hw/arm/msm5xxx-small-page-nand.h"
 cmp "$SPI_NV_HEADER" "$OUTPUT/hw/arm/msm5xxx-spi-nv.h"
@@ -290,6 +308,10 @@ check_sha256 "$MSM5XXX_MA5_RATECONV_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma5-r
 check_sha256 "$MSM5XXX_MA5_PCM_OUTPUT_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma5-pcm-output.c"
 check_sha256 "$MSM5XXX_MA5_PCM_OUTPUT_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-ma5-pcm-output.h"
 check_sha256 "$MSM5XXX_SMALL_NAND_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-small-page-nand.c"
+check_sha256 "$MSM5XXX_BOOT_NAND_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-boot-nand.c"
+check_sha256 "$MSM5XXX_BOOT_NAND_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-boot-nand.h"
+check_sha256 "$MSM5XXX_TIMER_IRQ_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-timer-irq.c"
+check_sha256 "$MSM5XXX_TIMER_IRQ_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-timer-irq.h"
 check_sha256 "$MSM5XXX_SPI_NV_CORE_SHA256" "$OUTPUT/hw/arm/msm5xxx-spi-nv.c"
 check_sha256 "$MSM5XXX_SMALL_NAND_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-small-page-nand.h"
 check_sha256 "$MSM5XXX_SPI_NV_HEADER_SHA256" "$OUTPUT/hw/arm/msm5xxx-spi-nv.h"
@@ -343,6 +365,10 @@ MSM5XXX_MA5_RATECONV_HEADER_SHA256=$MSM5XXX_MA5_RATECONV_HEADER_SHA256
 MSM5XXX_MA5_PCM_OUTPUT_CORE_SHA256=$MSM5XXX_MA5_PCM_OUTPUT_CORE_SHA256
 MSM5XXX_MA5_PCM_OUTPUT_HEADER_SHA256=$MSM5XXX_MA5_PCM_OUTPUT_HEADER_SHA256
 MSM5XXX_SMALL_NAND_CORE_SHA256=$MSM5XXX_SMALL_NAND_CORE_SHA256
+MSM5XXX_BOOT_NAND_CORE_SHA256=$MSM5XXX_BOOT_NAND_CORE_SHA256
+MSM5XXX_BOOT_NAND_HEADER_SHA256=$MSM5XXX_BOOT_NAND_HEADER_SHA256
+MSM5XXX_TIMER_IRQ_CORE_SHA256=$MSM5XXX_TIMER_IRQ_CORE_SHA256
+MSM5XXX_TIMER_IRQ_HEADER_SHA256=$MSM5XXX_TIMER_IRQ_HEADER_SHA256
 MSM5XXX_SPI_NV_CORE_SHA256=$MSM5XXX_SPI_NV_CORE_SHA256
 MSM5XXX_SMALL_NAND_HEADER_SHA256=$MSM5XXX_SMALL_NAND_HEADER_SHA256
 MSM5XXX_SPI_NV_HEADER_SHA256=$MSM5XXX_SPI_NV_HEADER_SHA256
