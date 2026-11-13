@@ -65,7 +65,10 @@ def _detector_fingerprint():
 
 
 def detect_cached(firmware):
-    """detect() reused per firmware content and detector version (memory, then a file beside the private copy)."""
+    """detect() reused per firmware content and detector version (memory, then a shared cache folder).
+
+    Each selection gets a fresh private copy, so the cache is keyed by content, not path; the
+    only path-dependent field of the result is ``path``, which is set to the requested copy."""
     import copy
     import hashlib
     import pickle
@@ -75,26 +78,31 @@ def detect_cached(firmware):
         content = firmware.read_bytes()
     except OSError:
         return detect(firmware)  # let the detector report the unreadable input
-    key = (_detector_fingerprint(), hashlib.sha256(content).hexdigest(), str(firmware.resolve()))
-    if key in _detect_memo:
-        return copy.deepcopy(_detect_memo[key])  # callers (Transport) append notes to their config
-    cache = firmware.with_name(firmware.name + ".detect-cache")
-    try:
-        stored_key, config = pickle.loads(cache.read_bytes())  # app-private file written below
-        if stored_key != key:
-            config = None
-    except Exception:
-        config = None
+    key = (_detector_fingerprint(), hashlib.sha256(content).hexdigest())
+    config = _detect_memo.get(key)
     if config is None:
-        config = detect(firmware)
+        # session/<token>/firmware.bin -> session/../detect-cache, outside any per-copy folder
+        cache = firmware.resolve().parent.parent.parent / "detect-cache" / (key[1] + ".pickle")
         try:
-            temporary = cache.with_name(cache.name + ".tmp")
-            temporary.write_bytes(pickle.dumps((key, config)))
-            os.replace(temporary, cache)
+            stored_key, config = pickle.loads(cache.read_bytes())  # app-private file written below
+            if stored_key != key:
+                config = None
         except Exception:
-            pass  # unwritable location or unpicklable config: memory cache only
-    _detect_memo[key] = config
-    return copy.deepcopy(config)
+            config = None
+        if config is None:
+            config = detect(firmware)
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                temporary = cache.with_name(cache.name + ".tmp")
+                temporary.write_bytes(pickle.dumps((key, config)))
+                os.replace(temporary, cache)
+            except Exception:
+                pass  # unwritable location or unpicklable config: memory cache only
+        _detect_memo[key] = config
+    config = copy.deepcopy(config)  # callers (Transport) append notes to their config
+    if hasattr(config, "path"):
+        config.path = type(config.path)(firmware) if config.path is not None else firmware
+    return config
 
 
 def detect_profile(firmware_path):
