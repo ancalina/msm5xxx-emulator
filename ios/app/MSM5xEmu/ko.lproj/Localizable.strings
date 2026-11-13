@@ -188,5 +188,5 @@
 "Settings require reopening" = "설정이 저장되었습니다. 적용하려면 앱을 다시 열어 주세요.";
 "Settings saved for next start" = "변경 사항은 다음 세션에 저장됩니다. 지금 적용하려면 적용하고 다시 시작하세요.";
 "Older iOS settings notice" = "변경 사항이 저장됩니다. 호환되는 화면 변경은 적용 후 다시 시작할 수 있으며, 다른 변경은 앱을 다시 열면 적용됩니다.";
-"Older iOS failure notice" = "iOS 15–25에서는 다른 세션을 시작하기 전에 앱을 다시 열어야 할 수 있습니다.";
+"Older iOS failure notice" = "다른 세션을 시작하기 전에 앱을 다시 열어야 할 수 있습니다.";
 "Settings saved while stopped" = "변경 사항은 다음 세션에 저장됩니다.";
