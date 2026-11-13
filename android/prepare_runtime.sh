@@ -5,6 +5,8 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(CDPATH= cd -- "$ROOT/.." && pwd)
 PYTHON_PREFIX="$ROOT/build/vendor-src/python-3.14.4-android/prefix"
 PYTHON_SOURCE="$ROOT/build/vendor-src/cpython-3.14.4"
+CAPSTONE_PREFIX="$ROOT/build/vendor-prefix/capstone"
+CAPSTONE_ARCHIVE="$ROOT/build/vendor-downloads/capstone-5.0.7.tar.xz"
 NUMPY_WHEEL="$ROOT/build/vendor-wheelhouse/numpy-2.5.1/numpy-2.5.1-cp314-cp314-android_24_arm64_v8a.whl"
 NUMPY_SOURCE_ARCHIVE="$ROOT/build/vendor-downloads/numpy-2.5.1.tar.gz"
 NUMPY_CXX_LIBRARY="$ROOT/build/vendor-prefix/numpy/lib/libc++_shared.so"
@@ -31,7 +33,8 @@ root, repo = map(Path, sys.argv[1:])
 assets = root / "build/generated/python-assets/python/lib/python3.14"
 site = assets / "site-packages"
 jni = root / "build/generated/jniLibs/arm64-v8a"
-required = [assets / "os.py", site / "numpy/__init__.py",
+required = [assets / "os.py", site / "numpy/__init__.py", site / "capstone/__init__.py",
+            jni / "libcapstone.so",
             jni / "libqemu-system-arm.so",
             jni / "libpython3.14.so"]
 if not all(path.is_file() for path in required):
@@ -74,6 +77,9 @@ check_sha256 \
 check_sha256 \
     a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3 \
     "$NUMPY_SOURCE_ARCHIVE"
+check_sha256 \
+    871f18b78e2c77e39aa0a448e135b856c0c71a0398bb1bc779ef59458f83e275 \
+    "$CAPSTONE_ARCHIVE"
 python3 -m zipfile -t "$NUMPY_WHEEL"
 check_sha256 \
     d523468d62d9b603cb3354294d70d4b2feabf2c3f1e43b0c96c9aabf32813708 \
@@ -117,6 +123,7 @@ cp "$ROOT/app/src/main/python/msm5xxx_android_runtime.py" \
     "$ASSETS/lib/python3.14/site-packages/"
 cp -a "$REPO/src/msm5xxx_emulator" \
     "$ASSETS/lib/python3.14/site-packages/"
+cp -a "$CAPSTONE_PREFIX/python/capstone" "$ASSETS/lib/python3.14/site-packages/"
 python3 -m zipfile -e "$NUMPY_WHEEL" \
     "$ASSETS/lib/python3.14/site-packages"
 find "$ASSETS/lib/python3.14/site-packages/numpy" -type f -name '*.so' \
@@ -163,6 +170,7 @@ for library in "$JNI/"*.so; do
 done
 cp "$PYTHON_PREFIX/lib/libpython3.14.so" "$JNI/"
 cp "$NUMPY_CXX_LIBRARY" "$JNI/"
+cp "$CAPSTONE_PREFIX/lib/libcapstone.so" "$JNI/"
 
 for file in \
         "$REPO/LICENSE" \
@@ -177,7 +185,8 @@ for file in \
         "$PYTHON_PREFIX/lib/python3.14/LICENSE.txt" \
         "$PYTHON_SOURCE/Doc/license.rst" \
         "$LIBFFI_SOURCE/LICENSE" \
-        "$NUMPY_NDK_NOTICE"; do
+        "$NUMPY_NDK_NOTICE" \
+        "$CAPSTONE_PREFIX/LICENSE.TXT"; do
     if [ ! -f "$file" ]; then
         echo "missing runtime license: $file" >&2
         exit 1
@@ -199,6 +208,7 @@ cp "$PYTHON_SOURCE/Doc/license.rst" \
     "$LICENSES/CPython-BUNDLED-LICENSE-NOTICES.txt"
 cp "$LIBFFI_SOURCE/LICENSE" "$LICENSES/libffi-LICENSE.txt"
 cp "$NUMPY_NDK_NOTICE" "$LICENSES/Android-NDK-NOTICE.txt"
+cp "$CAPSTONE_PREFIX/LICENSE.TXT" "$LICENSES/Capstone-BSD-3-Clause.txt"
 mkdir -p "$LICENSES/NumPy"
 cp -a "$ASSETS/lib/python3.14/site-packages/"numpy-2.5.1.dist-info/licenses/. \
     "$LICENSES/NumPy/"

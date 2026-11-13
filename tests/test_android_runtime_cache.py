@@ -31,7 +31,7 @@ class AndroidRuntimeCacheTests(unittest.TestCase):
                      tree / 'qemu-10.2.1-android-host.patch', tree / 'msm5xxx-poc.c',
                      assets / 'os.py']
             files += [jni / name for name in ('libqemu-system-arm.so', 'libglib-2.0.so',
-                      'libintl.so', 'libpython3.14.so', 'libc++_shared.so')]
+                      'libintl.so', 'libpython3.14.so', 'libc++_shared.so', 'libcapstone.so')]
             files += [tools / name for name in ('aarch64-linux-android28-clang',
                       'aarch64-linux-android28-clang++', 'clang', 'llvm-strip', 'llvm-readelf')]
             for p in files:
@@ -49,7 +49,7 @@ class AndroidRuntimeCacheTests(unittest.TestCase):
                 for p in (cache.ROOT / 'build_glib_android.sh', tree / 'msm5xxx-poc.c',
                           tree / 'qemu-10.2.1-dsound-playback-only.patch',
                           tree / 'qemu-10.2.1-arm-legacy-alignment.patch',
-                          jni / 'libqemu-system-arm.so',
+                          jni / 'libqemu-system-arm.so', jni / 'libcapstone.so',
                           assets / 'os.py'):
                     p.write_bytes(b'mutated')
                     with self.assertRaisesRegex(RuntimeError, 'runtime cache mismatch'):

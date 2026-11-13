@@ -52,6 +52,7 @@ final class BackendBridge {
             if (result.getInt("schema") != 1
                     || !"3.14.4".equals(result.getString("python"))
                     || !"2.5.1".equals(result.getString("numpy"))
+                    || !"5.0.7".equals(result.getString("capstone"))
                     || !result.getBoolean("qemu_decoder")
                     || !result.getBoolean("detector_entry")
                     || !result.getBoolean("gdb_remote")

@@ -18,6 +18,7 @@ install -m 0755 /new/glib-build-work/runtime/libintl.so \
 MSM5XXX_DTC_SOURCE=/path/to/pinned/dtc \
   ./build_qemu_android.sh /new/qemu-build-work
 ./build_numpy_android.sh
+./build_capstone_android.sh
 ./prepare_runtime.sh
 gradle --offline --max-workers=1 :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -57,7 +58,9 @@ For release preparation, run `gradle --offline --max-workers=1 :app:assembleRele
 The default output is `app/build/outputs/apk/release/app-release-unsigned.apk`.
 It must be signed with an approved release key before installation or publication.
 No signing credentials are stored in this project. Keep the matching project and
-dependency source companions and SHA-256 manifest with the candidate. Debug APKs
+dependency source companions and SHA-256 manifest with the candidate. Generate
+the Android runtime companion with `./build_runtime_sources.sh /output/directory`.
+Debug APKs
 remain test builds and must not be described as signed production releases.
 
 For the developer prerelease, the existing Gradle debug certificate can sign

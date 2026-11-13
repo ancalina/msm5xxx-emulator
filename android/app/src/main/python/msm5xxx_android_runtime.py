@@ -27,6 +27,7 @@ def _json(value):
 
 
 def probe():
+    import capstone
     import numpy
     from msm5xxx_emulator.qemu.gdb_remote import Remote
     from msm5xxx_emulator.qemu.transport import Transport
@@ -34,6 +35,7 @@ def probe():
     from msm5xxx_emulator.detection import detect
 
     return _json({
+        "capstone": capstone.__version__,
         "detector_entry": callable(detect),
         "gdb_remote": callable(getattr(Remote, "command", None)),
         "numpy": numpy.__version__,
