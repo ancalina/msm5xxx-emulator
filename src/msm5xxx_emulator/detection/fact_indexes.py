@@ -6,7 +6,8 @@ from capstone import arm as a
 import re
 import struct
 
-_THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(.[\x48-\x4f]..))', re.S)
+# The following Thumb word must be an immediate byte/halfword/word access.
+_THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(.[\x48-\x4f].[\x60-\x8f]))', re.S)
 _ARM_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(..(?:\x1f|\x9f)(?:\x05|\x15|\x25|\x35|\x45|\x55|\x65|\x75' rb'|\x85|\x95|\xa5|\xb5|\xc5|\xd5|\xe5)))', re.S)
 _THUMB_BLX_CANDIDATE = re.compile(rb'(?=(.[\xf0-\xf7].([\xc0-\xcf]|[\xe0-\xef])))', re.S)
 
@@ -130,9 +131,15 @@ class FactIndexes:
                     displacement = word & 0xFFF
                     sites.append((CodeAddress(pc, 'arm', phase, bank), pc + 8 + (displacement if word & (1 << 23) else -displacement)))
                 for pc, pool in sites:
-                    raw = self.view.read(pool, 4, phase=phase, bank=bank)
-                    if raw is not None:
-                        references.setdefault(int.from_bytes(raw, 'little'),[]).append(pc)
+                    offset = pool - base
+                    if 0 <= offset <= len(data) - 4:
+                        value = struct.unpack_from('<I', data, offset)[0]
+                    else:
+                        raw = self.view.read(pool, 4, phase=phase, bank=bank)
+                        if raw is None:
+                            continue
+                        value = int.from_bytes(raw, 'little')
+                    references.setdefault(value, []).append(pc)
             return {value: tuple(sorted(sites, key=lambda pc: (pc.address, pc.isa))) for value, sites in references.items()}
         return self.memo('literal-reference-index', (phase, bank), index)
 

@@ -21,6 +21,20 @@ def words(*values):
 
 
 class FactIndexTests(unittest.TestCase):
+    def test_literal_access_prefilter_keeps_all_thumb_immediate_access_shapes(self):
+        image = bytearray()
+        expected = []
+        for register in range(8):
+            for opcode, width in ((0x6000, 4), (0x6800, 4), (0x7000, 1),
+                                  (0x7800, 1), (0x8000, 2), (0x8800, 2)):
+                for immediate in range(32):
+                    expected.append((len(image), 0x03000000 + immediate * width, width))
+                    image.extend(struct.pack('<2HI', 0x4800 | register << 8,
+                                             opcode | immediate << 6 | register << 3 | 7,
+                                             0x03000000))
+        candidates = FirmwareFacts(bytes(image)).literal_access_candidates(((0x03000000, 0x03000100),))
+        self.assertEqual([(item.load.address, item.address, item.width) for item in candidates], expected)
+
     def test_string_candidates_preserve_overlaps_and_literal_bytes(self):
         facts = FirmwareFacts(b'AAAA\x00.*\xff\x00.*\xff')
         self.assertEqual(facts.string_candidates(b'AA'), (0, 1, 2))
