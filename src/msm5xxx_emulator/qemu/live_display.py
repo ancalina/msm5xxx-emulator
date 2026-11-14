@@ -25,23 +25,9 @@ from ..gui.firmware_library import FirmwareLibrary
 from ..gui.library_view import choose_from_library
 from ..gui.worker import _prepared_profile_matches
 from .virtual_cell import virtual_cell_scenario
+from ..backend.profile import parse_network_start_time  # noqa: F401
 
 
-def parse_network_start_time(value: str) -> float | None:
-    if not value.strip():
-        return None
-    parsed = datetime.strptime(value, "%Y-%m-%d %H:%M")
-    if parsed.strftime("%Y-%m-%d %H:%M") != value:
-        raise ValueError("invalid date format")
-    try:
-        timestamp = parsed.timestamp()
-        local = datetime.fromtimestamp(timestamp)
-    except (OSError, OverflowError) as error:  # Windows rejects times near the epoch
-        raise ValueError("invalid local time") from error
-    if local != parsed:
-        raise ValueError("invalid local time")
-    virtual_cell_scenario(False, start_time=timestamp)
-    return timestamp
 
 
 class LiveWindow(Window):

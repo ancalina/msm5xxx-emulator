@@ -34,6 +34,7 @@
   "ui_language": "화면 언어",
   "choose_file": "파일 선택…",
   "choose_firmware": "펌웨어 파일 선택",
+  "cancel": "취소",
   "apply": "적용 (필요 시 재부팅)",
   "save_failed": "저장 실패",
   "settings_error": "설정 오류",

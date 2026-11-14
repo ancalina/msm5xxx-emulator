@@ -413,7 +413,7 @@ class GuiLocaleTests(unittest.TestCase):
         firmware = Path("firmware.bin")
         baseline = SimpleNamespace(width=128, height=160)
         overridden = SimpleNamespace(width=176, height=160)
-        with mock.patch("msm5xxx_emulator.gui.controls.detect",
+        with mock.patch("msm5xxx_emulator.backend.profile.detect",
                         side_effect=[baseline, overridden]) as detector:
             config, overrides = detect_profile(
                 firmware, {"width": 128, "height": 160, "obsolete": 1}
@@ -422,7 +422,7 @@ class GuiLocaleTests(unittest.TestCase):
             self.assertEqual(overrides, {})
             detector.assert_called_once_with(firmware)
 
-        with mock.patch("msm5xxx_emulator.gui.controls.detect",
+        with mock.patch("msm5xxx_emulator.backend.profile.detect",
                         side_effect=[baseline, overridden]) as detector:
             config, overrides = detect_profile(firmware, {"width": 176})
             self.assertIs(config, overridden)
@@ -447,19 +447,19 @@ class GuiLocaleTests(unittest.TestCase):
             self.assertEqual(saved, {"width": 128, "model": "CUSTOM", "_model_user_set": True})
             baseline = SimpleNamespace(model=None, width=128)
             overridden = SimpleNamespace(model="CUSTOM", width=128)
-            with mock.patch("msm5xxx_emulator.gui.controls.detect",
+            with mock.patch("msm5xxx_emulator.backend.profile.detect",
                             side_effect=[baseline, overridden]):
                 config, overrides = detect_profile(firmware, saved)
             self.assertIs(config, overridden)
             self.assertEqual(overrides["model"], "CUSTOM")
-            with mock.patch("msm5xxx_emulator.gui.controls.detect", return_value=baseline):
+            with mock.patch("msm5xxx_emulator.backend.profile.detect", return_value=baseline):
                 self.assertEqual(detect_profile(firmware, {"model": "SCH-E100"})[1], {})
             self.assertEqual(merge_settings_overrides(
                 {"model": "SCH-E100"}, {"width"}, {"width": 176}, False),
                 {"width": 176})
             with self.assertRaises(ValueError):
                 merge_settings_overrides({}, {"model"}, {"model": "  "}, False)
-            with mock.patch("msm5xxx_emulator.gui.controls.detect", return_value=baseline):
+            with mock.patch("msm5xxx_emulator.backend.profile.detect", return_value=baseline):
                 self.assertEqual(detect_profile(firmware, {
                     "model": "", "_model_user_set": True})[1], {})
 

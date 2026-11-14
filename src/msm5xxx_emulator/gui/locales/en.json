@@ -34,6 +34,7 @@
   "ui_language": "Language",
   "choose_file": "Choose File…",
   "choose_firmware": "Choose Firmware",
+  "cancel": "Cancel",
   "apply": "Apply (restart if needed)",
   "save_failed": "Save Failed",
   "settings_error": "Settings Error",

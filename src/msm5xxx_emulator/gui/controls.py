@@ -15,6 +15,8 @@ detect = boot_plan.detect
 from ..state_io import atomic_write_text, exclusive_path_lock
 
 from .locale import (UI_TEXT, normalize_ui_language, resolve_ui_language)
+from ..backend.profile import (GUI_ZERO_DISABLE_FIELDS, _clean_saved_model, detect_profile,  # noqa: F401
+                               manual_keymap, merge_settings_overrides, parse_manual_key_event)
 from .settings import (BOOLEAN_FIELDS, SETTINGS_SECTIONS, parse_settings_values,
                        settings_values, validate_settings_values)
 
@@ -23,36 +25,11 @@ LOGGER = logging.getLogger("gui")
 LAST_CONFIG = DEFAULT_STATE_ROOT / "last_config.json"
 
 
-GUI_ZERO_DISABLE_FIELDS = DISABLEABLE_ADDRESS_FIELDS | {
-    "audio_play_address", "fast_boot_address",
-}
 
 
 KEYS = UI_TEXT["ko"]["_keys"]
 
 
-def parse_manual_key_event(text: str) -> int:
-    """Parse one opt-in firmware event byte from decimal or log-style hex."""
-    value_text = text.strip()
-    try:
-        # User logs conventionally render event bytes as ``053`` / ``05f``.
-        # Keep unprefixed nonzero values decimal, but accept that zero-prefixed
-        # firmware notation as hexadecimal.
-        base = (
-            16 if (len(value_text) > 1 and value_text.startswith("0")
-                   and not value_text.lower().startswith(("0x", "0o", "0b")))
-            else 0
-        )
-        value = int(value_text, base)
-    except ValueError as error:
-        raise ValueError(
-            "key event must be 0x00..0xFF, zero-prefixed hex, or decimal 0..255"
-        ) from error
-    if not 0 <= value <= 0xFF:
-        raise ValueError(
-            "key event must be 0x00..0xFF, zero-prefixed hex, or decimal 0..255"
-        )
-    return value
 
 
 def _log_manual_key_mapping(
@@ -80,25 +57,6 @@ def _log_manual_key_mapping(
     )
 
 
-def manual_keymap(data: object, firmware_sha256: str) -> dict[int, int]:
-    """Read one validated SHA-scoped GUI mapping from saved preferences."""
-    if not isinstance(data, dict):
-        return {}
-    mappings = data.get("manual_keymaps")
-    raw = mappings.get(firmware_sha256) if isinstance(mappings, dict) else None
-    if not isinstance(raw, dict):
-        return {}
-    valid_bits = set(KEYS.values())
-    result: dict[int, int] = {}
-    for key, value in raw.items():
-        try:
-            bit = int(key)
-        except (TypeError, ValueError):
-            continue
-        if (bit in valid_bits and isinstance(value, int)
-                and not isinstance(value, bool) and 0 <= value <= 0xFF):
-            result[bit] = value
-    return result
 
 
 LAYOUT = tuple(tuple(item) for item in UI_TEXT["ko"]["_layout"])
@@ -113,36 +71,8 @@ KEY_TEXT = UI_TEXT["ko"]["_key_text"]
 SETTINGS_ENGLISH = UI_TEXT["ko"]["_settings_english"]
 
 
-def _clean_saved_model(profile: dict[str, object]) -> dict[str, object]:
-    """Keep a saved model only when the user explicitly set a nonempty value."""
-    result = dict(profile)
-    model = result.get("model")
-    if (result.get("_model_user_set") is not True
-            or not isinstance(model, str) or not model.strip()):
-        result.pop("model", None)
-        result.pop("_model_user_set", None)
-    return result
 
 
-def merge_settings_overrides(current: dict[str, object], edited: set[str],
-                             parsed: dict[str, object],
-                             firmware_changed: bool) -> dict[str, object]:
-    """Keep prior manual values for one firmware; a new dump starts clean."""
-    merged = {} if firmware_changed else _clean_saved_model(current)
-    if "model" in edited:
-        model = parsed["model"]
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError(UI_TEXT[resolve_ui_language("auto")]["validation_00"])
-        merged["_model_user_set"] = True
-    for name in edited:
-        value = parsed[name]
-        if value is None and name in GUI_ZERO_DISABLE_FIELDS:
-            merged[name] = 0
-        elif value is None:
-            merged.pop(name, None)
-        else:
-            merged[name] = value
-    return merged
 
 
 def settings_apply_mode(edited: set[str], firmware_changed: bool) -> str:
@@ -162,22 +92,6 @@ def can_apply_live_framebuffer_format(edited: set[str], firmware_changed: bool,
             and framebuffer_format != "none")
 
 
-def detect_profile(firmware: Path, profile: dict[str, object]) -> tuple[object, dict[str, object]]:
-    """Detect once for normal startup while migrating legacy saved auto values."""
-    baseline = detect(firmware)
-    overrides = {
-        key: value for key, value in profile.items()
-        if key != "model" and hasattr(baseline, key)
-        and value != getattr(baseline, key)
-    }
-    model = profile.get("model")
-    if (profile.get("_model_user_set") is True
-            and isinstance(model, str) and model.strip()):
-        overrides["model"] = model
-        overrides["_model_user_set"] = True
-    config = (detect(firmware, argparse.Namespace(**overrides))
-              if overrides else baseline)
-    return config, overrides
 
 
 class ControlsMixin:
