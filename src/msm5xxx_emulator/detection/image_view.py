@@ -1,6 +1,7 @@
 """Immutable mappings from supplied firmware bytes to guest addresses."""
 from __future__ import annotations
-from dataclasses import dataclass
+from bisect import bisect_right
+from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
 ADDRESS_SPACE = 1 << 32
@@ -81,6 +82,7 @@ class ImageView:
     segments: tuple[bytes, ...]
     mappings: tuple[Mapping, ...]
     origin: int = 0
+    _mapping_groups: dict = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "segments", tuple(bytes(data) for data in self.segments))
@@ -101,6 +103,13 @@ class ImageView:
             if prior is not None and mapping.guest_base < prior.guest_base + prior.size:
                 raise ValueError("overlapping mappings in the same phase and bank")
             previous[key] = mapping
+        groups = {}
+        for mapping in ordered:
+            groups.setdefault((mapping.phase, mapping.bank), []).append(mapping)
+        object.__setattr__(self, "_mapping_groups", {
+            key: (tuple(item.guest_base for item in items), tuple(items))
+            for key, items in groups.items()
+        })
 
     def contiguous_ranges(self, *, phase: str = "reset", bank: str = "primary"):
         """Return supplied or materialised address intervals, excluding holes."""
@@ -367,47 +376,67 @@ class ImageView:
             cursor += take
         return original
 
+    def _mapping_at(self, address, phase, bank):
+        """Find a unique starting mapping; later bytes stay in its phase/bank."""
+        if phase is not None and bank is not None:
+            group = self._mapping_groups.get((phase, bank))
+            if group is None:
+                return None
+            starts, items = group
+            index = bisect_right(starts, address) - 1
+            if index >= 0:
+                item = items[index]
+                if address < item.guest_base + item.size:
+                    return item
+            return None
+        found = None
+        for item in self.mappings:
+            if (item.guest_base <= address < item.guest_base + item.size
+                    and (phase is None or item.phase == phase)
+                    and (bank is None or item.bank == bank)):
+                if found is not None:
+                    return None
+                found = item
+        return found
+
     def covers(self, guest_address: int, size: int, *, phase: str | None = None, bank: str | None = None) -> bool:
         """Return whether a range is supplied without materializing its bytes."""
         if size < 0 or guest_address < 0 or guest_address + size > ADDRESS_SPACE:
             return False
         if size == 0:
             return True
-        matches = [mapping for mapping in self.mappings if mapping.guest_base <= guest_address < mapping.guest_base + mapping.size and (phase is None or mapping.phase
-            == phase) and (bank is None or mapping.bank == bank)]
-        if len(matches) != 1:
+        mapping = self._mapping_at(guest_address, phase, bank)
+        if mapping is None:
             return False
-        selected_phase, selected_bank = matches[0].phase, matches[0].bank
-        address, end = guest_address, guest_address + size
-        while address < end:
-            current = [mapping for mapping in self.mappings if mapping.phase == selected_phase and mapping.bank == selected_bank and mapping.guest_base <=
-                address < mapping.guest_base + mapping.size]
-            if len(current) != 1:
+        end = guest_address + size
+        while end > mapping.guest_base + mapping.size:
+            mapping = self._mapping_at(mapping.guest_base + mapping.size, mapping.phase, mapping.bank)
+            if mapping is None:
                 return False
-            address = min(end, current[0].guest_base + current[0].size)
         return True
 
     def read(self, guest_address: int, size: int = 1, *, phase: str | None = None, bank: str | None = None) -> bytes | None:
         """Read fully supplied bytes, returning ``None`` for holes/ambiguity."""
-        if not self.covers(guest_address, size, phase=phase, bank=bank):
+        if size < 0 or guest_address < 0 or guest_address + size > ADDRESS_SPACE:
             return None
         if size == 0:
             return b""
-        matches = [mapping for mapping in self.mappings if mapping.guest_base <= guest_address < mapping.guest_base + mapping.size and (phase is None or mapping.phase
-            == phase) and (bank is None or mapping.bank == bank)]
-        mapping = matches[0]
-        selected_phase, selected_bank = mapping.phase, mapping.bank
+        mapping = self._mapping_at(guest_address, phase, bank)
+        if mapping is None:
+            return None
+        offset = mapping.source_offset + guest_address - mapping.guest_base
+        if guest_address + size <= mapping.guest_base + mapping.size:
+            return self.segments[mapping.source_segment][offset:offset + size]
         output = bytearray()
         address = guest_address
         end = guest_address + size
         while address < end:
-            current = [candidate for candidate in self.mappings if candidate.phase == selected_phase and candidate.bank == selected_bank and candidate.guest_base
-                <= address < candidate.guest_base + candidate.size]
-            if len(current) != 1:
-                return None
-            candidate = current[0]
-            take = min(end - address, candidate.guest_base + candidate.size - address)
-            offset = candidate.source_offset + address - candidate.guest_base
-            output.extend(self.segments[candidate.source_segment][offset:offset + take])
+            take = min(end - address, mapping.guest_base + mapping.size - address)
+            offset = mapping.source_offset + address - mapping.guest_base
+            output.extend(self.segments[mapping.source_segment][offset:offset + take])
             address += take
+            if address < end:
+                mapping = self._mapping_at(address, mapping.phase, mapping.bank)
+                if mapping is None:
+                    return None
         return bytes(output)

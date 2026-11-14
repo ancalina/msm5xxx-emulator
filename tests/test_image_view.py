@@ -1,5 +1,6 @@
 import unittest
 import struct
+import random
 
 from msm5xxx_emulator.detection.image_view import (
     ImageView, LoadOperation, Mapping, SourceSpan,
@@ -7,6 +8,48 @@ from msm5xxx_emulator.detection.image_view import (
 
 
 class ImageViewTests(unittest.TestCase):
+    def test_reads_and_coverage_match_bytewise_sparse_views(self):
+        rng = random.Random(415)
+        segments, mappings = [], []
+        for phase in ('reset', 'application'):
+            for bank in ('primary', 'secondary'):
+                cursor = 0
+                for _ in range(8):
+                    cursor += rng.randrange(3)
+                    payload = rng.randbytes(rng.randrange(1, 6))
+                    mappings.append(Mapping(len(segments), 1, cursor, len(payload), phase, bank))
+                    segments.append(b'!' + payload)
+                    cursor += len(payload)
+        rng.shuffle(mappings)
+        view = ImageView(tuple(segments), tuple(mappings))
+        for phase in (None, 'reset', 'application', 'absent'):
+            for bank in (None, 'primary', 'secondary', 'absent'):
+                for start in range(-1, 44):
+                    for size in (0, 1, 2, 6):
+                        expected = None
+                        if start >= 0:
+                            if size == 0:
+                                expected = b''
+                            else:
+                                hits = [m for m in mappings
+                                        if m.guest_base <= start < m.guest_base + m.size
+                                        and (phase is None or m.phase == phase)
+                                        and (bank is None or m.bank == bank)]
+                                if len(hits) == 1:
+                                    selected = hits[0]
+                                    supplied = {m.guest_base + i: segments[m.source_segment][m.source_offset + i]
+                                                for m in mappings if (m.phase, m.bank) == (selected.phase, selected.bank)
+                                                for i in range(m.size)}
+                                    if all(at in supplied for at in range(start, start + size)):
+                                        expected = bytes(supplied[at] for at in range(start, start + size))
+                        with self.subTest(phase=phase, bank=bank, start=start, size=size):
+                            self.assertEqual(view.read(start, size, phase=phase, bank=bank), expected)
+                            self.assertEqual(view.covers(start, size, phase=phase, bank=bank), expected is not None)
+        for address, size in ((-1, 0), (0, -1), (1 << 32, 1), ((1 << 32) - 1, 2)):
+            self.assertIsNone(view.read(address, size))
+            self.assertFalse(view.covers(address, size))
+        self.assertEqual(view.read(1 << 32, 0), b'')
+
     def test_unknown_writes_remove_postcopy_bytes_without_restoring_capture(self):
         source = ImageView.raw(b'abcdefgh', base=0x1000)
         unknown = LoadOperation('invalidate', None, 0x1002, 2, (0x40,))
