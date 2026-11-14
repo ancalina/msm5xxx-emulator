@@ -1,6 +1,7 @@
 """App icon: the top of an MSM-style chip package whose laser marking carries this build's data.
 
-python3 branding/chip_icon.py --version 0.1.0 --date 2026-11-14 --commit 8b4652b --platform "WIN X64" --out DIR
+python3 branding/chip_icon.py --platform "WIN X64" --out DIR [--version 0.1.0] [--date 2026-11-14] [--commit SHA]
+Defaults: version from pyproject.toml, commit = git HEAD of this checkout, date = today (SOURCE_DATE_EPOCH if set).
 
 Writes 1024x1024 SVG layers to DIR:
   full.svg          plate + marking (main icon)        small.svg          plate + "MSM5" + pin-1 dot
@@ -13,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
+import subprocess
 from pathlib import Path
 
 S = 1024
@@ -70,12 +73,18 @@ def layers(version: str, day: datetime.date, commit: str, platform: str) -> dict
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--version", required=True)
-    parser.add_argument("--date", required=True, type=datetime.date.fromisoformat)
-    parser.add_argument("--commit", required=True)
+    root = Path(__file__).resolve().parents[1]
+    version = re.search(r'^version = "(\d+\.\d+\.\d+)', (root / "pyproject.toml").read_text(), re.M).group(1)
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    today = datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).date() if epoch else datetime.date.today()
+    parser.add_argument("--version", default=version)
+    parser.add_argument("--date", default=today, type=datetime.date.fromisoformat)
+    parser.add_argument("--commit", default=None, help="default: git HEAD of this checkout")
     parser.add_argument("--platform", required=True, help='e.g. "WIN X64", "MAC X64", "LNX X64", "AND A64", "IOS A64"')
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.commit is None:
+        args.commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     args.out.mkdir(parents=True, exist_ok=True)
     for name, text in layers(args.version, args.date, args.commit, args.platform).items():
         (args.out / f"{name}.svg").write_text(text, encoding="utf-8")
