@@ -18,6 +18,7 @@ from msm5xxx_emulator.detection.image_view import ImageView, LoadOperation
 from msm5xxx_emulator.detection.fact_indexes import (
     _ARM_LITERAL_ACCESS_CANDIDATE, _THUMB_LITERAL_ACCESS_CANDIDATE,
     _THUMB_LITERAL_OPCODE,
+    _THUMB_BL_CANDIDATE, _THUMB_BLX_CANDIDATE, _ARM_BL_OPCODE, _ARM_BLX_OPCODE,
 )
 
 
@@ -28,11 +29,17 @@ def words(*values):
 class FactIndexTests(unittest.TestCase):
     def test_opcode_prefilters_preserve_overlaps_and_scan_boundaries(self):
         rng = random.Random(883)
-        image = bytes(range(256)) + rng.randbytes(256) + b'\x00\x48\x49\x60\x60\x00\x48\x0a\x60\x1f\x05\x9f\xe5'
+        image = (bytes(range(256)) + rng.randbytes(256)
+                 + b'\x00\x48\x49\x60\x60\x00\x48\x0a\x60\x1f\x05\x9f\xe5'
+                 + b'\x00\xf0\x00\xf8\x00\xf0\x0a\xc0\x00\xf0\xf1\xf8\xf9')
         shapes = (
             (_THUMB_LITERAL_OPCODE, 1, re.compile(rb'(?=(.[\x48-\x4f]))', re.S)),
             (_THUMB_LITERAL_ACCESS_CANDIDATE, 1, re.compile(rb'(?=(.[\x48-\x4f].[\x60-\x8f]))', re.S)),
             (_ARM_LITERAL_ACCESS_CANDIDATE, 2, re.compile(rb'(?=(..[\x1f\x9f][\x05\x15\x25\x35\x45\x55\x65\x75\x85\x95\xa5\xb5\xc5\xd5\xe5]))', re.S)),
+            (_THUMB_BL_CANDIDATE, 1, re.compile(rb'(?=(.[\xf0-\xf7].[\xf8-\xff]))', re.S)),
+            (_THUMB_BLX_CANDIDATE, 1, re.compile(rb'(?=(.[\xf0-\xf7].[\xc0-\xcf\xe0-\xef]))', re.S)),
+            (_ARM_BL_OPCODE, 3, re.compile(rb'(?=(...[\x0b\x1b\x2b\x3b\x4b\x5b\x6b\x7b\x8b\x9b\xab\xbb\xcb\xdb\xeb]))', re.S)),
+            (_ARM_BLX_OPCODE, 3, re.compile(rb'(?=(...[\xfa\xfb]))', re.S)),
         )
         for pattern, bias, reference in shapes:
             for end in range(len(image) + 1):

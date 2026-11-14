@@ -11,7 +11,10 @@ import struct
 _THUMB_LITERAL_OPCODE = re.compile(rb'[\x48-\x4f]')
 _THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'[\x48-\x4f](?=.[\x60-\x8f])', re.S)
 _ARM_LITERAL_ACCESS_CANDIDATE = re.compile(rb'[\x1f\x9f][\x05\x15\x25\x35\x45\x55\x65\x75\x85\x95\xa5\xb5\xc5\xd5\xe5]')
-_THUMB_BLX_CANDIDATE = re.compile(rb'(?=(.[\xf0-\xf7].([\xc0-\xcf]|[\xe0-\xef])))', re.S)
+_THUMB_BL_CANDIDATE = re.compile(rb'[\xf0-\xf7](?=.[\xf8-\xff])', re.S)
+_THUMB_BLX_CANDIDATE = re.compile(rb'[\xf0-\xf7](?=.[\xc0-\xcf\xe0-\xef])', re.S)
+_ARM_BL_OPCODE = re.compile(rb'[\x0b\x1b\x2b\x3b\x4b\x5b\x6b\x7b\x8b\x9b\xab\xbb\xcb\xdb\xeb]')
+_ARM_BLX_OPCODE = re.compile(rb'[\xfa\xfb]')
 
 class FactIndexes:
     def _search_regions(self, phase, bank):
@@ -27,15 +30,18 @@ class FactIndexes:
             calls = []
             for base, data in self._search_regions(phase, bank):
                 if isa == 'thumb':
-                    for match in re.finditer(rb'(?=(.[\xf0-\xf7].[\xf8-\xff]))', data, re.S):
-                        at = match.start()
-                        if (base + at) & 1:
+                    for match in _THUMB_BL_CANDIDATE.finditer(data):
+                        at = match.start() - 1
+                        if at < 0 or (base + at) & 1:
                             continue
                         target = thumb_call_target(data, at)
                         if target is not None:
                             calls.append((base + at, base + target))
                 else:
-                    for at in range((-base) & 3, len(data) - 3, 4):
+                    for match in _ARM_BL_OPCODE.finditer(data):
+                        at = match.start() - 3
+                        if at < 0 or (base + at) & 3:
+                            continue
                         word = struct.unpack_from('<I', data, at)[0]
                         if word >> 28 != 15 and word & 0x0F000000 == 0x0B000000:
                             delta = (word & 0xFFFFFF) << 2
@@ -60,9 +66,9 @@ class FactIndexes:
                 if scan_end < 4:
                     continue
                 for match in _THUMB_BLX_CANDIDATE.finditer(data, 0, scan_end):
-                    offset = match.start()
+                    offset = match.start() - 1
                     address = base + offset
-                    if address & 1 or offset + 4 > scan_end:
+                    if offset < 0 or address & 1 or offset + 4 > scan_end:
                         continue
                     source = CodeAddress(address, 'thumb', phase, bank)
                     instruction = self.decode(source)
@@ -74,7 +80,10 @@ class FactIndexes:
                     if target & 3:
                         continue
                     calls.append((source, CodeAddress(target, 'arm', phase, bank)))
-                for offset in range((-base) & 3, scan_end - 3, 4):
+                for match in _ARM_BLX_OPCODE.finditer(data, 0, scan_end):
+                    offset = match.start() - 3
+                    if offset < 0 or (base + offset) & 3:
+                        continue
                     word = struct.unpack_from('<I', data, offset)[0]
                     if word & 0xFE000000 != 0xFA000000:
                         continue
