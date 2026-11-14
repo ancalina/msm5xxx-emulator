@@ -1,5 +1,6 @@
 """Static evidence for the MSM5000 two-channel tone generator."""
 from __future__ import annotations
+from bisect import bisect_left
 from msm5xxx_emulator.detection.facts import facts_for
 import struct
 import re
@@ -10,6 +11,12 @@ from msm5xxx_emulator.detection.devices.audio.rules import find_audio_transport
 # signature; MMIO addresses alone are not sufficient evidence.
 _DIVIDERS = (307500, 2152500, 4305000, 8610000)
 _WRITES = (0x030006C8, 0x030006DC, 0x030006BC, 0x030006B8, 0x030006C4, 0x030006C0, 0x030006D0, 0x030006CC, 0x030006D8, 0x030006D4,)
+
+def _values_in_window(refs, ref_pcs, pc):
+    """Return literal values with reference PCs in ``[pc, pc + 0x80)``."""
+    first = bisect_left(ref_pcs, pc)
+    end = bisect_left(ref_pcs, pc + 0x80)
+    return {value for _, value in refs[first:end]}
 
 def _literal_values(image: bytes) -> set[int]:
     return {value for value in _DIVIDERS if image.find(struct.pack("<I", value)) >= 0}
@@ -32,8 +39,10 @@ def _tone_converter_entries(image: bytes) -> set[int]:
             if value in needed:
                 refs.append((pc, value))
     entries: set[int] = set()
+    ordered_refs = sorted(refs)
+    ref_pcs = [pc for pc, _ in ordered_refs]
     for pc, _ in refs:
-        used = {value for target_pc, value in refs if pc <= target_pc < pc + 0x80}
+        used = _values_in_window(ordered_refs, ref_pcs, pc)
         if used == needed:
             # Use the nearest Thumb function prologue preceding these literal
             # loads. The recovered converter starts 0x36 bytes before its

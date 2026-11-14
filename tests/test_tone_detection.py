@@ -4,6 +4,7 @@ import struct
 import unittest
 
 from msm5xxx_emulator.detection.registry import device_domain
+from msm5xxx_emulator.detection.devices.audio.tone import _values_in_window
 find_tone_generator = device_domain('audio.tone').find_tone_generator
 
 
@@ -57,6 +58,16 @@ def _fixture(*, complete=True, exact_writer=True) -> bytes:
 
 
 class ToneDetectionTests(unittest.TestCase):
+    def test_tone_reference_windows_match_range_filter(self) -> None:
+        refs = ((0x180, 5), (0x17F, 3), (0x100, 1), (0x17F, 3),
+                (0x180, 2), (0x0FF, 8), (0x17F, 4), (0x280, 9))
+        ordered_refs = sorted(refs)
+        ref_pcs = [pc for pc, _ in ordered_refs]
+        for pc in (0x80, 0xFF, 0x100, 0x101, 0x180, 0x201, 0x280):
+            expected = {value for target_pc, value in refs
+                        if pc <= target_pc < pc + 0x80}
+            self.assertEqual(_values_in_window(ordered_refs, ref_pcs, pc), expected)
+
     def test_requires_linked_converter_and_writer(self):
         self.assertEqual(find_tone_generator(_fixture())['static_status'], 'accepted')
         self.assertEqual(find_tone_generator(_fixture(complete=False))['static_status'], 'rejected')
