@@ -1,5 +1,6 @@
 """Static ARM and Thumb SBI bootstrap transaction evidence."""
 from __future__ import annotations
+from bisect import bisect_left, bisect_right
 import struct
 from capstone import arm as a
 from ...facts import CodeAddress, facts_for
@@ -304,9 +305,13 @@ def _marker_candidates(image, facts, isa):
 def _owner_starts(facts, marker, isa):
     starts = set()
     lower = max(0, marker - 0x1000)
-    for _, target in facts.call_candidates(isa):
-        if lower <= target <= marker and target % (4 if isa == 'arm' else 2) == 0:
-            starts.add(CodeAddress(target, isa))
+    alignment = 4 if isa == 'arm' else 2
+    targets = facts.memo('sbi-discovery-call-targets', isa, lambda: tuple(sorted({
+        target for _, target in facts.call_candidates(isa) if target % alignment == 0
+    })))
+    first = bisect_left(targets, lower)
+    last = bisect_right(targets, marker)
+    starts.update(CodeAddress(target, isa) for target in targets[first:last])
     for _, target in facts.vectors():
         if lower <= target.address <= marker and target.isa == isa:
             starts.add(target)
