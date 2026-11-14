@@ -21,6 +21,15 @@ def words(*values):
 
 
 class FactIndexTests(unittest.TestCase):
+    def test_string_candidates_preserve_overlaps_and_literal_bytes(self):
+        facts = FirmwareFacts(b'AAAA\x00.*\xff\x00.*\xff')
+        self.assertEqual(facts.string_candidates(b'AA'), (0, 1, 2))
+        self.assertEqual(facts.string_candidates(b'\x00.*\xff'), (4, 8))
+        self.assertEqual(facts.string_candidates(b'missing'), ())
+        self.assertIs(facts.string_candidates(b'AA'), facts.string_candidates(b'AA'))
+        with self.assertRaises(ValueError):
+            facts.string_candidates(b'')
+
     def test_ranged_literal_xrefs_include_only_validated_pool_consumers(self):
         image = bytearray(0x40)
         struct.pack_into('<3H', image, 0, 0x4807, 0x4908, 0x4770)

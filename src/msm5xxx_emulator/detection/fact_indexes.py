@@ -94,9 +94,16 @@ class FactIndexes:
         """Index supplied byte candidates, including copied code and data."""
         if not value:
             raise ValueError('empty string anchor')
-        pattern = re.compile(rb'(?=(' + re.escape(value) + rb'))', re.S)
-        return self.memo('strings', (value, phase, bank), lambda: tuple(base + match.start() for base, data in self._search_regions(phase, bank) for match in
-            pattern.finditer(data)))
+        def extract():
+            found = []
+            for base, data in self._search_regions(phase, bank):
+                offset = data.find(value)
+                while offset != -1:
+                    found.append(base + offset)
+                    # Advancing one byte retains overlapping occurrences.
+                    offset = data.find(value, offset + 1)
+            return tuple(found)
+        return self.memo('strings', (value, phase, bank), extract)
 
     def pointer_candidates(self, address: int, *, phase='reset', bank='primary'):
         return self.string_candidates(struct.pack('<I', address), phase=phase, bank=bank)
