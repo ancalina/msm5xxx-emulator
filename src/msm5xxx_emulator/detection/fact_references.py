@@ -40,8 +40,8 @@ class FactReferences:
                 scan_end = min(len(data), max(0, end - base))
                 if not scan_end:
                     continue
-                thumb_candidates = {match.start() for match in _THUMB_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end)}
-                arm_candidates = {match.start() for match in _ARM_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end)}
+                thumb_candidates = {match.start() - 1 for match in _THUMB_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end) if match.start() >= 1}
+                arm_candidates = {match.start() - 2 for match in _ARM_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end) if match.start() >= 2}
                 for off in sorted(thumb_candidates | arm_candidates):
                     guest = base + off
                     # Search regions contain only contiguous supplied bytes.

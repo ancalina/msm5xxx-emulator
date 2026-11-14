@@ -6,9 +6,11 @@ from capstone import arm as a
 import re
 import struct
 
-# The following Thumb word must be an immediate byte/halfword/word access.
-_THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(.[\x48-\x4f].[\x60-\x8f]))', re.S)
-_ARM_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(..(?:\x1f|\x9f)(?:\x05|\x15|\x25|\x35|\x45|\x55|\x65|\x75' rb'|\x85|\x95|\xa5|\xb5|\xc5|\xd5|\xe5)))', re.S)
+# Match opcode bytes first so the regex engine can skip unrelated bytes.
+# Thumb matches start one byte into the instruction; ARM matches start two in.
+_THUMB_LITERAL_OPCODE = re.compile(rb'[\x48-\x4f]')
+_THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'[\x48-\x4f](?=.[\x60-\x8f])', re.S)
+_ARM_LITERAL_ACCESS_CANDIDATE = re.compile(rb'[\x1f\x9f][\x05\x15\x25\x35\x45\x55\x65\x75\x85\x95\xa5\xb5\xc5\xd5\xe5]')
 _THUMB_BLX_CANDIDATE = re.compile(rb'(?=(.[\xf0-\xf7].([\xc0-\xcf]|[\xe0-\xef])))', re.S)
 
 class FactIndexes:
@@ -112,20 +114,19 @@ class FactIndexes:
     def _literal_reference_index(self, phase, bank):
         def index():
             references = {}
-            thumb = re.compile(rb'(?=(.[\x48-\x4f]))', re.S)
             for base, data in self._search_regions(phase, bank):
                 sites = []
-                for match in thumb.finditer(data):
-                    at = match.start()
+                for match in _THUMB_LITERAL_OPCODE.finditer(data):
+                    at = match.start() - 1
                     pc = base + at
-                    if pc & 1:
+                    if at < 0 or pc & 1:
                         continue
                     word = struct.unpack_from('<H', data, at)[0]
                     sites.append((CodeAddress(pc, 'thumb', phase, bank), ((pc + 4) & ~3) + (word & 255) * 4))
                 for match in _ARM_LITERAL_ACCESS_CANDIDATE.finditer(data):
-                    at = match.start()
+                    at = match.start() - 2
                     pc = base + at
-                    if pc & 3:
+                    if at < 0 or pc & 3:
                         continue
                     word = struct.unpack_from('<I', data, at)[0]
                     displacement = word & 0xFFF

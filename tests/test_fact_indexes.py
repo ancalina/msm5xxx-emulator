@@ -1,6 +1,7 @@
 """Synthetic code evidence, address views, and conservative propagation."""
 import struct
 import random
+import re
 import unittest
 
 from capstone.arm import ARM_CC_EQ, ARM_CC_NE
@@ -14,6 +15,10 @@ from msm5xxx_emulator.detection.facts import (
     source_prefix, with_fact_scope,
 )
 from msm5xxx_emulator.detection.image_view import ImageView, LoadOperation
+from msm5xxx_emulator.detection.fact_indexes import (
+    _ARM_LITERAL_ACCESS_CANDIDATE, _THUMB_LITERAL_ACCESS_CANDIDATE,
+    _THUMB_LITERAL_OPCODE,
+)
 
 
 def words(*values):
@@ -21,6 +26,21 @@ def words(*values):
 
 
 class FactIndexTests(unittest.TestCase):
+    def test_opcode_prefilters_preserve_overlaps_and_scan_boundaries(self):
+        rng = random.Random(883)
+        image = bytes(range(256)) + rng.randbytes(256) + b'\x00\x48\x49\x60\x60\x00\x48\x0a\x60\x1f\x05\x9f\xe5'
+        shapes = (
+            (_THUMB_LITERAL_OPCODE, 1, re.compile(rb'(?=(.[\x48-\x4f]))', re.S)),
+            (_THUMB_LITERAL_ACCESS_CANDIDATE, 1, re.compile(rb'(?=(.[\x48-\x4f].[\x60-\x8f]))', re.S)),
+            (_ARM_LITERAL_ACCESS_CANDIDATE, 2, re.compile(rb'(?=(..[\x1f\x9f][\x05\x15\x25\x35\x45\x55\x65\x75\x85\x95\xa5\xb5\xc5\xd5\xe5]))', re.S)),
+        )
+        for pattern, bias, reference in shapes:
+            for end in range(len(image) + 1):
+                actual = [match.start() - bias for match in pattern.finditer(image, 0, end)
+                          if match.start() >= bias]
+                expected = [match.start() for match in reference.finditer(image, 0, end)]
+                self.assertEqual(actual, expected, (bias, end))
+
     def test_literal_access_prefilter_keeps_all_thumb_immediate_access_shapes(self):
         image = bytearray()
         expected = []
