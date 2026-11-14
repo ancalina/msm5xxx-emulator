@@ -58,13 +58,27 @@ def stroke_text(glyphs, text, x, baseline, color, width, *, cap=0.0, cell=None, 
             f'stroke-linejoin="round">{"".join(parts)}</g>')
 
 
+def centered_text(glyphs, text, center_x, baseline, ink_width, color, width) -> str:
+    """Proportional Hershey text whose drawn strokes (not advances) are ink_width wide and centred on center_x."""
+    pen, left, right = 0.0, None, 0.0
+    for ch in text:
+        advance, path = glyphs.get(ch, (500, ""))
+        xs = [float(v) for v in re.findall(r"-?[\d.]+", path)][0::2]
+        if xs:
+            left = pen + min(xs) if left is None else left
+            right = pen + max(xs)
+        pen += advance * 1.12
+    k = ink_width / (right - left)
+    return stroke_text(glyphs, text, center_x - (left + right) / 2 * k, baseline, color, width, fit=pen * k)
+
+
 def layers(version: str, day: datetime.date, commit: str, platform: str) -> dict[str, str]:
     glyphs = _glyphs()
     marking = stroke_text(glyphs, "MSM5xxx", 0.17 * S, 0.235 * S, INK, 0.014 * S, cap=0.078 * S)
     marking += "".join(stroke_text(glyphs, line, 0.17 * S, (0.356 + 0.089 * i) * S, INK, 0.0065 * S, cap=0.052 * S, cell=0.051 * S)
                        for i, line in enumerate(marking_lines(version, day, commit, platform)))
     marking += f'<circle cx="{0.125 * S:.0f}" cy="{0.885 * S:.0f}" r="{0.029 * S:.0f}" fill="{DOT}"/>'
-    small = (stroke_text(glyphs, "MSM5", 0.11 * S, 0.62 * S, "#c4c6c8", 0.038 * S, fit=0.80 * S)
+    small = (centered_text(glyphs, "MSM5", 0.5 * S, 0.62 * S, 0.68 * S, "#c4c6c8", 0.034 * S)
              + f'<circle cx="{0.17 * S:.0f}" cy="{0.85 * S:.0f}" r="{0.065 * S:.0f}" fill="#b0b2b4"/>')
     svg = lambda body: f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {S} {S}">{DEFS}{body}</svg>'
     return {"full": svg(PLATE + marking), "plate": svg(PLATE), "marking": svg(marking),
