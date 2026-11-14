@@ -69,6 +69,17 @@ archives for license texts, notices, modifications and build recipes.
   CoreFoundation and Foundation. See `ios/build_python_ios.sh`,
   `ios/build_qemu_ios.sh` and the Xcode project for the build inputs.
 
+## App icon
+
+The icon marking (`branding/chip_icon.py`) is drawn with the Hershey Sans
+1-stroke font, converted to paths:
+
+- The Hershey Fonts were originally created by Dr. A. V. Hershey while working
+  at the U. S. National Bureau of Standards.
+- The format of the Font data in this distribution was originally created by
+  James Hurt, Cognition, Inc., 900 Technology Park Drive, Billerica, MA 01821
+  (mit-eddie!ci-dandelion!hurt).
+
 TODO: Check the final iOS Python support archive's bundled native dependency
 licenses and ensure their complete notices and corresponding source accompany
 the iOS release. Verify the final platform artifacts against their actual
