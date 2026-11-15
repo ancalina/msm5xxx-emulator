@@ -42,10 +42,8 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.LinearLayout;
-import android.widget.PopupMenu;
 import android.widget.Switch;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -259,9 +257,10 @@ public final class MainActivity extends ComponentActivity {
         composeContent = EmulatorContent.install(this, handset);
         composeContent.restore(savedInstanceState);
         getWindow().setCallback(new HandsetWindowCallback(getWindow().getCallback(), this));
-        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
-            @Override public void handleOnBackPressed() { requestReturnToLibrary(); }
-        });
+        // Only intercept back when a session needs confirming or no library sits below; otherwise
+        // the system back (with its predictive animation) returns to the library activity.
+        getOnBackPressedDispatcher().addCallback(this, backToLibrary);
+        backToLibrary.setEnabled(isTaskRoot());
         if (savedInstanceState != null && savedInstanceState.getBoolean("resume_session"))
             autoStartToken = preferences().getString(KEY_TOKEN, null);
         libraryScreen = new FirmwareLibraryScreen(this, null);
@@ -1914,7 +1913,7 @@ public final class MainActivity extends ComponentActivity {
             byte[] bytes = new byte[8192];
             int count;
             while ((count = input.read(bytes)) != -1) output.write(bytes, 0, count);
-            Toast.makeText(this, getString(R.string.capture_saved, data.getData().toString()), Toast.LENGTH_LONG).show();
+            composeContent.notify(getString(R.string.capture_saved, data.getData().toString()));
         } catch (IOException | SecurityException error) {
             showError(getString(R.string.error_capture));
         }
@@ -1983,7 +1982,12 @@ public final class MainActivity extends ComponentActivity {
         } else if (languageChanged) recreate();
     }
 
+    private final OnBackPressedCallback backToLibrary = new OnBackPressedCallback(true) {
+        @Override public void handleOnBackPressed() { requestReturnToLibrary(); }
+    };
+
     private void syncCompose() {
+        backToLibrary.setEnabled(session != null || sessionStarting || isTaskRoot());
         if (composeContent != null) composeContent.update(modelTitle, sessionView.getText().toString(), canStartSession,
                 session != null, sessionStarting, editingInputMapping);
     }

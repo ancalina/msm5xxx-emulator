@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window theme behind Compose content; Compose screens draw with MaterialTheme (AppTheme.kt). -->
+    <style name="Theme.MSM5xxx" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -21,10 +20,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,11 +36,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 
@@ -71,11 +77,16 @@ class SettingsActivity : ComponentActivity() {
         var language by rememberSaveable { mutableStateOf(preferences.getString("ui_language", "auto") ?: "auto") }
         var virtualNetwork by remember { mutableStateOf(preferences.getBoolean("virtual_network", false)) }
 
+        val snackbar = remember { SnackbarHostState() }
+        val scope = rememberCoroutineScope()
+        val iconError = stringResource(R.string.app_icon_error)
         Scaffold(topBar = {
             TopAppBar(title = { Text(stringResource(R.string.settings_title)) }, navigationIcon = {
-                TextButton(onClick = { finish() }) { Text(stringResource(R.string.back)) }
+                IconButton(onClick = { finish() }) {
+                    Icon(painterResource(R.drawable.ic_arrow_back), stringResource(R.string.back))
+                }
             })
-        }) { insets ->
+        }, snackbarHost = { SnackbarHost(snackbar) }) { insets ->
             Column(
                 modifier = Modifier.fillMaxSize().padding(insets).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(0.dp)
@@ -140,7 +151,7 @@ class SettingsActivity : ComponentActivity() {
         if (showIcon) {
             val initial = AppIconChoice.isSimple(this)
             IconChoiceDialog(initial, onDismiss = { showIcon = false }, onChoose = { simple ->
-                setIconChoice(simple)
+                if (!AppIconChoice.setSimple(this, simple)) scope.launch { snackbar.showSnackbar(iconError) }
                 showIcon = false
             })
         }
@@ -158,11 +169,6 @@ class SettingsActivity : ComponentActivity() {
         finish()
     }
 
-    private fun setIconChoice(simple: Boolean) {
-        if (!AppIconChoice.setSimple(this, simple)) {
-            Toast.makeText(this, R.string.app_icon_error, Toast.LENGTH_LONG).show()
-        }
-    }
 
 
     private fun folderLabel(folder: String): String {

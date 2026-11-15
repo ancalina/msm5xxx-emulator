@@ -10,7 +10,7 @@
         android:roundIcon="@mipmap/ic_launcher_full"
         android:supportsRtl="true"
         android:enableOnBackInvokedCallback="true"
-        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:theme="@style/Theme.MSM5xxx"
         android:usesCleartextTraffic="false">
         <provider android:name=".CaptureProvider"
             android:authorities="${applicationId}.capture"
@@ -21,15 +21,14 @@
             android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:theme="@android:style/Theme.Material.NoActionBar"
             android:screenOrientation="portrait" />
         <activity
             android:name=".SettingsActivity"
-            android:exported="false"
-            android:screenOrientation="portrait" />
+            android:exported="false" />
         <activity
             android:name=".LibraryActivity"
-            android:exported="true"
-            android:screenOrientation="portrait" />
+            android:exported="true" />
         <activity-alias android:name=".FullIcon" android:targetActivity=".LibraryActivity"
             android:enabled="true" android:exported="true"
             android:icon="@mipmap/ic_launcher_full" android:roundIcon="@mipmap/ic_launcher_full">

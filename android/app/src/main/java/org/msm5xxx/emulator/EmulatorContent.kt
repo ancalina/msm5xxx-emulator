@@ -41,6 +41,8 @@ internal class EmulatorContent private constructor(private val activity: MainAct
     private var virtualNetwork by mutableStateOf(false)
     private var settings by mutableStateOf(false)
     private var modal by mutableStateOf<Modal?>(null)
+    private var notice by mutableStateOf<String?>(null)
+    private val snackbar = SnackbarHostState()
     val hasModal: Boolean get() = menu || timeMenu || settings || modal != null
 
     fun restore(state: android.os.Bundle?) {
@@ -52,6 +54,7 @@ internal class EmulatorContent private constructor(private val activity: MainAct
         title = model; status = state; canStart = ready; running = active; starting = busy; editing = edit
     }
     fun showError(message: String) { error = message }
+    fun notify(message: String) { notice = message }
     fun clearError() { error = null }
     fun showActions() { menu = true }
     fun showSettings() { settings = true }
@@ -69,7 +72,8 @@ internal class EmulatorContent private constructor(private val activity: MainAct
 
     @Composable
     private fun Screen() {
-        Scaffold(containerColor = androidx.compose.ui.graphics.Color.Black) { insets ->
+        notice?.let { text -> LaunchedEffect(text) { snackbar.showSnackbar(text); notice = null } }
+        Scaffold(containerColor = androidx.compose.ui.graphics.Color.Black, snackbarHost = { SnackbarHost(snackbar) }) { insets ->
             Box(Modifier.fillMaxSize().padding(insets)) {
                 AndroidView(factory = { handset }, modifier = Modifier.fillMaxSize())
                 Column(Modifier.fillMaxWidth()) {

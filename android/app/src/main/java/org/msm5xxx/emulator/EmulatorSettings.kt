@@ -17,6 +17,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -34,14 +38,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 private data class DetailSection(val label: String, val start: Int, val endExclusive: Int)
@@ -102,15 +109,20 @@ internal fun EmulatorSettings(activity: MainActivity, onClose: () -> Unit) {
 
     val currentSection = sectionIndex?.let { sections.getOrNull(it) }
     BackHandler(enabled = sectionIndex != null) { sectionIndex = null }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val iconError = stringResource(R.string.app_icon_error)
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
                 title = { Text(currentSection?.label ?: stringResource(R.string.settings_title)) },
                 navigationIcon = {
-                    TextButton(onClick = {
+                    IconButton(onClick = {
                         if (sectionIndex != null) sectionIndex = null else onClose()
                     }) {
-                        Text(stringResource(if (sectionIndex == null) R.string.cancel else R.string.back))
+                        Icon(painterResource(if (sectionIndex == null) R.drawable.ic_close else R.drawable.ic_arrow_back),
+                            stringResource(if (sectionIndex == null) R.string.cancel else R.string.back))
                     }
                 },
                 actions = {
@@ -252,7 +264,7 @@ internal fun EmulatorSettings(activity: MainActivity, onClose: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    setAppIcon(activity, iconSimple)
+                    if (!AppIconChoice.setSimple(activity, iconSimple)) scope.launch { snackbar.showSnackbar(iconError) }
                     iconDialog = false
                 }) { Text(stringResource(R.string.save)) }
             },
@@ -260,12 +272,6 @@ internal fun EmulatorSettings(activity: MainActivity, onClose: () -> Unit) {
                 TextButton(onClick = { iconDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
         )
-    }
-}
-
-private fun setAppIcon(activity: MainActivity, simple: Boolean) {
-    if (!AppIconChoice.setSimple(activity, simple)) {
-        android.widget.Toast.makeText(activity, R.string.app_icon_error, android.widget.Toast.LENGTH_LONG).show()
     }
 }
 
