@@ -54,6 +54,32 @@ class BackendServerTests(unittest.TestCase):
         self.assertEqual(replies[2]["error"]["code"], "network_time_error")
         self.assertIs(replies[3]["result"]["virtual_network"], True)
 
+    def test_start_distinguishes_native_keys_from_manual_mappings(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from msm5xxx_emulator.backend import server
+        native = {1, 5}
+        mapped = {0}
+        transport = Mock()
+        transport.can_set_key.side_effect = lambda bit: bit in native
+        transport.config = SimpleNamespace(model="Example", verified_model="Example", chipset="MSM5000",
+                                           width=128, height=128, firmware_sha256="a" * 64)
+        session = Mock()
+        session.transport = None
+        session.firmware = Path("example.bin")
+        session.start.return_value = transport
+        session.key_available.side_effect = lambda bit: bit in native | mapped
+        backend = server.Backend(Path("qemu"))
+        backend.session = session
+        with patch.object(server, "remember_boot"):
+            result = backend.session_start()
+        self.assertEqual(set(result["keys"]), native | mapped)
+        self.assertEqual(set(result["native_keys"]), native)
+        # Clearing a manual-only key can now disable it without disturbing native keys.
+        mapped.clear()
+        self.assertNotIn(0, result["native_keys"])
+        self.assertTrue(native.issubset(result["native_keys"]))
+
     def test_backend_imports_no_ui_toolkit(self):
         import subprocess
         import sys

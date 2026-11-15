@@ -130,7 +130,8 @@ class Backend:
         return {"title": display_model_name(config.model, config.verified_model, _language(), session.firmware.stem),
                 "model": config.model, "chipset": config.chipset, "width": config.width, "height": config.height,
                 "firmware_sha256": config.firmware_sha256,
-                "keys": [bit for bit in KEYS.values() if session.key_available(bit)]}
+                "keys": self._available_keys(session),
+                "native_keys": self._native_keys(transport)}
 
     def session_stop(self) -> None:
         session = self._session()
@@ -180,10 +181,17 @@ class Backend:
     def session_key(self, bit: int, pressed: bool) -> bool:
         return self._session().set_key(int(bit), bool(pressed))
 
-    def session_keys(self) -> list[int]:
-        """Refresh key availability after a mapping changes, without rebooting."""
-        session = self._session()
+    def _available_keys(self, session) -> list[int]:
+        """Bits that work right now: firmware support or a manual mapping."""
         return [bit for bit in KEYS.values() if session.key_available(bit)]
+
+    def _native_keys(self, transport) -> list[int]:
+        """Firmware-supported bits, ignoring manual mappings."""
+        return [bit for bit in KEYS.values() if transport.can_set_key(bit)]
+
+    def session_keys(self) -> list[int]:
+        """Same list as session.start's keys, for a refresh after a mapping edit."""
+        return self._available_keys(self._session())
 
     def session_fold(self) -> None:
         error = self._session().toggle_fold()

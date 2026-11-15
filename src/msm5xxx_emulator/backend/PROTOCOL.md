@@ -40,12 +40,12 @@ one for the library window.
 | `library.remove_folder` | `path` | `null` |
 | `library.remove` | `path` | `null` |
 | `session.open` | `firmware` | `null`; selects the firmware for this process |
-| `session.start` | – | `{title, model, chipset, width, height, firmware_sha256, keys:[bit]}` (detection + QEMU launch: slow). `width/height` are the detected profile; the real LCD size comes with frames |
+| `session.start` | – | `{title, model, chipset, width, height, firmware_sha256, keys:[bit], native_keys:[bit]}` (detection + QEMU launch: slow). `width/height` are the detected profile; the real LCD size comes with frames. `keys` is the bits that work now, including manual mappings. `native_keys` is the firmware-supported set without mappings. A client that stores mappings itself must treat `native_keys` as the firmware set; clearing a mapping then drops a key that was not in `native_keys`, with no restart |
 | `session.stop` | – | `null`; powers off and saves the library thumbnail |
 | `session.frame` | `since=-1, secondary_since=-1` | `{running, seq, [width, height, rgb], [secondary:{seq, enabled, preview, [width, height, rgb]}]}`; `rgb` is base64 of `width*height*3` bytes (R, G, B rows, top-down), present only when `seq` differs from `since`. Poll at 30 Hz |
 | `session.state` | – | `{running, chipset, width, height, fold, virtual_cell, metrics:{run, pc, lcd, frame}, input_error}`; `fold`: `null` (no lid), `true` open, `false` closed. Poll at 10 Hz |
 | `session.key` | `bit, pressed` | `bool` (accepted). Hold each press at least `key_hold_ms` before releasing |
-| `session.keys` | – | `[bit]`; currently available keys, including manual mappings. Refresh after changing or clearing a mapping; no restart needed |
+| `session.keys` | – | `[bit]`; the same bits as `session.start`'s `keys`. Call it after changing or clearing a mapping when the client does not keep `native_keys` and mappings separately. No restart needed |
 | `session.fold` | – | `null`; toggles the lid |
 | `session.network_time` | – | `null`; re-sends network time after a time setting change |
 | `session.settings` | – | `{sections:[{title, fields:[{name, label, value, choices}]}]}`; `choices` is `null` for free text |

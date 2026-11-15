@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+*.app/
+
+.build-metadata.json
