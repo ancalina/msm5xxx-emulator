@@ -21,6 +21,7 @@ public abstract class DesktopWindow : Window
     protected bool DialogOpen { get; private set; }
     private bool allowClose;
     private Task? shutdown;
+    private SettingsWindow? settings;
     protected double MinimumClientWidth = 320, MinimumClientHeight = 180;
 
     protected DesktopWindow()
@@ -70,10 +71,24 @@ public abstract class DesktopWindow : Window
         IsClosing = true;
         Commands.IsEnabled = false;
         Body.IsHitTestVisible = false;
-        try { await ShutdownAsync(); }
+        try { if (settings is not null) await settings.ShutdownAndCloseAsync(); await ShutdownAsync(); }
         catch (Exception error) { System.Diagnostics.Debug.WriteLine(error); }
         finally { allowClose = true; Close(); }
     }
+
+    protected Task ShowSettingsAsync(Msm5xxx.Desktop.Core.BackendClient backend, Func<Task>? restart = null)
+    {
+        if (settings is null)
+        {
+            var window = new SettingsWindow(backend, Text, restart);
+            settings = window;
+            window.Closed += (_, _) => { if (ReferenceEquals(settings, window)) settings = null; };
+        }
+        settings.Activate();
+        return Task.CompletedTask;
+    }
+
+    internal Task RefreshSettingsLanguageAsync() => settings?.RefreshLanguageAsync() ?? Task.CompletedTask;
 
     protected virtual Task ShutdownAsync() => Task.CompletedTask;
     protected virtual Task BeforeDialogAsync() => Task.CompletedTask;

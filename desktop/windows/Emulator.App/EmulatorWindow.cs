@@ -20,7 +20,6 @@ public sealed class EmulatorWindow : DesktopWindow
     private KeypadInput? input;
     private readonly ScreenView screen;
     private readonly Grid keypad = new() { ColumnSpacing = 4, RowSpacing = 4, Padding = new(8, 4, 8, 4) };
-    private readonly ScrollViewer keypadScroller;
     private readonly Dictionary<int, Button> buttons = [];
     private readonly Dictionary<string, CounterValue> metrics = [];
     private double[] naturalKeypadColumns = [];
@@ -32,7 +31,7 @@ public sealed class EmulatorWindow : DesktopWindow
     private CancellationTokenSource? polling;
     private Task framePoll = Task.CompletedTask, statePoll = Task.CompletedTask;
     private Button? power;
-    private MenuFlyoutItem? done;
+    private Button? done;
     private Button? fold;
     private ToggleMenuFlyoutItem? networkToggle, editToggle;
     private MenuFlyoutItem? secondaryItem;
@@ -51,7 +50,6 @@ public sealed class EmulatorWindow : DesktopWindow
     private ContentSize fittedAvailable;
     private DisplayRect fittedWorkArea;
     private double fittedScale;
-    private double fittedTitleWidth;
     private string chipset = "";
     private JsonElement lastState;
     private string? lastInputError;
@@ -63,11 +61,9 @@ public sealed class EmulatorWindow : DesktopWindow
         screen = new(Text["firmware_screen"]);
         AutomationProperties.SetHelpText(screen, Text["screen_unavailable"]);
         screen.RenderFailed += ShowError;
-        keypadScroller = new() { Content = keypad, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 460 };
         Body.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         Body.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        Body.Children.Add(screen); Grid.SetRow(keypadScroller, 1); Body.Children.Add(keypadScroller);
-        Body.SizeChanged += (_, _) => keypadScroller.MaxHeight = Math.Max(36, Body.ActualHeight - 64);
+        Body.Children.Add(screen); Grid.SetRow(keypad, 1); Body.Children.Add(keypad);
         keypad.SizeChanged += (_, _) => ArrangeKeypadColumns();
         BuildChrome();
         MinimumClientWidth = 384; MinimumClientHeight = 760;
@@ -84,6 +80,7 @@ public sealed class EmulatorWindow : DesktopWindow
         };
         AppWindow.Changed += (_, _) =>
         {
+            ArrangeKeypadColumns();
             if (hasFrameGeometry && NativeWindow.IsNormal(this) && (NativeWindow.WorkArea(this) != fittedWorkArea || NativeWindow.Scale(this) != fittedScale))
                 DispatcherQueue.TryEnqueue(() => Fit(false));
         };
@@ -133,8 +130,6 @@ public sealed class EmulatorWindow : DesktopWindow
         menu.Items.Add(new MenuFlyoutSeparator());
         editToggle = new ToggleMenuFlyoutItem { Text = Text["edit_input"], IsChecked = editing };
         editToggle.Click += async (_, _) => await Guard(() => SetEditingAsync(editToggle.IsChecked)); menu.Items.Add(editToggle);
-        done = MenuItem(Text["done_editing"], () => SetEditingAsync(false));
-        done.Visibility = editing ? Visibility.Visible : Visibility.Collapsed; menu.Items.Add(done);
         menu.Items.Add(MenuItem(Text["settings"], SettingsAsync));
         Commands.IsEnabled = backend is not null && !busy;
     }
@@ -260,7 +255,14 @@ public sealed class EmulatorWindow : DesktopWindow
             group.Children.Add(value.Host); ToolTipService.SetToolTip(group, metric.Description);
             numbers.Children.Add(group); metrics[metric.Key] = value;
         }
-        Grid.SetRow(numbers, 4); Grid.SetRowSpan(numbers, 5); keypad.Children.Add(numbers);
+        Grid.SetRow(numbers, 4); Grid.SetRowSpan(numbers, 4); keypad.Children.Add(numbers);
+        done = Button(Text["done_short"], () => Guard(() => SetEditingAsync(false)));
+        done.MinWidth = 0; done.MinHeight = 32; done.CornerRadius = new(0); done.BorderThickness = new(0);
+        done.HorizontalAlignment = HorizontalAlignment.Stretch;
+        done.Visibility = editing ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetName(done, Text["done_editing"]);
+        ToolTipService.SetToolTip(done, Text["done_editing"]);
+        Grid.SetRow(done, 8); keypad.Children.Add(done);
         AutomationProperties.SetHelpText(keypad, Text["key_help"]);
         SetMetrics(); UpdateKeys();
         if (hasFrameGeometry) DispatcherQueue.TryEnqueue(() => Fit(false));
@@ -421,7 +423,6 @@ public sealed class EmulatorWindow : DesktopWindow
                     fold.Content = Text[lid.ValueKind == JsonValueKind.True ? "fold_short_close" : "fold_short_open"];
                     AutomationProperties.SetName(fold, Text[lid.ValueKind == JsonValueKind.Null ? "fold_unavailable" : lid.ValueKind == JsonValueKind.True ? "fold_access_close" : "fold_access_open"]);
                     AutomationProperties.SetHelpText(fold, lid.ValueKind == JsonValueKind.Null ? Text["fold_unavailable"] : "");
-                    if (hasFrameGeometry && TitleBarLayout.NaturalWidth(Commands) > fittedTitleWidth + 1) Fit(false);
                     if (state.TryGetProperty("input_error", out var error) && error.ValueKind == JsonValueKind.String && error.GetString() != lastInputError)
                     { lastInputError = error.GetString(); ShowError(new IOException(lastInputError)); }
                 });
@@ -494,10 +495,8 @@ public sealed class EmulatorWindow : DesktopWindow
         fittedWorkArea = NativeWindow.WorkArea(this);
         fittedScale = NativeWindow.Scale(this);
         fittedAvailable = NativeWindow.AvailableClientSize(this);
-        fittedTitleWidth = TitleBarLayout.NaturalWidth(Commands);
-        var size = DisplayGeometry.Initial(lcd.Width, lcd.Height, Math.Max(naturalKeypadWidth, fittedTitleWidth),
+        var size = DisplayGeometry.Initial(lcd.Width, lcd.Height, naturalKeypadWidth,
             keypad.DesiredSize.Height, Commands.ActualHeight + (Error.IsOpen ? Error.ActualHeight : 0), fittedAvailable);
-        size = DisplayGeometry.ConstrainToAvailableArea(size, fittedAvailable);
         MinimumClientWidth = size.Width; MinimumClientHeight = size.Height;
         Root.MinWidth = size.Width; Root.MinHeight = size.Height;
         minimumTrackSize = NativeWindow.MinimumOuterSize(this, size.Width, size.Height);
@@ -511,7 +510,7 @@ public sealed class EmulatorWindow : DesktopWindow
     private void ArrangeKeypadColumns()
     {
         if (naturalKeypadColumns.Length != keypad.ColumnDefinitions.Count || naturalKeypadColumns.Length < 2) return;
-        var available = keypad.ActualWidth - keypad.Padding.Left - keypad.Padding.Right -
+        var available = AppWindow.ClientSize.Width / NativeWindow.Scale(this) - keypad.Padding.Left - keypad.Padding.Right -
             keypad.ColumnSpacing * (naturalKeypadColumns.Length - 1);
         if (available <= 0) return;
         var widths = KeypadSizing.AllocateColumns(naturalKeypadColumns, available, NativeWindow.Scale(this));
@@ -646,8 +645,7 @@ public sealed class EmulatorWindow : DesktopWindow
 
     private async Task SettingsAsync()
     {
-        await SettingsDialog.ShowAsync(this, backend!, Text, RestartAsync);
-        if (!IsClosing) await App.Instance.RefreshLanguagesAsync();
+        await ShowSettingsAsync(backend!, RestartAsync);
     }
 
     protected override async Task ShutdownAsync()

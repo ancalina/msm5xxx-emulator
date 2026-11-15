@@ -39,25 +39,31 @@ public class GeometryAndInputTests
     [Fact]
     public void ExactFitUsesTheLargestWholeScaleWithinBothDimensions()
     {
-        Assert.Equal(new ContentSize(512, 1020), DisplayGeometry.Initial(128, 160, 600, 320, 60, new(512, 1020)));
+        Assert.Equal(new ContentSize(600, 1020), DisplayGeometry.Initial(128, 160, 600, 320, 60, new(512, 1020)));
     }
 
     [Fact]
     public void A640ChoosesFourTimesWhenFiveTimesExceedsWorkAreaHeight()
     {
-        Assert.Equal(new ContentSize(512, 1020), DisplayGeometry.Initial(128, 160, 640, 320, 60, new(1904, 1031)));
+        Assert.Equal(new ContentSize(640, 1020), DisplayGeometry.Initial(128, 160, 640, 320, 60, new(1904, 1031)));
     }
 
     [Fact]
     public void WidthCanBeTheLimitingWorkAreaDimension()
     {
-        Assert.Equal(new ContentSize(384, 764), DisplayGeometry.Initial(128, 128, 600, 320, 60, new(384, 1000)));
+        Assert.Equal(new ContentSize(600, 764), DisplayGeometry.Initial(128, 128, 600, 320, 60, new(384, 1000)));
     }
 
     [Fact]
-    public void KeepsAtLeastOneWholeLcdScaleWhenTheWorkAreaCannotFitIt()
+    public void UsesFractionalLcdScaleWhenOneWholeScaleCannotFit()
     {
-        Assert.Equal(new ContentSize(128, 540), DisplayGeometry.Initial(128, 160, 640, 320, 60, new(100, 400)));
+        Assert.Equal(new ContentSize(640, 400), DisplayGeometry.Initial(128, 160, 640, 320, 60, new(100, 400)));
+    }
+
+    [Fact]
+    public void KeepsFixedControlsAndAtLeastOneLcdPixelWhenTheyExceedTheWorkArea()
+    {
+        Assert.Equal(new ContentSize(640, 381.25), DisplayGeometry.Initial(128, 160, 640, 320, 60, new(100, 200)));
     }
 
     [Fact]
@@ -67,14 +73,6 @@ public class GeometryAndInputTests
         Assert.Equal(new DisplayRect(0, 140, 256, 320), DisplayGeometry.Fit(128, 160, 256, 600));
         Assert.Equal(new DisplayRect(96, 0, 128, 160), DisplayGeometry.Fit(128, 160, 320, 160));
     }
-
-    [Theory]
-    [InlineData(768, 1608, 960, 1000, 768, 1000)]
-    [InlineData(384, 804, 1904, 1001, 384, 804)]
-    [InlineData(384, 804, 300, 400, 300, 400)]
-    public void OpeningBoundsFitTheMonitorWorkArea(double width, double height, double availableWidth, double availableHeight, double expectedWidth, double expectedHeight) =>
-        Assert.Equal(new ContentSize(expectedWidth, expectedHeight),
-            DisplayGeometry.ConstrainToAvailableArea(new(width, height), new(availableWidth, availableHeight)));
 
     [Fact]
     public void PixelScalingUsesNearestNeighborAndBgra()

@@ -75,6 +75,9 @@
   <data name="done_editing" xml:space="preserve">
     <value>편집 완료</value>
   </data>
+  <data name="done_short" xml:space="preserve">
+    <value>완료</value>
+  </data>
   <data name="edit_input" xml:space="preserve">
     <value>키 배치 편집</value>
   </data>
@@ -274,7 +277,7 @@
     <value>라이브러리에서 이 항목을 제거할까요? 펌웨어 파일은 유지됩니다.</value>
   </data>
   <data name="restart_notice" xml:space="preserve">
-    <value>기기 설정은 재부팅 후 적용됩니다. 언어 변경은 설정을 닫으면 반영됩니다.</value>
+    <value>앱 설정은 자동으로 저장됩니다. 하드웨어 변경을 적용하면 기기가 다시 시작됩니다.</value>
   </data>
   <data name="restarting" xml:space="preserve">
     <value>재부팅 중</value>

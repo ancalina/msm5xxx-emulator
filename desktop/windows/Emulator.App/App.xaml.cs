@@ -49,7 +49,7 @@ public partial class App : Application
     internal async Task RefreshLanguagesAsync()
     {
         var windows = sessions.Values.ToArray();
-        if (launcher is not null) await launcher.RefreshLanguageAsync();
-        foreach (var window in windows) await window.RefreshLanguageAsync();
+        if (launcher is not null) { await launcher.RefreshLanguageAsync(); await launcher.RefreshSettingsLanguageAsync(); }
+        foreach (var window in windows) { await window.RefreshLanguageAsync(); await window.RefreshSettingsLanguageAsync(); }
     }
 }

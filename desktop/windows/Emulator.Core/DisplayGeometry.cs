@@ -8,18 +8,37 @@ public static class DisplayGeometry
     public static ContentSize Initial(int lcdWidth, int lcdHeight, double keypadWidth, double keypadHeight, double toolbarHeight, ContentSize? available = null)
     {
         Validate(lcdWidth, lcdHeight);
+        ValidateNonnegative(keypadWidth, nameof(keypadWidth));
+        ValidateNonnegative(keypadHeight, nameof(keypadHeight));
+        ValidateNonnegative(toolbarHeight, nameof(toolbarHeight));
+        if (available is { } bounds)
+        {
+            ValidateNonnegative(bounds.Width, nameof(available));
+            ValidateNonnegative(bounds.Height, nameof(available));
+        }
+
         var scale = Math.Max(1, Math.Ceiling(keypadWidth / lcdWidth));
         if (available is { } area)
         {
-            var heightScale = Math.Floor((area.Height - keypadHeight - toolbarHeight) / lcdHeight);
-            var widthScale = Math.Floor(area.Width / lcdWidth);
-            if (lcdWidth * scale > area.Width || lcdHeight * scale + keypadHeight + toolbarHeight > area.Height)
+            var controlsHeight = keypadHeight + toolbarHeight;
+            var heightScale = (area.Height - controlsHeight) / lcdHeight;
+            var widthScale = area.Width / lcdWidth;
+            if (lcdWidth * scale > area.Width || lcdHeight * scale + controlsHeight > area.Height)
             {
-                // Honor the work area even when that requires the LCD to be narrower than natural controls.
-                scale = Math.Max(1, Math.Min(widthScale, heightScale));
+                var fittingScale = Math.Min(scale, Math.Min(widthScale, heightScale));
+                if (fittingScale >= 1)
+                    scale = Math.Floor(fittingScale);
+                else
+                {
+                    // shortcut: physical work area smaller than natural controls, needs larger display
+                    scale = Math.Max(1d / Math.Min(lcdWidth, lcdHeight), fittingScale);
+                }
             }
         }
-        return new(lcdWidth * scale, lcdHeight * scale + keypadHeight + toolbarHeight);
+        var result = new ContentSize(Math.Max(keypadWidth, lcdWidth * scale), lcdHeight * scale + keypadHeight + toolbarHeight);
+        if (!double.IsFinite(result.Width) || !double.IsFinite(result.Height))
+            throw new ArgumentOutOfRangeException(nameof(keypadWidth), "Display geometry exceeds the supported range.");
+        return result;
     }
 
     public static double HeightForWidth(double width, int lcdWidth, int lcdHeight, double keypadHeight, double toolbarHeight)
@@ -27,10 +46,6 @@ public static class DisplayGeometry
         Validate(lcdWidth, lcdHeight);
         return width * lcdHeight / lcdWidth + keypadHeight + toolbarHeight;
     }
-
-    public static ContentSize ConstrainToAvailableArea(ContentSize preferred, ContentSize available) =>
-        new(Math.Clamp(preferred.Width, 1, Math.Max(1, available.Width)),
-            Math.Clamp(preferred.Height, 1, Math.Max(1, available.Height)));
 
     public static DisplayRect Fit(int lcdWidth, int lcdHeight, int areaWidth, int areaHeight)
     {
@@ -45,6 +60,11 @@ public static class DisplayGeometry
     private static void Validate(int width, int height)
     {
         if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+    }
+
+    private static void ValidateNonnegative(double value, string parameterName)
+    {
+        if (!double.IsFinite(value) || value < 0) throw new ArgumentOutOfRangeException(parameterName);
     }
 }
 

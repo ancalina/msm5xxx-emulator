@@ -77,7 +77,9 @@ internal static partial class NativeWindow
         var area = fitToWorkArea ? DisplayArea.GetFromWindowId(window.AppWindow.Id, DisplayAreaFallback.Nearest) : null;
         if (area is not null)
         {
-            if (constrainSize) pixels = DisplayGeometry.ConstrainToAvailableArea(pixels, new(area.WorkArea.Width - borderWidth, area.WorkArea.Height - borderHeight));
+            if (constrainSize) pixels = new(
+                Math.Clamp(pixels.Width, 1, Math.Max(1, area.WorkArea.Width - borderWidth)),
+                Math.Clamp(pixels.Height, 1, Math.Max(1, area.WorkArea.Height - borderHeight)));
         }
         window.AppWindow.Resize(new SizeInt32(Math.Max(1, (int)pixels.Width + borderWidth), Math.Max(1, (int)pixels.Height + borderHeight)));
         if (area is not null)

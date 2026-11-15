@@ -209,10 +209,7 @@ public sealed class LauncherWindow : DesktopWindow
     private async Task SettingsAsync()
     {
         await EnsureBackendAsync();
-        await SettingsDialog.ShowAsync(this, backend!, Text);
-        if (IsClosing) return;
-        await App.Instance.RefreshLanguagesAsync();
-        await RefreshAsync();
+        await ShowSettingsAsync(backend!);
     }
 
     protected override async Task ShutdownAsync()

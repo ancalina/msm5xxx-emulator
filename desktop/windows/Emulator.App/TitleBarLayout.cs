@@ -13,6 +13,8 @@ internal sealed class TitleBarLayout
     private TextBlock? subtitle;
     private string? measuredTitle;
     private double measuredFontSize, measuredHeight, naturalTitleWidth;
+    private GridLength? headerPadding, dragWidth;
+    private Thickness? titleMargin;
     private (Rect Left, Rect Right, double Width, double Height, double Scale)? hitBounds;
 
     public static void Attach(TitleBar bar) => new TitleBarLayout().Watch(bar);
@@ -29,21 +31,6 @@ internal sealed class TitleBarLayout
     }
 
     private void Queue(TitleBar bar) => bar.DispatcherQueue.TryEnqueue(() => Constrain(bar));
-
-    public static double NaturalWidth(TitleBar bar)
-    {
-        var layout = Find<Grid>(bar, "PART_LayoutRoot");
-        if (layout is null) return 0;
-        double TextWidth(string name, string value)
-        {
-            if (string.IsNullOrEmpty(value) || Find<TextBlock>(bar, name) is not { } source) return 0;
-            var probe = new TextBlock { Text = value, FontFamily = source.FontFamily, FontSize = source.FontSize, FontWeight = source.FontWeight };
-            probe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            return probe.DesiredSize.Width + source.Margin.Left + source.Margin.Right;
-        }
-        return layout.ColumnDefinitions.Select((column, index) => index is 6 or 7 or 8 ? 0 : column.ActualWidth).Sum()
-            + TextWidth("PART_TitleText", bar.Title);
-    }
 
     private static T? Find<T>(DependencyObject parent, string name) where T : FrameworkElement
     {
@@ -64,10 +51,24 @@ internal sealed class TitleBarLayout
         title ??= Find<TextBlock>(bar, "PART_TitleText");
         subtitle ??= Find<TextBlock>(bar, "PART_SubtitleText");
         if (title is null) return;
-        // These named parts and columns belong to the pinned WinUI TitleBar template.
-        var fixedWidth = layout.ColumnDefinitions.Select((column, index) => index is 6 or 7 or 8 ? 0 : column.ActualWidth).Sum();
-        var budget = Math.Max(0, bar.ActualWidth - fixedWidth - title.Margin.Left - title.Margin.Right -
-            (subtitle is null ? 0 : subtitle.Margin.Left + subtitle.Margin.Right));
+        // shortcut: pinned WinUI TitleBar template columns; review when upgrading Windows App SDK.
+        headerPadding ??= layout.ColumnDefinitions[4].Width;
+        dragWidth ??= layout.ColumnDefinitions[10].Width;
+        titleMargin ??= title.Margin;
+        var viewport = Math.Min(bar.ActualWidth, bar.XamlRoot.Size.Width);
+        var fullFixedWidth = layout.ColumnDefinitions.Select((column, index) => index is 6 or 7 or 8 ? 0 :
+            index == 4 ? headerPadding.Value.Value : index == 10 ? dragWidth.Value.Value : column.ActualWidth).Sum();
+        var narrow = viewport < fullFixedWidth + titleMargin.Value.Left + titleMargin.Value.Right + naturalTitleWidth;
+        var padding = narrow ? new GridLength(0) : headerPadding.Value;
+        var drag = narrow ? new GridLength(0) : dragWidth.Value;
+        var margin = narrow ? new Thickness(0) : titleMargin.Value;
+        if (!layout.ColumnDefinitions[4].Width.Equals(padding)) layout.ColumnDefinitions[4].Width = padding;
+        if (!layout.ColumnDefinitions[10].Width.Equals(drag)) layout.ColumnDefinitions[10].Width = drag;
+        if (!title.Margin.Equals(margin)) title.Margin = margin;
+        var fixedWidth = layout.ColumnDefinitions.Select((column, index) => index is 6 or 7 or 8 ? 0 :
+            index is 4 or 10 ? column.Width.Value : column.ActualWidth).Sum();
+        var budget = Math.Max(0, viewport - fixedWidth - title.Margin.Left - title.Margin.Right -
+            (subtitle is null || string.IsNullOrEmpty(bar.Subtitle) ? 0 : subtitle.Margin.Left + subtitle.Margin.Right));
         if (measuredTitle != bar.Title || measuredFontSize != title.FontSize || measuredHeight != title.DesiredSize.Height)
         {
             var measure = new TextBlock { Text = bar.Title, FontFamily = title.FontFamily, FontSize = title.FontSize, FontWeight = title.FontWeight };

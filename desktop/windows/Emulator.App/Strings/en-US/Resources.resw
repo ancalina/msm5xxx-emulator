@@ -75,6 +75,9 @@
   <data name="done_editing" xml:space="preserve">
     <value>Done</value>
   </data>
+  <data name="done_short" xml:space="preserve">
+    <value>Done</value>
+  </data>
   <data name="edit_input" xml:space="preserve">
     <value>Edit key layout</value>
   </data>
@@ -274,7 +277,7 @@
     <value>Remove this entry from the library? The firmware file will be kept.</value>
   </data>
   <data name="restart_notice" xml:space="preserve">
-    <value>Device settings take effect after a restart. Language changes appear when settings close.</value>
+    <value>App settings are saved automatically. Apply hardware changes to restart the device.</value>
   </data>
   <data name="restarting" xml:space="preserve">
     <value>Restarting</value>
