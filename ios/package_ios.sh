@@ -11,6 +11,8 @@ done
 mkdir -p "$1"; OUT=$(cd "$1" && pwd)
 WORK=$(mktemp -d "$OUT/package.XXXXXX"); trap 'rm -rf "$WORK"' EXIT
 
+"$APP_DIR/../build_icons.sh"
+
 nice -n 19 xcodebuild -jobs 2 -project "$APP_DIR/MSM5xEmu.xcodeproj" -target MSM5xEmu -configuration Release \
     -sdk iphoneos -arch arm64 CODE_SIGNING_ALLOWED=NO SYMROOT="$WORK/build" build >"$WORK/xcodebuild.log" 2>&1 \
     || { tail -20 "$WORK/xcodebuild.log" >&2; exit 1; }

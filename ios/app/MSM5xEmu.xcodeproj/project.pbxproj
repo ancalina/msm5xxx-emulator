@@ -16,6 +16,9 @@
 		A10000000000000000000007 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000001 /* Localizable.strings */; };
         A10000000000000000000008 /* FirmwareLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* FirmwareLibrary.swift */; };
         A10000000000000000000009 /* HandsetInputState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013; };
+        C10000000000000000000001 = {isa = PBXBuildFile; fileRef = C20000000000000000000001; };
+        C10000000000000000000002 = {isa = PBXBuildFile; fileRef = C20000000000000000000002; };
+        C10000000000000000000003 = {isa = PBXBuildFile; fileRef = C20000000000000000000003; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -41,6 +44,9 @@
         A20000000000000000000011 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
         A20000000000000000000012 /* FirmwareLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareLibrary.swift; sourceTree = "<group>"; };
         A20000000000000000000013 /* HandsetInputState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandsetInputState.swift; sourceTree = "<group>"; };
+        C20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = build/icons/Assets.xcassets; sourceTree = SOURCE_ROOT; };
+        C20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = build/icons/AppIcon.icon; sourceTree = SOURCE_ROOT; };
+        C20000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = build/icons/Simple.icon; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +65,9 @@
 			isa = PBXGroup;
 			children = (
 				A40000000000000000000002 /* MSM5xEmu */,
+                C20000000000000000000001,
+                C20000000000000000000002,
+                C20000000000000000000003,
                 B10000000000000000000008,
 				A40000000000000000000003 /* Products */,
 			);
@@ -95,7 +104,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A70000000000000000000002 /* Build configuration list for PBXNativeTarget "MSM5xEmu" */;
 			buildPhases = (
-				A30000000000000000000001 /* Sources */,
+				C30000000000000000000001 /* Generate app icons */,
+                A30000000000000000000001 /* Sources */,
 				A30000000000000000000002 /* Frameworks */,
 				A30000000000000000000003 /* Resources */,
                 A30000000000000000000005 /* Install Python runtime */,
@@ -147,6 +157,9 @@
 			buildActionMask = 2147483647;
 			files = (
                 A10000000000000000000007 /* Localizable.strings in Resources */,
+                C10000000000000000000001,
+                C10000000000000000000002,
+                C10000000000000000000003,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -179,6 +192,18 @@
             runOnlyForDeploymentPostprocessing = 0;
             shellPath = /bin/bash;
             shellScript = "\"$SRCROOT/../build_python_ios.sh\" --install-bundle\n";
+        };
+        C30000000000000000000001 = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            name = "Generate app icons";
+            outputPaths = ("$(SRCROOT)/build/icons/Assets.xcassets", "$(SRCROOT)/build/icons/AppIcon.icon", "$(SRCROOT)/build/icons/Simple.icon", );
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/sh;
+            shellScript = "\"$SRCROOT/../build_icons.sh\"\n";
         };
 /* End PBXShellScriptBuildPhase section */
 
@@ -242,6 +267,10 @@
 		A80000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = Simple;
+                ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+                ASSETCATALOG_OTHER_FLAGS = "--enable-icon-stack-fallback-generation=disabled";
 				CODE_SIGN_STYLE = Automatic;
                 EX_ENABLE_EXTENSION_POINT_GENERATION = YES;
                 SWIFT_OBJC_BRIDGING_HEADER = "MSM5xEmu/MSM5xEmu-Bridging-Header.h";
@@ -268,6 +297,10 @@
 		A80000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = Simple;
+                ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+                ASSETCATALOG_OTHER_FLAGS = "--enable-icon-stack-fallback-generation=disabled";
 				CODE_SIGN_STYLE = Automatic;
                 EX_ENABLE_EXTENSION_POINT_GENERATION = YES;
                 SWIFT_OBJC_BRIDGING_HEADER = "MSM5xEmu/MSM5xEmu-Bridging-Header.h";

@@ -1,7 +1,6 @@
 package org.msm5xxx.emulator;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -14,19 +13,9 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.provider.DocumentsContract;
-import android.view.View;
-import android.view.Gravity;
-import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.widget.BaseAdapter;
 import android.util.LruCache;
 import android.os.Handler;
 import android.os.Looper;
-import android.widget.Button;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ListView;
-import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -55,8 +44,6 @@ final class FirmwareLibraryScreen {
         void openSettings();
     }
     private static final String PREFS = "firmware-library";
-    private final int infoAction = View.generateViewId();
-    private final int removeAction = View.generateViewId();
     private final Activity activity;
     private final Listener listener;
     private final SharedPreferences preferences;
@@ -70,18 +57,9 @@ final class FirmwareLibraryScreen {
     private final ExecutorService scanner = backgroundExecutor("library-scan");
     private final ArrayList<JSONObject> visible = new ArrayList<>();
     private boolean showing;
-    private ListView list;
-    private TextView empty;
-    private LinearLayout emptyArea;
-    private LibraryAdapter adapter;
-    private final ArrayList<LibraryGrouping.Group> groups = new ArrayList<>();
-    private final java.util.Map<String, JSONObject> indexed = new java.util.HashMap<>();
-    private final java.util.Map<String, String> renderFingerprints = new java.util.HashMap<>();
-    private final LruCache<String, Bitmap> thumbnails = new LruCache<>(4 * 1024 * 1024) {
-        @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount(); }
-    };
-    private final ExecutorService imageLoader = backgroundExecutor("library-images");
-    private final java.util.Set<String> loadingImages = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private LibraryContent content;
+    private boolean loading;
+    private String pendingMessage;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private long lastListUpdate;
     private Runnable listUpdate;
@@ -117,6 +95,8 @@ final class FirmwareLibraryScreen {
     }
 
     void importFile(Uri source, String name) {
+        loading = true;
+        publishRows();
         scanner.execute(() -> {
             File directory = new File(activity.getFilesDir(), "firmware-library");
             File target = new File(directory, java.util.UUID.randomUUID() + ".bin");
@@ -150,6 +130,7 @@ final class FirmwareLibraryScreen {
                     }
                     JSONObject entry = new JSONObject().put("uri", Uri.fromFile(target).toString())
                             .put("name", name).put("size", target.length()).put("imported", true).put("available", true)
+                            .put("source_stamp", target.lastModified()).put("source_size", target.length())
                             .put("sha256", sha).put("model", metadata.isNull("model") ? "" : metadata.optString("model", ""))
                             .put("display", metadata.optString("name", name))
                             .put("chipset", metadata.isNull("chipset") ? "—" : metadata.optString("chipset", "—"));
@@ -160,8 +141,11 @@ final class FirmwareLibraryScreen {
                 activity.runOnUiThread(this::refresh);
             } catch (IOException | JSONException | RuntimeException error) {
                 target.delete();
-                activity.runOnUiThread(() -> new AlertDialog.Builder(activity)
-                        .setMessage(R.string.error_unreadable_document).setPositiveButton(android.R.string.ok, null).show());
+                activity.runOnUiThread(() -> {
+                    loading = false;
+                    publishRows();
+                    showMessage(activity.getString(R.string.error_unreadable_document));
+                });
             }
         });
     }
@@ -169,87 +153,29 @@ final class FirmwareLibraryScreen {
     void show() {
         if (showing) { refresh(); return; }
         showing = true;
-        LinearLayout body = new LinearLayout(activity);
-        body.setOrientation(LinearLayout.VERTICAL);
-        int pad = Math.round(12 * activity.getResources().getDisplayMetrics().density);
-        body.setFitsSystemWindows(true);
-        body.setBackgroundColor(android.graphics.Color.rgb(18, 18, 18));
-        LinearLayout titleBar = new LinearLayout(activity);
-        titleBar.setGravity(Gravity.CENTER_VERTICAL);
-        titleBar.setPadding(Math.round(16 * activity.getResources().getDisplayMetrics().density), 0, 0, 0);
-        TextView title = new TextView(activity);
-        title.setText(R.string.library_title);
-        title.setTextSize(20);
-        title.setTextColor(android.graphics.Color.WHITE);
-        titleBar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        int square = Math.round(48 * activity.getResources().getDisplayMetrics().density);
-        android.widget.ImageButton add = iconButton(R.drawable.ic_add, R.string.library_add);
-        add.setOnClickListener(v -> {
-            android.widget.PopupMenu menu = new android.widget.PopupMenu(activity, v);
-            menu.getMenu().add(0, 1, 0, R.string.library_add_folder);
-            menu.getMenu().add(0, 2, 1, R.string.library_import);
-            menu.setOnMenuItemClickListener(item -> {
-                if (item.getItemId() == 1) listener.chooseFolder(); else listener.importFile();
-                return true;
-            });
-            menu.show();
-        });
-        android.widget.ImageButton reload = iconButton(R.drawable.ic_refresh, R.string.library_refresh);
-        reload.setOnClickListener(v -> refresh());
-        android.widget.ImageButton settings = iconButton(R.drawable.ic_settings, R.string.settings_title);
-        settings.setOnClickListener(v -> listener.openSettings());
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(square, square);
-        titleBar.addView(add, iconParams);
-        titleBar.addView(reload, new LinearLayout.LayoutParams(iconParams));
-        titleBar.addView(settings, new LinearLayout.LayoutParams(iconParams));
-        body.addView(titleBar, new LinearLayout.LayoutParams(-1, -2));
-        empty = new TextView(activity);
-        empty.setText(R.string.library_empty);
-        empty.setGravity(Gravity.CENTER);
-        list = new ListView(activity);
-        adapter = new LibraryAdapter(pad);
-        list.setAdapter(adapter);
-        JSONArray cached = read("entries");
+        if (content == null) content = LibraryContent.install(activity, this);
+        if (pendingMessage != null) showMessage(pendingMessage);
         visible.clear();
-        HashSet<String> cachedHashes = new HashSet<>();
-        for (int pass = 0; pass < 2; pass++) {
-            for (int i = 0; i < cached.length(); i++) {
-                JSONObject entry = cached.optJSONObject(i);
-                if (entry == null || entry.optBoolean("available", false) != (pass == 0)) continue;
-                String hash = entry.optString("sha256", "");
-                if (!hash.isEmpty() && !cachedHashes.add(hash)) continue;
-                visible.add(entry);
-            }
+        JSONArray cached = read("entries");
+        for (int i = 0; i < cached.length(); i++) {
+            JSONObject entry = cached.optJSONObject(i);
+            if (entry != null) visible.add(entry);
         }
         publishRows();
-        list.setOnItemClickListener((parent, view, position, id) -> choose(groups.get(position), 0));
-        list.setOnItemLongClickListener((parent, view, position, id) -> {
-            LibraryGrouping.Group group = groups.get(position);
-            new AlertDialog.Builder(activity).setItems(new String[]{activity.getString(R.string.library_info), activity.getString(R.string.library_remove)},
-                    (which, item) -> choose(group, item == 0 ? 1 : 2)).show();
-            return true;
-        });
-        android.widget.FrameLayout listArea = new android.widget.FrameLayout(activity);
-        listArea.addView(list, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        emptyArea = new LinearLayout(activity);
-        emptyArea.setOrientation(LinearLayout.VERTICAL);
-        emptyArea.setGravity(Gravity.CENTER);
-        emptyArea.addView(empty);
-        for (int id : new int[]{R.string.library_add_folder, R.string.library_import}) {
-            Button action = flatButton(activity.getString(id), id);
-            LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, square);
-            actionParams.topMargin = pad / 2;
-            action.setOnClickListener(v -> {
-                if (id == R.string.library_add_folder) listener.chooseFolder();
-                else listener.importFile();
-            });
-            emptyArea.addView(action, actionParams);
-        }
-        listArea.addView(emptyArea, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        body.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
-        activity.setContentView(body);
         refresh();
     }
+
+    void showMessage(String message) {
+        pendingMessage = message;
+        if (content != null) {
+            content.showMessage(message);
+            pendingMessage = null;
+        }
+    }
+
+    void chooseFolder() { listener.chooseFolder(); }
+    void chooseImport() { listener.importFile(); }
+    void openSettings() { listener.openSettings(); }
 
     private void schedulePublish() {
         if (listUpdate != null) ui.removeCallbacks(listUpdate);
@@ -259,176 +185,8 @@ final class FirmwareLibraryScreen {
     }
 
     private void publishRows() {
-        ArrayList<LibraryGrouping.Entry> entries = new ArrayList<>();
-        java.util.ArrayList<String> oldKeys = new java.util.ArrayList<>();
-        for (LibraryGrouping.Group group : groups) oldKeys.add(group.key);
-        java.util.Map<String, String> oldFingerprints = new java.util.HashMap<>(renderFingerprints);
-        indexed.clear();
-        for (JSONObject row : visible) {
-            String uri = row.optString("uri"), name = row.optString("name");
-            String model = row.optString("model", "");
-            String display = row.optString("display", name);
-            if (model.isEmpty() && !display.equals(name) && !row.optString("sha256").isEmpty()) model = display;
-            indexed.put(uri, row);
-            entries.add(new LibraryGrouping.Entry(uri, model, name, row.optLong("size", -1), row.optLong("last_booted", 0)));
-        }
-        int first = list.getFirstVisiblePosition();
-        View top = list.getChildAt(0);
-        int offset = top == null ? 0 : top.getTop();
-        groups.clear(); groups.addAll(LibraryGrouping.group(entries));
-        renderFingerprints.clear();
-        java.util.ArrayList<String> newKeys = new java.util.ArrayList<>();
-        for (LibraryGrouping.Group group : groups) {
-            newKeys.add(group.key);
-            StringBuilder value = new StringBuilder();
-            for (LibraryGrouping.Entry file : group.files) value.append(indexed.get(file.uri).toString());
-            renderFingerprints.put(group.key, value.toString());
-        }
-        if (!oldKeys.equals(newKeys)) {
-            adapter.notifyDataSetChanged();
-            if (first < groups.size()) list.setSelectionFromTop(first, offset);
-        } else {
-            for (int i = 0; i < list.getChildCount(); i++) {
-                int position = first + i;
-                if (position < groups.size() && !java.util.Objects.equals(
-                        oldFingerprints.get(groups.get(position).key), renderFingerprints.get(groups.get(position).key))) {
-                    adapter.getView(position, list.getChildAt(i), list);
-                }
-            }
-        }
+        if (content != null) content.publish(new ArrayList<>(visible), loading);
         lastListUpdate = android.os.SystemClock.uptimeMillis();
-    }
-
-    private String size(long value) {
-        return value < 0 ? activity.getString(R.string.size_unavailable)
-                : String.format(java.util.Locale.US, "%.1f MiB", value / 1048576.0);
-    }
-    // Each file keeps its own size, e.g. "4.1 MiB / 6.0 MiB".
-    private String groupSizes(LibraryGrouping.Group group) {
-        StringBuilder sizes = new StringBuilder();
-        for (LibraryGrouping.Entry file : group.files) {
-            if (sizes.length() > 0) sizes.append(" / ");
-            sizes.append(size(file.size));
-        }
-        return sizes.toString();
-    }
-    private String bootTime(long value) {
-        return value == 0 ? activity.getString(R.string.library_never)
-                : DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(value));
-    }
-    private void choose(LibraryGrouping.Group group, int action) {
-        if (group.files.size() == 1) { act(group.files.get(0), action); return; }
-        String[] labels = new String[group.files.size()];
-        for (int i = 0; i < labels.length; i++) {
-            LibraryGrouping.Entry file = group.files.get(i);
-            labels[i] = file.name + " · " + size(file.size) + "\n" + bootTime(file.lastBoot);
-        }
-        new AlertDialog.Builder(activity).setTitle(R.string.library_files)
-                .setItems(labels, (dialog, which) -> act(group.files.get(which), action))
-                .setNegativeButton(R.string.cancel, null).show();
-    }
-    private void act(LibraryGrouping.Entry file, int action) {
-        JSONObject entry = indexed.get(file.uri);
-        if (entry == null) return;
-        if (action == 0) select(entry); else if (action == 1) info(entry); else remove(entry);
-    }
-
-    private final class LibraryAdapter extends BaseAdapter {
-        private final int pad;
-        LibraryAdapter(int pad) { this.pad = pad; }
-        @Override public int getCount() { return groups.size(); }
-        @Override public Object getItem(int position) { return groups.get(position); }
-        @Override public long getItemId(int position) { return groups.get(position).stableId(); }
-        @Override public boolean hasStableIds() { return true; }
-        @Override public View getView(int position, View convert, ViewGroup parent) {
-            RowHolder holder;
-            if (convert == null) {
-                LinearLayout row = new LinearLayout(activity);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setPadding(pad, pad * 3 / 4, pad, pad * 3 / 4);
-                row.setGravity(Gravity.CENTER_VERTICAL);
-                ImageView image = new ImageView(activity);
-                image.setBackgroundColor(android.graphics.Color.rgb(28, 28, 30));
-                LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(pad * 5, pad * 5);
-                imageParams.rightMargin = pad; row.addView(image, imageParams);
-                LinearLayout labels = new LinearLayout(activity); labels.setOrientation(LinearLayout.VERTICAL);
-                TextView model = new TextView(activity); model.setTextSize(18); model.setTextColor(android.graphics.Color.WHITE);
-                model.setTypeface(android.graphics.Typeface.DEFAULT_BOLD); model.setSingleLine(true);
-                model.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                TextView detail = new TextView(activity); detail.setTextSize(13);
-                detail.setTextColor(android.graphics.Color.rgb(160, 160, 166));
-                labels.addView(model); labels.addView(detail); row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-                labels.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-                image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-                holder = new RowHolder(row, image, model, detail); row.setTag(holder); convert = row;
-                row.setAccessibilityDelegate(new View.AccessibilityDelegate() {
-                    @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
-                        super.onInitializeAccessibilityNodeInfo(host, info);
-                        info.setClassName(Button.class.getName()); info.setClickable(true);
-                        info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
-                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(infoAction, activity.getString(R.string.library_info)));
-                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(removeAction, activity.getString(R.string.library_remove)));
-                    }
-                    @Override public boolean performAccessibilityAction(View host, int action, android.os.Bundle args) {
-                        LibraryGrouping.Group current = ((RowHolder) host.getTag()).group;
-                        if (action == AccessibilityNodeInfo.ACTION_CLICK) { choose(current, 0); return true; }
-                        if (action == infoAction) { choose(current, 1); return true; }
-                        if (action == removeAction) { choose(current, 2); return true; }
-                        return super.performAccessibilityAction(host, action, args);
-                    }
-                });
-            } else holder = (RowHolder) convert.getTag();
-            LibraryGrouping.Group group = groups.get(position);
-            holder.group = group;
-            LibraryGrouping.Entry recent = group.recent();
-            JSONObject entry = indexed.get(recent.uri);
-            String name = recent.model.isEmpty() ? entry.optString("display", recent.name) : recent.model;
-            String chipset = entry.optString("chipset", "—");
-            String booted = bootTime(recent.lastBoot);
-            String summary = group.files.size() > 1
-                    ? groupSizes(group)
-                    : size(recent.size);
-            holder.model.setText(name);
-            holder.detail.setText(chipset + " · " + summary + "\n" + booted
-                    + (entry.optBoolean("available", false) ? "" : " · " + activity.getString(R.string.library_unavailable)));
-            holder.row.setContentDescription(activity.getString(R.string.library_row, name, chipset, booted));
-            String path = entry.optString("thumbnail", "");
-            String key = path.isEmpty() ? "" : path + ":" + new File(path).lastModified();
-            holder.image.setTag(key);
-            Bitmap bitmap = thumbnails.get(key);
-            if (bitmap != null) { holder.image.setImageBitmap(bitmap); holder.image.setScaleType(ImageView.ScaleType.FIT_CENTER); holder.image.setAlpha(1f); }
-            else {
-                holder.image.setImageResource(R.drawable.ic_phone); holder.image.setScaleType(ImageView.ScaleType.CENTER); holder.image.setAlpha(0.35f);
-                if (!path.isEmpty() && loadingImages.add(key)) {
-                    long requestRevision = revision.get();
-                    imageLoader.execute(() -> {
-                        if (requestRevision != revision.get()) { loadingImages.remove(key); return; }
-                        Bitmap decoded = BitmapFactory.decodeFile(path);
-                        if (decoded != null) thumbnails.put(key, decoded);
-                        loadingImages.remove(key);
-                        if (decoded != null) ui.post(() -> {
-                            if (!showing) return;
-                            for (int i = 0; i < list.getChildCount(); i++) {
-                                RowHolder visibleHolder = (RowHolder) list.getChildAt(i).getTag();
-                                if (key.equals(visibleHolder.image.getTag())) {
-                                    visibleHolder.image.setImageBitmap(decoded);
-                                    visibleHolder.image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                                    visibleHolder.image.setAlpha(1f);
-                                }
-                            }
-                        });
-                    });
-                }
-            }
-            return convert;
-        }
-    }
-    private static final class RowHolder {
-        final LinearLayout row; final ImageView image; final TextView model, detail;
-        LibraryGrouping.Group group;
-        RowHolder(LinearLayout row, ImageView image, TextView model, TextView detail) {
-            this.row = row; this.image = image; this.model = model; this.detail = detail;
-        }
     }
 
     static void removeFolder(Context context, String folder) {
@@ -462,43 +220,6 @@ final class FirmwareLibraryScreen {
         } catch (JSONException error) { return new String[0]; }
     }
 
-    private android.widget.ImageButton iconButton(int icon, int description) {
-        android.widget.ImageButton button = new android.widget.ImageButton(activity);
-        button.setImageResource(icon);
-        button.setScaleType(android.widget.ImageView.ScaleType.CENTER);
-        button.setStateListAnimator(null);
-        button.setElevation(0);
-        android.graphics.drawable.StateListDrawable background = new android.graphics.drawable.StateListDrawable();
-        background.addState(new int[]{android.R.attr.state_pressed},
-                new android.graphics.drawable.ColorDrawable(android.graphics.Color.rgb(46, 46, 48)));
-        background.addState(new int[]{}, new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
-        button.setBackground(background);
-        button.setContentDescription(activity.getString(description));
-        return button;
-    }
-
-    private Button flatButton(String text, int description) {
-        Button button = new Button(activity);
-        button.setText(text);
-        button.setAllCaps(false);
-        button.setTextColor(android.graphics.Color.WHITE);
-        button.setTextSize(18);
-        button.setPadding(0, 0, 0, 0);
-        button.setMinHeight(0);
-        button.setMinimumHeight(0);
-        button.setMinWidth(0);
-        button.setMinimumWidth(0);
-        button.setStateListAnimator(null);
-        button.setElevation(0);
-        android.graphics.drawable.StateListDrawable background = new android.graphics.drawable.StateListDrawable();
-        android.graphics.drawable.ColorDrawable pressed = new android.graphics.drawable.ColorDrawable(android.graphics.Color.rgb(112, 112, 116));
-        background.addState(new int[]{android.R.attr.state_pressed}, pressed);
-        background.addState(new int[]{}, new android.graphics.drawable.ColorDrawable(android.graphics.Color.rgb(46, 46, 48)));
-        button.setBackground(background);
-        button.setContentDescription(activity.getString(description));
-        return button;
-    }
-
     boolean isShowing() { return showing; }
 
     void dismiss() {
@@ -509,9 +230,9 @@ final class FirmwareLibraryScreen {
         }
     }
 
-    void close() { dismiss(); scanner.shutdown(); imageLoader.shutdown(); }
+    void close() { dismiss(); scanner.shutdown(); }
 
-    private void select(JSONObject entry) {
+    void select(JSONObject entry) {
         if (!entry.optBoolean("available", false)) return;
         String value = entry.optString("uri");
         String name = entry.optString("name");
@@ -535,12 +256,11 @@ final class FirmwareLibraryScreen {
             activity.runOnUiThread(() -> {
                 if (!showing || revision.get() != selectedRevision) return;
                 boolean stillPresent = false;
-                stillPresent = indexed.containsKey(value);
+                for (JSONObject row : visible) if (value.equals(row.optString("uri"))) stillPresent = true;
                 if (!stillPresent) return;
                 if (!available) {
                     updateEntry(value, "available", false);
-                    new AlertDialog.Builder(activity).setMessage(R.string.library_unavailable)
-                            .setPositiveButton(android.R.string.ok, null).show();
+                    content.showMessage(activity.getString(R.string.library_unavailable));
                     refresh();
                 } else {
                     listener.boot(uri, name, size);
@@ -549,12 +269,20 @@ final class FirmwareLibraryScreen {
         }, "library-selection").start();
     }
 
-    private void info(JSONObject entry) {
+    void info(JSONObject entry) {
         String detail = activity.getString(R.string.library_info_body,
                 entry.optString("display", entry.optString("name")), entry.optString("chipset", "—"),
                 entry.optString("sha256", "—"), entry.optString("uri"));
-        new AlertDialog.Builder(activity).setTitle(R.string.library_info).setMessage(detail)
-                .setPositiveButton(android.R.string.ok, null).show();
+        detail += "\n" + SelectionLabels.size(activity, entry.optLong("size", -1))
+                + "\n" + (entry.optLong("last_booted", 0) == 0 ? activity.getString(R.string.library_never)
+                : DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT, activity.getResources().getConfiguration().getLocales().get(0)).format(new Date(entry.optLong("last_booted"))));
+        content.showInfo(activity.getString(R.string.library_info), detail);
+    }
+
+    void requestRemove(JSONObject entry) {
+        content.confirm(activity.getString(R.string.library_remove),
+                activity.getString(R.string.library_remove_confirm, entry.optString("display", entry.optString("name"))),
+                () -> remove(entry));
     }
 
     private void remove(JSONObject entry) {
@@ -716,8 +444,8 @@ final class FirmwareLibraryScreen {
     void refresh() {
         if (!showing) return;
         final long token = revision.incrementAndGet();
-        emptyArea.setVisibility(visible.isEmpty() ? View.VISIBLE : View.GONE);
-        empty.setText(R.string.library_loading);
+        loading = true;
+        publishRows();
         scanner.execute(() -> {
             JSONArray entries = read("entries"), folders = read("folders"), excluded = read("excluded");
             if (!preferences.getBoolean("private_migrated", false)) {
@@ -859,9 +587,7 @@ final class FirmwareLibraryScreen {
             }
             activity.runOnUiThread(() -> {
                 if (token != revision.get() || !showing) return;
-                visible.clear(); visible.addAll(rows); schedulePublish();
-                empty.setText(R.string.library_empty);
-                emptyArea.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
+                visible.clear(); visible.addAll(rows); loading = false; schedulePublish();
             });
         });
     }

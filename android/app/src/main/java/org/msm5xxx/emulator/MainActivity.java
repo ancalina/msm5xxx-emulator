@@ -1,7 +1,8 @@
 package org.msm5xxx.emulator;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import android.app.Presentation;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
@@ -71,7 +72,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-public final class MainActivity extends Activity {
+public final class MainActivity extends ComponentActivity {
     private static final String PREFS = "launcher";
     private static final String KEY_URI = "uri";
     private static final String KEY_NAME = "name";
@@ -153,6 +154,8 @@ public final class MainActivity extends Activity {
     private final KeyPressDuration keyPressDuration = new KeyPressDuration();
     private long lastMetricsLog;
     private long lastMetricLabels;
+    private EmulatorContent composeContent;
+    private String modelTitle = "";
     private TextView profileView;
     private TextView sessionView;
     private LinearLayout metricsGroup;
@@ -251,7 +254,16 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         displayManager = getSystemService(DisplayManager.class);
-        setContentView(buildContent());
+        modelTitle = SelectionLabels.displayName(this, getIntent().getStringExtra("name"));
+        View handset = buildContent();
+        composeContent = EmulatorContent.install(this, handset);
+        composeContent.restore(savedInstanceState);
+        getWindow().setCallback(new HandsetWindowCallback(getWindow().getCallback(), this));
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override public void handleOnBackPressed() { requestReturnToLibrary(); }
+        });
+        if (savedInstanceState != null && savedInstanceState.getBoolean("resume_session"))
+            autoStartToken = preferences().getString(KEY_TOKEN, null);
         libraryScreen = new FirmwareLibraryScreen(this, null);
         File external = getExternalFilesDir(null);
         if (external != null && new File(external, "autorun").isFile()) {
@@ -271,6 +283,21 @@ public final class MainActivity extends Activity {
         }
     }
 
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Uri uri = intent.getData();
+        if (uri == null || uri.toString().equals(preferences().getString(KEY_URI, null))) return;
+        Runnable open = () -> {
+            setIntent(intent);
+            modelTitle = SelectionLabels.displayName(this, intent.getStringExtra("name"));
+            preparePrivateCopy(new Selection(uri, intent.getStringExtra("name"), intent.getLongExtra("size", -1)));
+        };
+        if (session != null || sessionStarting)
+            composeContent.confirm(getString(R.string.choose_firmware_menu), getString(R.string.confirm_firmware),
+                    getString(R.string.stop_emulator), () -> stopSession(false, open));
+        else open.run();
+    }
+
     private void returnToLibrary() {
         Runnable navigate = () -> {
             Intent intent = new Intent(this, LibraryActivity.class)
@@ -284,12 +311,16 @@ public final class MainActivity extends Activity {
         } else navigate.run();
     }
 
-    @Override
-    public void onBackPressed() {
+    void requestReturnToLibrary() {
         if (session == null && !sessionStarting) returnToLibrary();
-        else new AlertDialog.Builder(this).setMessage(R.string.confirm_power_off_library)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.stop_emulator, (dialog, which) -> returnToLibrary()).show();
+        else composeContent.confirm(getString(R.string.stop_emulator), getString(R.string.confirm_power_off_library),
+                getString(R.string.stop_emulator), this::returnToLibrary);
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putBoolean("resume_session", session != null || sessionStarting);
+        if (composeContent != null) composeContent.save(state);
+        super.onSaveInstanceState(state);
     }
 
     @Override
@@ -347,7 +378,7 @@ public final class MainActivity extends Activity {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setBackgroundColor(Color.rgb(18, 18, 18));
         int padding = dp(2);
-        content.setPadding(padding, padding, padding, padding);
+        content.setPadding(0, 0, 0, 0);
 
         frameView = new FrameView(this);
         frameView.setBackgroundColor(Color.BLACK);
@@ -406,8 +437,8 @@ public final class MainActivity extends Activity {
         foldButton.setPadding(0, 0, 0, 0);
         foldButton.setBackground(handsetButtonBackground());
         foldButton.setOnClickListener(view -> toggleFold());
-        foldButton.setEnabled(true);
-        foldButton.setAlpha(1f);
+        foldButton.setEnabled(false);
+        foldButton.setAlpha(0.5f);
         side.addView(foldButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
@@ -437,17 +468,16 @@ public final class MainActivity extends Activity {
         telemetry.addView(metricsGroup, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 4));
         sessionView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        telemetry.addView(sessionView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         side.addView(telemetry, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
         moreButton = compactButton(R.string.more, view -> showMoreMenu());
-        moreButton.setTextSize(20);
-        moreButton.setBackground(menuButtonBackground());
+        moreButton.setText("");
+        moreButton.setBackground(moreKeyBackground());
         moreButton.setContentDescription(getString(R.string.more_actions) + ". " + getString(R.string.menu_hint));
         side.addView(moreButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+
 
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.HORIZONTAL);
@@ -458,31 +488,6 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams controlsLayout = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(336));
         content.addView(controls, controlsLayout);
-        appRoot.setOnApplyWindowInsetsListener((view, insets) -> {
-            int left, top, right, bottom;
-            if (Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets safe = insets.getInsets(
-                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-                left = safe.left; top = safe.top; right = safe.right; bottom = safe.bottom;
-            } else {
-                left = insets.getSystemWindowInsetLeft(); top = insets.getSystemWindowInsetTop();
-                right = insets.getSystemWindowInsetRight(); bottom = insets.getSystemWindowInsetBottom();
-                android.view.DisplayCutout cutout = insets.getDisplayCutout();
-                if (cutout != null) {
-                    left = Math.max(left, cutout.getSafeInsetLeft()); top = Math.max(top, cutout.getSafeInsetTop());
-                    right = Math.max(right, cutout.getSafeInsetRight()); bottom = Math.max(bottom, cutout.getSafeInsetBottom());
-                }
-            }
-            safeInsets.set(left, top, right, bottom);
-            int edge = dp(2);
-            content.setPadding(edge + left, edge + top, edge + right, edge);
-            if (controlsLayout.bottomMargin != bottom) {
-                controlsLayout.bottomMargin = bottom;
-                controls.setLayoutParams(controlsLayout);
-            }
-            if (secondaryPanel != null) clampSecondary((FrameLayout.LayoutParams) secondaryPanel.getLayoutParams());
-            return insets;
-        });
         buildSecondaryPanel();
         return appRoot;
     }
@@ -608,7 +613,7 @@ public final class MainActivity extends Activity {
         secondaryPanel.setLayoutParams(bounds);
     }
 
-    private void chooseSecondaryDestination() {
+    void chooseSecondaryDestination() {
         ArrayList<String> destinations = new ArrayList<>();
         ArrayList<String> labels = new ArrayList<>();
         destinations.add(SECONDARY_INTERNAL);
@@ -625,18 +630,11 @@ public final class MainActivity extends Activity {
         String selected = preferences().getString(
                 KEY_SECONDARY_DESTINATION, SECONDARY_INTERNAL);
         int checked = destinations.indexOf(selected);
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.display_destination)
-                .setSingleChoiceItems(labels.toArray(new String[0]), checked,
-                        (dialog, which) -> {
-                            preferences().edit().putString(
-                                    KEY_SECONDARY_DESTINATION,
-                                    destinations.get(which)).apply();
-                            dialog.dismiss();
-                            updateSecondaryPresentation();
-                        })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
+        composeContent.choose(getString(R.string.display_destination), labels.toArray(new String[0]), checked,
+                which -> {
+                    preferences().edit().putString(KEY_SECONDARY_DESTINATION, destinations.get(which)).apply();
+                    updateSecondaryPresentation();
+                });
     }
 
     private static String presentationKey(Display display) {
@@ -754,6 +752,7 @@ public final class MainActivity extends Activity {
             stopSession(true);
         }
         clearError();
+        modelTitle = SelectionLabels.displayName(this, selection.name);
         SharedPreferences preferences = preferences();
         String token = UUID.randomUUID().toString();
         autoStartToken = token;
@@ -979,7 +978,7 @@ public final class MainActivity extends Activity {
         } else if (qemuReady && detectorRuntimeReady) {
             clearIdleStatus();
         } else {
-            clearIdleStatus();
+            setIdleStatus(R.string.preparing_emulator);
         }
     }
 
@@ -1012,7 +1011,7 @@ public final class MainActivity extends Activity {
         int generation = ++sessionGeneration;
         sessionStarting = true;
         latestStatus = null;
-        if (foldButton != null) { foldButton.setEnabled(true); foldButton.setAlpha(1f); }
+        if (foldButton != null) { foldButton.setEnabled(false); foldButton.setAlpha(0.5f); }
         secondaryHidden = false;
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
@@ -1024,6 +1023,7 @@ public final class MainActivity extends Activity {
         updateKeypad(null);
         resetMetrics();
         sessionView.setText(R.string.starting_session);
+        syncCompose();
         Context application = getApplicationContext();
         new Thread(() -> runSession(application, new File(path), profile,
                 persistentState, experimentalRex, virtualNetwork, networkHostTime, networkStartTime, generation),
@@ -1057,6 +1057,7 @@ public final class MainActivity extends Activity {
             handler.post(() -> {
                 if (generation == sessionGeneration && session != null) {
                     sessionView.setText("");
+            syncCompose();
                     moreButton.announceForAccessibility(getString(R.string.booted_announcement));
                     libraryScreen.recordBoot(preferences().getString(KEY_URI, null), active.identity(),
                             preferences().getString(KEY_COPY, null), preferences().getString(KEY_NAME, null));
@@ -1244,8 +1245,8 @@ public final class MainActivity extends Activity {
         boolean secondaryAvailabilityChanged = latestStatus == null
                 || latestStatus.secondaryAvailable != status.secondaryAvailable;
         latestStatus = status;
-        foldButton.setEnabled(true);
-        foldButton.setAlpha(1f);
+        foldButton.setEnabled(status.foldSupported);
+        foldButton.setAlpha(status.foldSupported ? 1f : 0.5f);
         setTextIfChanged(foldButton, getString(status.foldOpen ? R.string.fold_close : R.string.fold_open));
         secondaryPreviewNotice.setVisibility(status.secondaryPreview ? View.VISIBLE : View.GONE);
         if (presentationPreviewNotice != null) {
@@ -1307,6 +1308,7 @@ public final class MainActivity extends Activity {
                     + " LCD " + status.lcdWrites + " Frame " + status.frameSequence);
         }
         if (now - lastMetricLabels >= 500) {
+            syncCompose();
             lastMetricLabels = now;
             setTextIfChanged(pcView, getString(R.string.metric_pc, status.pc));
             setTextIfChanged(runView, getString(
@@ -1359,8 +1361,7 @@ public final class MainActivity extends Activity {
         }
     }
 
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
+    boolean dispatchHandsetKeyEvent(KeyEvent event) {
         String source = "keyboard:" + event.getDeviceId() + ":" + event.getKeyCode();
         if (event.getAction() == KeyEvent.ACTION_UP && inputSources.containsKey(source)) {
             releaseInput(source, session, true);
@@ -1369,8 +1370,9 @@ public final class MainActivity extends Activity {
         int bit = event.getKeyCode() == KeyEvent.KEYCODE_EQUALS && event.isShiftPressed()
                 ? 10 : hardwareBit(event.getKeyCode());
         BackendBridge.Session current = session;
-        if (bit < 0 || current == null || editingInputMapping) {
-            return super.dispatchKeyEvent(event);
+        if (bit < 0 || current == null || editingInputMapping || event.isCtrlPressed() || event.isAltPressed()
+                || event.isMetaPressed() || (composeContent != null && composeContent.getHasModal())) {
+            return false;
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             if (inputSources.containsKey(source)) return true;
@@ -1380,7 +1382,7 @@ public final class MainActivity extends Activity {
             }
             return true;
         }
-        return super.dispatchKeyEvent(event);
+        return false;
     }
 
     @Override
@@ -1516,51 +1518,19 @@ public final class MainActivity extends Activity {
 
     private void showKeyMapping(int bit) {
         BackendBridge.Session current = session;
-        if (current == null || heldKeyBit >= 0) {
-            return;
-        }
+        if (current == null || heldKeyBit >= 0) return;
         String identity = current.identity();
         Integer saved = manualKeyEvent(identity, bit);
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        int padding = dp(20);
-        body.setPadding(padding, 0, padding, 0);
-        TextView prompt = text(getString(R.string.mapping_prompt), 14);
-        EditText value = new EditText(this);
-        value.setSingleLine(true);
-        value.setText(saved == null ? ""
-                : getString(R.string.mapping_value, saved));
-        body.addView(prompt, matchWidth());
-        body.addView(value, matchWidth());
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(getString(R.string.mapping_title,
-                        keyButtons[bit].getText()))
-                .setView(body)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.save, null)
-                .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(
-                AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
-            String requested = value.getText().toString();
-            if (requested.trim().isEmpty()) {
-                saveManualKeyEvent(identity, bit, null);
-                updateKeypad(current);
-                dialog.dismiss();
-                return;
-            }
-            final int eventCode;
-            try {
-                eventCode = parseManualKeyEvent(requested);
-            } catch (IllegalArgumentException error) {
-                showError(getString(R.string.mapping_invalid));
-                return;
-            }
-            // A user mapping is kept as entered, even where detection found no evidence for it.
-            saveManualKeyEvent(identity, bit, eventCode);
-            updateKeypad(current);
-            dialog.dismiss();
-        }));
-        dialog.show();
+        composeContent.input(getString(R.string.mapping_title, keyButtons[bit].getText()),
+                getString(R.string.mapping_prompt), saved == null ? "" : getString(R.string.mapping_value, saved),
+                requested -> {
+                    if (requested.trim().isEmpty()) return null;
+                    try { parseManualKeyEvent(requested); return null; }
+                    catch (IllegalArgumentException error) { return getString(R.string.mapping_invalid); }
+                }, requested -> {
+                    saveManualKeyEvent(identity, bit, requested.trim().isEmpty() ? null : parseManualKeyEvent(requested));
+                    updateKeypad(current);
+                });
     }
 
     private Integer manualKeyEvent(String identity, int bit) {
@@ -1666,7 +1636,7 @@ public final class MainActivity extends Activity {
             staleFrame.recycle();
         }
         latestStatus = null;
-        if (foldButton != null) { foldButton.setEnabled(true); foldButton.setAlpha(1f); }
+        if (foldButton != null) { foldButton.setEnabled(false); foldButton.setAlpha(0.5f); }
         dismissSecondaryPresentation();
         secondaryPanel.setVisibility(View.GONE);
         secondaryFrameView.clear();
@@ -1783,6 +1753,8 @@ public final class MainActivity extends Activity {
                 model = getString(R.string.model_unknown,
                         SelectionLabels.displayName(this, stem));
             }
+            modelTitle = model;
+            syncCompose();
             String chipset = SelectionLabels.displayName(this,
                     profile.getString("chipset"));
             if (!"auto-default".equals(profile.optString(
@@ -1801,80 +1773,82 @@ public final class MainActivity extends Activity {
     }
 
     private void showMoreMenu() {
-        if (editingInputMapping) {
-            setInputMappingEditing(false);
-            return;
-        }
-        MenuSessionState actions = new MenuSessionState(session != null, sessionStarting, canStartSession);
+        if (editingInputMapping) setInputMappingEditing(false);
+        else composeContent.showActions();
+    }
+
+    boolean hasFrame() { return frameView.bitmap != null; }
+    boolean secondaryVisible() { return !secondaryHidden; }
+    boolean secondaryAvailable() { return latestStatus != null && latestStatus.secondaryAvailable; }
+    void setSecondaryVisible(boolean visible) { secondaryHidden = !visible; updateSecondaryPresentation(); }
+    void performAction(int action) {
         SharedPreferences prefs = preferences();
-        PopupMenu popup = new PopupMenu(this, moreButton);
-        android.view.Menu menu = popup.getMenu();
-        menu.add(0, 101, 0, R.string.virtual_network_menu).setCheckable(true)
-                .setChecked(prefs.getBoolean(KEY_VIRTUAL_NETWORK, false));
-        menu.add(0, 102, 1, R.string.start).setEnabled(actions.start);
-        menu.add(0, 103, 2, R.string.stop_emulator).setEnabled(actions.stop);
-        menu.add(0, 104, 3, R.string.reboot_emulator).setEnabled(actions.reboot);
-        menu.add(0, 105, 4, R.string.choose_firmware_menu);
-        menu.add(0, 106, 5, R.string.capture).setEnabled(frameView.bitmap != null);
-        menu.add(0, 107, 6, R.string.edit_key_input).setEnabled(session != null && !sessionStarting);
-        android.view.SubMenu time = menu.addSubMenu(0, 108, 7, R.string.time_menu);
-        time.add(1, 109, 0, R.string.host_time).setCheckable(true)
-                .setChecked(prefs.getBoolean(KEY_NETWORK_HOST_TIME, true));
-        time.add(1, 110, 1, R.string.set_time).setCheckable(true)
-                .setChecked(!prefs.getBoolean(KEY_NETWORK_HOST_TIME, true));
-        time.setGroupCheckable(1, true, true);
-        menu.add(0, 111, 9, R.string.settings_menu);
-        popup.setOnMenuItemClickListener(item -> {
-            switch (item.getItemId()) {
-                case 101:
-                    prefs.edit().putBoolean(KEY_VIRTUAL_NETWORK,
-                            !prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)).apply();
-                    restartIfRunning(); return true;
-                case 102: startSession(); return true;
-                case 103: stopSession(true); return true;
-                case 104: stopSession(false); startSession(); return true;
-                case 105:
-                    if (session != null || sessionStarting) {
-                        new AlertDialog.Builder(this).setMessage(R.string.confirm_firmware)
-                                .setNegativeButton(R.string.cancel, null)
-                                .setPositiveButton(android.R.string.ok, (dialog, which) -> returnToLibrary()).show();
-                    } else returnToLibrary();
-                    return true;
-                case 106: saveCapture(); return true;
-                case 107: setInputMappingEditing(true); return true;
-                case 109:
-                    prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, true).putString(KEY_NETWORK_START_TIME, "").apply();
-                    if (prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
-                    return true;
-                case 110: showNetworkTimeDialog(); return true;
-                case 111: showSettings(); return true;
-                case 112:
-                    BackendBridge.Session current = session;
-                    boolean host = prefs.getBoolean(KEY_NETWORK_HOST_TIME, true);
-                    Double start = parseNetworkStartTime(prefs.getString(KEY_NETWORK_START_TIME, ""));
-                    controlExecutor.execute(() -> {
-                        try { if (current != null) current.refreshNetworkTime(host, start); }
-                        catch (IOException error) { android.util.Log.e("MSM5xEmu", "Network time refresh failed", error); }
-                    });
-                    return true;
-                default: return false;
-            }
-        });
-        popup.show();
+        switch (action) {
+            case 101:
+                prefs.edit().putBoolean(KEY_VIRTUAL_NETWORK, !prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)).apply();
+                restartIfRunning(); break;
+            case 102: startSession(); break;
+            case 103: stopSession(true); break;
+            case 104: stopSession(false, this::startSession); break;
+            case 105: requestReturnToLibrary(); break;
+            case 106: saveCapture(); break;
+            case 107: setInputMappingEditing(true); break;
+            case 108:
+                composeContent.choose(getString(R.string.network_time),
+                        new String[]{getString(R.string.time_device_clock), getString(R.string.time_set_manually), getString(R.string.refresh_network_time)},
+                        -1, this::networkTimeAction); break;
+            case 111: showSettings(); break;
+            case 113: setInputMappingEditing(false); break;
+            case 114:
+                composeContent.choose(getString(R.string.additional_display),
+                        new String[]{getString(secondaryHidden ? R.string.show_display : R.string.hide_display), getString(R.string.display_destination)},
+                        -1, choice -> { if (choice == 0) setSecondaryVisible(secondaryHidden); else chooseSecondaryDestination(); }); break;
+            case 115:
+                String heading = profileView.getText().toString();
+                if (frameView.bitmap != null) {
+                    try {
+                        String chipset = new JSONObject(preferences().getString(KEY_PROFILE, "{}")).optString("chipset", "—");
+                        heading = getString(R.string.profile_header, modelTitle, frameView.bitmap.getWidth(), frameView.bitmap.getHeight(), chipset);
+                    } catch (JSONException ignored) { }
+                }
+                String details = heading + "\n" + preferences().getString(KEY_NAME, "")
+                        + "\n" + sessionView.getText() + "\n" + runView.getText() + "\n" + pcView.getText()
+                        + "\n" + lcdView.getText() + "\n" + frameMetricView.getText();
+                if (latestStatus != null) details += "\n" + latestStatus.virtualCellStatus;
+                composeContent.message(getString(R.string.library_info), details); break;
+            default: break;
+        }
+        syncCompose();
+    }
+
+    void networkTimeAction(int choice) {
+        SharedPreferences prefs = preferences();
+        if (choice == 0) {
+            prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, true).putString(KEY_NETWORK_START_TIME, "").apply();
+            if (prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
+        } else if (choice == 1) showNetworkTimeDialog();
+        else {
+            BackendBridge.Session current = session;
+            boolean host = prefs.getBoolean(KEY_NETWORK_HOST_TIME, true);
+            Double start = parseNetworkStartTime(prefs.getString(KEY_NETWORK_START_TIME, ""));
+            controlExecutor.execute(() -> {
+                try { if (current != null) current.refreshNetworkTime(host, start); }
+                catch (IOException error) { handler.post(() -> showError(getString(R.string.network_time_error))); }
+            });
+        }
     }
 
     private void restartIfRunning() {
         if (session != null && !sessionStarting) {
-            stopSession(false);
-            startSession();
+            stopSession(false, this::startSession);
         }
     }
 
-    private void showNetworkTimeDialog() {
+    void showNetworkTimeDialog() {
         SharedPreferences prefs = preferences();
-        NetworkTimePicker.show(this, prefs.getString(KEY_NETWORK_START_TIME, ""), value -> {
-            prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, value.isEmpty())
-                    .putString(KEY_NETWORK_START_TIME, value).apply();
+        composeContent.networkTime(prefs.getString(KEY_NETWORK_START_TIME, ""), value -> {
+            String stored = value.trim();
+            prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, stored.isEmpty()).putString(KEY_NETWORK_START_TIME, stored).apply();
             if (prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
         });
     }
@@ -1887,11 +1861,13 @@ public final class MainActivity extends Activity {
         releaseHeldKey(false);
         releaseKeyboardKeys();
         editingInputMapping = editing;
-        moreButton.setText(editing ? R.string.done_editing : R.string.more);
+        moreButton.setText(editing ? getString(R.string.done_editing) : "");
+        moreButton.setBackground(editing ? menuButtonBackground() : moreKeyBackground());
         moreButton.setTextSize(editing ? 11 : 20);
         moreButton.setContentDescription(editing ? getString(R.string.done_editing)
                 : getString(R.string.more_actions) + ". " + getString(R.string.menu_hint));
         updateKeypad(session);
+        syncCompose();
     }
 
     private static final int SAVE_CAPTURE = 73;
@@ -1906,9 +1882,8 @@ public final class MainActivity extends Activity {
             showError(getString(R.string.error_capture));
             return;
         }
-        new AlertDialog.Builder(this).setTitle(R.string.capture)
-                .setItems(new String[]{getString(R.string.capture_share), getString(R.string.capture_save_as)},
-                        (dialog, choice) -> {
+        composeContent.choose(getString(R.string.capture),
+                new String[]{getString(R.string.capture_share), getString(R.string.capture_save_as)}, -1, choice -> {
             try {
                 if (choice == 0) {
                     Uri uri = new Uri.Builder().scheme("content")
@@ -1926,7 +1901,7 @@ public final class MainActivity extends Activity {
             } catch (ActivityNotFoundException error) {
                 showError(getString(R.string.error_no_picker));
             }
-        }).show();
+        });
     }
 
     @Override
@@ -1975,137 +1950,52 @@ public final class MainActivity extends Activity {
 
     private static final String[] DETAIL_FIELDS = {"model", "chipset", "width", "height", "board_revision", "image_offset", "load_address", "flash_size", "ram_base", "ram_size", "ram_image_offset", "ram_image_size", "entry", "framebuffer_address", "framebuffer_stride", "framebuffer_format", "board_revision_register", "board_revision_value", "key_register", "key_active_low", "rex_idle_address", "rex_tick_address", "rex_tick_ms", "board_adc_value", "flash_id_address", "flash_id_value", "dmd_download_address", "primary_flash_probe_address", "secondary_flash_address", "secondary_flash_size", "secondary_flash_image", "secondary_flash_state", "secondary_flash_write_address", "flash_state", "nand_enabled", "nand_image", "nand_data_size", "nand_page_size", "nand_spare_size", "nand_pages_per_block", "nand_bus_width"};
 
-    private void showSettings() {
-        SharedPreferences preferences = preferences();
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        int padding = dp(20);
-        body.setPadding(padding, 0, padding, 0);
-        body.addView(NetworkTimePicker.row(this, preferences.getString(KEY_NETWORK_START_TIME, ""), value -> {
-            preferences.edit().putBoolean(KEY_NETWORK_HOST_TIME, value.isEmpty())
-                    .putString(KEY_NETWORK_START_TIME, value).apply();
-            if (preferences.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();
-        }), matchWidth());
-        Switch persistent = new Switch(this);
-        persistent.setText(R.string.persistent_state);
-        persistent.setChecked(preferences.getBoolean(
-                KEY_PERSISTENT_STATE, true));
-        Switch experimental = new Switch(this);
-        experimental.setText(R.string.experimental_rex);
-        experimental.setChecked(preferences.getBoolean(
-                KEY_EXPERIMENTAL_REX, false));
-        body.addView(persistent, matchWidth());
-        Switch background = new Switch(this);
-        background.setText(R.string.keep_running_background);
-        background.setChecked(preferences.getBoolean("keep_running_background", false));
-        body.addView(background, matchWidth());
-        TextView languageTitle = text(getString(R.string.ui_language), 14);
-        body.addView(languageTitle, matchWidth());
-        android.widget.Spinner language = new android.widget.Spinner(this);
-        String[] languageValues = {"auto", "ko", "en"};
-        String[] languageLabels = {getString(R.string.language_auto), getString(R.string.language_korean), getString(R.string.language_english)};
-        language.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, languageLabels));
-        String selectedLanguage = preferences.getString("ui_language", "auto");
-        language.setSelection("ko".equals(selectedLanguage) ? 1 : "en".equals(selectedLanguage) ? 2 : 0);
-        body.addView(language, matchWidth());
-        Switch secondary = new Switch(this);
-        secondary.setText(R.string.additional_display);
-        secondary.setChecked(!secondaryHidden);
-        secondary.setEnabled(latestStatus != null && latestStatus.secondaryAvailable);
-        secondary.setOnCheckedChangeListener((button, checked) -> {
-            secondaryHidden = !checked;
-            updateSecondaryPresentation();
-        });
-        body.addView(secondary, matchWidth());
-        Button destination = new Button(this);
-        destination.setText(R.string.display_destination);
-        destination.setMinHeight(dp(48));
-        destination.setOnClickListener(view -> chooseSecondaryDestination());
-        body.addView(destination, matchWidth());
-        String identity = null;
-        try { identity = new JSONObject(preferences.getString(KEY_PROFILE, "{}"))
-                    .getJSONObject("firmware").getString("sha256"); }
-        catch (JSONException ignored) { }
-        final String settingsIdentity = identity;
-        body.addView(text(getString(R.string.detailed_settings), 16), matchWidth());
-        if (settingsIdentity == null) body.addView(text(getString(R.string.profile_required), 14), matchWidth());
-        experimental.setEnabled(settingsIdentity != null);
-        body.addView(experimental, matchWidth());
-        SharedPreferences detailPrefs = getSharedPreferences("detailed-settings", MODE_PRIVATE);
-        JSONObject saved;
-        try { saved = new JSONObject(settingsIdentity == null ? "{}" : detailPrefs.getString(settingsIdentity, "{}")); }
-        catch (JSONException error) { saved = new JSONObject(); }
-        final JSONObject initialDetails = saved;
-        final boolean initialExperimental = experimental.isChecked();
-        final boolean initialPersistent = persistent.isChecked();
-        ArrayList<EditText> detailInputs = new ArrayList<>();
-        String[] labels = getResources().getStringArray(R.array.detail_labels);
-        String[] sections = getResources().getStringArray(R.array.detail_sections);
-        int[] sectionStarts = {0, 5, 13, 16, 20, 28, 33};
-        int section = 0;
-        for (int index = 0; index < DETAIL_FIELDS.length; index++) {
-            if (section < sectionStarts.length && index == sectionStarts[section]) {
-                body.addView(text(sections[section++], 16), matchWidth());
-            }
-            TextView label = text(labels[index], 14);
-            body.addView(label, matchWidth());
-            EditText input = new EditText(this);
-            input.setSingleLine(true);
-            input.setText(saved.optString(DETAIL_FIELDS[index], ""));
-            input.setHint(R.string.automatic_value);
-            input.setEnabled(settingsIdentity != null);
-            body.addView(input, matchWidth());
-            detailInputs.add(input);
-        }
-        android.widget.ScrollView settingsScroll = new android.widget.ScrollView(this);
-        settingsScroll.addView(body);
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(R.string.settings_title)
-                .setView(settingsScroll)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.save, null)
-                .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            boolean changed = initialExperimental != experimental.isChecked()
-                    || initialPersistent != persistent.isChecked();
-            if (settingsIdentity != null) {
-                JSONObject edits = new JSONObject();
-                try {
-                    for (int i = 0; i < DETAIL_FIELDS.length; i++) {
-                        String value = detailInputs.get(i).getText().toString().trim();
-                        if (!value.equals(initialDetails.optString(DETAIL_FIELDS[i], "").trim())) changed = true;
-                        if (!value.isEmpty()) edits.put(DETAIL_FIELDS[i], value);
-                    }
-                    detailPrefs.edit().putString(settingsIdentity, edits.toString()).apply();
-                } catch (JSONException error) { showError(error.getMessage()); return; }
-            }
-            String newLanguage = languageValues[language.getSelectedItemPosition()];
-            preferences.edit().putString("ui_language", newLanguage).putBoolean(KEY_PERSISTENT_STATE, persistent.isChecked())
-                    .putBoolean(KEY_EXPERIMENTAL_REX, experimental.isChecked())
-                    .putBoolean("keep_running_background", background.isChecked()).apply();
-            dialog.dismiss();
-            if (changed && session != null && !sessionStarting) {
-                new AlertDialog.Builder(this).setMessage(R.string.apply_restart_prompt)
-                        .setPositiveButton(R.string.apply_restart, (prompt, which) ->
-                                stopSession(false, this::startSession))
-                        .setNegativeButton(R.string.next_start, (prompt, which) -> {
-                            if (!newLanguage.equals(selectedLanguage)) recreate();
-                        }).show();
-            } else if (!newLanguage.equals(selectedLanguage)) recreate();
-        }));
-        dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT);
-        }
+    private void showSettings() { composeContent.showSettings(); }
+
+    String settingsIdentity() {
+        try { return new JSONObject(preferences().getString(KEY_PROFILE, "{}"))
+                .getJSONObject("firmware").getString("sha256"); }
+        catch (JSONException ignored) { return null; }
+    }
+    String[] detailFields() { return DETAIL_FIELDS.clone(); }
+    void chooseAppIcon() {
+        composeContent.choose(getString(R.string.app_icon),
+                new String[]{getString(R.string.app_icon_full), getString(R.string.app_icon_simple)},
+                AppIconChoice.isSimple(this) ? 1 : 0,
+                choice -> { if (!AppIconChoice.setSimple(this, choice == 1)) showError(getString(R.string.app_icon_error)); });
+    }
+    void applyComposeSettings(JSONObject details, boolean persistent, boolean experimental, boolean background, String language) {
+        String identity = settingsIdentity();
+        SharedPreferences prefs = preferences();
+        SharedPreferences hardware = getSharedPreferences("detailed-settings", MODE_PRIVATE);
+        boolean changed = persistent != prefs.getBoolean(KEY_PERSISTENT_STATE, true)
+                || experimental != prefs.getBoolean(KEY_EXPERIMENTAL_REX, false)
+                || (identity != null && !details.toString().equals(hardware.getString(identity, "{}")));
+        if (identity != null) hardware.edit().putString(identity, details.toString()).apply();
+        boolean languageChanged = !language.equals(prefs.getString("ui_language", "auto"));
+        prefs.edit().putBoolean(KEY_PERSISTENT_STATE, persistent).putBoolean(KEY_EXPERIMENTAL_REX, experimental)
+                .putBoolean("keep_running_background", background).putString("ui_language", language).apply();
+        if (changed && session != null && !sessionStarting) {
+            composeContent.confirm(getString(R.string.settings_title), getString(R.string.apply_restart_prompt),
+                    getString(R.string.apply_restart), () -> {
+                        if (languageChanged) recreate(); else stopSession(false, this::startSession);
+                    });
+        } else if (languageChanged) recreate();
+    }
+
+    private void syncCompose() {
+        if (composeContent != null) composeContent.update(modelTitle, sessionView.getText().toString(), canStartSession,
+                session != null, sessionStarting, editingInputMapping);
     }
 
     private void updateSessionControls(boolean canStart) {
         canStartSession = canStart;
         moreButton.setEnabled(true);
+        syncCompose();
     }
 
     private void updateKeypad(BackendBridge.Session active) {
+        syncCompose();
         for (KeySpec key : KEY_LAYOUT) {
             Button button = keyButtons[key.bit];
             View target = keyTargets[key.bit];
@@ -2180,23 +2070,26 @@ public final class MainActivity extends Activity {
             return;
         }
         lastErrorMessage = message;
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        if (composeContent != null) composeContent.showError(message);
         moreButton.announceForAccessibility(message);
     }
 
     private void clearError() {
         lastErrorMessage = null;
+        if (composeContent != null) composeContent.clearError();
     }
 
     private void setIdleStatus(int textResource) {
         if (session == null && !sessionStarting) {
             sessionView.setText(textResource);
+            syncCompose();
         }
     }
 
     private void clearIdleStatus() {
         if (session == null && !sessionStarting) {
             sessionView.setText("");
+            syncCompose();
         }
     }
 
@@ -2252,6 +2145,14 @@ public final class MainActivity extends Activity {
         return target;
     }
 
+    private Drawable moreKeyBackground() {
+        android.graphics.drawable.LayerDrawable background = new android.graphics.drawable.LayerDrawable(
+                new Drawable[]{menuButtonBackground(), getDrawable(R.drawable.ic_more_horiz)});
+        background.setLayerSize(1, dp(24), dp(24));
+        background.setLayerGravity(1, Gravity.CENTER);
+        return background;
+    }
+
     private Drawable menuButtonBackground() {
         StateListDrawable background = new StateListDrawable();
         int[][] states = {{-android.R.attr.state_enabled}, {android.R.attr.state_pressed}, {}};
@@ -2288,7 +2189,11 @@ public final class MainActivity extends Activity {
     }
 
     private TextView metricCell(int textResource) {
-        return statusLine(getString(textResource));
+        TextView cell = statusLine(getString(textResource));
+        cell.setTypeface(android.graphics.Typeface.MONOSPACE);
+        cell.setAutoSizeTextTypeUniformWithConfiguration(7, 10, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+        cell.setEllipsize(null);
+        return cell;
     }
 
     private TextView statusLine(String value) {
@@ -2445,7 +2350,7 @@ public final class MainActivity extends Activity {
             int width = Math.max(1, Math.round(current.getWidth() * scale));
             int height = Math.max(1, Math.round(current.getHeight() * scale));
             int left = (getWidth() - width) / 2;
-            int top = (getHeight() - height) / 2;
+            int top = 0;
             canvas.drawBitmap(current, null,
                     new Rect(left, top, left + width, top + height), paint);
         }

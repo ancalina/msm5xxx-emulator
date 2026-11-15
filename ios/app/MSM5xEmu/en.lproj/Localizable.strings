@@ -190,3 +190,8 @@
 "Older iOS settings notice" = "Changes are saved. Apply and restart works for compatible display changes; other changes apply after reopening the app.";
 "Older iOS failure notice" = "You may need to reopen the app before starting another session.";
 "Settings saved while stopped" = "Changes are saved for the next session.";
+
+"App icon" = "App icon";
+"Full chip marking" = "Full chip marking";
+"Simple (MSM5)" = "Simple (MSM5)";
+"Could not change the app icon." = "Could not change the app icon.";

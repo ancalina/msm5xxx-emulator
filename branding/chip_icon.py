@@ -17,11 +17,26 @@ import datetime
 import os
 import re
 import subprocess
+import shutil
 from pathlib import Path
 
 S = 1024
 INK, DOT = "#9fa2a5", "#9fa1a3"
-HERSHEY = Path("/usr/share/inkscape/extensions/svg_fonts/HersheySans1.svg")
+def hershey_font() -> Path:
+    """Find Inkscape's bundled font on Linux or macOS (or an explicit override)."""
+    override = os.environ.get("INKSCAPE_HERSHEY_FONT")
+    if override:
+        return Path(override)
+    candidates = [Path("/usr/share/inkscape/extensions/svg_fonts/HersheySans1.svg")]
+    binary = shutil.which(os.environ.get("INKSCAPE", "inkscape"))
+    if binary:
+        contents = Path(binary).resolve().parent.parent
+        candidates += [contents / "Resources/share/inkscape/extensions/svg_fonts/HersheySans1.svg",
+                       contents / "share/inkscape/extensions/svg_fonts/HersheySans1.svg"]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("Inkscape HersheySans1.svg not found; set INKSCAPE_HERSHEY_FONT")
 DEFS = ('<defs><linearGradient id="pkg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46494d"/>'
         '<stop offset="1" stop-color="#2c2e31"/></linearGradient><filter id="grain"><feTurbulence type="fractalNoise" '
         'baseFrequency="1.6" numOctaves="2" seed="3"/><feColorMatrix values="0 0 0 0 0.6  0 0 0 0 0.6  0 0 0 0 0.62  '
@@ -39,7 +54,7 @@ def marking_lines(version: str, day: datetime.date, commit: str, platform: str) 
 
 
 def _glyphs() -> dict[str, tuple[float, str]]:
-    text = HERSHEY.read_text(encoding="utf-8")
+    text = hershey_font().read_text(encoding="utf-8")
     return {m[0]: (float(m[1]), m[2]) for m in
             re.findall(r'<glyph unicode="(.)"[^>]*?horiz-adv-x="([\d.]+)"(?: d="([^"]*)")?', text)}
 

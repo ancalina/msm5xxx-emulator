@@ -437,6 +437,9 @@ struct FirmwareLibraryView: View {
                     Button(text("Library add folder")) { showingSettings = false; folderPicker = true }
                     Button(text("Library import")) { showingSettings = false; filePicker = true }
                 }
+                Section {
+                    AppIconPicker(text: text)
+                }
                 Section(header: Text(text("Library session settings"))) {
                     Toggle(text("Virtual network"), isOn: $virtualNetwork)
                     // One choice: device clock or a manual start time; only relevant with the virtual network.

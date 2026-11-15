@@ -64,3 +64,18 @@ Detailed settings are saved per firmware. While a session is running, choose
 change can be applied with a reset; changes to machine configuration or device
 state take effect after reopening the app. When no session is running, edits
 are saved for the next fresh start. Backgrounding still pauses the session.
+
+App icons are generated on every Xcode build by `build_icons.sh`, using Python 3
+and Inkscape. Install Inkscape in `/Applications`, put it on `PATH`, or set
+`INKSCAPE` to the executable; `INKSCAPE_HERSHEY_FONT` can override the location
+of its bundled `HersheySans1.svg`. `package_ios.sh` also prepares these resources
+before invoking Xcode. All generated SVG/PNG, asset catalog and Composer output
+stays in ignored `ios/app/build/icons/`.
+
+Both AppIcon and Simple have single 1024 px Any/Dark/Tinted asset catalog
+appearances (tinted is the marking in white on black). Xcode 26 compiles the
+matching `.icon` files with separate plate and marking layers for Liquid Glass.
+The catalog supplies the earlier iOS appearances; the minimum remains iOS 15.
+**Settings → App icon** in either the library or session chooses **Full chip
+marking** or **Simple (MSM5)** through the system alternate-icon API. A failed
+change keeps the system's current selection and displays an error.

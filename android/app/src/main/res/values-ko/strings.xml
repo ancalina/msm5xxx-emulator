@@ -236,4 +236,15 @@
     <string name="apply_restart_prompt">설정을 적용하고 지금 세션을 다시 시작할까요?</string>
     <string name="apply_restart">적용 후 다시 시작</string>
     <string name="next_start">다음 시작</string>
+    <string name="app_icon">앱 아이콘</string>
+    <string name="app_icon_full">전체 칩 마킹</string>
+    <string name="app_icon_simple">간단히 (MSM5)</string>
+    <string name="app_icon_error">앱 아이콘을 변경하지 못했습니다.</string>
+    <string name="library_remove_confirm">%1$s을(를) 라이브러리에서 제거할까요? 가져온 사본은 삭제되고 추가한 폴더의 원본 파일은 유지됩니다.</string>
+    <string name="show_display">화면 표시</string>
+    <string name="hide_display">화면 숨기기</string>
+    <string name="preparing_emulator">에뮬레이터 준비 중…</string>
+    <string name="back_to_library">라이브러리로 돌아가기</string>
+    <string name="time_keyboard_input">키보드 입력</string>
+    <string name="time_dial_input">시계 다이얼</string>
 </resources>

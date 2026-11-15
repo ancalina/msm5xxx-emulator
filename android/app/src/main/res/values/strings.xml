@@ -236,4 +236,15 @@
     <string name="apply_restart_prompt">Apply these settings and restart the session now?</string>
     <string name="apply_restart">Apply and restart</string>
     <string name="next_start">Next start</string>
+    <string name="app_icon">App icon</string>
+    <string name="app_icon_full">Full chip marking</string>
+    <string name="app_icon_simple">Simple (MSM5)</string>
+    <string name="app_icon_error">Could not change the app icon.</string>
+    <string name="library_remove_confirm">Remove %1$s from the library? Imported copies owned by the library are deleted. Files in added folders are kept.</string>
+    <string name="show_display">Show display</string>
+    <string name="hide_display">Hide display</string>
+    <string name="preparing_emulator">Preparing emulator…</string>
+    <string name="back_to_library">Back to library</string>
+    <string name="time_keyboard_input">Keyboard input</string>
+    <string name="time_dial_input">Clock dial</string>
 </resources>

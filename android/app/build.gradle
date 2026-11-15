@@ -1,18 +1,20 @@
 plugins {
     id "com.android.application"
+    id "org.jetbrains.kotlin.plugin.compose"
 }
 
 android {
     namespace "org.msm5xxx.emulator"
     compileSdk 35
     ndkVersion "28.2.13676358"
+    buildFeatures { compose true }
 
     defaultConfig {
         applicationId "org.msm5xxx.emulator"
         minSdk 28
         targetSdk 35
-        versionCode 21
-        versionName "0.1.0-dev3"
+        versionCode 22
+        versionName "0.1.0-dev4"
         ndk {
             abiFilters "arm64-v8a"
         }
@@ -25,6 +27,7 @@ android {
 
     sourceSets {
         main {
+            res.srcDir "$buildDir/generated/chip-icons/res"
             assets.srcDir "$rootDir/build/generated/python-assets"
             jniLibs.srcDir "$rootDir/build/generated/jniLibs"
         }
@@ -46,3 +49,20 @@ android {
     // Python's stdlib contains required directories whose names start with '_'.
     aaptOptions.ignoreAssetsPattern = "android-testbed-dont-ignore-anything"
 }
+
+dependencies {
+    implementation platform("androidx.compose:compose-bom:2025.04.01")
+    implementation "androidx.compose.ui:ui"
+    implementation "androidx.compose.foundation:foundation"
+    implementation "androidx.compose.material3:material3"
+    implementation "androidx.activity:activity-compose:1.10.1"
+}
+
+// The marking includes the current checkout and date, so regenerate on every build.
+def generateAppIcons = tasks.register("generateAppIcons", Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine "python3", "branding/mobile_icons.py", "android", "$buildDir/generated/chip-icons"
+    outputs.dir "$buildDir/generated/chip-icons"
+    outputs.upToDateWhen { false }
+}
+tasks.named("preBuild").configure { dependsOn generateAppIcons }

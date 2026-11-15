@@ -382,6 +382,7 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) {
             NavigationView {
                 Form {
+                    AppIconPicker(text: text)
                     Toggle(text("Persistent device state"), isOn: $persistentState)
                     Picker(text("UI language"), selection: $uiLanguage) {
                         Text(text("Auto (System)")).tag("auto")
@@ -893,5 +894,43 @@ private struct HardwareKeyboardInput: UIViewRepresentable {
             let remaining = end(presses)
             if !remaining.isEmpty { super.pressesCancelled(remaining, with: event) }
         }
+    }
+}
+
+
+struct AppIconPicker: View {
+    let text: (String) -> String
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var selected = UIApplication.shared.alternateIconName ?? "AppIcon"
+    @State private var changing = false
+    @State private var failure = false
+
+    var body: some View {
+        Picker(text("App icon"), selection: $selected) {
+            Text(text("Full chip marking")).tag("AppIcon")
+            Text(text("Simple (MSM5)")).tag("Simple")
+        }
+        .disabled(changing || !UIApplication.shared.supportsAlternateIcons)
+        .onAppear { selected = UIApplication.shared.alternateIconName ?? "AppIcon" }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active && !changing {
+                selected = UIApplication.shared.alternateIconName ?? "AppIcon"
+            }
+        }
+        .onChange(of: selected) { name in
+            let iconName: String? = name == "AppIcon" ? nil : name
+            guard iconName != UIApplication.shared.alternateIconName else { return }
+            changing = true
+            UIApplication.shared.setAlternateIconName(iconName) { error in
+                DispatchQueue.main.async {
+                    selected = UIApplication.shared.alternateIconName ?? "AppIcon"
+                    changing = false
+                    failure = error != nil
+                }
+            }
+        }
+        .alert(text("App icon"), isPresented: $failure) {
+            Button(text("OK"), role: .cancel) { }
+        } message: { Text(text("Could not change the app icon.")) }
     }
 }
