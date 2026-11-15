@@ -4,7 +4,7 @@ from msm5xxx_emulator.core.config import FirmwareConfig
 from msm5xxx_emulator.detection.firmware_image import load_firmware_image
 from msm5xxx_emulator.detection.facts import bind_facts
 from msm5xxx_emulator.detection.layout_queries import (find_arm_vector_offset, find_linker_layout, find_overlays, restore_sparse_nor_gap)
-from .configuration import ADDRESS_SPACE, DISABLEABLE_ADDRESS_FIELDS, _apply_overrides, _scan_layout
+from .configuration import ADDRESS_SPACE, DISABLEABLE_ADDRESS_FIELDS, _apply_overrides, _scan_layout, identify
 from .layout import _scan_drivers, _scan_resources
 from .drivers import _assemble_config, detect
 from msm5xxx_emulator.detection.registry import device_domain

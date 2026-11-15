@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- Firmware detection is faster. Detection results are unchanged.
+- Adding firmware to the library is much faster: library rows need only the
+  model and chipset; full detection runs when the firmware is launched.
+- Library rows appear as each file is identified, and listed firmware can be
+  launched while the rest of the library is still being scanned.
+
 ## 0.1.0
 
 Changes since the previous public release, `qemu-tcg-preview-20261030-r17.1`.

@@ -49,14 +49,14 @@ def describe_file(path: Path, cache: dict, *, detector: Callable | None = None,
         raise ValueError('invalid library source')
     digest = source_hash(path, maximum)
     if digest not in cache:
-        if detector is None:
-            from msm5xxx_emulator.detection.registry import device_domain
-            detect = boot_plan.detect
-            detector = detect
         try:
-            config = detector(path)
-            cache[digest] = {'model': getattr(config, 'model', None),
-                             'chipset': getattr(config, 'chipset', None)}
+            if detector is None:
+                # Rows need only model and chipset; full detection waits until boot.
+                model, chipset = boot_plan.identify(path)
+            else:
+                config = detector(path)
+                model, chipset = getattr(config, 'model', None), getattr(config, 'chipset', None)
+            cache[digest] = {'model': model, 'chipset': chipset}
         except (OSError, ValueError):
             cache[digest] = {'model': None, 'chipset': None}
     metadata = cache[digest]
@@ -131,7 +131,8 @@ class FirmwareLibrary:
         self.entries.remove(entry)
         self.save()
 
-    def scan(self) -> list[dict]:
+    def scan(self, progress: Callable[[list[dict]], None] | None = None) -> list[dict]:
+        """Refresh rows; progress gets the current list each time a new file is described."""
         known = {entry.get('path') for entry in self.entries}
         for folder in self.folders:
             try:
@@ -150,8 +151,9 @@ class FirmwareLibrary:
                     continue
         seen: set[str] = set()
         result = []
-        for entry in self.entries:
+        for position, entry in enumerate(self.entries):
             path = Path(entry['path'])
+            described_now = False
             try:
                 stat = path.stat()
                 if not path.is_file() or stat.st_size > source_size_limit(path):
@@ -165,6 +167,7 @@ class FirmwareLibrary:
                     continue
                 seen.add(digest)
                 if digest not in self.cache:
+                    described_now = True
                     described = describe_file(path, self.cache, detector=self.detector)
                     entry['sha256'] = described['sha256']
                 entry.update(self.cache[entry['sha256']])
@@ -176,5 +179,12 @@ class FirmwareLibrary:
                 entry['available'] = False
             entry['name'] = display_name(entry.get('model'), path.name)
             result.append(dict(entry))
+            if described_now and progress is not None:
+                pending, listed = [], set(seen)
+                for later in self.entries[position + 1:]:
+                    if later.get('available') and later.get('sha256') in self.cache and later['sha256'] not in listed:
+                        listed.add(later['sha256'])
+                        pending.append(dict(later))
+                progress(result + pending)
         self.save()
         return result
