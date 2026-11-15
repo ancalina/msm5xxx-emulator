@@ -1,0 +1,513 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="additional_display" xml:space="preserve">
+    <value>Additional display</value>
+  </data>
+  <data name="all_file_types" xml:space="preserve">
+    <value>All files</value>
+  </data>
+  <data name="app_settings" xml:space="preserve">
+    <value>App settings</value>
+  </data>
+  <data name="apply" xml:space="preserve">
+    <value>Apply (restart if needed)</value>
+  </data>
+  <data name="audio_error" xml:space="preserve">
+    <value>Sound error</value>
+  </data>
+  <data name="audio_label" xml:space="preserve">
+    <value>Audio</value>
+  </data>
+  <data name="audio_unavailable" xml:space="preserve">
+    <value>Sound unavailable</value>
+  </data>
+  <data name="auto_system" xml:space="preserve">
+    <value>Auto (System)</value>
+  </data>
+  <data name="backend_stopped" xml:space="preserve">
+    <value>Emulator stopped</value>
+  </data>
+  <data name="boot_settings" xml:space="preserve">
+    <value>Boot Settings</value>
+  </data>
+  <data name="booting" xml:space="preserve">
+    <value>Starting…</value>
+  </data>
+  <data name="cancel" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+  <data name="capture" xml:space="preserve">
+    <value>Capture</value>
+  </data>
+  <data name="choose_file" xml:space="preserve">
+    <value>Choose File…</value>
+  </data>
+  <data name="choose_firmware" xml:space="preserve">
+    <value>Choose Firmware</value>
+  </data>
+  <data name="choose_firmware_menu" xml:space="preserve">
+    <value>Open firmware…</value>
+  </data>
+  <data name="close" xml:space="preserve">
+    <value>Close</value>
+  </data>
+  <data name="confirm_firmware" xml:space="preserve">
+    <value>This powers off the current session and boots the new firmware</value>
+  </data>
+  <data name="default_language" xml:space="preserve">
+    <value>System default</value>
+  </data>
+  <data name="detecting" xml:space="preserve">
+    <value>Checking</value>
+  </data>
+  <data name="detection_not_ready" xml:space="preserve">
+    <value>Firmware check is not complete</value>
+  </data>
+  <data name="display_left" xml:space="preserve">
+    <value>Left</value>
+  </data>
+  <data name="display_position" xml:space="preserve">
+    <value>Additional display position</value>
+  </data>
+  <data name="display_right" xml:space="preserve">
+    <value>Right</value>
+  </data>
+  <data name="done_editing" xml:space="preserve">
+    <value>Done</value>
+  </data>
+  <data name="edit_input" xml:space="preserve">
+    <value>Edit key layout</value>
+  </data>
+  <data name="english_language" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="error_title" xml:space="preserve">
+    <value>Operation failed</value>
+  </data>
+  <data name="experimental_rex" xml:space="preserve">
+    <value>Experimental static REX controller</value>
+  </data>
+  <data name="firmware_file_type" xml:space="preserve">
+    <value>Firmware images</value>
+  </data>
+  <data name="firmware_screen" xml:space="preserve">
+    <value>Phone display</value>
+  </data>
+  <data name="fold_access_close" xml:space="preserve">
+    <value>Close fold</value>
+  </data>
+  <data name="fold_access_open" xml:space="preserve">
+    <value>Open fold</value>
+  </data>
+  <data name="fold_closed" xml:space="preserve">
+    <value>Fold closed (experimental)</value>
+  </data>
+  <data name="fold_open" xml:space="preserve">
+    <value>Fold open (experimental)</value>
+  </data>
+  <data name="fold_short_close" xml:space="preserve">
+    <value>Close</value>
+  </data>
+  <data name="fold_short_open" xml:space="preserve">
+    <value>Open</value>
+  </data>
+  <data name="fold_unavailable" xml:space="preserve">
+    <value>Fold unavailable</value>
+  </data>
+  <data name="folder_empty" xml:space="preserve">
+    <value>No imported folders</value>
+  </data>
+  <data name="folder_notice" xml:space="preserve">
+    <value>Remove this folder from the library? Files will be kept.</value>
+  </data>
+  <data name="framebuffer_applying" xml:space="preserve">
+    <value>Applying screen colors</value>
+  </data>
+  <data name="hardware_settings" xml:space="preserve">
+    <value>Hardware settings</value>
+  </data>
+  <data name="host_time" xml:space="preserve">
+    <value>Use device clock</value>
+  </data>
+  <data name="key_help" xml:space="preserve">
+    <value>Arrow keys, Enter, Esc, digits and +/− control the phone. Tab moves between controls.</value>
+  </data>
+  <data name="key_prompt" xml:space="preserve">
+    <value>Enter a key value (leave blank for the default).</value>
+  </data>
+  <data name="key_unavailable" xml:space="preserve">
+    <value>Unavailable in this firmware. Use Edit key layout to assign a value.</value>
+  </data>
+  <data name="korean" xml:space="preserve">
+    <value>Korean</value>
+  </data>
+  <data name="language_invalid" xml:space="preserve">
+    <value>UI language selection is invalid</value>
+  </data>
+  <data name="library_add_folder" xml:space="preserve">
+    <value>Add folder</value>
+  </data>
+  <data name="library_boot" xml:space="preserve">
+    <value>Boot</value>
+  </data>
+  <data name="library_chipset" xml:space="preserve">
+    <value>Chipset</value>
+  </data>
+  <data name="library_empty" xml:space="preserve">
+    <value>Add firmware to your library</value>
+  </data>
+  <data name="library_import" xml:space="preserve">
+    <value>Import file</value>
+  </data>
+  <data name="library_info" xml:space="preserve">
+    <value>Info</value>
+  </data>
+  <data name="library_last" xml:space="preserve">
+    <value>Last booted</value>
+  </data>
+  <data name="library_loading" xml:space="preserve">
+    <value>Checking…</value>
+  </data>
+  <data name="library_model" xml:space="preserve">
+    <value>Model</value>
+  </data>
+  <data name="library_never" xml:space="preserve">
+    <value>Never booted</value>
+  </data>
+  <data name="library_path" xml:space="preserve">
+    <value>Path</value>
+  </data>
+  <data name="library_refresh" xml:space="preserve">
+    <value>Refresh</value>
+  </data>
+  <data name="library_remove" xml:space="preserve">
+    <value>Remove</value>
+  </data>
+  <data name="library_remove_folder" xml:space="preserve">
+    <value>Remove folder</value>
+  </data>
+  <data name="library_size" xml:space="preserve">
+    <value>Size</value>
+  </data>
+  <data name="library_title" xml:space="preserve">
+    <value>Firmware library</value>
+  </data>
+  <data name="library_unavailable" xml:space="preserve">
+    <value>Unavailable</value>
+  </data>
+  <data name="loading_failed" xml:space="preserve">
+    <value>Could not complete the operation</value>
+  </data>
+  <data name="mapping_hint" xml:space="preserve">
+    <value>Firmware event byte: decimal, 0x hexadecimal, or blank to clear.</value>
+  </data>
+  <data name="mapping_invalid" xml:space="preserve">
+    <value>Enter a valid key value</value>
+  </data>
+  <data name="mapping_rejected" xml:space="preserve">
+    <value>This value is not in the firmware key table</value>
+  </data>
+  <data name="menu_access" xml:space="preserve">
+    <value>More options</value>
+  </data>
+  <data name="metric_frame_label" xml:space="preserve">
+    <value>frame</value>
+  </data>
+  <data name="metric_lcd_label" xml:space="preserve">
+    <value>LCD</value>
+  </data>
+  <data name="metric_pc_label" xml:space="preserve">
+    <value>PC</value>
+  </data>
+  <data name="missing_firmware" xml:space="preserve">
+    <value>Firmware file not found</value>
+  </data>
+  <data name="more" xml:space="preserve">
+    <value>•••</value>
+  </data>
+  <data name="network_host_time" xml:space="preserve">
+    <value>Use computer clock for network time</value>
+  </data>
+  <data name="network_restart" xml:space="preserve">
+    <value>Apply and restart</value>
+  </data>
+  <data name="network_start_time" xml:space="preserve">
+    <value>Network start time (blank = off)</value>
+  </data>
+  <data name="network_time_error" xml:space="preserve">
+    <value>Enter a valid time in YYYY-MM-DD HH:MM format</value>
+  </data>
+  <data name="no_secondary" xml:space="preserve">
+    <value>An additional display has not appeared yet.</value>
+  </data>
+  <data name="persistent_state" xml:space="preserve">
+    <value>Save device state</value>
+  </data>
+  <data name="power_off" xml:space="preserve">
+    <value>Off</value>
+  </data>
+  <data name="power_on" xml:space="preserve">
+    <value>On</value>
+  </data>
+  <data name="power_on_action" xml:space="preserve">
+    <value>Power on</value>
+  </data>
+  <data name="power_unknown" xml:space="preserve">
+    <value>Power unknown</value>
+  </data>
+  <data name="profile_required" xml:space="preserve">
+    <value>Select firmware to edit these settings</value>
+  </data>
+  <data name="ready" xml:space="preserve">
+    <value>Ready</value>
+  </data>
+  <data name="reboot" xml:space="preserve">
+    <value>Reboot</value>
+  </data>
+  <data name="reboot_emulator" xml:space="preserve">
+    <value>Reboot</value>
+  </data>
+  <data name="refresh_network_time" xml:space="preserve">
+    <value>Refresh network time</value>
+  </data>
+  <data name="remove_notice" xml:space="preserve">
+    <value>Remove this entry from the library? The firmware file will be kept.</value>
+  </data>
+  <data name="restart_notice" xml:space="preserve">
+    <value>Device settings take effect after a restart. Language changes appear when settings close.</value>
+  </data>
+  <data name="restarting" xml:space="preserve">
+    <value>Restarting</value>
+  </data>
+  <data name="restore_failed" xml:space="preserve">
+    <value>Restore failed</value>
+  </data>
+  <data name="restore_save_failed" xml:space="preserve">
+    <value>Restored settings could not be saved</value>
+  </data>
+  <data name="retry" xml:space="preserve">
+    <value>Retry</value>
+  </data>
+  <data name="run_label" xml:space="preserve">
+    <value>Run</value>
+  </data>
+  <data name="save" xml:space="preserve">
+    <value>Save</value>
+  </data>
+  <data name="save_failed" xml:space="preserve">
+    <value>Save Failed</value>
+  </data>
+  <data name="screen_unavailable" xml:space="preserve">
+    <value>The phone display is graphical. Use the keypad controls below.</value>
+  </data>
+  <data name="secondary_preview" xml:space="preserve">
+    <value>Preview: colors and orientation unverified</value>
+  </data>
+  <data name="secondary_title" xml:space="preserve">
+    <value>Additional display (experimental)</value>
+  </data>
+  <data name="secondary_unknown" xml:space="preserve">
+    <value>Display purpose unknown</value>
+  </data>
+  <data name="set_time" xml:space="preserve">
+    <value>Set manually…</value>
+  </data>
+  <data name="settings" xml:space="preserve">
+    <value>Settings</value>
+  </data>
+  <data name="settings_error" xml:space="preserve">
+    <value>Settings Error</value>
+  </data>
+  <data name="settings_restored" xml:space="preserve">
+    <value>Settings failed; previous firmware restored</value>
+  </data>
+  <data name="settings_save_error" xml:space="preserve">
+    <value>Settings Save Error</value>
+  </data>
+  <data name="start" xml:space="preserve">
+    <value>Boot</value>
+  </data>
+  <data name="stop_emulator" xml:space="preserve">
+    <value>Power off</value>
+  </data>
+  <data name="stopped" xml:space="preserve">
+    <value>Stopped</value>
+  </data>
+  <data name="stopping" xml:space="preserve">
+    <value>Powering off…</value>
+  </data>
+  <data name="time" xml:space="preserve">
+    <value>Network time</value>
+  </data>
+  <data name="time_format" xml:space="preserve">
+    <value>YYYY-MM-DD HH:MM</value>
+  </data>
+  <data name="transport_status" xml:space="preserve">
+    <value>Display running</value>
+  </data>
+  <data name="ui_language" xml:space="preserve">
+    <value>Language</value>
+  </data>
+  <data name="unknown_label" xml:space="preserve">
+    <value>Unknown</value>
+  </data>
+  <data name="unknown_model" xml:space="preserve">
+    <value>Unknown model</value>
+  </data>
+  <data name="unverified" xml:space="preserve">
+    <value>unverified</value>
+  </data>
+  <data name="update_clean" xml:space="preserve">
+    <value>Update {revision} is available. Update now?</value>
+  </data>
+  <data name="update_downloading" xml:space="preserve">
+    <value>Downloading update</value>
+  </data>
+  <data name="update_failed" xml:space="preserve">
+    <value>Update failed</value>
+  </data>
+  <data name="update_modified" xml:space="preserve">
+    <value>Update {revision} is available. Discard your program changes and update? Firmware, logs, and saved state will be kept.</value>
+  </data>
+  <data name="update_prepare_failed" xml:space="preserve">
+    <value>Update preparation failed</value>
+  </data>
+  <data name="update_title" xml:space="preserve">
+    <value>Update</value>
+  </data>
+  <data name="validation_00" xml:space="preserve">
+    <value>Model name is empty</value>
+  </data>
+  <data name="validation_01" xml:space="preserve">
+    <value>Unsupported chipset</value>
+  </data>
+  <data name="validation_02" xml:space="preserve">
+    <value>Screen dimensions must be 32..1024</value>
+  </data>
+  <data name="validation_03" xml:space="preserve">
+    <value>Display buffer format must be none when disabled</value>
+  </data>
+  <data name="validation_04" xml:space="preserve">
+    <value>Select a display buffer pixel format</value>
+  </data>
+  <data name="validation_05" xml:space="preserve">
+    <value>Display buffer row size is smaller than one row</value>
+  </data>
+  <data name="validation_06" xml:space="preserve">
+    <value>Image offset is outside firmware</value>
+  </data>
+  <data name="validation_07" xml:space="preserve">
+    <value>Flash size is outside firmware range</value>
+  </data>
+  <data name="validation_08" xml:space="preserve">
+    <value>Flash range exceeds 32-bit address space</value>
+  </data>
+  <data name="validation_09" xml:space="preserve">
+    <value>Entry offset is outside flash</value>
+  </data>
+  <data name="validation_10" xml:space="preserve">
+    <value>RAM base and size must be positive</value>
+  </data>
+  <data name="validation_11" xml:space="preserve">
+    <value>RAM size limit: 128 MiB</value>
+  </data>
+  <data name="validation_12" xml:space="preserve">
+    <value>RAM range exceeds 32-bit address space</value>
+  </data>
+  <data name="validation_13" xml:space="preserve">
+    <value>Primary flash overlaps RAM</value>
+  </data>
+  <data name="validation_14" xml:space="preserve">
+    <value>Display buffer is outside RAM</value>
+  </data>
+  <data name="validation_15" xml:space="preserve">
+    <value>RAM image offset and size cannot be negative</value>
+  </data>
+  <data name="validation_16" xml:space="preserve">
+    <value>RAM image extends beyond the firmware</value>
+  </data>
+  <data name="validation_17" xml:space="preserve">
+    <value>RAM image exceeds RAM size</value>
+  </data>
+  <data name="validation_18" xml:space="preserve">
+    <value>Addresses and register values must be 0..0xFFFFFFFF</value>
+  </data>
+  <data name="validation_19" xml:space="preserve">
+    <value>REX tick interval must be 0–60000 ms</value>
+  </data>
+  <data name="validation_20" xml:space="preserve">
+    <value>Enter a flash state file path</value>
+  </data>
+  <data name="validation_21" xml:space="preserve">
+    <value>Secondary NOR size cannot be negative</value>
+  </data>
+  <data name="validation_22" xml:space="preserve">
+    <value>Check the secondary NOR address and size</value>
+  </data>
+  <data name="validation_23" xml:space="preserve">
+    <value>Secondary NOR overlaps primary flash</value>
+  </data>
+  <data name="validation_24" xml:space="preserve">
+    <value>Secondary NOR overlaps RAM</value>
+  </data>
+  <data name="validation_25" xml:space="preserve">
+    <value>Enter a secondary NOR state file path</value>
+  </data>
+  <data name="validation_26" xml:space="preserve">
+    <value>Secondary NOR image file not found</value>
+  </data>
+  <data name="validation_27" xml:space="preserve">
+    <value>Secondary NOR image exceeds the configured size</value>
+  </data>
+  <data name="validation_28" xml:space="preserve">
+    <value>NAND size and layout values must be positive</value>
+  </data>
+  <data name="validation_29" xml:space="preserve">
+    <value>NAND data size must be at most 128 MiB</value>
+  </data>
+  <data name="validation_30" xml:space="preserve">
+    <value>NAND page size must be 256–16384</value>
+  </data>
+  <data name="validation_31" xml:space="preserve">
+    <value>NAND spare size must be 1–4096</value>
+  </data>
+  <data name="validation_32" xml:space="preserve">
+    <value>NAND pages per block must be 1–4096</value>
+  </data>
+  <data name="validation_33" xml:space="preserve">
+    <value>NAND data size must be a multiple of page size</value>
+  </data>
+  <data name="validation_34" xml:space="preserve">
+    <value>NAND bus width must be 1 or 2 bytes</value>
+  </data>
+  <data name="validation_35" xml:space="preserve">
+    <value>NAND storage file must be at most 256 MiB</value>
+  </data>
+  <data name="validation_36" xml:space="preserve">
+    <value>NAND image not found</value>
+  </data>
+  <data name="validation_boolean" xml:space="preserve">
+    <value>must be true or false</value>
+  </data>
+  <data name="virtual_network" xml:space="preserve">
+    <value>Virtual network (calls unavailable)</value>
+  </data>
+  <data name="virtual_network_active" xml:space="preserve">
+    <value>Virtual network</value>
+  </data>
+  <data name="virtual_network_menu" xml:space="preserve">
+    <value>Virtual network</value>
+  </data>
+  <data name="virtual_network_unavailable" xml:space="preserve">
+    <value>Virtual network unavailable</value>
+  </data>
+  <data name="window_title" xml:space="preserve">
+    <value>MSM5XXX Emulator</value>
+  </data>
+  <data name="commands" xml:space="preserve">
+    <value>Commands</value>
+  </data>
+  <data name="app_icon" xml:space="preserve"><value>App icon</value></data>
+  <data name="icon_full" xml:space="preserve"><value>Full</value></data>
+  <data name="icon_simple" xml:space="preserve"><value>Simple (MSM5)</value></data>
+</root>

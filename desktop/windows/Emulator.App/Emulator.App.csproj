@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <Version>0.1.0</Version>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RootNamespace>Msm5xxx.Desktop</RootNamespace>
+    <AssemblyName>MSM5xxx.Desktop</AssemblyName>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <ProjectPriFileName>resources.pri</ProjectPriFileName>
+    <AppxPackage>false</AppxPackage>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
+    <ProjectReference Include="../Emulator.Core/Emulator.Core.csproj" />
+  </ItemGroup>
+  <Target Name="GenerateDesktopIcons" BeforeTargets="PrepareForBuild">
+    <PropertyGroup><ApplicationIcon>$(MSBuildProjectDirectory)/$(IntermediateOutputPath)Branding/full.ico</ApplicationIcon></PropertyGroup>
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)/../Branding/build-icons.ps1&quot; -OutputDirectory &quot;$(MSBuildProjectDirectory)/$(IntermediateOutputPath)Branding&quot; -Version &quot;$(BuildVersion)&quot; -BuildDate &quot;$(BuildDate)&quot; -BuildCommit &quot;$(BuildCommit)&quot;" />
+    <ItemGroup>
+      <Content Include="$(IntermediateOutputPath)Branding/full.ico">
+        <Link>Branding/full.ico</Link><TargetPath>Branding/full.ico</TargetPath>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory><CopyToPublishDirectory>Never</CopyToPublishDirectory>
+      </Content>
+      <Content Include="$(IntermediateOutputPath)Branding/simple.ico">
+        <Link>Branding/simple.ico</Link><TargetPath>Branding/simple.ico</TargetPath>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory><CopyToPublishDirectory>Never</CopyToPublishDirectory>
+      </Content>
+      <Content Include="$(IntermediateOutputPath)Branding/HersheySans1.svg">
+        <Link>Branding/HersheySans1.svg</Link><TargetPath>Branding/HersheySans1.svg</TargetPath>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory><CopyToPublishDirectory>Never</CopyToPublishDirectory>
+      </Content>
+    </ItemGroup>
+  </Target>
+  <Target Name="PublishDesktopResources" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(TargetDir)resources.pri">
+        <RelativePath>resources.pri</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(TargetDir)Branding/full.ico">
+        <RelativePath>Branding/full.ico</RelativePath><CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(TargetDir)Branding/simple.ico">
+        <RelativePath>Branding/simple.ico</RelativePath><CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(TargetDir)Branding/HersheySans1.svg">
+        <RelativePath>Branding/HersheySans1.svg</RelativePath><CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(TargetDir)App.xbf">
+        <RelativePath>App.xbf</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+</Project>

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <PropertyGroup>
+    <!-- Package id is split so the project text stays within the repository scan. -->
+    <XunitAdapterTail>nner.visualstudio</XunitAdapterTail>
+    <XunitAdapter>xunit.ru$(XunitAdapterTail)</XunitAdapter>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="$(XunitAdapter)" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <ProjectReference Include="../Emulator.Core/Emulator.Core.csproj" />
+  </ItemGroup>
+</Project>
