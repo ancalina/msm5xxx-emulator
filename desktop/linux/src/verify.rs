@@ -144,6 +144,23 @@ fn find(widget: &gtk::Widget, label: &str) -> Option<gtk::Widget> {
     }
     None
 }
+fn form_values(widget: &gtk::Widget, values: &mut Vec<Value>) {
+    let page = widget
+        .ancestor(adw::PreferencesPage::static_type())
+        .and_downcast::<adw::PreferencesPage>()
+        .and_then(|p| p.name())
+        .map(|s| s.to_string());
+    if let Some(row) = widget.downcast_ref::<adw::EntryRow>() {
+        values.push(json!({"kind":"entry","id":row.as_ptr() as usize,"title":row.title().to_string(),"text":row.text().to_string(),"page":page,"mapped":row.is_mapped()}));
+    } else if let Some(row) = widget.downcast_ref::<adw::ComboRow>() {
+        values.push(json!({"kind":"choice","id":row.as_ptr() as usize,"title":row.title().to_string(),"selected":row.selected(),"page":page,"mapped":row.is_mapped()}));
+    }
+    let mut child = widget.first_child();
+    while let Some(node) = child {
+        child = node.next_sibling();
+        form_values(&node, values);
+    }
+}
 async fn dispatch(app: &Rc<App>, request: &Value) -> Result<Value, String> {
     let target = request["target"].as_str().unwrap_or("library");
     match request["command"].as_str().unwrap_or("") {
@@ -223,6 +240,29 @@ async fn dispatch(app: &Rc<App>, request: &Value) -> Result<Value, String> {
             Ok(
                 json!({"icon":button.icon_name().map(|s|s.to_string()),"primary":button.is_primary(),"tooltip":button.tooltip_text().map(|s|s.to_string()),"open":button.popover().is_some_and(|p|p.is_mapped())}),
             )
+        }
+        "keypad-margins" => {
+            let emulator = app
+                .emulators
+                .borrow()
+                .values()
+                .find(|e| e.path.file_stem().is_some_and(|s| s == target))
+                .cloned()
+                .ok_or("No emulator")?;
+            let margin = request["value"]
+                .as_i64()
+                .filter(|n| (0..=64).contains(n))
+                .ok_or("margin")? as i32;
+            emulator.keypad.set_margin_start(margin);
+            emulator.keypad.set_margin_end(margin);
+            emulator.fit();
+            Ok(json!(emulator.inspect_layout()))
+        }
+        "form" => {
+            let window = window(app, target)?;
+            let mut values = Vec::new();
+            form_values(window.upcast_ref(), &mut values);
+            Ok(json!(values))
         }
         "resize" => {
             let window = window(app, target)?;
@@ -413,7 +453,7 @@ async fn dispatch(app: &Rc<App>, request: &Value) -> Result<Value, String> {
             Ok(json!(true))
         }
         "inspect" => {
-            let mut result = json!({"windows":[],"simple_icon":crate::icons::simple(),"icon_theme":gtk::Settings::default().and_then(|s|s.gtk_icon_theme_name().map(|s|s.to_string())),"decoration_layout":gtk::Settings::default().and_then(|s|s.gtk_decoration_layout().map(|s|s.to_string())),"font":gtk::Settings::default().map(|s|s.gtk_font_name().map(|s|s.to_string())),"dark":adw::StyleManager::default().is_dark(),"high_contrast":adw::StyleManager::default().is_high_contrast()});
+            let mut result = json!({"windows":[],"simple_icon":crate::icons::simple(),"language":app.text.borrow().language(),"language_state":app.language.state().and_then(|s|s.get::<(String,String)>()),"icon_theme":gtk::Settings::default().and_then(|s|s.gtk_icon_theme_name().map(|s|s.to_string())),"decoration_layout":gtk::Settings::default().and_then(|s|s.gtk_decoration_layout().map(|s|s.to_string())),"font":gtk::Settings::default().map(|s|s.gtk_font_name().map(|s|s.to_string())),"dark":adw::StyleManager::default().is_dark(),"high_contrast":adw::StyleManager::default().is_high_contrast()});
             result["windows"]=Value::Array(app.application.windows().iter().map(|w|json!({"icon_name":w.icon_name().map(|s|s.to_string()),"title":w.title().map(|s|s.to_string()),"visible":w.is_visible(),"active":w.is_active(),"width":w.width(),"height":w.height()})).collect());
             result["sessions"]=Value::Array(app.emulators.borrow().values().map(|e|json!({"path":e.path,"running":e.running.get(),"busy":e.busy.get(),"ready":e.ready.get(),"editing":e.editing.get(),"buttons":e.buttons.borrow().iter().map(|(bit,button)|json!({"bit":bit,"sensitive":button.is_sensitive()})).collect::<Vec<_>>(),"screen":e.screen.geometry(),"screen_area":[e.screen.width(),e.screen.height()],"keypad":[e.keypad.width(),e.keypad.height()],"secondary":e.secondary_seen.get(),"state":*e.state.borrow(),"started":*e.started.borrow(),"banner":e.banner.is_revealed(),"error":e.banner.title().to_string()})).collect());
             Ok(result)

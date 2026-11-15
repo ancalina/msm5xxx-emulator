@@ -95,7 +95,7 @@ GNU gettext uses `share/locale` in a bundle and the build output's locale direct
 development. English source strings and a Korean PO catalog are included. Language is
 selected through backend settings (automatic/Korean/English). Install the system
 `ko_KR.UTF-8` locale for Korean toolkit translations; reopen the app after changing
-it so every open window and the toolkit use the same language.
+it for toolkit-owned system dialogs; app windows and Settings labels update live without restarting firmware.
 
 ## Controls and behavior
 
@@ -111,8 +111,10 @@ it so every open window and the toolkit use the same language.
 - The title bar shows the model name only. Info contains chipset, actual LCD dimensions,
   network status, power and secondary-display details. There is no subtitle or extra status row.
 - The LCD refits to actual frame dimensions. Its opening width is the smallest integer
-  LCD scale that fits the keypad buttons at their natural width and the header minimum.
+  LCD scale that fits the keypad buttons plus their own margins and the header minimum.
+  The model title may ellipsize and never supplies its natural width to this calculation.
   Keypad columns 1–3 have exactly equal widths; column 0 fits its longest button label.
+  The keypad-only CSS keeps square, flat buttons; Done uses the spare column-0, row-8 cell.
   All keypad buttons have equal heights. Live counters shrink their monospace font
   to a 7-point floor instead of widening any column or window; the full value remains
   available in a tooltip if it exceeds that floor.
@@ -138,7 +140,10 @@ it so every open window and the toolkit use the same language.
   state persist per firmware in `linux-displays/` under the isolated state directory
   (or app configuration directory). X11 positioning accounts for native frame/shadow extents.
   Wayland sessions have no docking controls, side pane or positioning controller; the
-  secondary display remains a separate resizable window. Power off hides it.
+  secondary display remains a separate resizable window, with no transient parent on Wayland.
+  Its native window title displays Secondary Display and the power · W×H · note subtitle.
+  Native close-only utility controls follow the desktop's button placement.
+  Power off hides it.
 - General settings save when changed; apply a time entry with its Apply button. Hardware
   settings are grouped on the Hardware page; **Apply and Restart** validates all fields,
   disables editing while applying, preserves edits on failure, then restarts after success.
@@ -151,7 +156,8 @@ Ctrl+W close current window; Ctrl+Q close all windows and sessions.
 
 The LCD is firmware-rendered pixel content and has no semantic text tree. Its surrounding
 controls have native keyboard focus and AT-SPI names, roles and states. System font,
-contrast, color scheme and button arrangement are respected; the application supplies no CSS.
+contrast, color scheme and button arrangement are respected. The only application CSS is
+scoped to keypad buttons for the owner's square/flat-key exception.
 
 ## Development verification
 
@@ -179,11 +185,14 @@ read `response.json` before the next request. Example requests:
 {"command":"snapshot","target":"library","path":"/absolute/path/under/tmp/library.png"}
 {"command":"snapshot","target":"x350","path":"/absolute/path/under/tmp/phone.png"}
 {"command":"layout","target":"x350"}
+{"command":"keypad-margins","target":"x350","value":32}
 {"command":"main-menu","target":"x350","open":true}
 {"command":"snapshot","target":"x350","menu":true,"path":"/absolute/path/under/tmp/phone-menu.png"}
 {"command":"resize","target":"x350","width":200,"height":300}
 {"command":"counter","target":"x350","key":"run","value":"123,456,789,012"}
 {"command":"action","target":"x350","name":"win.settings"}
+{"command":"form","target":"x350"}
+{"command":"page","target":"x350","value":"hardware"}
 {"command":"theme","dark":true}
 {"command":"quit"}
 ```

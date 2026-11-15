@@ -18,6 +18,9 @@ mod pad {
         const NAME: &'static str = "MsmKeypad";
         type Type = super::Keypad;
         type ParentType = gtk::Widget;
+        fn class_init(class: &mut Self::Class) {
+            class.set_css_name("phone-keypad");
+        }
     }
     impl ObjectImpl for Keypad {
         fn dispose(&self) {
@@ -27,7 +30,7 @@ mod pad {
         }
     }
     impl Keypad {
-        fn dimensions(&self) -> ([i32; 4], i32, i32) {
+        pub(super) fn dimensions(&self) -> ([i32; 4], i32, i32) {
             let mut widths = [0; 4];
             let (mut height, mut rows) = (0, 0);
             for cell in self.cells.borrow().iter() {
@@ -97,6 +100,13 @@ impl Keypad {
             .property("margin-bottom", 8)
             .property("valign", gtk::Align::End)
             .build()
+    }
+    pub fn content_width(&self) -> i32 {
+        self.imp().dimensions().0.iter().sum::<i32>() + 12
+    }
+    // shortcut: container styling is margin-only; include CSS padding here if container padding is introduced.
+    pub fn opening_width(&self) -> i32 {
+        self.content_width() + self.margin_start() + self.margin_end()
     }
     pub fn attach(&self, widget: &impl IsA<gtk::Widget>, column: i32, row: i32, _: i32, rows: i32) {
         widget.set_parent(self);

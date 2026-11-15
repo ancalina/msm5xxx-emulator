@@ -13,7 +13,12 @@ mod widgets;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+};
 
 pub const APP_ID: &str = "io.github.ancalina.MSM5xxx";
 pub struct App {
@@ -22,6 +27,8 @@ pub struct App {
     pub library: RefCell<Option<Rc<library::Library>>>,
     pub emulators: RefCell<HashMap<PathBuf, Rc<emulator::Emulator>>>,
     pub text: RefCell<i18n::Text>,
+    pub language: gio::SimpleAction,
+    language_generation: Cell<u64>,
 }
 impl App {
     pub fn open(self: &Rc<Self>, path: PathBuf) {
@@ -38,6 +45,41 @@ impl App {
         if let Some(library) = self.library.borrow().as_ref() {
             library.refresh();
         }
+    }
+    pub async fn refresh_language(
+        self: &Rc<Self>,
+        backend: &backend::Backend,
+    ) -> Result<(), String> {
+        let generation = self.language_generation.get().wrapping_add(1);
+        self.language_generation.set(generation);
+        let values = backend.call("settings.get", serde_json::json!({})).await?;
+        let layout = backend.call("ui.layout", serde_json::json!({})).await?;
+        if generation != self.language_generation.get() {
+            return Ok(());
+        }
+        let requested = values["ui_language"]
+            .as_str()
+            .filter(|s| ["auto", "en", "ko"].contains(s))
+            .ok_or("Invalid UI language preference")?;
+        let language = layout["language"]
+            .as_str()
+            .filter(|s| ["en", "ko"].contains(s))
+            .ok_or("Invalid UI language")?;
+        let text = self.text.borrow().clone();
+        text.set_language(language);
+        text.activate();
+        let library = self.library.borrow().clone();
+        if let Some(library) = library {
+            library.set_language(text.clone());
+        }
+        let emulators: Vec<_> = self.emulators.borrow().values().cloned().collect();
+        for emulator in emulators {
+            if let Err(error) = emulator.reload_language(&text, &layout) {
+                emulator.error(&error);
+            }
+        }
+        self.language.set_state(&(requested, language).to_variant());
+        Ok(())
     }
     pub fn quit(&self) {
         let sessions: Vec<_> = self.emulators.borrow().values().cloned().collect();
@@ -94,6 +136,9 @@ fn main() -> glib::ExitCode {
             settings.connect_gtk_decoration_layout_notify(hide_title_icon);
         }
         if let Some(display) = gtk::gdk::Display::default() {
+            let css = gtk::CssProvider::new();
+            css.load_from_string("phone-keypad button { border-radius: 0; background-image: none; box-shadow: none; }");
+            gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
             gtk::IconTheme::for_display(&display)
                 .add_resource_path("/io/github/ancalina/MSM5xxx/icons");
         }
@@ -105,6 +150,12 @@ fn main() -> glib::ExitCode {
         library: RefCell::new(None),
         emulators: RefCell::new(HashMap::new()),
         text: RefCell::new(i18n::Text::new("en")),
+        language: gio::SimpleAction::new_stateful(
+            "ui-language",
+            None,
+            &("auto", "en").to_variant(),
+        ),
+        language_generation: Cell::new(0),
     });
     application.connect_activate(glib::clone!(
         #[weak]

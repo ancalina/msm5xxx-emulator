@@ -12,7 +12,7 @@ pub struct Library {
     pub window: adw::ApplicationWindow,
     pub backend: Rc<Backend>,
     pub text: RefCell<Text>,
-    app: Weak<App>,
+    pub(crate) app: Weak<App>,
     banner: adw::Banner,
     stack: gtk::Stack,
     model: gio::ListStore,
@@ -69,6 +69,17 @@ impl Library {
                         text.activate();
                         this.text.replace(text.clone());
                         if let Some(app) = this.app.upgrade() {
+                            let values = this.backend.call("settings.get", json!({})).await;
+                            match values {
+                                Ok(values) => app.language.set_state(
+                                    &(
+                                        values["ui_language"].as_str().unwrap_or("auto"),
+                                        text.language(),
+                                    )
+                                        .to_variant(),
+                                ),
+                                Err(error) => this.error(&error),
+                            }
                             app.text.replace(text);
                         }
                         this.build();
@@ -298,6 +309,15 @@ impl Library {
         view.add_top_bar(&header);
         view.set_content(Some(&box_));
         self.window.set_content(Some(&view));
+    }
+    pub fn set_language(self: &Rc<Self>, text: Text) {
+        if self.closing.get() {
+            return;
+        }
+        self.text.borrow().set_language(&text.language());
+        self.text.replace(text);
+        self.build();
+        self.refresh();
     }
     pub fn error(&self, message: &str) {
         self.banner.set_title(&self.text.borrow().tr(message));

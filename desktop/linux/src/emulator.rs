@@ -21,7 +21,7 @@ pub struct Emulator {
     pub backend: Rc<Backend>,
     pub text: RefCell<Text>,
     pub path: PathBuf,
-    app: Weak<App>,
+    pub(crate) app: Weak<App>,
     pub screen: Display,
     pub keypad: crate::keypad::Keypad,
     header: adw::HeaderBar,
@@ -37,7 +37,9 @@ pub struct Emulator {
     fold: gtk::Button,
     pub secondary: adw::Window,
     secondary_screen: Display,
-    secondary_heading: gtk::Label,
+    secondary_heading: adw::WindowTitle,
+    secondary_state: Cell<(Option<bool>, bool)>,
+    menu: gtk::MenuButton,
     secondary_header: adw::HeaderBar,
     pub buttons: RefCell<HashMap<i64, gtk::Button>>,
     metrics: RefCell<HashMap<String, crate::keypad::Counter>>,
@@ -76,6 +78,9 @@ impl Emulator {
             "display_backend":gtk::prelude::WidgetExt::display(&self.window).type_().name().to_string(),
             "title":self.title.title().to_string(), "subtitle":self.title.subtitle().to_string(),
             "font_dpi":self.window.settings().gtk_xft_dpi() as f64 / 1024.,
+            "keypad_content_width":self.keypad.content_width(),"keypad_opening_width":self.keypad.opening_width(),"keypad_margins":[self.keypad.margin_start(),self.keypad.margin_end()],
+            "secondary_title":self.secondary_heading.title().to_string(),"secondary_subtitle":self.secondary_heading.subtitle().to_string(),"secondary_transient":self.secondary.transient_for().is_some(),
+            "done": {"visible":self.done.is_visible(),"bounds":self.done.compute_bounds(&self.window).map(|r|[r.x(),r.y(),r.width(),r.height()]),"classes":self.done.css_classes().iter().map(|s|s.to_string()).collect::<Vec<_>>()},
             "keypad_natural":self.keypad.measure(gtk::Orientation::Horizontal,-1).1,
             "power":{"icon":self.power.icon_name().map(|s|s.to_string()),"tooltip":self.power.tooltip_text().map(|s|s.to_string()),"classes":self.power.css_classes().iter().map(|s|s.to_string()).collect::<Vec<_>>(),"sensitive":self.power.is_sensitive()},
             "fold":self.fold.label().map(|s|s.to_string()),
@@ -110,10 +115,11 @@ impl Emulator {
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         let power = widgets::icon_button("system-shutdown-symbolic", &text.tr("Power on"));
         header.pack_start(&power);
+        let menu = widgets::menu(&gio::Menu::new(), &text);
+        header.pack_end(&menu);
         let done = gtk::Button::builder()
             .label(text.tr("Done"))
             .visible(false)
-            .css_classes(["suggested-action"])
             .build();
         let screen = Display::new(&text.tr("Phone Screen"));
         screen.set_focusable(true);
@@ -130,21 +136,38 @@ impl Emulator {
         window.set_content(Some(&view));
         let secondary = adw::Window::builder()
             .application(&app.application)
-            .transient_for(&window)
             .hide_on_close(true)
             .resizable(true)
             .title(text.tr("Secondary Display"))
             .build();
         secondary.set_size_request(-1, -1);
-        let secondary_heading = gtk::Label::builder()
-            .label(text.tr("Secondary Display"))
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(16)
-            .css_classes(["heading"])
-            .build();
+        let secondary_heading = adw::WindowTitle::new(&text.tr("Secondary Display"), "");
         let secondary_header = adw::HeaderBar::builder()
             .title_widget(&secondary_heading)
             .build();
+        // Retain utility-window controls without making the display transient.
+        let controls = glib::clone!(
+            #[weak]
+            secondary_header,
+            move |settings: &gtk::Settings| {
+                let layout = settings.gtk_decoration_layout().unwrap_or_default();
+                let layout = layout
+                    .split(':')
+                    .map(|side| {
+                        side.split(',')
+                            .filter(|button| button.trim() == "close")
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(":");
+                secondary_header.set_decoration_layout(Some(&layout));
+            }
+        );
+        controls(&secondary.settings());
+        secondary
+            .settings()
+            .connect_gtk_decoration_layout_notify(controls);
         let secondary_screen = Display::new(&text.tr("Secondary Display"));
         secondary_screen.set_scale(3);
         secondary_screen.set_flexible(true);
@@ -178,6 +201,8 @@ impl Emulator {
             secondary,
             secondary_screen,
             secondary_heading,
+            secondary_state: Cell::new((None, false)),
+            menu,
             secondary_header,
             buttons: RefCell::new(HashMap::new()),
             metrics: RefCell::new(HashMap::new()),
@@ -350,9 +375,7 @@ impl Emulator {
             .await?;
         self.start().await
     }
-    fn build_menu(self: &Rc<Self>) {
-        let text = self.text.borrow().clone();
-        self.done.set_label(&text.tr("Done"));
+    fn menu_model(text: &Text) -> gio::Menu {
         let model = gio::Menu::new();
         let session = gio::Menu::new();
         for (label, key) in [
@@ -381,7 +404,12 @@ impl Emulator {
         tools.append(Some(&text.tr("Edit Key Layout")), Some("win.edit-keys"));
         tools.append(Some(&text.tr("Settings…")), Some("win.settings"));
         model.append_section(None, &tools);
-        self.header.pack_end(&widgets::menu(&model, &text));
+        model
+    }
+    fn build_menu(self: &Rc<Self>) {
+        let text = self.text.borrow().clone();
+        self.done.set_label(&text.tr("Done"));
+        self.menu.set_menu_model(Some(&Self::menu_model(&text)));
         widgets::action(
             &self.window,
             "reboot",
@@ -561,10 +589,10 @@ impl Emulator {
             self.buttons.borrow_mut().insert(bit, button);
         }
         self.keypad.attach(&self.fold, 0, 3, 1, 1);
-        self.keypad.attach(&self.done, 2, 0, 1, 1);
+        self.keypad.attach(&self.done, 0, 8, 1, 1);
         let stats = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(2)
+            .spacing(1)
             .valign(gtk::Align::Start)
             .margin_top(4)
             .build();
@@ -584,7 +612,7 @@ impl Emulator {
             stats.append(&value);
             self.metrics.borrow_mut().insert(key.into(), value);
         }
-        self.keypad.attach(&stats, 0, 4, 1, 5);
+        self.keypad.attach(&stats, 0, 4, 1, 4);
         self.update_controls();
     }
     pub fn fit(&self) {
@@ -593,8 +621,7 @@ impl Emulator {
         // header's minimum (the model title ellipsizes), never the header's natural width.
         let natural = self
             .keypad
-            .measure(gtk::Orientation::Horizontal, -1)
-            .0
+            .opening_width()
             .max(self.header.measure(gtk::Orientation::Horizontal, -1).0);
         let old = self.opening.get();
         let changed = self.opening_geometry.replace((w, h)) != (w, h);
@@ -665,6 +692,83 @@ impl Emulator {
 
         self.error(message);
         self.update_controls();
+    }
+    fn update_secondary_title(&self) {
+        let text = self.text.borrow();
+        let (enabled, preview) = self.secondary_state.get();
+        let power = text.tr(if !self.running.get() {
+            "Off"
+        } else {
+            match enabled {
+                Some(true) => "On",
+                Some(false) => "Off",
+                None => "Power Unknown",
+            }
+        });
+        let note = text.tr(if preview {
+            "Preview: colors and orientation unverified"
+        } else {
+            "Display purpose unknown"
+        });
+        let (w, h) = self.secondary_screen.geometry();
+        let status = format!("{power} · {w}×{h} · {note}");
+        self.secondary_heading
+            .set_title(&text.tr("Secondary Display"));
+        self.secondary_heading.set_subtitle(&status);
+        self.secondary
+            .set_title(Some(&text.tr("Secondary Display")));
+        self.secondary_screen.set_tooltip_text(Some(&status));
+    }
+    pub fn reload_language(self: &Rc<Self>, text: &Text, layout: &Value) -> Result<(), String> {
+        if self.closing.get() {
+            return Ok(());
+        }
+        self.release_all();
+        self.text.borrow().set_language(&text.language());
+        let text = self.text.borrow().clone();
+        self.menu.set_menu_model(Some(&Self::menu_model(&text)));
+        let label = text.tr("Main Menu");
+        self.menu.set_tooltip_text(Some(&label));
+        widgets::name(&self.menu, &label);
+        self.done.set_label(&text.tr("Done"));
+        widgets::name(&self.screen, &text.tr("Phone Screen"));
+        widgets::name(&self.secondary_screen, &text.tr("Secondary Display"));
+        for key in layout["keys"].as_array().ok_or("Invalid keypad layout")? {
+            if let Some(button) = key["bit"]
+                .as_i64()
+                .and_then(|bit| self.buttons.borrow().get(&bit).cloned())
+            {
+                button.set_label(key["text"].as_str().unwrap_or(""));
+                let name = key["accessible_name"].as_str().unwrap_or("");
+                widgets::name(&button, name);
+                button.set_tooltip_text(Some(name));
+            }
+        }
+        for metric in layout["metrics"]
+            .as_array()
+            .ok_or("Invalid keypad metrics")?
+        {
+            if let Some(value) = metric["key"]
+                .as_str()
+                .and_then(|key| self.metrics.borrow().get(key).cloned())
+            {
+                if let Some(name) = value.prev_sibling().and_downcast::<gtk::Label>() {
+                    name.set_label(metric["title"].as_str().unwrap_or(""));
+                }
+                let description = metric["description"].as_str().unwrap_or("");
+                value.set_tooltip_text(Some(description));
+                widgets::name(
+                    value.label(),
+                    &format!("{}: {description}", metric["title"].as_str().unwrap_or("")),
+                );
+            }
+        }
+        let state = self.state.borrow().clone();
+        self.show_state(&state);
+        self.update_secondary_title();
+        self.update_controls();
+        self.fit();
+        Ok(())
     }
     pub fn refresh_settings(self: &Rc<Self>) {
         if self.closing.get() || self.settings_busy.replace(true) {
@@ -785,6 +889,7 @@ impl Emulator {
         self.running.set(false);
         self.screen.clear();
         self.secondary.set_visible(false);
+        self.update_secondary_title();
         self.secondary_available.set(false);
         self.fold.set_sensitive(false);
 
@@ -890,12 +995,15 @@ impl Emulator {
         let available = secondary.is_object();
         self.secondary_available.replace(available);
         if available {
+            self.secondary_state
+                .set((secondary["enabled"].as_bool(), secondary["preview"] == true));
             if secondary["rgb"].is_string() {
                 match self.secondary_screen.frame(secondary) {
                     Ok(changed) => {
                         self.secondary_seq
                             .set(secondary["seq"].as_i64().unwrap_or(-1));
                         let (w, h) = self.secondary_screen.geometry();
+                        self.update_secondary_title();
                         self.secondary_screen.set_size_request(w, h);
                         if changed || !self.secondary_seen.get() {
                             self.secondary.set_default_size(
@@ -911,24 +1019,7 @@ impl Emulator {
                     Err(e) => self.error(&e),
                 }
             }
-            let text = self.text.borrow();
-            let (w, h) = self.secondary_screen.geometry();
-            let power = text.tr(match secondary["enabled"].as_bool() {
-                Some(true) => "On",
-                Some(false) => "Off",
-                None => "Power Unknown",
-            });
-            let note = text.tr(if secondary["preview"] == true {
-                "Preview: colors and orientation unverified"
-            } else {
-                "Display purpose unknown"
-            });
-            self.secondary_heading
-                .set_label(&text.tr("Secondary Display"));
-            self.secondary
-                .set_title(Some(&text.tr("Secondary Display")));
-            self.secondary_screen
-                .set_tooltip_text(Some(&format!("{power} · {w}×{h} · {note}")));
+            self.update_secondary_title();
             if self.secondary_screen.texture().is_some() && !self.secondary_seen.replace(true) {
                 self.secondary.present();
             }
