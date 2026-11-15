@@ -190,7 +190,6 @@
 "Older iOS settings notice" = "변경 사항이 저장됩니다. 호환되는 화면 변경은 적용 후 다시 시작할 수 있으며, 다른 변경은 앱을 다시 열면 적용됩니다.";
 "Older iOS failure notice" = "다른 세션을 시작하기 전에 앱을 다시 열어야 할 수 있습니다.";
 "Settings saved while stopped" = "변경 사항은 다음 세션에 저장됩니다.";
-
 "App icon" = "앱 아이콘";
 "Full chip marking" = "전체 칩 마킹";
 "Simple (MSM5)" = "간단히 (MSM5)";

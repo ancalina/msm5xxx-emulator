@@ -37,6 +37,12 @@ def hershey_font() -> Path:
         if candidate.is_file():
             return candidate
     raise FileNotFoundError("Inkscape HersheySans1.svg not found; set INKSCAPE_HERSHEY_FONT")
+
+
+try:
+    HERSHEY = hershey_font()
+except FileNotFoundError:
+    HERSHEY = Path("/usr/share/inkscape/extensions/svg_fonts/HersheySans1.svg")
 DEFS = ('<defs><linearGradient id="pkg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46494d"/>'
         '<stop offset="1" stop-color="#2c2e31"/></linearGradient><filter id="grain"><feTurbulence type="fractalNoise" '
         'baseFrequency="1.6" numOctaves="2" seed="3"/><feColorMatrix values="0 0 0 0 0.6  0 0 0 0 0.6  0 0 0 0 0.62  '
