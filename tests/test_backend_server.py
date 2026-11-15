@@ -62,6 +62,24 @@ class BackendServerTests(unittest.TestCase):
                              env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
         self.assertEqual(out.stdout.strip(), "False", out.stderr)
 
+    def test_keys_refresh_after_mapping_is_added_and_cleared(self):
+        from types import SimpleNamespace
+        from msm5xxx_emulator.backend import server
+        from msm5xxx_emulator.backend.session import Session
+
+        backend = server.Backend(Path("/nonexistent/qemu"))
+        backend.session = Session(backend.qemu, Path("firmware.bin"))
+        backend.session.config = SimpleNamespace(firmware_sha256="a" * 64)
+        backend.session.transport = SimpleNamespace(can_set_key=lambda bit: bit == 1)
+        self.assertEqual(backend.session_keys(), [1])
+        backend.session_set_key_mapping(2, "0x2A")
+        self.assertEqual(backend.session_keys(), [1, 2])
+        backend.session_set_key_mapping(2, "")
+        self.assertEqual(backend.session_keys(), [1])
+        backend.session.transport = None
+        self.assertEqual(backend.session_keys(), [])
+        self.assertEqual(server.METHODS["session.keys"], "session_keys")
+
 
 if __name__ == "__main__":
     unittest.main()

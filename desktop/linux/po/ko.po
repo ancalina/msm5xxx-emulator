@@ -1,0 +1,319 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: MSM5xxx Desktop 0.1\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ko\n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"PO-Revision-Date: 2026-11-14 12:00+0900\n"
+"Last-Translator: MSM5xxx Contributors\n"
+
+msgid "Add Firmware to Your Library"
+msgstr "라이브러리에 펌웨어를 추가하세요"
+
+msgid "Add Folder…"
+msgstr "폴더 추가…"
+
+msgid "All Files"
+msgstr "모든 파일"
+
+msgid "Apply"
+msgstr "적용"
+
+msgid "Apply and Restart"
+msgstr "적용 후 재시작"
+
+msgid "Automatic (System)"
+msgstr "자동 (시스템)"
+
+msgid "Power on"
+msgstr "전원 켜기"
+
+msgid "Boot Settings"
+msgstr "부팅 설정"
+
+msgid "Cancel"
+msgstr "취소"
+
+msgid "Capture…"
+msgstr "화면 캡처…"
+
+msgid "Changes take effect the next time a phone boots."
+msgstr "다음에 휴대전화를 부팅할 때 변경 사항이 적용됩니다."
+
+msgid "Checking Firmware…"
+msgstr "펌웨어 확인 중…"
+
+msgid "Chipset"
+msgstr "칩셋"
+
+msgid "Choose Firmware"
+msgstr "펌웨어 선택"
+
+msgid "Choose a file on this computer."
+msgstr "이 컴퓨터의 파일을 선택하세요."
+
+msgid "Close"
+msgstr "닫기"
+
+msgid "Close lid"
+msgstr "폴더 닫기"
+
+msgid "Display purpose unknown"
+msgstr "화면 용도 알 수 없음"
+
+msgid "Done"
+msgstr "완료"
+
+msgid "Edit Key Layout"
+msgstr "키 배치 편집"
+
+msgid "Emulator Stopped"
+msgstr "에뮬레이터 중지됨"
+
+msgid "English"
+msgstr "영어"
+
+msgid "Enter a valid time in YYYY-MM-DD HH:MM format"
+msgstr "YYYY-MM-DD HH:MM 형식의 올바른 시간을 입력하세요"
+
+msgid "Enter the firmware event byte. Leave empty to clear the mapping."
+msgstr "펌웨어 이벤트 바이트를 입력하세요. 비워 두면 키 매핑을 해제합니다."
+
+msgid "Event Byte"
+msgstr "이벤트 바이트"
+
+msgid "Experimental Static REX Controller"
+msgstr "실험적 정적 REX 컨트롤러"
+
+msgid "File could not be opened"
+msgstr "파일을 열 수 없습니다"
+
+msgid "Files stay on your computer."
+msgstr "원본 파일은 컴퓨터에 그대로 남습니다."
+
+msgid "Firmware Images"
+msgstr "펌웨어 이미지"
+
+msgid "Firmware Library"
+msgstr "펌웨어 라이브러리"
+
+msgid "Folder"
+msgstr "폴더"
+
+msgid "General"
+msgstr "일반"
+
+msgid "Import File"
+msgstr "파일 가져오기"
+
+msgid "Import a firmware image to start emulating a phone."
+msgstr "펌웨어 이미지를 가져와 휴대전화 에뮬레이션을 시작하세요."
+
+msgid "Info"
+msgstr "정보"
+
+msgid "Korean"
+msgstr "한국어"
+
+msgid "Language"
+msgstr "언어"
+
+msgid "Language Changed"
+msgstr "언어 변경됨"
+
+msgid "Last booted"
+msgstr "마지막 실행"
+
+msgid "Last screen"
+msgstr "마지막 화면"
+
+msgid "Main Menu"
+msgstr "주 메뉴"
+
+msgid "Model"
+msgstr "모델"
+
+msgid "Network Start Time"
+msgstr "네트워크 시작 시간"
+
+msgid "Network Start Time (Blank = Off)"
+msgstr "네트워크 시작 시간 (빈 값 = 끄기)"
+
+msgid "Network Time"
+msgstr "네트워크 시간"
+
+msgid "Never booted"
+msgstr "실행한 적 없음"
+
+msgid "No folders have been added."
+msgstr "추가한 폴더가 없습니다."
+
+msgid "Off"
+msgstr "꺼짐"
+
+msgid "On"
+msgstr "켜짐"
+
+msgid "Open"
+msgstr "열기"
+
+msgid "Open lid"
+msgstr "폴더 열기"
+
+msgid "Path"
+msgstr "경로"
+
+msgid "Phone Screen"
+msgstr "휴대전화 화면"
+
+msgid "Power off"
+msgstr "전원 끄기"
+
+msgid "Power Unknown"
+msgstr "전원 상태 알 수 없음"
+
+msgid "Powering Off…"
+msgstr "전원 끄는 중…"
+
+msgid "Preview: colors and orientation unverified"
+msgstr "미리 보기: 색상과 방향 미검증"
+
+msgid "Reboot"
+msgstr "재부팅"
+
+msgid "Refresh"
+msgstr "새로 고침"
+
+msgid "Remove"
+msgstr "제거"
+
+msgid "Remove Folder"
+msgstr "폴더 제거"
+
+msgid "Remove Folder…"
+msgstr "폴더 제거…"
+
+msgid "Remove from Library"
+msgstr "라이브러리에서 제거"
+
+msgid "Remove from Library?"
+msgstr "라이브러리에서 제거할까요?"
+
+msgid "Reopen the app to use the new language in all windows."
+msgstr "모든 창에 새 언어를 적용하려면 앱을 다시 여세요."
+
+msgid "Save Capture"
+msgstr "화면 캡처 저장"
+
+msgid "Save Device State"
+msgstr "장치 상태 저장"
+
+msgid "Secondary Display"
+msgstr "보조 화면"
+
+msgid "Set Network Time"
+msgstr "네트워크 시간 설정"
+
+msgid "Set Time…"
+msgstr "시간 설정…"
+
+msgid "Settings"
+msgstr "설정"
+
+msgid "Settings Error"
+msgstr "설정 오류"
+
+msgid "Settings…"
+msgstr "설정…"
+
+msgid "Size"
+msgstr "크기"
+
+msgid "The emulator stopped. Power on to try again."
+msgstr "에뮬레이터가 중지되었습니다. 전원을 켜서 다시 시도하세요."
+
+msgid "The firmware file stays on your computer. You can import it again."
+msgstr "펌웨어 파일은 컴퓨터에 그대로 남습니다. 다시 가져올 수 있습니다."
+
+msgid "This firmware has no lid control"
+msgstr "이 펌웨어에는 덮개 제어가 없습니다"
+
+msgid "Toggle the phone lid"
+msgstr "휴대전화 덮개 열기 또는 닫기"
+
+msgid "Unavailable"
+msgstr "사용 불가"
+
+msgid "Use Computer Clock"
+msgstr "컴퓨터 시계 사용"
+
+msgid "Use Computer Clock for Network Time"
+msgstr "네트워크 시간에 컴퓨터 시계 사용"
+
+msgid "Virtual Network"
+msgstr "가상 통신망"
+
+msgid "Virtual Network (Calls Unavailable)"
+msgstr "가상 통신망 (통화 불가)"
+
+msgid "Virtual Network Unavailable"
+msgstr "가상 통신망 사용 불가"
+
+msgid "YYYY-MM-DD HH:MM"
+msgstr "YYYY-MM-DD HH:MM"
+
+msgid "bytes"
+msgstr "바이트"
+
+msgid "Hardware"
+msgstr "하드웨어"
+
+msgid "Backend connection closed"
+msgstr "백엔드 연결이 닫혔습니다"
+
+msgid "Backend process exited"
+msgstr "백엔드 프로세스가 종료되었습니다"
+
+msgid "Backend response ID mismatch"
+msgstr "백엔드 응답 식별자가 일치하지 않습니다"
+
+msgid "Invalid display dimensions"
+msgstr "화면 크기가 올바르지 않습니다"
+
+msgid "Invalid display frame length"
+msgstr "화면 프레임 길이가 올바르지 않습니다"
+
+msgid "Unsupported backend protocol"
+msgstr "지원하지 않는 백엔드 프로토콜입니다"
+
+msgid "Backend error"
+msgstr "백엔드 오류"
+
+msgid "Applying Settings…"
+msgstr "설정 적용 중…"
+
+msgid "App Icon"
+msgstr "앱 아이콘"
+
+msgid "Full"
+msgstr "전체"
+
+msgid "Simple (MSM5)"
+msgstr "간단히 (MSM5)"
+
+msgid "Could not save appearance settings"
+msgstr "모양 설정을 저장할 수 없습니다"
+
+msgid "Backend did not exit within 10 seconds"
+msgstr "백엔드가 10초 안에 종료되지 않았습니다"
+
+msgid "Power"
+msgstr "전원"
+
+msgid "Display"
+msgstr "화면"
+
+msgid "Could not save display placement"
+msgstr "화면 배치를 저장할 수 없습니다"

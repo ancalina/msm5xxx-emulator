@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=MSM5xxx Emulator
+Name[ko]=MSM5xxx 에뮬레이터
+Comment=Explore and preserve feature-phone firmware
+Comment[ko]=피처폰 펌웨어 실행 및 보존
+Exec=msm5xxx-desktop %F
+Icon=io.github.ancalina.MSM5xxx
+Terminal=false
+Categories=Game;Emulator;GTK;
+StartupNotify=true
+Keywords=phone;firmware;QEMU;preservation;
+Keywords[ko]=휴대전화;펌웨어;QEMU;보존;

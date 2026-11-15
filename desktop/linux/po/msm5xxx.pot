@@ -1,0 +1,319 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: MSM5xxx Desktop 0.1\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"PO-Revision-Date: 2026-11-14 12:00+0900\n"
+"Last-Translator: MSM5xxx Contributors\n"
+
+msgid "Add Firmware to Your Library"
+msgstr ""
+
+msgid "Add Folder…"
+msgstr ""
+
+msgid "All Files"
+msgstr ""
+
+msgid "Apply"
+msgstr ""
+
+msgid "Apply and Restart"
+msgstr ""
+
+msgid "Automatic (System)"
+msgstr ""
+
+msgid "Power on"
+msgstr ""
+
+msgid "Boot Settings"
+msgstr ""
+
+msgid "Cancel"
+msgstr ""
+
+msgid "Capture…"
+msgstr ""
+
+msgid "Changes take effect the next time a phone boots."
+msgstr ""
+
+msgid "Checking Firmware…"
+msgstr ""
+
+msgid "Chipset"
+msgstr ""
+
+msgid "Choose Firmware"
+msgstr ""
+
+msgid "Choose a file on this computer."
+msgstr ""
+
+msgid "Close"
+msgstr ""
+
+msgid "Close lid"
+msgstr ""
+
+msgid "Display purpose unknown"
+msgstr ""
+
+msgid "Done"
+msgstr ""
+
+msgid "Edit Key Layout"
+msgstr ""
+
+msgid "Emulator Stopped"
+msgstr ""
+
+msgid "English"
+msgstr ""
+
+msgid "Enter a valid time in YYYY-MM-DD HH:MM format"
+msgstr ""
+
+msgid "Enter the firmware event byte. Leave empty to clear the mapping."
+msgstr ""
+
+msgid "Event Byte"
+msgstr ""
+
+msgid "Experimental Static REX Controller"
+msgstr ""
+
+msgid "File could not be opened"
+msgstr ""
+
+msgid "Files stay on your computer."
+msgstr ""
+
+msgid "Firmware Images"
+msgstr ""
+
+msgid "Firmware Library"
+msgstr ""
+
+msgid "Folder"
+msgstr ""
+
+msgid "General"
+msgstr ""
+
+msgid "Import File"
+msgstr ""
+
+msgid "Import a firmware image to start emulating a phone."
+msgstr ""
+
+msgid "Info"
+msgstr ""
+
+msgid "Korean"
+msgstr ""
+
+msgid "Language"
+msgstr ""
+
+msgid "Language Changed"
+msgstr ""
+
+msgid "Last booted"
+msgstr ""
+
+msgid "Last screen"
+msgstr ""
+
+msgid "Main Menu"
+msgstr ""
+
+msgid "Model"
+msgstr ""
+
+msgid "Network Start Time"
+msgstr ""
+
+msgid "Network Start Time (Blank = Off)"
+msgstr ""
+
+msgid "Network Time"
+msgstr ""
+
+msgid "Never booted"
+msgstr ""
+
+msgid "No folders have been added."
+msgstr ""
+
+msgid "Off"
+msgstr ""
+
+msgid "On"
+msgstr ""
+
+msgid "Open"
+msgstr ""
+
+msgid "Open lid"
+msgstr ""
+
+msgid "Path"
+msgstr ""
+
+msgid "Phone Screen"
+msgstr ""
+
+msgid "Power off"
+msgstr ""
+
+msgid "Power Unknown"
+msgstr ""
+
+msgid "Powering Off…"
+msgstr ""
+
+msgid "Preview: colors and orientation unverified"
+msgstr ""
+
+msgid "Reboot"
+msgstr ""
+
+msgid "Refresh"
+msgstr ""
+
+msgid "Remove"
+msgstr ""
+
+msgid "Remove Folder"
+msgstr ""
+
+msgid "Remove Folder…"
+msgstr ""
+
+msgid "Remove from Library"
+msgstr ""
+
+msgid "Remove from Library?"
+msgstr ""
+
+msgid "Reopen the app to use the new language in all windows."
+msgstr ""
+
+msgid "Save Capture"
+msgstr ""
+
+msgid "Save Device State"
+msgstr ""
+
+msgid "Secondary Display"
+msgstr ""
+
+msgid "Set Network Time"
+msgstr ""
+
+msgid "Set Time…"
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "Settings Error"
+msgstr ""
+
+msgid "Settings…"
+msgstr ""
+
+msgid "Size"
+msgstr ""
+
+msgid "The emulator stopped. Power on to try again."
+msgstr ""
+
+msgid "The firmware file stays on your computer. You can import it again."
+msgstr ""
+
+msgid "This firmware has no lid control"
+msgstr ""
+
+msgid "Toggle the phone lid"
+msgstr ""
+
+msgid "Unavailable"
+msgstr ""
+
+msgid "Use Computer Clock"
+msgstr ""
+
+msgid "Use Computer Clock for Network Time"
+msgstr ""
+
+msgid "Virtual Network"
+msgstr ""
+
+msgid "Virtual Network (Calls Unavailable)"
+msgstr ""
+
+msgid "Virtual Network Unavailable"
+msgstr ""
+
+msgid "YYYY-MM-DD HH:MM"
+msgstr ""
+
+msgid "bytes"
+msgstr ""
+
+msgid "Hardware"
+msgstr ""
+
+msgid "Backend connection closed"
+msgstr ""
+
+msgid "Backend process exited"
+msgstr ""
+
+msgid "Backend response ID mismatch"
+msgstr ""
+
+msgid "Invalid display dimensions"
+msgstr ""
+
+msgid "Invalid display frame length"
+msgstr ""
+
+msgid "Unsupported backend protocol"
+msgstr ""
+
+msgid "Backend error"
+msgstr ""
+
+msgid "Applying Settings…"
+msgstr ""
+
+msgid "App Icon"
+msgstr ""
+
+msgid "Full"
+msgstr ""
+
+msgid "Simple (MSM5)"
+msgstr ""
+
+msgid "Could not save appearance settings"
+msgstr ""
+
+msgid "Backend did not exit within 10 seconds"
+msgstr ""
+
+msgid "Power"
+msgstr ""
+
+msgid "Display"
+msgstr ""
+
+msgid "Could not save display placement"
+msgstr ""

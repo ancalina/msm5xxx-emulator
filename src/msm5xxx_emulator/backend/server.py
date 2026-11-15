@@ -180,6 +180,11 @@ class Backend:
     def session_key(self, bit: int, pressed: bool) -> bool:
         return self._session().set_key(int(bit), bool(pressed))
 
+    def session_keys(self) -> list[int]:
+        """Refresh key availability after a mapping changes, without rebooting."""
+        session = self._session()
+        return [bit for bit in KEYS.values() if session.key_available(bit)]
+
     def session_fold(self) -> None:
         error = self._session().toggle_fold()
         if error:

@@ -45,6 +45,7 @@ one for the library window.
 | `session.frame` | `since=-1, secondary_since=-1` | `{running, seq, [width, height, rgb], [secondary:{seq, enabled, preview, [width, height, rgb]}]}`; `rgb` is base64 of `width*height*3` bytes (R, G, B rows, top-down), present only when `seq` differs from `since`. Poll at 30 Hz |
 | `session.state` | – | `{running, chipset, width, height, fold, virtual_cell, metrics:{run, pc, lcd, frame}, input_error}`; `fold`: `null` (no lid), `true` open, `false` closed. Poll at 10 Hz |
 | `session.key` | `bit, pressed` | `bool` (accepted). Hold each press at least `key_hold_ms` before releasing |
+| `session.keys` | – | `[bit]`; currently available keys, including manual mappings. Refresh after changing or clearing a mapping; no restart needed |
 | `session.fold` | – | `null`; toggles the lid |
 | `session.network_time` | – | `null`; re-sends network time after a time setting change |
 | `session.settings` | – | `{sections:[{title, fields:[{name, label, value, choices}]}]}`; `choices` is `null` for free text |
