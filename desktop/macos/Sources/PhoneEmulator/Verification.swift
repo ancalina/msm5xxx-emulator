@@ -98,6 +98,10 @@ var desktopDebugArguments: [String] {
         if desktopDebugArguments.contains("--verify") { await interactiveDesktop(output) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil); window.displayIfNeeded(); await pause(0.6)
+        if LibraryModel.shared.windows.values.contains(where: { $0.secondaryWindow === window }) {
+            try require(window.subtitle.contains(L("secondary_preview")) || window.subtitle.contains(L("secondary_unknown")), "Secondary window subtitle is missing its display note")
+            log("PASS secondary subtitle note \(name): \(window.subtitle)", output)
+        }
         guard let view = window.contentView?.superview,
               let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw BackendError(message: "No snapshot view: " + name) }
         view.cacheDisplay(in: view.bounds, to: bitmap)

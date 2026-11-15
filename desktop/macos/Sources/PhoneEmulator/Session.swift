@@ -115,9 +115,9 @@ private struct KeyPressReceipt: Sendable { let acceptedAt: TimeInterval }
                     if !sub.isNull {
                         if let frame = pair.1 { self.secondary.frame = frame; self.secondarySequence = sub["seq"].int }
                         let enabled = sub["enabled"].isNull ? L("power_unknown") : L(sub["enabled"].bool ? "power_on" : "power_off")
-                        let note = sub["preview"].bool ? L("secondary_preview") : ""
+                        let note = sub["preview"].bool ? L("secondary_preview") : L("secondary_unknown")
                         if let frame = self.secondary.frame {
-                            self.secondaryStatus = "\(enabled) · \(frame.width)×\(frame.height)" + (note.isEmpty ? "" : " · \(note)")
+                            self.secondaryStatus = "\(enabled) · \(frame.width)×\(frame.height) · \(note)"
                             if !self.secondarySeen { self.secondarySeen = true; self.onSecondary?() }
                         }
                     }
