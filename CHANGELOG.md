@@ -2,11 +2,9 @@
 
 ## 0.1.1
 
-- Firmware detection is faster. Detection results are unchanged.
-- Adding firmware to the library is much faster: library rows need only the
-  model and chipset; full detection runs when the firmware is launched.
-- Library rows appear as each file is identified, and listed firmware can be
-  launched while the rest of the library is still being scanned.
+- Faster firmware detection.
+- Faster library adds: full detection now runs when firmware is launched.
+- Desktop reuses detection results when the same firmware is launched again.
 
 ## 0.1.0
 

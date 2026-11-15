@@ -162,9 +162,68 @@ def can_apply_live_framebuffer_format(edited: set[str], firmware_changed: bool,
             and framebuffer_format != "none")
 
 
+_detect_memo: dict = {}
+_detector_fingerprint_value: str | None = None
+
+
+def _detector_fingerprint() -> str:
+    """Hash of the installed detector source; an update changes it and forces re-detection."""
+    global _detector_fingerprint_value
+    if _detector_fingerprint_value is None:
+        import hashlib
+        import msm5xxx_emulator
+        root = Path(msm5xxx_emulator.__file__).parent
+        digest = hashlib.sha256()
+        for path in sorted(root.rglob("*.py")):
+            digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+        _detector_fingerprint_value = digest.hexdigest()
+    return _detector_fingerprint_value
+
+
+def detect_cached(firmware: Path):
+    """Baseline detect() reused per firmware content and detector version (memory, then the state folder).
+
+    Same rule as the mobile runtimes' detect_cached."""
+    import copy
+    import hashlib
+    import os
+    import pickle
+    if detect is not boot_plan.detect:  # a substituted detector (tests) must not fill the shared cache
+        return detect(firmware)
+    firmware = Path(firmware)
+    try:
+        content = firmware.read_bytes()
+    except OSError:
+        return detect(firmware)  # let the detector report the unreadable input
+    key = (_detector_fingerprint(), hashlib.sha256(content).hexdigest())
+    config = _detect_memo.get(key)
+    if config is None:
+        cache = DEFAULT_STATE_ROOT / "detect-cache" / (key[1] + ".pickle")
+        try:
+            stored_key, config = pickle.loads(cache.read_bytes())  # file written below in the user's state folder
+            if stored_key != key:
+                config = None
+        except Exception:
+            config = None
+        if config is None:
+            config = detect(firmware)
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                temporary = cache.with_name(cache.name + ".tmp")
+                temporary.write_bytes(pickle.dumps((key, config)))
+                os.replace(temporary, cache)
+            except Exception:
+                pass  # unwritable location or unpicklable config: memory cache only
+        _detect_memo[key] = config
+    config = copy.deepcopy(config)  # callers (Transport) append notes to their config
+    if hasattr(config, "path"):
+        config.path = type(config.path)(firmware) if config.path is not None else firmware
+    return config
+
+
 def detect_profile(firmware: Path, profile: dict[str, object]) -> tuple[object, dict[str, object]]:
     """Detect once for normal startup while migrating legacy saved auto values."""
-    baseline = detect(firmware)
+    baseline = detect_cached(firmware)
     overrides = {
         key: value for key, value in profile.items()
         if key != "model" and hasattr(baseline, key)
