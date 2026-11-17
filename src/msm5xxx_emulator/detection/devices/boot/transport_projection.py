@@ -1,6 +1,8 @@
 """Source-qualified machine properties owned by this device domain."""
 from __future__ import annotations
 from msm5xxx_emulator.detection.facts import facts_for
+from msm5xxx_emulator.detection.values import CodeAddress
+from .rules import DELAY_SIGNATURE
 import struct
 
 PAUSE_TIMER_ADDRESS = 0x04800020
@@ -53,6 +55,9 @@ def qemu_pause_timer_profile(image: bytes, config: object, immutable_limit: int 
         if bytes(candidate) == template:
             starts.append(start)
     if not starts:
+        delay = _delay_store_pause_timer(image, load, limit)
+        if delay[0] is not None:
+            return delay
         reason = None
         if literal_match:
             reason = "fixed-helper-shape-mismatch"
@@ -60,7 +65,8 @@ def qemu_pause_timer_profile(image: bytes, config: object, immutable_limit: int 
             reason = "pause-register-literal-mismatch"
         elif anchored:
             reason = "fixed-helper-outside-immutable-nor"
-        return None, reason
+        return None, delay[1] or reason
+
     if len(starts) != 1:
         return None, "fixed-helper-ambiguous"
     start = starts[0]
@@ -77,6 +83,54 @@ def qemu_pause_timer_profile(image: bytes, config: object, immutable_limit: int 
                 )
         pool = image.find(literal, pool + 1, limit)
     return None, "100ms-caller-not-found"
+
+def _delay_store_pause_timer(image: bytes, load: int, limit: int,) -> tuple[str | None, str | None]:
+    """Admit a unique millisecond delay that stores counts to the pause timer."""
+    hits = []
+    cursor = 0
+    while True:
+        start = image.find(DELAY_SIGNATURE, cursor, limit)
+        if start < 0:
+            break
+        if not start & 1:
+            hits.append(start)
+        cursor = start + 1
+        if len(hits) > 1:
+            break
+    if len(hits) != 1:
+        return None, None
+    start = hits[0]
+    facts = facts_for(image)
+    loads = []
+    stores = 0
+    pc = start
+    end = None
+    while pc + 2 <= start + 0x100 and pc + 2 <= limit:
+        ins = facts.decode(CodeAddress(pc, 'thumb'))
+        if ins is None:
+            break
+        for register in range(8):
+            if facts.thumb_literal_value(pc, register) == PAUSE_TIMER_ADDRESS:
+                loads.append(register)
+        word = struct.unpack_from("<H", image, pc)[0]
+        if word & 0xF800 == 0x8000 and (word >> 3 & 7) in loads:
+            stores += 1
+        nxt = pc + ins.size
+        if ins.mnemonic == 'pop' and nxt + 2 <= limit:
+            follow = facts.decode(CodeAddress(nxt, 'thumb'))
+            if follow is not None and follow.mnemonic == 'bx':
+                end = nxt + follow.size
+                break
+        pc = nxt
+    if not loads or not stores or end is None:
+        return None, "delay-pause-store-unclosed"
+    callers = 0
+    for site in range(0, limit - 5, 2):
+        if image[site:site + 2] == b"\x32\x20" and facts.thumb_call_target(site + 2) == start:
+            callers += 1
+    if not callers:
+        return None, "delay-pause-50ms-caller-not-found"
+    return (f"{PAUSE_TIMER_ADDRESS:x}:{312_500:x}:{load + start:x}:{load + end:x}", None)
 
 def legacy_dmd_loader_patch(image: bytes, config: object, immutable_limit: int | None = None) -> tuple[int, bytes] | None:
     """Return the existing legacy DMD completion contract as Thumb code."""

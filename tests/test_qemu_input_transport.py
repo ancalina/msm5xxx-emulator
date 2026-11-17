@@ -3199,6 +3199,41 @@ class QEMUInputTransportTests(unittest.TestCase):
             (None, "fixed-helper-ambiguous"),
         )
 
+    def test_pause_timer_profile_admits_delay_store_helper(self) -> None:
+        from msm5xxx_emulator.detection.devices.boot.rules import DELAY_SIGNATURE
+        from msm5xxx_emulator.detection.devices.boot.transport_projection import PAUSE_TIMER_ADDRESS
+
+        def thumb_bl(source: int, target: int) -> bytes:
+            displacement = (target - source - 4) & 0x7FFFFF
+            return MODULE.struct.pack(
+                "<2H",
+                0xF000 | displacement >> 12 & 0x7FF,
+                0xF800 | displacement >> 1 & 0x7FF,
+            )
+
+        image = bytearray(b"\xff" * 0x400)
+        start, pool, caller = 0x200, 0x2C0, 0x100
+        image[start:start + len(DELAY_SIGNATURE)] = DELAY_SIGNATURE
+        store = start + len(DELAY_SIGNATURE)
+        bias = (store + 4) & ~3
+        imm = (pool - bias) // 4
+        MODULE.struct.pack_into("<H", image, store, 0x4F00 | imm)
+        MODULE.struct.pack_into("<H", image, store + 2, 0x803C)
+        MODULE.struct.pack_into("<2H", image, store + 4, 0xBCF0, 0x4770)
+        MODULE.struct.pack_into("<I", image, pool, PAUSE_TIMER_ADDRESS)
+        MODULE.struct.pack_into("<H", image, caller, 0x2032)
+        image[caller + 2:caller + 6] = thumb_bl(caller + 2, start)
+        config = SimpleNamespace(load_address=0, flash_size=len(image))
+        end = store + 8
+        self.assertEqual(
+            MODULE.qemu_pause_timer_profile(bytes(image), config),
+            (f"4800020:4c4b4:{start:x}:{end:x}", None),
+        )
+        image[caller] = 0
+        self.assertEqual(
+            MODULE.qemu_pause_timer_profile(bytes(image), config),
+            (None, "delay-pause-50ms-caller-not-found"),
+        )
 
     def test_c80_route_requires_explicit_closed_candidate(self) -> None:
         status = 0x03000C80
