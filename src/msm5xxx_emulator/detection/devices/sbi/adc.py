@@ -31,6 +31,13 @@ BOARD_ADC_READER_EXTENDED_BL_OFFSETS = (0x04, 0x0C, 0x12, 0x4E, 0x52, 0x56, 0x68
 BOARD_ADC_READER_EXTENDED_FIXED = ((0, BOARD_ADC_READER_PREFIX), (8, BOARD_ADC_READER_ANCHOR), (0x10, bytes.fromhex("2a20")), (0x16, bytes.fromhex("2248802201781143017001789f2319400170022f02d10178202208e0"
     "032f02d10178602203e0002f03d10178402211430170071c01780a20")), (0x5A, bytes.fromhex("3878802398430106090e38700a20")), (0x70, bytes.fromhex("80210c20")), (0x7C,
     bytes.fromhex("0b20")), (0x86, bytes.fromhex("0748808907063f0e002c01d1")), (0x96, bytes.fromhex("381c90bc08bc1847")),)
+# Callers pass SBI mux bits 0x20/0x40/0x60 instead of channel numbers 0/2/3.
+BOARD_ADC_READER_SELECTOR_SIZE = 0x94
+BOARD_ADC_READER_SELECTOR_BL_OFFSETS = (0x04, 0x0C, 0x12, 0x4C, 0x50, 0x54, 0x64, 0x68, 0x6E, 0x72, 0x82)
+BOARD_ADC_READER_SELECTOR_FIXED = ((0, BOARD_ADC_READER_PREFIX), (8, BOARD_ADC_READER_ANCHOR), (0x10, bytes.fromhex("2a20")), (0x16, bytes.fromhex(
+    "1d48802301781943017001789f2319400170402f02d10178394308e0202f02d10178394303e0"
+    "602f02d10178394301700178071c0a20")), (0x58, BOARD_ADC_READER_MID_BODY), (0x6C, bytes.fromhex("0b20")), (0x76, bytes.fromhex("0648808907063f0e002c01d1")),
+    (0x86, bytes.fromhex("381c90bd")),)
 BOARD_ADC_READER_FIXED = ((0, BOARD_ADC_READER_PREFIX), (8, BOARD_ADC_READER_ANCHOR), (0x10, bytes.fromhex("2a20")), (0x16, BOARD_ADC_READER_BODY), (0x5E,
     BOARD_ADC_READER_MID_BODY), (0x72, bytes.fromhex("0b20")), (0x7C, BOARD_ADC_READER_TAIL), (0x8C, bytes.fromhex("381c90bd")),)
 DC0_BOARD_ADC_SCALE_PREFIX = bytes.fromhex("88b569461520")
@@ -58,6 +65,9 @@ def board_adc_reader_read_offset_at(image: bytes, position: int) -> int | None:
     if (position + BOARD_ADC_READER_EXTENDED_SIZE <= len(image) and not any(image[position + offset:position + offset + len(expected)] != expected for offset,
         expected in BOARD_ADC_READER_EXTENDED_FIXED) and struct.unpack_from("<I", image, position + 0xA4)[0] == BOARD_ADC_READER_LITERAL):
         return 0x88
+    if (position + BOARD_ADC_READER_SELECTOR_SIZE <= len(image) and not any(image[position + offset:position + offset + len(expected)] != expected for offset,
+        expected in BOARD_ADC_READER_SELECTOR_FIXED) and struct.unpack_from("<I", image, position + 0x90)[0] == BOARD_ADC_READER_LITERAL):
+        return 0x76
     return None
 
 def _reader_targets_in_image(image: bytes, position: int, offsets: tuple[int, ...]) -> bool:
@@ -66,7 +76,8 @@ def _reader_targets_in_image(image: bytes, position: int, offsets: tuple[int, ..
 def board_adc_reader_at(image: bytes, position: int) -> bool:
     """Validate one shared ADC reader without matching unrelated MMIO users."""
     offset = board_adc_reader_read_offset_at(image, position)
-    offsets = { 0x7E: BOARD_ADC_READER_BL_OFFSETS, 0x7C: BOARD_ADC_READER_VARIANT_BL_OFFSETS, 0x88: BOARD_ADC_READER_EXTENDED_BL_OFFSETS, }.get(offset)
+    offsets = { 0x7E: BOARD_ADC_READER_BL_OFFSETS, 0x7C: BOARD_ADC_READER_VARIANT_BL_OFFSETS, 0x88: BOARD_ADC_READER_EXTENDED_BL_OFFSETS,
+        0x76: BOARD_ADC_READER_SELECTOR_BL_OFFSETS, }.get(offset)
     return (offsets is not None and _reader_targets_in_image(image, position, offsets))
 
 def find_board_adc_reader(image: bytes) -> int | None:

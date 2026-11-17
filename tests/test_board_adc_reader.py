@@ -13,7 +13,7 @@ from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_DATA_AD
 from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_READ_OFFSET)
 from msm5xxx_emulator.detection.registry import device_domain
 detect = boot_plan.detect
-from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_EXTENDED_FIXED, BOARD_ADC_READER_EXTENDED_SIZE, BOARD_ADC_READER_LITERAL, BOARD_ADC_READER_REORDERED_FIXED, BOARD_ADC_READER_VARIANT_SIZE, board_adc_reader_read_offset_at, find_dc0_board_adc_profile)
+from msm5xxx_emulator.detection.devices.sbi.adc import (BOARD_ADC_READER_EXTENDED_FIXED, BOARD_ADC_READER_EXTENDED_SIZE, BOARD_ADC_READER_LITERAL, BOARD_ADC_READER_REORDERED_FIXED, BOARD_ADC_READER_SELECTOR_BL_OFFSETS, BOARD_ADC_READER_SELECTOR_FIXED, BOARD_ADC_READER_SELECTOR_SIZE, BOARD_ADC_READER_VARIANT_SIZE, board_adc_reader_at, board_adc_reader_read_offset_at, find_dc0_board_adc_profile)
 from corpus import FIRMWARE_ROOT
 
 
@@ -111,6 +111,23 @@ class BoardADCReaderTests(unittest.TestCase):
         self.assertEqual(board_adc_reader_read_offset_at(image, 0), 0x88)
         image[0x70] = 0
         self.assertIsNone(board_adc_reader_read_offset_at(image, 0))
+
+    def test_selector_bit_reader_grammar_is_exact(self) -> None:
+        image = bytearray(0x200)
+        for offset, expected in BOARD_ADC_READER_SELECTOR_FIXED:
+            image[offset:offset + len(expected)] = expected
+        struct.pack_into("<I", image, 0x90, BOARD_ADC_READER_LITERAL)
+        self.assertEqual(board_adc_reader_read_offset_at(image, 0), 0x76)
+        image[0x28] = 0
+        self.assertIsNone(board_adc_reader_read_offset_at(image, 0))
+        image[0x28] = 0x40
+        helper = 0x100
+        image[helper:helper + 2] = b"\x70\x47"
+        for site in BOARD_ADC_READER_SELECTOR_BL_OFFSETS:
+            delta = helper - (site + 4)
+            struct.pack_into("<HH", image, site, 0xF000 | (delta >> 12 & 0x7FF), 0xF800 | (delta >> 1 & 0x7FF))
+        self.assertTrue(board_adc_reader_at(image, 0))
+        self.assertEqual(find_board_adc_reader(image), 0)
 
     def test_shared_reader_requires_complete_unique_grammar(self) -> None:
         if not FIRMWARE_ROOT.is_dir():
