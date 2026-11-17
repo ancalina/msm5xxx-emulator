@@ -1320,6 +1320,19 @@ class PageProtocolMixin:
             self._lcd_window_raw8_separate_reset(replay=True)
         return True
 
+    def _lcd_window_raw8_note_mode(self, address: int, size: int,
+                                   value: int) -> None:
+        """Latch command 7's 0x0D/0x2D colour and scan argument."""
+        pending = self._lcd_window_raw8_mode_pending
+        if pending:
+            self._lcd_window_raw8_mode_pending = False
+            if address == 0x02000000 and size == 1 and value in (0x0D, 0x2D):
+                self._lcd_window_raw8_rgb332 = True
+                self._lcd_window_raw8_column_major = value == 0x2D
+                return
+        if address == 0x02000000 and size == 1 and value == 0x07:
+            self._lcd_window_raw8_mode_pending = True
+
     def _lcd_window_raw8_reset(self, *, replay: bool) -> None:
         """Drop one incomplete byte-window candidate without losing traffic."""
         header = tuple(self._lcd_window_raw8_header)
@@ -1337,13 +1350,14 @@ class PageProtocolMixin:
             )
 
     def _lcd_window_raw8_publish(self) -> None:
-        """Render one area-closed raw8 window as an encoding-neutral preview."""
+        """Render one area-closed raw8 window as RGB332 or a gray preview."""
         window = self._lcd_window_raw8_window
         if window is None:
             return
         rgb332 = bool(
-            self._lcd_window_raw8_header
-            and self._lcd_window_raw8_header[0][2] == 0x21
+            self._lcd_window_raw8_rgb332
+            or (self._lcd_window_raw8_header
+                and self._lcd_window_raw8_header[0][2] == 0x21)
         )
         x0, y0, x1, y1 = window
         payload = bytes(self._lcd_window_raw8_payload)
@@ -1356,22 +1370,22 @@ class PageProtocolMixin:
                 return
             self._lcd_window_raw8_qualified = True
         width = x1 - x0 + 1
-        cursor = 0
-        for y in range(y0, y1 + 1):
-            row = payload[cursor:cursor + width]
-            cursor += width
-            raw = y * 128 + x0
-            self._lcd_window_raw8_ram[raw:raw + width] = row
-            if rgb332:
-                for index, packed in enumerate(row):
-                    self._lcd_028_rgb332_pixel(raw + index, packed)
+        height = y1 - y0 + 1
+        column_major = self._lcd_window_raw8_column_major
+        for index, packed in enumerate(payload):
+            if column_major:
+                x = x0 + index // height
+                y = y0 + index % height
             else:
-                rgb = bytearray(width * 3)
-                rgb[0::3] = row
-                rgb[1::3] = row
-                rgb[2::3] = row
+                x = x0 + index % width
+                y = y0 + index // width
+            raw = y * 128 + x
+            self._lcd_window_raw8_ram[raw] = packed
+            if rgb332:
+                self._lcd_028_rgb332_pixel(raw, packed)
+            else:
                 offset = raw * 3
-                self.framebuffer[offset:offset + len(rgb)] = rgb
+                self.framebuffer[offset:offset + 3] = bytes((packed,)) * 3
         self._lcd_window_raw8_header.clear()
         self._lcd_window_raw8_payload.clear()
         self._lcd_window_raw8_window = None

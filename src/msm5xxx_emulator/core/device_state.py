@@ -733,6 +733,10 @@ class DeviceStateMixin:
         self._lcd_028_rgb332_qualified = False
         self._lcd_028_rgb332_mode_pending = 0
         self._lcd_028_rgb332_column_major = False
+        # 0xBC P1 bit 2 walks 16-bit 0x028 windows down Y first. P3=2 stores
+        # RGB444 in the high 12 bits; P3=4 uses the low 12 bits.
+        self._lcd_direct_column_major = False
+        self._lcd_direct_rgb444_shift: int | None = None
         self._lcd_028_window_fifo_qualified = False
         # Some byte-wide controllers send complete 128-pixel RGB565 rows as
         # 0/base-command/+2-high/+2-low packets.  Hold only this exact
@@ -745,14 +749,17 @@ class DeviceStateMixin:
         self._lcd_byte_raster_stage = ""
         self._lcd_byte_raster_row = 0
         self._lcd_byte_raster_pixels = bytearray()
-        # One byte-wide controller sends 31,y0,y1,21,x0,x1 at 0x02000000
-        # and one raw byte per coordinate at +2.  Physical colour encoding
-        # remains unknown, so the qualified framebuffer is a gray preview.
+        # One byte-wide controller sends 31,x0,x1,21,y0,y1 at 0x02000000
+        # and one raw byte per coordinate at +2. Command 7 with 0x0D/0x2D
+        # selects RGB332; 0x2D walks the window column-major.
         self._lcd_window_raw8_header: list[tuple[int, int, int]] = []
         self._lcd_window_raw8_payload = bytearray()
         self._lcd_window_raw8_window: tuple[int, int, int, int] | None = None
         self._lcd_window_raw8_qualified = False
         self._lcd_window_raw8_ram = bytearray(128 * 128)
+        self._lcd_window_raw8_mode_pending = False
+        self._lcd_window_raw8_rgb332 = False
+        self._lcd_window_raw8_column_major = False
         self._lcd_window_raw8_separate_events: list[tuple[int, int, int]] = []
         self._lcd_window_raw8_separate_stage = ""
         self._lcd_window_raw8_separate_axis: list[int] = []

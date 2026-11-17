@@ -932,6 +932,17 @@ class DisplayControllerMixin:
                 )
                 self._lcd_args.clear()
             return
+        if (self._lcd_command == 0xBC and address == 0x02800004 and size == 2
+                and len(self._lcd_args) < 3):
+            self._lcd_args.append(value & 0xFF)
+            if len(self._lcd_args) == 1:
+                self._lcd_direct_column_major = bool(self._lcd_args[0] & 4)
+            elif len(self._lcd_args) == 3:
+                packed = self._lcd_args[2]
+                self._lcd_direct_rgb444_shift = (
+                    4 if packed == 2 else 0 if packed == 4 else None
+                )
+            return
         self._capture_raw_lcd_stream(address, size, value)
 
     def _lcd_feed_parallel_data(self, address: int, size: int, value: int) -> None:
@@ -1353,6 +1364,7 @@ class DisplayControllerMixin:
             return
         if self._lcd_split_port_write(address, size, value):
             return
+        self._lcd_window_raw8_note_mode(address, size, value)
         if self._lcd_window_raw8_separate_write(address, size, value):
             return
         if self._lcd_window_raw8_write(address, size, value):

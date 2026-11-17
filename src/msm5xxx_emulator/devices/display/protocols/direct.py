@@ -554,7 +554,9 @@ class DirectProtocolMixin:
                                  or all(len({word >> shift & 0xF
                                              for word in payload}) == 16
                                         for shift in (4, 8, 12))))
-        if not rgb444_signature:
+        # P3=4 already streamed 0x0RGB through the 16-bit window; a 0xRGB0
+        # overwrite would drop the low nibble the command selected.
+        if not rgb444_signature or self._lcd_direct_rgb444_shift == 0:
             probe.clear()
             self._lcd_028_rgb444_qualified = False
             self._lcd_byte_rgb565_interrupt(address, size)
@@ -692,10 +694,20 @@ class DirectProtocolMixin:
                     and address == 0x02000002):
                 self._lcd_028_rgb332_pixel(index, value)
             else:
-                self._pixel(index, value)
-        column += 1
-        if column >= self._lcd_direct_window[0]:
-            column, row = 0, row + 1
+                packed = value
+                shift = self._lcd_direct_rgb444_shift
+                if (shift is not None and self._lcd_command == 0x5C
+                        and size == 2):
+                    packed = self._lcd_bgr444_rgb565((value >> shift) & 0xFFF)
+                self._pixel(index, packed)
+        if self._lcd_direct_column_major:
+            row += 1
+            if row >= self._lcd_direct_window[1]:
+                row, column = 0, column + 1
+        else:
+            column += 1
+            if column >= self._lcd_direct_window[0]:
+                column, row = 0, row + 1
         self._lcd_direct_cursor = [column, row]
         self._lcd_streamed += 1
         if self._lcd_streamed >= self._lcd_expected:

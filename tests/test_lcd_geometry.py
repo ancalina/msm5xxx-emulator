@@ -338,6 +338,9 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_window_raw8_window = None
         emulator._lcd_window_raw8_qualified = False
         emulator._lcd_window_raw8_ram = bytearray(128 * 128)
+        emulator._lcd_window_raw8_mode_pending = False
+        emulator._lcd_window_raw8_rgb332 = False
+        emulator._lcd_window_raw8_column_major = False
         emulator._lcd_window_raw8_separate_events = []
         emulator._lcd_window_raw8_separate_stage = ""
         emulator._lcd_window_raw8_separate_axis = []
@@ -382,6 +385,8 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_028_rgb332_qualified = False
         emulator._lcd_028_rgb332_mode_pending = 0
         emulator._lcd_028_rgb332_column_major = False
+        emulator._lcd_direct_column_major = False
+        emulator._lcd_direct_rgb444_shift = None
         emulator._lcd_028_window_fifo_qualified = False
         emulator._lg_pixels = []
         emulator._lcd_lgfa_window_order = []
@@ -1322,6 +1327,58 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertTrue(emulator._lcd_028_rgb444_qualified)
         self.assertEqual(emulator._lcd_028_direct_probe, [])
 
+    def test_028_bc_selects_rgb444_nibble_and_column_major(self) -> None:
+        emulator = self._routing_emulator(width=120, height=160)
+        emulator.config.display_geometry_source = "runtime:direct-window"
+
+        def write(command: bool, value: int) -> None:
+            address = 0x02800000 if command else 0x02800004
+            emulator._lcd_write(None, 0, address, 2, value, None)
+
+        def window(x0: int, x1: int, y0: int, y1: int) -> None:
+            write(True, 0x75)
+            write(False, y0)
+            write(False, y1)
+            write(True, 0x15)
+            write(False, x0)
+            write(False, x1)
+            write(True, 0x5C)
+
+        write(True, 0xBC)
+        write(False, 2)
+        write(False, 1)
+        write(False, 2)
+        window(0, 1, 0, 0)
+        write(False, 0xF000)
+        write(False, 0x00F0)
+        self.assertEqual(emulator.display_frame[:6], bytes((255, 0, 0, 0, 0, 255)))
+
+        write(True, 0xBC)
+        write(False, 2)
+        write(False, 1)
+        write(False, 4)
+        window(0, 1, 1, 1)
+        write(False, 0x0F00)
+        write(False, 0x000F)
+        row = 120 * 3
+        self.assertEqual(emulator.display_frame[row:row + 6],
+                         bytes((255, 0, 0, 0, 0, 255)))
+
+        write(True, 0xBC)
+        write(False, 6)
+        write(False, 1)
+        write(False, 4)
+        window(2, 3, 4, 6)
+        for value in (0x0F00, 0x00F0, 0x0FF0, 0x000F, 0x0F0F, 0x00FF):
+            write(False, value)
+        rgb = ((255, 0, 0), (0, 255, 0), (255, 255, 0),
+               (0, 0, 255), (255, 0, 255), (0, 255, 255))
+        actual = tuple(
+            tuple(emulator.display_frame[(y * 120 + x) * 3:(y * 120 + x) * 3 + 3])
+            for x in range(2, 4) for y in range(4, 7)
+        )
+        self.assertEqual(actual, rgb)
+
     def test_028_be_word_packets_require_initializer_and_stream_22(self) -> None:
         def packet(target: QemuDecoder, command: int, data: int) -> None:
             for address, value in (
@@ -2108,6 +2165,44 @@ class LCDGeometryTests(unittest.TestCase):
             (0x02000000, 1, 0x31), (0x02000000, 1, 0),
             (0x02000000, 1, 127), (0x02000000, 1, 0x20),
         ])
+
+    def test_window_raw8_command7_selects_rgb332_and_scan(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+
+        def write(address: int, value: int) -> None:
+            emulator._lcd_write(None, 0, address, 1, value, None)
+
+        write(0x02000000, 0x07)
+        write(0x02000000, 0x2D)
+        for value in (0x31, 0, 127, 0x21, 0, 127):
+            write(0x02000000, value)
+        payload = bytearray(128 * 128)
+        payload[0], payload[1], payload[128] = 0xE0, 0x1C, 0x03
+        for packed in payload:
+            write(0x02000002, packed)
+        self.assertEqual((emulator.config.width, emulator.config.height),
+                         (128, 128))
+        self.assertEqual(emulator._lcd_frame_protocol, "window-raw8-rgb332")
+        # 0x2D walks Y first: index 1 is (0,1), index 128 is (1,0).
+        self.assertEqual(emulator.display_frame[:3], b"\xff\0\0")
+        self.assertEqual(emulator.display_frame[128 * 3:128 * 3 + 3],
+                         b"\0\xff\0")
+        self.assertEqual(emulator.display_frame[3:6], b"\0\0\xff")
+
+        write(0x02000000, 0x07)
+        write(0x02000000, 0x0D)
+        for value in (0x31, 0, 5, 0x21, 32, 47):
+            write(0x02000000, value)
+        row = bytes((0xE0, 0x1C, 0x03, 0, 0, 0))
+        for packed in row * 16:
+            write(0x02000002, packed)
+        origin = 32 * 128 * 3
+        self.assertEqual(emulator.display_frame[origin:origin + 9],
+                         b"\xff\0\0\0\xff\0\0\0\xff")
+        self.assertEqual(
+            emulator.display_frame[(33 * 128) * 3:(33 * 128) * 3 + 3],
+            b"\xff\0\0",
+        )
 
     def test_020_byte_5c_rgb332_keeps_one_byte_per_pixel(self) -> None:
         emulator = self._routing_emulator(width=176, height=220)
