@@ -723,6 +723,14 @@ class DisplayControllerMixin:
                     self._lcd_gram_addressed = True
                     return True
                 self._lcd_packed_21_state = 0
+            if self._lcd_window_axis_mask == 0xF and value > 0xFF:
+                x, y = value & 0xFF, value >> 8 & 0xFF
+                if (self._lcd_x[0] <= x <= self._lcd_x[1]
+                        and self._lcd_y[0] <= y <= self._lcd_y[1]):
+                    self._lcd_cursor[:] = [x, y]
+                    self._lcd_gram_cursor[:] = [x, y]
+                    self._lcd_gram_addressed = True
+                    return True
             coordinate = value & 0xFF or (value >> 8 & 0xFF)
             self._lcd_cursor[1] = coordinate
             self._lcd_gram_cursor[1] = coordinate
@@ -885,7 +893,7 @@ class DisplayControllerMixin:
             self._lcd_write_gram_pixel(value)
             return
         if self._lcd_command in LCD_MEMORY_WRITE_COMMANDS:
-            self._lcd_direct_data(value)
+            self._lcd_direct_data(value, size, address)
             return
         # Temporary evidence-gated class: exact ordered compact window writes
         # on the observed +2 halfword transport.  Near misses stay raw.
@@ -929,6 +937,12 @@ class DisplayControllerMixin:
     def _lcd_feed_parallel_data(self, address: int, size: int, value: int) -> None:
         """Feed a data-port write, joining byte-wide RGB565 transfers safely."""
         if size == 1 and self._lcd_command in LCD_MEMORY_WRITE_COMMANDS:
+            # 0x5C on the +2 byte bus is 8-bit RGB332 RAMWR. Pairing those
+            # bytes halves the raster and places two source rows side by side.
+            # The 0x028 +4 observer keeps its own full-raster RGB332 probe.
+            if self._lcd_command == 0x5C and address == 0x02000002:
+                self._lcd_feed_data(address, 1, value & 0xFF)
+                return
             first = self._lcd_data_byte_latch.pop(address, None)
             if first is None:
                 self._lcd_data_byte_latch[address] = value & 0xFF
@@ -941,12 +955,20 @@ class DisplayControllerMixin:
     def _lcd_write_gram_pixel(self, value: int) -> None:
         """Write a cursor-addressed ILI/Hitachi GRAM pixel without full copies."""
         x, y = self._lcd_gram_cursor
-        if 0 <= x < self.config.width and 0 <= y < self.config.height:
-            self._pixel(y * self.config.width + x, value)
+        width, height = self.config.width, self.config.height
+        dx = x % width if x >= width else x
+        dy = y % height if y >= height else y
+        if 0 <= dx < width and 0 <= dy < height:
+            self._pixel(dy * width + dx, value)
             self._lcd_gram_dirty = True
+        x0, x1 = self._lcd_x
+        y0, y1 = self._lcd_y
         x += 1
-        if x >= self.config.width:
-            x, y = 0, y + 1
+        if x > x1 or x >= self.config.width:
+            x = x0
+            y += 1
+            if y > y1 or y >= self.config.height:
+                y = y0
         self._lcd_gram_cursor[:] = [x, y]
 
     def _lcd_observe_paired_state(self, address: int, size: int, value: int) -> None:

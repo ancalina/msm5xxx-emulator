@@ -666,7 +666,8 @@ class DirectProtocolMixin:
             self._publish_frame()
             self._lcd_expected = 0
 
-    def _lcd_direct_data(self, value: int) -> None:
+    def _lcd_direct_data(self, value: int, size: int = 2,
+                        address: int = 0) -> None:
         if self._lcd_command in (0x15, 0x75):
             if len(self._lcd_args) < 4:
                 self._lcd_args.append(value & 0xFF)
@@ -681,8 +682,17 @@ class DirectProtocolMixin:
         raw_y = (self._lcd_y[0] + row) & 0xFF
         x = (raw_x - self._lcd_direct_origin[0]) & 0xFF
         y = (raw_y - self._lcd_direct_origin[1]) & 0xFF
+        if x >= self.config.width:
+            x %= self.config.width
+        if y >= self.config.height:
+            y %= self.config.height
         if x < self.config.width and y < self.config.height:
-            self._pixel(y * self.config.width + x, value)
+            index = y * self.config.width + x
+            if (self._lcd_command == 0x5C and size == 1
+                    and address == 0x02000002):
+                self._lcd_028_rgb332_pixel(index, value)
+            else:
+                self._pixel(index, value)
         column += 1
         if column >= self._lcd_direct_window[0]:
             column, row = 0, row + 1

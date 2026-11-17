@@ -1434,7 +1434,9 @@ class PageProtocolMixin:
         first0, first1, second0, second1 = (
             header[1][2], header[2][2], header[4][2], header[5][2])
         if header[0][2] == 0x31:
-            y0, y1, x0, x1 = first0, first1, second0, second1
+            # 0x31 programs columns, 0x21 programs rows; the pixel loop is
+            # x-fast. Swapping these axes transposes a square panel.
+            x0, x1, y0, y1 = first0, first1, second0, second1
         else:
             # The qualified UI writer uses 0x21 for its y bounds, then 0x31
             # for x, and streams x-fast RGB332 rows.

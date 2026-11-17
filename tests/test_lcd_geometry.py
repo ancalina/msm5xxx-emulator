@@ -2076,7 +2076,7 @@ class LCDGeometryTests(unittest.TestCase):
             emulator._lcd_write(None, 0, 0x02000000, 1, value, None)
         for _ in range(16 * 6):
             emulator._lcd_write(None, 0, 0x02000002, 1, 0xE0, None)
-        offset = 32 * 3
+        offset = 32 * 128 * 3
         self.assertEqual(emulator.display_frame[offset:offset + 3],
                          b"\xE0\xE0\xE0")
 
@@ -2108,6 +2108,51 @@ class LCDGeometryTests(unittest.TestCase):
             (0x02000000, 1, 0x31), (0x02000000, 1, 0),
             (0x02000000, 1, 127), (0x02000000, 1, 0x20),
         ])
+
+    def test_020_byte_5c_rgb332_keeps_one_byte_per_pixel(self) -> None:
+        emulator = self._routing_emulator(width=176, height=220)
+
+        def write(address: int, value: int) -> None:
+            emulator._lcd_write(None, 0, address, 1, value, None)
+
+        write(0x02000000, 0x75)
+        write(0x02000002, 0)
+        write(0x02000002, 159)
+        write(0x02000000, 0x15)
+        write(0x02000002, 0)
+        write(0x02000002, 119)
+        write(0x02000000, 0xBC)
+        write(0x02000002, 0x52)
+        write(0x02000002, 1)
+        write(0x02000000, 0x5C)
+        payload = bytearray(120 * 160)
+        payload[0] = 0xE0
+        payload[1] = 0x1C
+        payload[120] = 0x03
+        for value in payload:
+            write(0x02000002, value)
+        self.assertEqual((emulator.config.width, emulator.config.height),
+                         (120, 160))
+        self.assertEqual(emulator.display_frame[:6], b"\xff\0\0\0\xff\0")
+        self.assertEqual(emulator.display_frame[120 * 3:120 * 3 + 3],
+                         b"\0\0\xff")
+
+    def test_gram_cursor_wraps_inside_programmed_window(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+
+        def write(command: int, value: int) -> None:
+            emulator._lcd_write(None, 0, 0x02000000, 2, command, None)
+            emulator._lcd_write(None, 0, 0x02000002, 2, value, None)
+
+        write(0x16, 0x7F00)
+        write(0x17, 0x9F00)
+        write(0x21, 0x9F7F)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x22, None)
+        emulator._lcd_write(None, 0, 0x02000002, 2, 0xF800, None)
+        emulator._lcd_write(None, 0, 0x02000002, 2, 0x001F, None)
+        last = (159 * 128 + 127) * 3
+        self.assertEqual(emulator.framebuffer[last:last + 3], b"\xff\0\0")
+        self.assertEqual(emulator.framebuffer[:3], b"\0\0\xff")
 
 
 if __name__ == "__main__":
