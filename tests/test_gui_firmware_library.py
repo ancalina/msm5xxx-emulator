@@ -9,6 +9,24 @@ from msm5xxx_emulator.gui.firmware_library import FirmwareLibrary, display_name,
 
 
 class FirmwareLibraryTest(unittest.TestCase):
+    def test_scan_reports_each_newly_described_file(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / 'files'
+            folder.mkdir()
+            for name in ('a.bin', 'b.bin', 'c.bin'):
+                (folder / name).write_bytes(name.encode())
+            lib = FirmwareLibrary(root / 'library.json', detector=Mock(return_value=SimpleNamespace(model='M', chipset='C')))
+            lib.add_folder(folder)
+            partial = []
+            self.assertEqual(len(lib.scan(progress=partial.append)), 3)
+            self.assertEqual([len(rows) for rows in partial], [1, 2, 3])
+            partial.clear()
+            (folder / 'd.bin').write_bytes(b'd')
+            lib.scan(progress=partial.append)
+            # Known rows stay listed while only the new file is described.
+            self.assertEqual([len(rows) for rows in partial], [4])
+
     def test_scan_deduplicates_and_reuses_sha_cache(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -214,7 +232,7 @@ class MobileLibraryBridgeTest(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             source = Path(tmp) / 'synthetic.bin'
             source.write_bytes(b'synthetic descriptor')
-            with source.open('rb') as handle, patch.object(firmware, 'detect', return_value=SimpleNamespace(model='Detected', chipset='MSM5xxx')):
+            with source.open('rb') as handle, patch.object(firmware, 'identify', return_value=('Detected', 'MSM5xxx')):
                 descriptor = Path('/proc/self/fd') / str(handle.fileno())
                 if not descriptor.exists():
                     self.skipTest('descriptor filesystem unavailable')
@@ -257,7 +275,7 @@ class MobileLibraryBridgeTest(unittest.TestCase):
             source = Path(tmp) / 'sample.bin'
             source.write_bytes(b'synthetic data')
             request = json.dumps({'path': str(source), 'cache': str(Path(tmp) / 'cache.json'), 'name': 'Original'})
-            with patch.object(firmware, 'detect', return_value=SimpleNamespace(model=None, chipset='MSM5xxx')) as detect:
+            with patch.object(firmware, 'identify', return_value=(None, 'MSM5xxx')) as detect:
                 first = json.loads(android.library_describe(request))
                 second = json.loads(android.detect_profile('library-v1:' + request))
             self.assertEqual(first, second)

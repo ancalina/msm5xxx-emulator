@@ -5,17 +5,71 @@ from corpus import snippet
 
 import struct
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from capstone import arm as a
 
 from msm5xxx_emulator.detection.fact_context import FirmwareFacts
 from msm5xxx_emulator.detection.devices.sbi.bootstrap import (
-    _marker_has_base_store, find_sbi_bootstrap_profile, bootstrap_layout_at,
+    _marker_has_base_store, _owner_starts, find_sbi_bootstrap_profile, bootstrap_layout_at,
 )
 from msm5xxx_emulator.detection.facts import CodeAddress, facts_for
 
 
 class SbiBootstrapProfileTest(unittest.TestCase):
+    def test_owner_start_index_matches_closed_ranges_and_reuses_each_isa(self) -> None:
+        class Facts:
+            def __init__(self) -> None:
+                self.calls = {
+                    'arm': tuple((None, value) for value in
+                                 (-4, 0x7FC, 0x800, 0x800, 0x1000, 0x17FC,
+                                  0x1800, 0x1804, 1 << 32)),
+                    'thumb': tuple((None, value) for value in
+                                   (-2, 0x7FE, 0x800, 0x1000, 0x17FE,
+                                    0x1800, 0x1802, 0x1804, 1 << 32)),
+                }
+                self.call_queries = []
+                self.memo_values = {}
+                self.vectors_seen = (CodeAddress(0x1004, 'arm', 'reset', 'primary'),
+                                     CodeAddress(0x1006, 'thumb', 'post-copy', 'secondary'))
+
+            def call_candidates(self, isa):
+                self.call_queries.append(isa)
+                return self.calls[isa]
+
+            def vectors(self):
+                return tuple((None, target) for target in self.vectors_seen)
+
+            def literal_references_in(self, ranges):
+                return (SimpleNamespace(instruction=CodeAddress(0x1800, 'thumb')),
+                        SimpleNamespace(instruction=CodeAddress(0x27FE, 'thumb')))
+
+            def memo(self, name, parameters, extract):
+                key = (name, parameters)
+                if key not in self.memo_values:
+                    self.memo_values[key] = extract()
+                return self.memo_values[key]
+
+        facts = Facts()
+        for isa, marker in (('arm', 0x1800), ('thumb', 0x1802)):
+            lower = max(0, marker - 0x1000)
+            align = 4 if isa == 'arm' else 2
+            expected = {CodeAddress(target, isa)
+                        for _, target in facts.calls[isa]
+                        if lower <= target <= marker and target % align == 0}
+            expected.update(target for _, target in facts.vectors()
+                            if lower <= target.address <= marker and target.isa == isa)
+            if isa == 'thumb':
+                references = (0x1800, 0x27FE)
+                expected = {start for start in expected
+                            if any(0 <= address - start.address < 0x1000
+                                   for address in references)}
+            self.assertEqual(_owner_starts(facts, marker, isa), expected)
+            self.assertEqual(_owner_starts(facts, marker - 2, isa) <= expected, True)
+
+        self.assertEqual(facts.call_queries, ['arm', 'thumb'])
+        self.assertEqual(len(facts.memo_values), 3)
+
     @staticmethod
     def _arm_image(*, with_intervening_call: bool = False,
                    with_unknown_access: bool = False,

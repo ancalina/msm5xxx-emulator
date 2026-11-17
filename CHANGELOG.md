@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Faster firmware detection.
+- Faster library adds: full detection now runs when firmware is launched.
+- Desktop reuses detection results when the same firmware is launched again.
+
 ## 0.1.0
 
 Changes since the previous public release, `qemu-tcg-preview-20261030-r17.1`.

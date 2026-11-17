@@ -40,27 +40,29 @@ class FactReferences:
                 scan_end = min(len(data), max(0, end - base))
                 if not scan_end:
                     continue
-                thumb_candidates = {match.start() for match in _THUMB_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end)}
-                arm_candidates = {match.start() for match in _ARM_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end)}
+                thumb_candidates = {match.start() - 1 for match in _THUMB_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end) if match.start() >= 1}
+                arm_candidates = {match.start() - 2 for match in _ARM_LITERAL_ACCESS_CANDIDATE.finditer(data, 0, scan_end) if match.start() >= 2}
                 for off in sorted(thumb_candidates | arm_candidates):
                     guest = base + off
+                    # Search regions contain only contiguous supplied bytes.
                     if (off in thumb_candidates and off + 4 <= scan_end and guest % 2 == 0):
                         first = struct.unpack_from('<H', data, off)[0]
-                        if (first & 0xF800 == 0x4800 and self.view.covers(guest, 4, phase=phase, bank=bank)):
+                        if first & 0xF800 == 0x4800:
                             register = first >> 8 & 7
-                            pool = ((guest + 4) & ~3) + (first & 0xFF) * 4
-                            raw = self.view.read(pool, 4, phase=phase, bank=bank)
                             word = struct.unpack_from('<H', data, off + 2)[0]
                             opcode = word & 0xF800
                             widths = {0x6000: 4, 0x6800: 4, 0x7000: 1, 0x7800: 1, 0x8000: 2, 0x8800: 2}
                             width = widths.get(opcode)
-                            if (raw is not None and width is not None and (word >> 3) & 7 == register):
-                                pointer = int.from_bytes(raw, 'little')
-                                address = pointer + ((word >> 6 & 31) * width)
-                                if (0 <= address and address + width <= 1 << 32):
-                                    found.append(LiteralAccessCandidate(CodeAddress(guest, 'thumb', phase, bank), CodeAddress(guest + 2, 'thumb', phase, bank),
-                                        pool, address, width, 'read' if opcode in (0x6800, 0x7800, 0x8800) else 'write', a.ARM_CC_AL,))
-                    if off not in arm_candidates or (guest % 4 or off + 8 > scan_end or not self.view.covers(guest, 8, phase=phase, bank=bank)):
+                            if width is not None and (word >> 3) & 7 == register:
+                                pool = ((guest + 4) & ~3) + (first & 0xFF) * 4
+                                raw = self.view.read(pool, 4, phase=phase, bank=bank)
+                                if raw is not None:
+                                    pointer = int.from_bytes(raw, 'little')
+                                    address = pointer + ((word >> 6 & 31) * width)
+                                    if (0 <= address and address + width <= 1 << 32):
+                                        found.append(LiteralAccessCandidate(CodeAddress(guest, 'thumb', phase, bank), CodeAddress(guest + 2, 'thumb', phase, bank),
+                                            pool, address, width, 'read' if opcode in (0x6800, 0x7800, 0x8800) else 'write', a.ARM_CC_AL,))
+                    if off not in arm_candidates or guest % 4 or off + 8 > scan_end:
                         continue
                     first = struct.unpack_from('<I', data, off)[0]
                     condition = first >> 28

@@ -52,6 +52,10 @@ def save_session_settings(path: Path, network: bool, host_time: bool, start_time
         atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + '\n')
 
 
+class _ScanStopped(Exception):
+    pass
+
+
 class LibraryDialog:
     def __init__(self, root: tk.Tk, library: FirmwareLibrary, language: str):
         self.root, self.library, self.text = root, library, UI_TEXT[language]
@@ -104,27 +108,37 @@ class LibraryDialog:
         if self.scanning:
             return
         self.scanning = True
-        for button in self.buttons:
+        for button in self.buttons[:4]:  # settings stays usable while files are identified
             button.configure(state='disabled')
         self.notice.configure(text=self.text['library_loading'])
+        def report(partial):
+            if self.closed:  # a firmware was launched: leave the CPU to its boot
+                raise _ScanStopped
+            self.results.put((partial, None, False))
         def scan():
             try:
-                self.results.put((self.library.scan(), None))
+                rows = self.library.scan(progress=report)
+                self.results.put((rows, None, True))
+            except _ScanStopped:
+                pass
             except (OSError, ValueError) as error:
-                self.results.put(([], str(error)))
+                self.results.put(([], str(error), True))
         threading.Thread(target=scan, daemon=True).start()
 
     def poll(self) -> None:
         if self.closed:
             return
         try:
-            self.rows, error = self.results.get_nowait()
+            self.rows, error, done = self.results.get_nowait()
+            while not done and not self.results.empty():  # draw only the newest partial list
+                self.rows, error, done = self.results.get_nowait()
         except queue.Empty:
             pass
         else:
-            self.scanning = False
-            for button in self.buttons:
-                button.configure(state='normal')
+            if done:
+                self.scanning = False
+                for button in self.buttons:
+                    button.configure(state='normal')
             self.list.delete(*self.list.get_children())
             self.images.clear()
             for group_number, group in enumerate(group_rows(self.rows)):
@@ -150,7 +164,8 @@ class LibraryDialog:
                     label = Path(item['path']).name if parent else item['name']
                     self.list.insert(parent, tk.END, iid=str(index), text=label + status, image=thumbnail,
                                      values=(item.get('chipset') or '—', format_size(item.get('size', 0)), timestamp))
-            self.notice.configure(text=error or ('' if self.rows else self.text['library_empty']))
+            self.notice.configure(text=error or (self.text['library_loading'] if not done
+                                                 else '' if self.rows else self.text['library_empty']))
         self.window.after(100, self.poll)
 
     def add_folder(self) -> None:
@@ -224,8 +239,6 @@ class LibraryDialog:
         return self.rows[int(selection[0])] if selection and selection[0].isdigit() else None
 
     def boot(self) -> None:
-        if self.scanning:
-            return
         row = self.selected_row()
         if row is None and self.list.selection():
             item = self.list.selection()[0]

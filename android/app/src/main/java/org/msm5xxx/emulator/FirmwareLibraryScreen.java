@@ -434,6 +434,26 @@ final class FirmwareLibraryScreen {
         }
     }
 
+    /** Show each newly described file at once; known rows not yet rescanned stay listed meanwhile. */
+    private void publishPartial(long token, ArrayList<JSONObject> rows, JSONArray entries, int next, HashSet<String> hashes) {
+        ArrayList<JSONObject> snapshot = new ArrayList<>();
+        HashSet<String> listed = new HashSet<>(hashes);
+        try {
+            for (JSONObject row : rows) snapshot.add(new JSONObject(row.toString()));
+            for (int j = next; j < entries.length(); j++) {
+                JSONObject pending = entries.optJSONObject(j);
+                if (pending == null || !pending.optBoolean("available") || !pending.has("model")) continue;
+                String sha = pending.optString("sha256", "");
+                if (sha.isEmpty() || !listed.add(sha)) continue;
+                snapshot.add(new JSONObject(pending.toString()));
+            }
+        } catch (JSONException error) { return; }
+        activity.runOnUiThread(() -> {
+            if (token != revision.get() || !showing) return;
+            visible.clear(); visible.addAll(snapshot); schedulePublish();
+        });
+    }
+
     private Cursor queryChildren(Uri children, String[] columns) {
         try { return activity.getContentResolver().query(children, columns, null, null, null); }
         catch (IllegalArgumentException error) {
@@ -572,6 +592,7 @@ final class FirmwareLibraryScreen {
                     String sha = entry.optString("sha256", "");
                     if (!sha.isEmpty() && !hashes.add(sha)) continue;
                     rows.add(entry);
+                    if (!cacheHit) publishPartial(token, rows, entries, i + 1, hashes);
                 } catch (IOException | RuntimeException | JSONException ignored) { }
             }
             HashSet<String> availableHashes = new HashSet<>();

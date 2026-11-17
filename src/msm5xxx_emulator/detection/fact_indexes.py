@@ -6,9 +6,15 @@ from capstone import arm as a
 import re
 import struct
 
-_THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(.[\x48-\x4f]..))', re.S)
-_ARM_LITERAL_ACCESS_CANDIDATE = re.compile(rb'(?=(..(?:\x1f|\x9f)(?:\x05|\x15|\x25|\x35|\x45|\x55|\x65|\x75' rb'|\x85|\x95|\xa5|\xb5|\xc5|\xd5|\xe5)))', re.S)
-_THUMB_BLX_CANDIDATE = re.compile(rb'(?=(.[\xf0-\xf7].([\xc0-\xcf]|[\xe0-\xef])))', re.S)
+# Match opcode bytes first so the regex engine can skip unrelated bytes.
+# Thumb matches start one byte into the instruction; ARM matches start two in.
+_THUMB_LITERAL_OPCODE = re.compile(rb'[\x48-\x4f]')
+_THUMB_LITERAL_ACCESS_CANDIDATE = re.compile(rb'[\x48-\x4f](?=.[\x60-\x8f])', re.S)
+_ARM_LITERAL_ACCESS_CANDIDATE = re.compile(rb'[\x1f\x9f][\x05\x15\x25\x35\x45\x55\x65\x75\x85\x95\xa5\xb5\xc5\xd5\xe5]')
+_THUMB_BL_CANDIDATE = re.compile(rb'[\xf0-\xf7](?=.[\xf8-\xff])', re.S)
+_THUMB_BLX_CANDIDATE = re.compile(rb'[\xf0-\xf7](?=.[\xc0-\xcf\xe0-\xef])', re.S)
+_ARM_BL_OPCODE = re.compile(rb'[\x0b\x1b\x2b\x3b\x4b\x5b\x6b\x7b\x8b\x9b\xab\xbb\xcb\xdb\xeb]')
+_ARM_BLX_OPCODE = re.compile(rb'[\xfa\xfb]')
 
 class FactIndexes:
     def _search_regions(self, phase, bank):
@@ -24,15 +30,18 @@ class FactIndexes:
             calls = []
             for base, data in self._search_regions(phase, bank):
                 if isa == 'thumb':
-                    for match in re.finditer(rb'(?=(.[\xf0-\xf7].[\xf8-\xff]))', data, re.S):
-                        at = match.start()
-                        if (base + at) & 1:
+                    for match in _THUMB_BL_CANDIDATE.finditer(data):
+                        at = match.start() - 1
+                        if at < 0 or (base + at) & 1:
                             continue
                         target = thumb_call_target(data, at)
                         if target is not None:
                             calls.append((base + at, base + target))
                 else:
-                    for at in range((-base) & 3, len(data) - 3, 4):
+                    for match in _ARM_BL_OPCODE.finditer(data):
+                        at = match.start() - 3
+                        if at < 0 or (base + at) & 3:
+                            continue
                         word = struct.unpack_from('<I', data, at)[0]
                         if word >> 28 != 15 and word & 0x0F000000 == 0x0B000000:
                             delta = (word & 0xFFFFFF) << 2
@@ -57,9 +66,9 @@ class FactIndexes:
                 if scan_end < 4:
                     continue
                 for match in _THUMB_BLX_CANDIDATE.finditer(data, 0, scan_end):
-                    offset = match.start()
+                    offset = match.start() - 1
                     address = base + offset
-                    if address & 1 or offset + 4 > scan_end:
+                    if offset < 0 or address & 1 or offset + 4 > scan_end:
                         continue
                     source = CodeAddress(address, 'thumb', phase, bank)
                     instruction = self.decode(source)
@@ -71,7 +80,10 @@ class FactIndexes:
                     if target & 3:
                         continue
                     calls.append((source, CodeAddress(target, 'arm', phase, bank)))
-                for offset in range((-base) & 3, scan_end - 3, 4):
+                for match in _ARM_BLX_OPCODE.finditer(data, 0, scan_end):
+                    offset = match.start() - 3
+                    if offset < 0 or (base + offset) & 3:
+                        continue
                     word = struct.unpack_from('<I', data, offset)[0]
                     if word & 0xFE000000 != 0xFA000000:
                         continue
@@ -94,9 +106,16 @@ class FactIndexes:
         """Index supplied byte candidates, including copied code and data."""
         if not value:
             raise ValueError('empty string anchor')
-        pattern = re.compile(rb'(?=(' + re.escape(value) + rb'))', re.S)
-        return self.memo('strings', (value, phase, bank), lambda: tuple(base + match.start() for base, data in self._search_regions(phase, bank) for match in
-            pattern.finditer(data)))
+        def extract():
+            found = []
+            for base, data in self._search_regions(phase, bank):
+                offset = data.find(value)
+                while offset != -1:
+                    found.append(base + offset)
+                    # Advancing one byte retains overlapping occurrences.
+                    offset = data.find(value, offset + 1)
+            return tuple(found)
+        return self.memo('strings', (value, phase, bank), extract)
 
     def pointer_candidates(self, address: int, *, phase='reset', bank='primary'):
         return self.string_candidates(struct.pack('<I', address), phase=phase, bank=bank)
@@ -104,28 +123,33 @@ class FactIndexes:
     def _literal_reference_index(self, phase, bank):
         def index():
             references = {}
-            thumb = re.compile(rb'(?=(.[\x48-\x4f]))', re.S)
             for base, data in self._search_regions(phase, bank):
                 sites = []
-                for match in thumb.finditer(data):
-                    at = match.start()
+                for match in _THUMB_LITERAL_OPCODE.finditer(data):
+                    at = match.start() - 1
                     pc = base + at
-                    if pc & 1:
+                    if at < 0 or pc & 1:
                         continue
                     word = struct.unpack_from('<H', data, at)[0]
                     sites.append((CodeAddress(pc, 'thumb', phase, bank), ((pc + 4) & ~3) + (word & 255) * 4))
                 for match in _ARM_LITERAL_ACCESS_CANDIDATE.finditer(data):
-                    at = match.start()
+                    at = match.start() - 2
                     pc = base + at
-                    if pc & 3:
+                    if at < 0 or pc & 3:
                         continue
                     word = struct.unpack_from('<I', data, at)[0]
                     displacement = word & 0xFFF
                     sites.append((CodeAddress(pc, 'arm', phase, bank), pc + 8 + (displacement if word & (1 << 23) else -displacement)))
                 for pc, pool in sites:
-                    raw = self.view.read(pool, 4, phase=phase, bank=bank)
-                    if raw is not None:
-                        references.setdefault(int.from_bytes(raw, 'little'),[]).append(pc)
+                    offset = pool - base
+                    if 0 <= offset <= len(data) - 4:
+                        value = struct.unpack_from('<I', data, offset)[0]
+                    else:
+                        raw = self.view.read(pool, 4, phase=phase, bank=bank)
+                        if raw is None:
+                            continue
+                        value = int.from_bytes(raw, 'little')
+                    references.setdefault(value, []).append(pc)
             return {value: tuple(sorted(sites, key=lambda pc: (pc.address, pc.isa))) for value, sites in references.items()}
         return self.memo('literal-reference-index', (phase, bank), index)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from msm5xxx_emulator.detection.registry import device_domain
+from msm5xxx_emulator.detection.facts import with_fact_scope
 
 from msm5xxx_emulator.detection.image_view import ADDRESS_SPACE
 DISABLEABLE_ADDRESS_FIELDS = frozenset({ "delay_address", "busy_delay_address", "secondary_flash_read_address", "secondary_flash_write_address",
@@ -41,6 +42,21 @@ def _apply_overrides(config: FirmwareConfig, overrides: argparse.Namespace, *, i
                 if address is not None:
                     setattr(config, field, config.load_address + address)
         device_domain('memory.configuration').relocate_operations(config, clear_layout, copy_layout, ramp_layout)
+
+@with_fact_scope
+def identify(path) -> tuple[str | None, str]:
+    """Model and chipset only, for library rows: the identity stage of _scan_layout without layout or driver discovery."""
+    from . import bind_facts, detect_chipset, detect_model, find_arm_vector_offset, load_firmware_image, restore_sparse_nor_gap
+    loaded = load_firmware_image(path)
+    raw = loaded.image
+    vector_offset, vector_score = find_arm_vector_offset(raw)
+    image_offset = vector_offset if vector_score >= 4 else 0
+    image, sparse_gap = restore_sparse_nor_gap(raw[image_offset:])
+    supplied = getattr(loaded, 'image_view', None)
+    if supplied is not None:
+        bind_facts(image, supplied.normalized(image_offset, size=len(image), gap=sparse_gap))
+    chipset = detect_chipset(image, "")
+    return detect_model(image, path, device_domain('identity.model').embedded_model_scores(image), chipset, notes=[]), chipset
 
 def _scan_layout(path, overrides):
     from . import ADDRESS_SPACE, LayoutCapture, _embedded_model_scores, _verified_embedded_model, bind_facts, chipset_confidence, detect_chipset, detect_model, find_arm_vector_offset, find_linker_layout, load_firmware_image, restore_sparse_nor_gap
