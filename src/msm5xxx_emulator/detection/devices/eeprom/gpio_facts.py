@@ -131,6 +131,27 @@ def _sampled_gpio_bit(facts, function, address: int, *, width: int, shift: int, 
             cursor += shifted.size
     return False
 
+def _same_register_shift(update, mnemonic: str, register: int) -> bool:
+    if update is None or update.mnemonic != mnemonic:
+        return False
+    operands = update.operands
+    if (len(operands) == 3 and operands[0].type == arm.ARM_OP_REG and operands[1].type == arm.ARM_OP_REG and operands[2].type == arm.ARM_OP_IMM):
+        return operands[0].reg == register and operands[1].reg == register and operands[2].imm == 1
+    if len(operands) == 2 and operands[0].type == arm.ARM_OP_REG and operands[1].type == arm.ARM_OP_IMM:
+        return operands[0].reg == register and operands[1].imm == 1
+    return False
+
+def _low_bit_shift_clear(facts, function, access, source, definition, update, reads) -> bool:
+    """A reload, logical shift right by one, then left by one clears bit 0."""
+    if definition is None or not _same_register_shift(update, 'lsls', source):
+        return False
+    shift_pc = _unique_def(facts, function, definition, source)
+    narrowed = facts.decode(shift_pc) if shift_pc is not None else None
+    if not _same_register_shift(narrowed, 'lsrs', source):
+        return False
+    load_pc = _unique_def(facts, function, shift_pc, source)
+    return any(item.operation == 'read' and item.address == access.address and item.width == access.width and item.instruction == load_pc for item in reads)
+
 def _gpio_store_transitions(facts, function, accesses):
     transitions = []
     for access in accesses:
@@ -145,6 +166,9 @@ def _gpio_store_transitions(facts, function, accesses):
         if (update is not None and update.mnemonic in ('ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh') and any(item.operation == 'read' and item.address == access.address
             and item.width == access.width and item.instruction == definition for item in reads)):
             transitions.append(('same', 0))
+            continue
+        if _low_bit_shift_clear(facts, function, access, source, definition, update, reads):
+            transitions.append(('bics', 1))
             continue
         if (update is None or update.mnemonic not in ('orrs', 'bics') or len(update.operands) < 2 or update.operands[0].reg != source or update.operands[1].type
             != arm.ARM_OP_REG):

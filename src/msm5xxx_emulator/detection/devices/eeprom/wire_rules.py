@@ -218,7 +218,8 @@ def _byte_gpio_protocol(facts, writer_entry: int, reader_entry: int, ack_entry: 
     reader_group = ((facts, reader), *((facts, function) for function in reader_children))
     calls_ack = lambda function: any(target.address == ack_entry for _site, target in function.calls)
     ack_sites = tuple(call for function in (writer, reader) for call in function.call_sites if call.target.address == ack_entry)
-    if not calls_ack(writer) or not calls_ack(reader) or not ack_sites:
+    # The reader may sample SDA inline. The writer's ACK helper still has to prove that sample.
+    if not calls_ack(writer) or not ack_sites:
         return False
     ack_contexts = []
     for call in ack_sites:

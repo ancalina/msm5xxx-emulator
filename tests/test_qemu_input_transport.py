@@ -38,7 +38,7 @@ def _thumb_bl_bytes(source: int, target: int) -> bytes:
 
 
 def _complete_byte_gpio_fixture(image: bytearray, writer: int, reader: int,
-                                ack: int) -> None:
+                                ack: int, *, reader_calls_ack: bool = True) -> None:
     """Emit complete, relocatable Thumb owners for the byte GPIO contract."""
     helper_a, helper_b = 0x180, 0x190
     image[helper_a:helper_a + 2] = struct.pack("<H", 0x4770)
@@ -90,7 +90,8 @@ def _complete_byte_gpio_fixture(image: bytearray, writer: int, reader: int,
             port_write(5, 0x20, set_bits=False)
             ldr_port(6, 0x03000678)
             port_write(6, 1, set_bits=True)
-            call(ack)
+            if role != "reader" or reader_calls_ack:
+                call(ack)
             words.append(0x3F01)  # subs r7, #1; the loop has a real exit
             branch = len(words)
             words.append(0xD100)  # bne loop_call; both paths remain represented
@@ -2503,6 +2504,31 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         # Change the SDA direction mask in executed code: the sample is no
         # longer released from output mode, so the native GPIO tuple rejects.
+        MODULE.struct.pack_into("<H", image, ack + 0x24, 0x2102)
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            (None, "gpio-line-shape-mismatch"),
+        )
+
+    def test_eeprom_gpio_profile_accepts_inline_reader_sample(self) -> None:
+        image = bytearray(b"\xff" * 0x1400)
+        write, read = 0x800, 0xEB0
+        writer, ack, reader = write - 0x12C, write - 0x1D2, read - 0x718
+        image[write:write + len(EEPROM.EEPROM_24LCXX_X430_WRITE_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X430_WRITE_PREFIX
+        )
+        image[read:read + len(EEPROM.EEPROM_24LCXX_X430_READ_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X430_READ_PREFIX
+        )
+        _complete_byte_gpio_fixture(image, writer, reader, ack, reader_calls_ack=False)
+        config = SimpleNamespace(
+            eeprom_read_address=read, eeprom_write_address=write,
+            eeprom_geometry_address=0x01001000, load_address=0,
+        )
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
+        )
         MODULE.struct.pack_into("<H", image, ack + 0x24, 0x2102)
         self.assertEqual(
             MODULE.eeprom_gpio_profile(bytes(image), config),

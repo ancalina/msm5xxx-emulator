@@ -206,6 +206,24 @@ class GPIODataflowTests(unittest.TestCase):
         self.assertEqual(_gpio_store_transitions(facts, function, (access,)),
                          (('bics', 0x20),))
 
+    def test_shift_clear_of_bit_0_is_a_bic(self):
+        def image(second_shift):
+            facts = _thumb((
+                0x4C03,       # ldr r4, [pc, #12]
+                0x7820,       # ldrb r0, [r4]
+                0x0840,       # lsrs r0, r0, #1
+                second_shift,
+                0x7020,       # strb r0, [r4]
+                0x4770,
+                0x46C0, 0x46C0,
+            ), ((16, 0x03000720),))
+            function = facts.function(CodeAddress(0, 'thumb'))
+            access = next(item for item in function.accesses if item.operation == 'write')
+            return _gpio_store_transitions(facts, function, (access,))
+
+        self.assertEqual(image(0x0040), (('bics', 1),))  # lsls r0, r0, #1
+        self.assertEqual(image(0x0080), (None,))         # lsls r0, r0, #2
+
     def test_mask_can_be_computed_without_a_fixed_immediate_layout(self):
         facts = _thumb((0x4C03, 0x8821, 0x2210, 0x0052,
                         0x4391, 0x8021, 0x4770, 0x46C0),
