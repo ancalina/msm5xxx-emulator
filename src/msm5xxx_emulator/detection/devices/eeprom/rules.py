@@ -63,7 +63,18 @@ def _select_eeprom_gpio_profile(image: bytes, config: object,) -> tuple[tuple[in
         writer = write - 0x16C
         ack = write - 0x216
         reader = read - 0x754
-        if (read - write != 0x6D8 or min(ack, writer, reader) < 0 or not _byte_gpio_protocol(facts_for(image), writer, reader, ack, _BYTE_GPIO_PROFILE)):
+        if read - write != 0x6D8 or min(ack, writer, reader) < 0:
+            return None, "gpio-line-shape-mismatch"
+        if _byte_gpio_protocol(facts_for(image), writer, reader, ack, _BYTE_GPIO_PROFILE):
+            return _BYTE_GPIO_PROFILE, None
+        # Shadow-byte then GPIO copy: SDA 0x660+4 bit0, SCL 0x660 bit5, DIR 0x670+8 bit0.
+        shapes = ((writer, bytes.fromhex("f0b5071c80260724")), (writer + 0x1A, bytes.fromhex("0123117819431170")), (writer + 0x26, bytes.fromhex("11710028")),
+            (writer + 0x3C, bytes.fromhex("2023117819431170")), (writer + 0x60, bytes.fromhex("99431170")), (ack + 0x0A, bytes.fromhex("4908490011701178")),
+            (ack + 0x14, bytes.fromhex("11720028")), (ack + 0x2E, bytes.fromhex("2978103c2170")), (reader, bytes.fromhex("f0b50027")), (reader + 0x12,
+            bytes.fromhex("194a202311781943")), (reader + 0x38, bytes.fromhex("400801d301200743")),)
+        literals = ((writer + 0x24, 2, 0x03000660), (writer + 0x46, 2, 0x03000660), (ack + 0x12, 2, 0x03000670), (ack + 0x28, 4, 0x03000670), (reader + 0x04, 6,
+            0x03000664), (reader + 0x1E, 2, 0x03000664),)
+        if not _code_shapes_match(image, shapes) or not _literal_values_match(image, literals):
             return None, "gpio-line-shape-mismatch"
         return _BYTE_GPIO_PROFILE, None
     x270 = (image[read:read + len(EEPROM_24LCXX_X270_READ_PREFIX)] == EEPROM_24LCXX_X270_READ_PREFIX and image[write:write + len(EEPROM_24LCXX_X270_WRITE_PREFIX)]

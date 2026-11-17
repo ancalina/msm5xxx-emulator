@@ -2604,6 +2604,66 @@ class QEMUInputTransportTests(unittest.TestCase):
             (None, "gpio-line-shape-mismatch"),
         )
 
+    def test_eeprom_gpio_profile_accepts_f7f6_shadow_gpio_class(self) -> None:
+        image = bytearray(b"\xff" * 0x3000)
+        write, read, initializer = 0x1000, 0x16D8, 0x2400
+        writer, ack, reader = write - 0x16C, write - 0x216, read - 0x754
+        geometry = 0x01208494
+        image[write:write + len(EEPROM.EEPROM_24LCXX_X7700_WRITE_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X7700_WRITE_PREFIX
+        )
+        image[read:read + len(EEPROM.EEPROM_24LCXX_X430_READ_PREFIX)] = (
+            EEPROM.EEPROM_24LCXX_X430_READ_PREFIX
+        )
+        image[initializer:initializer + len(EEPROM.EEPROM_24LCXX_X7700_INIT_SIGNATURE)] = (
+            EEPROM.EEPROM_24LCXX_X7700_INIT_SIGNATURE
+        )
+        for position in (write + 0x3EC, read + 0x3E8, initializer + 0x14):
+            MODULE.struct.pack_into("<I", image, position, geometry)
+        image[0x2E00:0x2E0B] = b"nv24lcxx.c\0"
+        shapes = (
+            (writer, "f0b5071c80260724"),
+            (writer + 0x1A, "0123117819431170"),
+            (writer + 0x26, "11710028"),
+            (writer + 0x3C, "2023117819431170"),
+            (writer + 0x60, "99431170"),
+            (ack + 0x0A, "4908490011701178"),
+            (ack + 0x14, "11720028"),
+            (ack + 0x2E, "2978103c2170"),
+            (reader, "f0b50027"),
+            (reader + 0x12, "194a202311781943"),
+            (reader + 0x38, "400801d301200743"),
+        )
+        for position, value in shapes:
+            raw = bytes.fromhex(value)
+            image[position:position + len(raw)] = raw
+
+        def put_literal(pc: int, register: int, value: int, pool: int) -> None:
+            bias = (pc + 4) & ~3
+            imm = (pool - bias) // 4
+            MODULE.struct.pack_into("<H", image, pc, 0x4800 | register << 8 | imm)
+            MODULE.struct.pack_into("<I", image, pool, value)
+
+        put_literal(writer + 0x24, 2, 0x03000660, 0x1100)
+        put_literal(writer + 0x46, 2, 0x03000660, 0x1104)
+        put_literal(ack + 0x12, 2, 0x03000670, 0x1108)
+        put_literal(ack + 0x28, 4, 0x03000670, 0x110C)
+        put_literal(reader + 0x04, 6, 0x03000664, 0x1110)
+        put_literal(reader + 0x1E, 2, 0x03000664, 0x1114)
+        config = SimpleNamespace(
+            eeprom_read_address=read, eeprom_write_address=write,
+            eeprom_geometry_address=geometry, load_address=0,
+        )
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
+        )
+        image[writer + 0x1A] ^= 1
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(image), config),
+            (None, "gpio-line-shape-mismatch"),
+        )
+
     def test_eeprom_gpio_profile_accepts_f6f7_protocol_class(self) -> None:
         image = bytearray(b"\xff" * 0x4000)
         write, read, initializer = 0x1000, 0x16D0, 0x2400
