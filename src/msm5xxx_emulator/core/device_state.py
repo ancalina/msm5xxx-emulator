@@ -703,6 +703,8 @@ class DeviceStateMixin:
         self._lcd_gram_cursor = [0, 0]
         self._lcd_gram_addressed = False
         self._lcd_gram_dirty = False
+        # Command 5 bit 3 (AM) walks GRAM/direct windows down Y first.
+        self._lcd_entry_column_major = False
         self._lcd_packed_21_state = 0
         self._lcd_packed_cursor_stage = 0
         self._lcd_packed_cursor_accepts = 0

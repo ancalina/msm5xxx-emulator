@@ -700,7 +700,7 @@ class DirectProtocolMixin:
                         and size == 2):
                     packed = self._lcd_bgr444_rgb565((value >> shift) & 0xFFF)
                 self._pixel(index, packed)
-        if self._lcd_direct_column_major:
+        if self._lcd_direct_column_major or self._lcd_entry_column_major:
             row += 1
             if row >= self._lcd_direct_window[1]:
                 row, column = 0, column + 1

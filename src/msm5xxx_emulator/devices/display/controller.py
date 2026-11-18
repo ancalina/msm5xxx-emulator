@@ -699,6 +699,11 @@ class DisplayControllerMixin:
             self._lcd_window_axis_mask |= 0x8
             return True
         if command == 0x05:
+            # S6D0129 R05: 0x0100 row-major, 0x0108 AM (Y first).
+            if value in (0x0100, 0x0108):
+                self._lcd_entry_column_major = bool(value & 8)
+                self._lcd_packed_21_state = 0
+                return True
             self._lcd_packed_21_state = int(
                 self._lcd_protocol == "parallel-2" and value == 0x0230
                 and self._lcd_x == [0, 127] and self._lcd_y == [0, 159]
@@ -974,12 +979,20 @@ class DisplayControllerMixin:
             self._lcd_gram_dirty = True
         x0, x1 = self._lcd_x
         y0, y1 = self._lcd_y
-        x += 1
-        if x > x1 or x >= self.config.width:
-            x = x0
+        if self._lcd_entry_column_major:
             y += 1
             if y > y1 or y >= self.config.height:
                 y = y0
+                x += 1
+                if x > x1 or x >= self.config.width:
+                    x = x0
+        else:
+            x += 1
+            if x > x1 or x >= self.config.width:
+                x = x0
+                y += 1
+                if y > y1 or y >= self.config.height:
+                    y = y0
         self._lcd_gram_cursor[:] = [x, y]
 
     def _lcd_observe_paired_state(self, address: int, size: int, value: int) -> None:

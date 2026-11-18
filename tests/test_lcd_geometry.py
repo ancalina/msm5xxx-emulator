@@ -406,6 +406,7 @@ class LCDGeometryTests(unittest.TestCase):
         emulator._lcd_gram_cursor = [0, 0]
         emulator._lcd_gram_addressed = False
         emulator._lcd_gram_dirty = False
+        emulator._lcd_entry_column_major = False
         emulator._lcd_packed_21_state = 0
         return emulator
 
@@ -2231,6 +2232,40 @@ class LCDGeometryTests(unittest.TestCase):
         self.assertEqual(emulator.display_frame[:6], b"\xff\0\0\0\xff\0")
         self.assertEqual(emulator.display_frame[120 * 3:120 * 3 + 3],
                          b"\0\0\xff")
+
+    def test_entry_mode_am_walks_direct_window_column_major(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+
+        def write(command: int, value: int) -> None:
+            emulator._lcd_write(None, 0, 0x02000000, 2, command, None)
+            emulator._lcd_write(None, 0, 0x02000002, 2, value, None)
+
+        write(0x05, 0x0108)
+        write(0x16, 0x7F7A)
+        write(0x17, 0x7F70)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x22, None)
+        for value in (0xF800, 0x07E0, 0x001F):
+            emulator._lcd_write(None, 0, 0x02000002, 2, value, None)
+        origin = (112 * 128 + 122) * 3
+        self.assertTrue(emulator._lcd_entry_column_major)
+        self.assertEqual(emulator.framebuffer[origin:origin + 3], b"\xff\0\0")
+        self.assertEqual(
+            emulator.framebuffer[origin + 128 * 3:origin + 128 * 3 + 3],
+            b"\0\xff\0",
+        )
+        self.assertEqual(
+            emulator.framebuffer[origin + 256 * 3:origin + 256 * 3 + 3],
+            b"\0\0\xff",
+        )
+
+    def test_entry_mode_am_ignores_unrelated_command_5(self) -> None:
+        emulator = self._routing_emulator(width=128, height=160)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x05, None)
+        emulator._lcd_write(None, 0, 0x02C00004, 1, 14, None)
+        self.assertFalse(emulator._lcd_entry_column_major)
+        emulator._lcd_write(None, 0, 0x02000000, 2, 0x05, None)
+        emulator._lcd_write(None, 0, 0x02000004, 2, 0x0100, None)
+        self.assertFalse(emulator._lcd_entry_column_major)
 
     def test_gram_cursor_wraps_inside_programmed_window(self) -> None:
         emulator = self._routing_emulator(width=128, height=160)
