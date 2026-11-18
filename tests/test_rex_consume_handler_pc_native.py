@@ -1,0 +1,96 @@
+"""Consume-on-read ACKs only at the handler PC; other PCs peek pending."""
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+class RexConsumeHandlerPcNativeTests(unittest.TestCase):
+    def test_handler_pc_consumes_other_pcs_peek(self):
+        native = Path(__file__).resolve().parents[1] / 'native/qemu'
+        source = (native / 'msm5xxx-poc.c').read_text()
+
+        def extract(name):
+            at = source.index('static ', source.index(name) - 80)
+            while name not in source[at:source.index('{', at)]:
+                at = source.index('static ', at + 7)
+            start = source.index('{', at)
+            depth = 1
+            end = start + 1
+            while depth:
+                depth += (source[end] == '{') - (source[end] == '}')
+                end += 1
+            return source[at:end]
+
+        harness = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+typedef uint64_t hwaddr;
+typedef struct CPUState { bool running; struct {bool can_do_io;} neg; } CPUState;
+typedef struct {uint32_t (*get_pc)(CPUState *);} CPUClass;
+typedef struct {
+ CPUState *cpu; bool rex_irq_c80, legacy_cdma, rex_irq_route_active;
+ bool ma5_irq_configured, ma3_gpio_irq_configured, sd810_fold_irq_enabled, rex_irq_read_consume;
+ unsigned rex_irq_controller_size; unsigned rex_irq_bank_count;
+ uint16_t rex_irq_pending[3], rex_irq_mask; uint8_t rex_irq_backing[128];
+ unsigned rex_irq_acks; uint32_t rex_irq_handler_address, rex_irq_handler_size;
+} MSM5xxxPOCMachineState;
+static CPUState cpu_state;
+static CPUState *current_cpu = &cpu_state;
+static bool in_vcpu;
+static uint32_t fake_pc;
+#define CPU(x) (x)
+static bool qemu_in_vcpu_thread(void) { return in_vcpu; }
+static uint32_t get_pc(CPUState *c) { (void)c; return fake_pc; }
+static CPUClass cpu_class = { .get_pc = get_pc };
+static CPUClass *CPU_GET_CLASS(CPUState *c) { (void)c; return &cpu_class; }
+static bool msm5xxx_poc_legacy_gate(MSM5xxxPOCMachineState *s) {(void)s;return false;}
+static uint64_t msm5xxx_poc_backing_read(uint8_t *b, hwaddr o, unsigned n) {
+ uint64_t v=0; for (unsigned i=0;i<n;i++) v|=(uint64_t)b[o+i]<<(8*i); return v;
+}
+static void msm5xxx_poc_backing_write(uint8_t *b, hwaddr o, uint64_t v, unsigned n) {
+ for (unsigned i=0;i<n;i++) b[o+i]=v>>(8*i);
+}
+static uint64_t msm5xxx_poc_ma5_irq_read(MSM5xxxPOCMachineState *s, hwaddr o, unsigned n) { (void)s;(void)o;(void)n;return 0; }
+static uint64_t msm5xxx_poc_ma3_gpio_irq_read(MSM5xxxPOCMachineState *s, hwaddr o, unsigned n) { (void)s;(void)o;(void)n;return 0; }
+static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s) {(void)s;}
+static void msm5xxx_poc_rex_irq_schedule(MSM5xxxPOCMachineState *s) {(void)s;}
+static const hwaddr msm5xxx_poc_rex_irq_status_offsets[] = {0,4,0x30};
+'''
+        harness += '\n'.join(extract(x) for x in (
+            'msm5xxx_poc_rex_irq_handler_pc(',
+            'msm5xxx_poc_rex_irq_shadow_active(',
+            'msm5xxx_poc_rex_irq_read('))
+        harness += r'''
+int main(void) {
+ MSM5xxxPOCMachineState s = {0};
+ s.cpu = &cpu_state; cpu_state.running = true; cpu_state.neg.can_do_io = true;
+ s.rex_irq_read_consume = true; s.rex_irq_controller_size = 16;
+ s.rex_irq_bank_count = 2; s.rex_irq_mask = 0x200;
+ s.rex_irq_pending[0] = 0x200;
+ s.rex_irq_handler_address = 0x8f114; s.rex_irq_handler_size = 0x178;
+ in_vcpu = false; fake_pc = 0x8f124;
+ assert(msm5xxx_poc_rex_irq_read(&s,0,2)==0x200);
+ assert(s.rex_irq_pending[0]==0x200 && s.rex_irq_acks==0);
+ in_vcpu = true; fake_pc = 0x100;
+ assert(msm5xxx_poc_rex_irq_read(&s,0,2)==0x200);
+ assert(s.rex_irq_pending[0]==0x200 && s.rex_irq_acks==0);
+ fake_pc = 0x8f124;
+ assert(msm5xxx_poc_rex_irq_read(&s,0,2)==0x200);
+ assert(s.rex_irq_pending[0]==0 && s.rex_irq_acks==1);
+ assert(msm5xxx_poc_rex_irq_read(&s,0,2)==0);
+ s.rex_irq_handler_size = 0; s.rex_irq_pending[0] = 0x200; s.rex_irq_acks = 0;
+ in_vcpu = false;
+ assert(msm5xxx_poc_rex_irq_read(&s,0,2)==0x200);
+ assert(s.rex_irq_pending[0]==0 && s.rex_irq_acks==1);
+ return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'test.c').write_text(harness)
+            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)

@@ -7554,26 +7554,31 @@ static bool msm5xxx_poc_rex_static_gate(MSM5xxxPOCMachineState *s)
     return true;
 }
 
-static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s)
+static bool msm5xxx_poc_rex_irq_handler_pc(MSM5xxxPOCMachineState *s)
 {
     CPUState *cpu = current_cpu;
     CPUClass *cc;
     uint32_t pc;
 
-    if (!s->rex_irq_c80 || (s->legacy_cdma && msm5xxx_poc_legacy_gate(s))) {
-        return true;
-    }
-    if (!s->rex_irq_route_active) {
-        return false;
-    }
-    if (!qemu_in_vcpu_thread() || cpu != CPU(s->cpu) || !cpu->running ||
-        !cpu->neg.can_do_io) {
+    if (!s->rex_irq_handler_size || !qemu_in_vcpu_thread() ||
+        cpu != CPU(s->cpu) || !cpu->running || !cpu->neg.can_do_io) {
         return false;
     }
     cc = CPU_GET_CLASS(cpu);
     pc = cc->get_pc(cpu) & ~1U;
     return pc >= s->rex_irq_handler_address &&
            pc < s->rex_irq_handler_address + s->rex_irq_handler_size;
+}
+
+static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s)
+{
+    if (!s->rex_irq_c80 || (s->legacy_cdma && msm5xxx_poc_legacy_gate(s))) {
+        return true;
+    }
+    if (!s->rex_irq_route_active) {
+        return false;
+    }
+    return msm5xxx_poc_rex_irq_handler_pc(s);
 }
 
 static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s)
@@ -7705,6 +7710,27 @@ static uint64_t msm5xxx_poc_rex_irq_read(void *opaque, hwaddr offset,
             );
         }
         return msm5xxx_poc_backing_read(s->rex_irq_backing, offset, size);
+    }
+    /* Consume-on-read ACK is the handler LDRH. Other PCs peek pending. */
+    if (s->rex_irq_handler_size && !msm5xxx_poc_rex_irq_handler_pc(s)) {
+        for (i = 0; i < size; i++) {
+            hwaddr byte = offset + i;
+            unsigned bank;
+
+            for (bank = 0; bank < s->rex_irq_bank_count; bank++) {
+                hwaddr status = msm5xxx_poc_rex_irq_status_offsets[bank];
+
+                if (byte >= status && byte < status + 2) {
+                    uint8_t pending =
+                        s->rex_irq_pending[bank] >> ((byte - status) * 8);
+
+                    value &= ~(UINT64_C(0xff) << (i * 8));
+                    value |= (uint64_t)pending << (i * 8);
+                    break;
+                }
+            }
+        }
+        return value;
     }
     for (i = 0; i < size; i++) {
         hwaddr byte = offset + i;

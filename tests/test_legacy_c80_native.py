@@ -56,6 +56,7 @@ static const hwaddr msm5xxx_poc_rex_irq_status_offsets[] = {0,4,0x30};
 static const hwaddr msm5xxx_poc_rex_irq_clear_offsets[] = {0,4,0x4c};
 '''
         harness += '\n'.join(extract(x) for x in (
+            'msm5xxx_poc_rex_irq_handler_pc(',
             'msm5xxx_poc_rex_irq_shadow_active(', 'msm5xxx_poc_rex_irq_read(',
             'msm5xxx_poc_rex_irq_write('))
         harness += r'''
