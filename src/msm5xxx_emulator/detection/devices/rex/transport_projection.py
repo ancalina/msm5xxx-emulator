@@ -50,7 +50,7 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
     overlay = signature == "static-c80-overlay-controller-callback-v1"
     required = { "signature": signature, "controller_class": ("legacy-c80-three-bank-group14-v1" if overlay else
         "legacy-fb0-index1b-delta5-controller-candidate-v1" if fb0 else "legacy-c80-index1e-delta5-controller-candidate-v1"), "accepted": True, "active": False,
-        "vector": 0x18, "mask": 0x0200, "callback_delta": 5, "callback_validation_size": 68, }
+        "vector": 0x18, "mask": 0x0200, "callback_delta": 5, "callback_validation_size": (0x54 if candidate.get("callback_validation_shape") == "group10-timer-list" else 68), }
     if (signature not in ("static-c80-controller-callback-v1", "static-c80-overlay-controller-callback-v1", "static-fb0-controller-callback-v1",) or any(candidate.get(key)
         != value for key, value in required.items())):
         return None

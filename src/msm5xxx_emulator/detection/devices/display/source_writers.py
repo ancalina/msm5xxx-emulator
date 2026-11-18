@@ -16,6 +16,7 @@ from .indexed28_writer import find_indexed28
 from .indexed20_writer import find_indexed20
 from .indexed44_writer import find_indexed44
 from .indexed1c_writer import find_indexed1c_profile
+from .padded_gray_writer import find_padded_gray_writer
 
 
 def _decision(ctx):
@@ -32,6 +33,7 @@ def _decision(ctx):
                   and original[:0x10000] == loaded[:0x10000]
                   and find_source_packed_cursor(original) is not None)
     page = None
+    evidence_end = min(len(original), 0x80000)
     window51 = None
     indexed28 = None
     indexed44 = None
@@ -78,9 +80,18 @@ def _decision(ctx):
                     end = max(source + length, init + 0x48, writer + 0xb0)
                     if original[:end] == loaded[:end]:
                         page = 'packed12'
+            if page is None:
+                padded = find_padded_gray_writer(original, getattr(cfg, 'overlays', ()))
+                if padded is not None:
+                    table, source, length, writer, thunk, call = padded
+                    end = max(table + 12, source + length, writer + 0xa4, thunk + 16, call + 4)
+                    if original[:end] == loaded[:end]:
+                        page = 'padded-gray'
+                        evidence_end = end
         dimensions = {'paired': (128, 128), 'byte-paired': (120, 128), 'mono': (128, 64),
                       'offset-mono': (128, 64), 'row565': (128, 160), 'binary': (120, 143),
-                      'reverse565': (120, 133), 'packed12': (128, 128)}
+                      'reverse565': (120, 133), 'packed12': (128, 128),
+                      'padded-gray': (128, 160)}
         if page and getattr(cfg, 'display_geometry_source', 'external-config') != 'auto-default' and (cfg.width, cfg.height) != dimensions[page]:
             page = None
     if layout and len(original) >= 0x14000 and len(loaded) >= 0x14000:
@@ -148,7 +159,7 @@ def _decision(ctx):
                  if indexed44 is not None else
                  tuple(sorted({span[0] for item in indexed1c['evidence']
                    for span in (item['span'], *item.get('extra_spans', ()))}))
-                 if indexed1c is not None else (0, min(len(original), 0x80000)))
+                 if indexed1c is not None else (0, evidence_end))
     evidence = Evidence('display-writer', selected, locations, 'linkage')
     ports = {
         'paired': ((0x02000000, 2), (0x02000002, 2)),
@@ -159,6 +170,7 @@ def _decision(ctx):
         'binary': ((0x02000004, 1), (0x02000006, 1)),
         'reverse565': ((0x02000000, 1), (0x02000004, 1)),
         'packed12': ((0x02000040, 1), (0x02000042, 1)),
+        'padded-gray': ((0x02800010, 2),),
     }
     selected = list(ports.get(page, ()))
     if indexed28 is not None:

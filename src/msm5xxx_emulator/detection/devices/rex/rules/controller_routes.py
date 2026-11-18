@@ -43,11 +43,17 @@ def find_rex_static_controller_callback_candidate(image: bytes, *, ram_base: int
         return rejected("descriptor-seed-ambiguous")
     descriptor_file_offset, seed = seeds[0]
     status, enable, mask, masks, _unused, default, _reserved = seed
+    from .group10_timer import group10_callback, group10_handler, group10_registrar
     handler = (default & ~1) + (0x64 if fb0 else 0x68)
+    group10 = False
     if not _controller_two_bank_handler_at(image, handler, masks, status):
-        return rejected("two-bank-handler-not-closed")
-    handler_validation_size = (0x182 if fb0 else 0x150 if struct.unpack_from("<H", image, handler + 2)[0] == 0xB087 else 0x100)
-    group_row_size = (10 if fb0 or handler_validation_size == 0x150 else 12 if _normalized_thumb_sha256(image, handler, 0x100) == ("e2d286a40ba316e36638235247203ba5ab1800c3f1b50149a9a36be770d40f17",
+        handler = (default & ~1) + 0xa0
+        group10 = (not fb0 and group10_handler(image, handler, masks, status,
+                                               vector_copy, descriptor_file_offset))
+        if not group10:
+            return rejected("two-bank-handler-not-closed")
+    handler_validation_size = (0x250 if group10 else 0x182 if fb0 else 0x150 if struct.unpack_from("<H", image, handler + 2)[0] == 0xB087 else 0x100)
+    group_row_size = (10 if fb0 or group10 or handler_validation_size == 0x150 else 12 if _normalized_thumb_sha256(image, handler, 0x100) == ("e2d286a40ba316e36638235247203ba5ab1800c3f1b50149a9a36be770d40f17",
         (0x04, 0x34, 0x94, 0xBA, 0xF6),) else None)
     registrations: list[tuple[int, int, int, int]] = []
     registration_positions: list[int] = []
@@ -67,14 +73,14 @@ def find_rex_static_controller_callback_candidate(image: bytes, *, ram_base: int
         if (callback_pointer is None or not callback_pointer & 1 or registrar is None):
             continue
         callback = callback_pointer & ~1
-        table = _controller_registrar_at(image, registrar, default, fb0=fb0)
-        advance = _controller_callback_advance(image, callback)
+        table = (group10_registrar(image, registrar, masks, default) if group10 else _controller_registrar_at(image, registrar, default, fb0=fb0))
+        advance = group10_callback(image, callback) if group10 else _controller_callback_advance(image, callback)
         if (table is not None and _ram_contains(table, 4, ram_base, ram_size) and advance is not None):
             registrations.append((registration, callback, registrar, advance))
     if len(registrations) != 1:
         return rejected(f"row{index:02x}-callback-route-not-unique")
     registration, callback, registrar, advance = registrations[0]
-    table = _controller_registrar_at(image, registrar, default, fb0=fb0)
+    table = (group10_registrar(image, registrar, masks, default) if group10 else _controller_registrar_at(image, registrar, default, fb0=fb0))
     if table is None or not _ram_contains(table, 4, ram_base, ram_size):
         return rejected("registrar-not-closed")
     if fb0:
@@ -152,10 +158,10 @@ def find_rex_static_controller_callback_candidate(image: bytes, *, ram_base: int
     callback_slot = (table if fb0 else masks + 0x0C) + index * 0x1C + 0x14
     if not _ram_contains(callback_slot, 4, ram_base, ram_size):
         return rejected(f"row{index:02x}-callback-slot-invalid")
-    callback_shape = rex_legacy_5ms_callback_shape_at(image, callback)
+    callback_shape = ('group10-timer-list' if group10 else rex_legacy_5ms_callback_shape_at(image, callback))
     if callback_shape is None:
         return rejected("legacy-callback-validator-not-closed")
-    if not fb0:
+    if not fb0 and not group10:
         full_span = _c80_full_handler_span(image, handler, masks, wrapper, ram_base, ram_size)
         if full_span == 0:
             return rejected("controller-handler-full-span-not-closed")
@@ -219,7 +225,7 @@ def find_rex_static_controller_callback_candidate(image: bytes, *, ram_base: int
         "handler_validation_size": handler_validation_size,
         "wrapper_validation_size": wrapper_size,
         "callback_delta": 5,
-        "callback_validation_size": REX_LEGACY_5MS_CALLBACK_SIZE,
+        "callback_validation_size": 0x54 if group10 else REX_LEGACY_5MS_CALLBACK_SIZE,
         "callback_validation_shape": callback_shape,
         **({
             "promotion": "experimental-only" if fb0 else "temporary-evidence-gated",

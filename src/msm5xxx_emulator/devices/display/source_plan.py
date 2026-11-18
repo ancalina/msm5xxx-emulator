@@ -11,6 +11,7 @@ from .dcs_window import DcsWindow
 from .indexed28 import Indexed28
 from .indexed44 import Indexed44
 from .indexed1c import Indexed1C
+from .padded_gray import PaddedGray
 
 
 def apply_source_plan(decoder, plan):
@@ -20,7 +21,8 @@ def apply_source_plan(decoder, plan):
             choices = dict(capability.parameters)
     factories = {'paired': PairedPage, 'byte-paired': lambda: PairedPage(width=120, access_width=1),
                  'mono': MonoPage, 'offset-mono': OffsetMonoPage, 'row565': Row565,
-                 'binary': BinaryWindow, 'reverse565': Reverse565, 'packed12': SourcePacked12}
+                 'binary': BinaryWindow, 'reverse565': Reverse565, 'packed12': SourcePacked12,
+                 'padded-gray': PaddedGray}
     decoder._lcd_packed_window2 = PackedWindow2() if choices.get('packed2') else False
     decoder._lcd_source_packed_cursor = SourcePackedCursor() if choices.get('cursor') else False
     factory = factories.get(choices.get('page'))

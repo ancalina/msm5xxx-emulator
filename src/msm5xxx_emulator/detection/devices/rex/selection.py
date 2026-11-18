@@ -73,7 +73,8 @@ def project_controller(self, machine, detector_image):
     return machine
 
 def loaded_controller_matches(self, loaded, limit, controller):
-    return not (self.rex_c80_profile is not None and isinstance(controller, dict) and controller.get('vector_source_chain') is not None and
+    return not (self.rex_c80_profile is not None and isinstance(controller, dict) and (controller.get('vector_source_chain') is not None or
+        controller.get('callback_validation_shape') == 'group10-timer-list') and
         find_rex_static_controller_callback_candidate(loaded[:limit], ram_base=self.config.ram_base, ram_size=self.config.ram_size) != controller)
 
 def revalidate_loaded_stack(self, machine, original, loaded):
