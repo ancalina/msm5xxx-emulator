@@ -4,6 +4,37 @@ from msm5xxx_emulator.detection.facts import facts_for
 import struct
 from msm5xxx_emulator.core.config import BoardStatusInput
 
+# GPIO+0xC bit 2: high skips the UART framed downloader.
+_HALFWORD_BOOT_DOWNLOAD = bytes.fromhex(
+    "00b5042088820020088101300004000c6428fadb8889c008"
+)
+
+
+def halfword_boot_download_input_at(image: bytes, at: int) -> BoardStatusInput | None:
+    """Close a halfword GPIO+0xC bit2 gate into the UART framed downloader."""
+    if at < 2 or at & 1 or at + 0x30 > len(image):
+        return None
+    if image[at:at + len(_HALFWORD_BOOT_DOWNLOAD)] != _HALFWORD_BOOT_DOWNLOAD:
+        return None
+    branch = struct.unpack_from("<H", image, at + 0x18)[0]
+    if branch & 0xFF00 != 0xD200 or (branch & 0xFF) < 4:
+        return None
+    if (facts_for(image).thumb_literal_value(at - 2, 1) != 0x03000660 or
+            struct.unpack_from("<HH", image, at + 0x1C) != (0x8208, 0x8088)):
+        return None
+    hello = facts_for(image).thumb_call_target(at + 0x20)
+    veneer = facts_for(image).thumb_call_target(at + 0x24)
+    if (hello is None or hello & 1 or hello + 0x40 > len(image) or
+            veneer is None or veneer & 3 or veneer + 8 > len(image)):
+        return None
+    if (0x227E not in struct.unpack_from("<32H", image, hello) or
+            struct.unpack_from("<HHI", image, veneer) != (0x4778, 0, 0xE321F0D3)):
+        return None
+    if struct.unpack_from("<HHH", image, at + 0x28) != (0x2000, 0xBC08, 0x4718):
+        return None
+    return BoardStatusInput(0x0300066C, 4, 4)
+
+
 def boot_download_input_at(image: bytes, at: int) -> BoardStatusInput | None:
     if at < 0 or at & 1 or at + 0x1C > len(image):
         return None
@@ -54,6 +85,9 @@ def find_boot_download_inputs(image: bytes) -> set[BoardStatusInput]:
     marker = struct.pack('<H', 0xB500)  # PUSH {lr}.
     while (at := image.find(marker, at)) >= 0:
         result = boot_download_input_at(image, at)
+        if result is not None:
+            found.add(result)
+        result = halfword_boot_download_input_at(image, at)
         if result is not None:
             found.add(result)
         at += 2
