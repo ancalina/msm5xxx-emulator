@@ -618,6 +618,17 @@ class StaticControllerCandidateTests(unittest.TestCase):
         self.assertFalse(c80["active"])
         self.assertNotIn("time_tick_control_address", c80)
 
+    def test_fb0_closed_route_auto_admits_without_experimental_flag(self) -> None:
+        from msm5xxx_emulator.qemu.transport import c80_rex_irq_profile
+        path = firmware_path() / "incoming-20260914/KTF-X3300.bin"
+        config = detect(path)
+        self.assertEqual(config.rex_static_controller_candidate["promotion"],
+                         "experimental-only")
+        self.assertEqual(
+            c80_rex_irq_profile(config, False),
+            "3000fb0:3000fc4:200:4c4b40:1000000:231994:10a5788:a9444:182:1003078:b480",
+        )
+
     def test_c80_group10_relocated_vector_three_peer_topology(self) -> None:
         root = firmware_path()
         expected = {

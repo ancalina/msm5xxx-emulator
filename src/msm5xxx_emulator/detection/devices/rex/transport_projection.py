@@ -44,7 +44,10 @@ def c80_rex_irq_profile(config: object, enabled: bool) -> str | None:
     automatic = (signature == 'static-c80-controller-callback-v1' and fields_match(candidate, (('promotion', 'temporary-evidence-gated'), ('status_bank_count',
         2), ('pending_read_semantics', 'latched-read'), ('pending_ack_semantics', 'write-one-to-clear'), ('time_tick_status_bank', 50334848), ('time_tick_clear_bank',
         50334848), ('time_tick_mask', 512))) and (candidate.get('group_row_size') in (10, 12)))
-    if not enabled and not automatic:
+    automatic_fb0 = (signature == "static-fb0-controller-callback-v1" and fields_match(candidate, (('promotion', 'experimental-only'), ('status_bank_count', 2),
+        ('pending_read_semantics', 'latched-read'), ('pending_ack_semantics', 'write-one-to-clear'), ('time_tick_status_bank', 50335664), ('time_tick_clear_bank',
+        50335664), ('time_tick_mask', 512), ('group_row_size', 10), ('time_tick_control_address', 0x030006E0), ('handler_validation_size', 0x182),)))
+    if not enabled and not automatic and not automatic_fb0:
         return None
     fb0 = signature == "static-fb0-controller-callback-v1"
     overlay = signature == "static-c80-overlay-controller-callback-v1"

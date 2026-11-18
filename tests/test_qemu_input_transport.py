@@ -3340,7 +3340,7 @@ class QEMUInputTransportTests(unittest.TestCase):
         candidate["vector_target"] = 0x02000000
         self.assertIsNone(MODULE.c80_rex_irq_profile(config, True))
 
-        # The arm-gated FB0 variant is explicit-only, even with closed topology.
+        # Closed FB0 auto-admits the same profile as the explicit arm.
         status = 0x03000FB0
         candidate.update({
             "signature": "static-fb0-controller-callback-v1",
@@ -3356,9 +3356,12 @@ class QEMUInputTransportTests(unittest.TestCase):
             "time_tick_control_address": 0x030006E0,
             "handler_validation_size": 0x182,
         })
-        self.assertIsNone(MODULE.c80_rex_irq_profile(config, False))
         self.assertEqual(
+            MODULE.c80_rex_irq_profile(config, False),
             MODULE.c80_rex_irq_profile(config, True),
+        )
+        self.assertEqual(
+            MODULE.c80_rex_irq_profile(config, False),
             "3000fb0:3000fc4:200:4c4b40:1800000:1000:1801000:"
             "2000:182:1802000:3000",
         )
