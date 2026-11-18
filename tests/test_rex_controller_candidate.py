@@ -486,6 +486,40 @@ class StaticControllerCandidateTests(unittest.TestCase):
             assert rejected is not None
             self.assertFalse(rejected["accepted"])
 
+    def test_620_w1c_inline_idle_8call_closes(self) -> None:
+        path = firmware_path("incoming-20261117", "SPH-X2509.bin")
+        image = path.read_bytes()
+        candidate = find_rex_static_controller_callback_candidate(
+            image, **RAM_5000
+        )
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate["accepted"])
+        self.assertEqual(candidate["controller_class"],
+                         "legacy-msm5000-620-two-bank-w1c-8call-v1")
+        self.assertEqual(candidate["handler_validation_size"], 0x154)
+        self.assertEqual(tuple(candidate[field] for field in (
+            "vector_target", "handler_file_offset",
+            "callback_file_offset", "handler_slot", "callback_slot",
+        )), (0x01180000, 0x000B51B0, 0x00021C80, 0x01181CF8, 0x0118330C))
+        from msm5xxx_emulator.qemu.transport import w1c_rex_irq_profile
+        config = detect(path)
+        self.assertEqual(w1c_rex_irq_profile(config),
+                         "3000620:3000628:30006e0:200:4c4b40")
+        mutations = {
+            "handler-body": (candidate["handler_file_offset"] + 0x20, bytes(2)),
+            "lock-body": (0x1ACA80 + 8, bytes(4)),
+            "trampoline": (0x1F8C, bytes(2)),
+            "table-literal": (candidate["registrar_file_offset"] + 0x28, bytes(2)),
+        }
+        for label, (offset, replacement) in mutations.items():
+            with self.subTest(label=label):
+                changed = bytearray(image)
+                changed[offset:offset + len(replacement)] = replacement
+                result = find_rex_static_controller_callback_candidate(
+                    changed, **RAM_5000)
+                self.assertTrue(result is None or not result["accepted"])
+
     def test_fb0_exact_copied_route_is_experimental_and_fails_closed(self) -> None:
         root = firmware_path()
         image = (root / "incoming-20260914/KTF-X3300.bin").read_bytes()

@@ -69,9 +69,16 @@ def legacy_rex_timer_advance_at(image: bytes, position: int) -> bool:
 def _controller_timer_advance_at(image: bytes, position: int) -> bool:
     """Close the legacy walker to its timer callback fanout call."""
     from . import facts_for, legacy_rex_timer_advance_at, struct
-    if (not legacy_rex_timer_advance_at(image, position) or position + 0x60 > len(image)):
+    if position < 0 or position + 0x60 > len(image):
         return False
-    calls = [offset for offset in range(position, position + 0x58, 2) if struct.unpack_from("<2H", image, offset)[:2] == (0x68F8, 0x6939) and facts_for(image).thumb_call_target(offset
+    # The cursor may be r7 (str r0,[r7,#8] after movs r0,#0) or r5 (str r6,[r5,#8]
+    # after movs r6,#0). Both walk remaining==0 entries and call the same fanout.
+    renamed = (image[position:position + 2] == b"\xf0\xb5" and b"\xa0\x42" in image[position:position + 0x30] and b"\x00\x26" in image[position:position + 0x38]
+        and b"\xae\x60" in image[position:position + 0x38])
+    if not (legacy_rex_timer_advance_at(image, position) or renamed):
+        return False
+    pairs = ((0x68F8, 0x6939), (0x68E8, 0x6929))
+    calls = [offset for offset in range(position, position + 0x58, 2) if struct.unpack_from("<2H", image, offset)[:2] in pairs and facts_for(image).thumb_call_target(offset
         + 4) is not None]
     return len(calls) == 1
 
@@ -171,14 +178,22 @@ def _controller_registrar_at(image: bytes, position: int, default: int, *, fb0: 
 def _controller_callback_advance(image: bytes, position: int,) -> int | None:
     """Return the unique direct 5-unit legacy timer advance from callback."""
     from . import _controller_timer_advance_at, facts_for, struct
-    if position < 0 or position + 0x40 > len(image):
+    if position < 0 or position + 0x44 > len(image):
         return None
     advances: list[int] = []
     for offset in range(position, position + 0x38, 2):
-        if (struct.unpack_from("<3H", image, offset) != (0x3805, 0x6008, 0x2005)):
+        words = struct.unpack_from("<3H", image, offset)
+        if words == (0x3805, 0x6008, 0x2005):
+            follow_at = offset + 10
+        elif words == (0x3905, 0x6001, 0x2005):
+            # Remaining in r1, pointer in r0; movs r1,#5 may follow one ldr.
+            follow_at = offset + 10
+            if struct.unpack_from("<H", image, follow_at)[0] != 0x2105:
+                follow_at = offset + 12
+        else:
             continue
         advance = facts_for(image).thumb_call_target(offset + 6)
-        if (advance is not None and struct.unpack_from("<H", image, offset + 10)[0] == 0x2105 and _controller_timer_advance_at(image, advance)):
+        if (advance is not None and struct.unpack_from("<H", image, follow_at)[0] == 0x2105 and _controller_timer_advance_at(image, advance)):
             advances.append(advance)
     return advances[0] if len(advances) == 1 else None
 

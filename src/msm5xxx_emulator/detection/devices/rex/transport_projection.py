@@ -159,7 +159,7 @@ def _legacy_620_rex_irq_profile(config: object, enabled: bool, classes: dict[str
         candidate.get("pending_ack_semantics") != "write-one-to-clear") or tuple(candidate.get("mask_output_banks", ())) != (enable, enable + 4) or tuple(candidate.get("controller_aperture",
         ())) != (status, enable + 8) or vector_target & 3 or not ram_base <= vector_target <= ram_end - 4 or copy_size <= 0 or vector_target + copy_size >
         ram_end or copy_source < 0 or copy_source + copy_size > flash_size or not copy_source <= descriptor or descriptor + 0x1C > copy_source + copy_size or
-        descriptor_runtime != vector_target + descriptor - copy_source or descriptor_runtime != mask_table + 8 + 0x1C * 0x1C or callback_slot !=
+        descriptor_runtime != vector_target + descriptor - copy_source or descriptor_runtime not in (mask_table + 8 + 0x1C * 0x1C, mask_table + 0xC + 0x1C * 0x1C) or callback_slot !=
         descriptor_runtime + 0x14 or any(address & 3 or not ram_base <= address <= ram_end - 4 for address in (handler_slot, callback_slot)) or wrapper & 3 or
         handler & 1 or callback & 1 or any(not 0 <= address < flash_size for address in (wrapper, handler, callback)) or any(size <= 0 or address + size >
         flash_size for address, size in ((wrapper, wrapper_size), (handler, handler_size), (callback, callback_size),))):

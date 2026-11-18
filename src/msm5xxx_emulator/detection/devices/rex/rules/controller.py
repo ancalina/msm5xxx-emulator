@@ -97,9 +97,21 @@ def _find_rex_620_static_controller_callback_candidate(image: bytes, *, ram_base
              (0x06, 0x20, 0x66)),
             0x26, "latched-read", "temporary-evidence-gated",
         ),
+        (
+            "7ef78b07b5b47fd76e6cc11ce6851d24bd5f8128881b01e905ae8ef6d13ec5e4",
+            (0x38, 0x44, 0x56, 0xC8, 0xEA, 0x112, 0x14E),
+        ): (
+            "legacy-msm5000-620-two-bank-w1c-8call-v1", 12,
+            0x70,
+            ("6b66b1c4d5eb08b51031162960f9a99a1fa9436c51de475d74a7089745ee8e43",
+             (0x06, 0x20, 0x68)),
+            0x28, "latched-read", "temporary-evidence-gated",
+        ),
     }
     handler_size = 0x178
     profile = handler_profiles.get(handler_shape)
+    if profile is not None and handler_shape[0] == "7ef78b07b5b47fd76e6cc11ce6851d24bd5f8128881b01e905ae8ef6d13ec5e4":
+        handler_size = 0x154
     # Complete callback-then-W1C dispatchers, ending at BX r3.
     # Both walk three priority groups; the row stride is part of the code shape.
     # Unlike the older profiles, exclude the following literal pool.
@@ -131,6 +143,21 @@ def _find_rex_620_static_controller_callback_candidate(image: bytes, *, ram_base
         if any(not _ram_contains(facts_for(image).thumb_literal_value(handler + offset, register) or 0, 2, ram_base, ram_size) for offset, register in ((0x34, 0),
             (0x14A, 1))):
             return rejected("two-bank-w1c-state-outside-ram")
+    elif handler_size == 0x154:
+        calls = {offset: facts_for(image).thumb_call_target(handler + offset) for offset in (0x38, 0x44, 0x56, 0xC8, 0xEA, 0x112, 0x14E)}
+        trampoline = calls[0xEA]
+        if (any(p is None or p & 1 or not 0 <= p <= len(image) - 2 for p in calls.values()) or trampoline is None or not _thumb_bx_r0_trampoline(image, trampoline) or calls[0x112]
+            != trampoline or calls[0x38] != calls[0xC8] or calls[0x56] != calls[0x14E]):
+            return rejected("two-bank-w1c-call-route-not-closed")
+        for offset, instruction in ((0x38, 0xE3C010C0), (0x56, 0xE38010C0)):
+            helper = _arm_thumb_veneer_landing(image, calls[offset] or 0)
+            bodies = [bytes.fromhex("78470000") + struct.pack("<" + "I" * len(words), *words) for words in ((0xE38EE001, 0xE10F0000, instruction, 0xE121F001,
+                0xE20000C0, 0xE12FFF1E), (0xE10F0000, instruction, 0xE121F001, 0xE20000C0, 0xE12FFF1E))]
+            if helper is None or helper & 3 or not any(image[helper:helper + len(expected)] == expected for expected in bodies):
+                return rejected("two-bank-w1c-irq-lock-not-closed")
+        if any(not _ram_contains(facts_for(image).thumb_literal_value(handler + offset, register) or 0, 2, ram_base, ram_size) for offset, register in ((0x3C, 0),
+            (0x6C, 0))):
+            return rejected("two-bank-w1c-state-outside-ram")
     if profile is None:
         return rejected("two-bank-read-consume-handler-not-closed")
     (controller_class, group_row_size, registrar_size, registrar_expected, table_at, pending_read_semantics, promotion) = profile
@@ -138,8 +165,12 @@ def _find_rex_620_static_controller_callback_candidate(image: bytes, *, ram_base
         semantic_limit = ("two-peer clear/write route with a 5-unit service callback; " "physical tick source remains approximated")
         if handler_size == 0x15A:
             semantic_limit = ("closed callback-then-W1C route with a 5-unit service callback; " "physical tick source remains approximated; idle unproven")
-        literal_checks = ((0x00, 2, masks), (0x0E, 7, status), (0x12, 2, masks), (0x48, 1, descriptor_runtime + 0x1C), (0x6C, 2, masks), (0x70, 7, status), (0x9C,
-            1, masks), (0xA4, 3, status), (0xC8, 1, status), (0xCE, 3, status), (0xF2, 1, status), (0x12A, 7, masks), (0x13E, 1, status),)
+        if handler_size == 0x154:
+            literal_checks = ((0x04, 2, masks), (0x0E, 2, masks), (0x14, 7, status), (0x4E, 7, masks), (0x60, 1, status), (0x82, 1, descriptor_runtime + 0x1C),
+                (0xA8, 2, masks), (0xAC, 7, status), (0xD6, 1, masks + 0xC), (0xD8, 3, enable), (0xFA, 1, status), (0x104, 3, enable + 4), (0x122, 1, status),)
+        else:
+            literal_checks = ((0x00, 2, masks), (0x0E, 7, status), (0x12, 2, masks), (0x48, 1, descriptor_runtime + 0x1C), (0x6C, 2, masks), (0x70, 7, status), (0x9C,
+                1, masks), (0xA4, 3, status), (0xC8, 1, status), (0xCE, 3, status), (0xF2, 1, status), (0x12A, 7, masks), (0x13E, 1, status),)
     else:
         if promotion == "temporary-evidence-gated":
             semantic_limit = ("ordered status-read, callback, return, and next-tick cadence " "closed for this exact handler class; handset idle remains "
@@ -176,12 +207,13 @@ def _find_rex_620_static_controller_callback_candidate(image: bytes, *, ram_base
     if len(ticks) != 1:
         return rejected("row1c-callback-route-not-unique")
     callback, advance, registrar, table = ticks[0]
-    if table != masks + 8:
+    if table != (masks + 0xC if handler_size == 0x154 else masks + 8):
         return rejected("descriptor-table-mask-relation-mismatch")
     callback_slot = table + 0x1C * 0x1C + 0x14
     if descriptor_runtime != callback_slot - 0x14:
         return rejected("descriptor-runtime-row-relation-mismatch")
-    if facts_for(image).thumb_literal_value(handler + 0x48, 1) != callback_slot + 8:
+    table_literal_at = 0x82 if handler_size == 0x154 else 0x48
+    if facts_for(image).thumb_literal_value(handler + table_literal_at, 1) != callback_slot + 8:
         return rejected("handler-callback-table-not-closed")
     wrapper_prefix = struct.pack("<4I", 0xE24EE004, 0xE92D540F, 0xE14F0000, 0xE92D0001)
     wrappers: list[tuple[int, int, int]] = []
