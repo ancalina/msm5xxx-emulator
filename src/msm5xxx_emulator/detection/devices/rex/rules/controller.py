@@ -1,4 +1,28 @@
 from __future__ import annotations
+import struct
+
+_BX_R0 = b"\x00\x47"
+_ARM_THUMB_VENEER = bytes.fromhex("7847c04600c09fe51cff2fe1")
+
+
+def _arm_thumb_veneer_landing(image: bytes, address: int) -> int | None:
+    """Return the Thumb landing of one ARM interworking veneer, or address as-is."""
+    if not 0 <= address <= len(image) - 2 or address & 1:
+        return None
+    if address & 3 or address + 16 > len(image) or image[address:address + 12] != _ARM_THUMB_VENEER:
+        return address
+    target = struct.unpack_from("<I", image, address + 12)[0]
+    landing = target & ~1
+    if target & 1 and 0 <= landing <= len(image) - 2:
+        return landing
+    return None
+
+
+def _thumb_bx_r0_trampoline(image: bytes, address: int) -> bool:
+    """True when a Thumb BL lands on BX r0, including one ARM interworking veneer."""
+    landing = _arm_thumb_veneer_landing(image, address)
+    return landing is not None and image[landing:landing + 2] == _BX_R0
+
 
 def _find_rex_620_static_controller_callback_candidate(image: bytes, *, ram_base: int, ram_size: int,) -> dict[str, object] | None:
     """Close the early 0x620 two-bank route as telemetry-only evidence."""
@@ -93,16 +117,16 @@ def _find_rex_620_static_controller_callback_candidate(image: bytes, *, ram_base
         )
         calls = {offset: facts_for(image).thumb_call_target(handler + offset) for offset in (0x30, 0x90, 0xB6, 0xE0, 0x11C, 0x122, 0x134)}
         trampoline = calls[0xB6]
-        if (any(p is None or p & 1 or not 0 <= p <= len(image) - 2 for p in calls.values()) or image[trampoline: trampoline + 2] != b"\x00\x47" or calls[0xE0]
+        if (any(p is None or p & 1 or not 0 <= p <= len(image) - 2 for p in calls.values()) or trampoline is None or not _thumb_bx_r0_trampoline(image, trampoline) or calls[0xE0]
             != trampoline or calls[0x30] != calls[0x90] or calls[0x11C] != calls[0x134]):
             return rejected("two-bank-w1c-call-route-not-closed")
         for offset, instruction in ((0x30, 0xE3C010C0), (0x11C, 0xE38010C0)):
-            helper = calls[offset]
+            helper = _arm_thumb_veneer_landing(image, calls[offset] or 0)
             # Interworking helpers either tag LR explicitly or return directly
             # with BX LR; both preserve the caller's Thumb return state.
             bodies = [bytes.fromhex("78470000") + struct.pack("<" + "I" * len(words), *words) for words in ((0xE38EE001, 0xE10F0000, instruction, 0xE121F001,
                 0xE20000C0, 0xE12FFF1E), (0xE10F0000, instruction, 0xE121F001, 0xE20000C0, 0xE12FFF1E))]
-            if helper & 3 or not any(image[helper:helper + len(expected)] == expected for expected in bodies):
+            if helper is None or helper & 3 or not any(image[helper:helper + len(expected)] == expected for expected in bodies):
                 return rejected("two-bank-w1c-irq-lock-not-closed")
         if any(not _ram_contains(facts_for(image).thumb_literal_value(handler + offset, register) or 0, 2, ram_base, ram_size) for offset, register in ((0x34, 0),
             (0x14A, 1))):
