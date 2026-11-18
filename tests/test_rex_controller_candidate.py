@@ -520,6 +520,29 @@ class StaticControllerCandidateTests(unittest.TestCase):
                     changed, **RAM_5000)
                 self.assertTrue(result is None or not result["accepted"])
 
+    def test_consume_route_keeps_ack_when_stack_w1c_also_matches(self) -> None:
+        path = firmware_path("SPH-X5900.bin")
+        config = detect(path)
+        from msm5xxx_emulator.qemu.transport import (
+            read_consume_rex_irq_profile, w1c_rex_irq_profile,
+        )
+        consume = read_consume_rex_irq_profile(config, False)
+        self.assertIsNotNone(consume)
+        self.assertIsNone(w1c_rex_irq_profile(config))
+        host = SimpleNamespace(
+            config=config, boot_format_nor_profile=None,
+            rex_a80_plan=None, rex_c80_profile=None,
+            rex_read_consume_profile=None, rex_w1c_profile=None,
+            rex_stack_w1c_profile=None, rex_stack_corrected_automatic=False,
+        )
+        device_domain("rex.selection").select_controller(
+            host, path.read_bytes(), False, None)
+        self.assertEqual(host.rex_read_consume_profile, consume)
+        self.assertIsNone(host.rex_stack_w1c_profile)
+        self.assertFalse(any(
+            "supersedes automatic read-consume" in note
+            for note in (config.detection_notes or ())))
+
     def test_fb0_exact_copied_route_is_experimental_and_fails_closed(self) -> None:
         root = firmware_path()
         image = (root / "incoming-20260914/KTF-X3300.bin").read_bytes()

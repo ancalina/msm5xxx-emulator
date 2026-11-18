@@ -17,14 +17,8 @@ def select_controller(self, detector_image, experimental_c80, source_limit):
         stack_candidate = qemu_stack_w1c_property(detector_image,self.config)
         if self.rex_read_consume_profile is None:
             self.rex_stack_w1c_profile = stack_candidate
-        elif (stack_candidate is not None and not experimental_c80 and not self.config.rex_static_controller_experimental):
-            # Canonical accepted telemetry can reach this branch only
-            # through the exact power-task source proof above. Preserve
-            # explicit controller choices; correct this automatic tag.
-            self.rex_read_consume_profile = None
-            self.rex_stack_corrected_automatic = True
-            self.rex_stack_w1c_profile = stack_candidate
-            self.config.detection_notes.append("source ACK/W1C proof supersedes automatic read-consume telemetry")
+        # A closed consume-on-read handler keeps that ACK. Stack W1C on the
+        # same 0x620 aperture does not change pending-read semantics.
     self.config.rex_static_controller_experimental = (self.rex_c80_profile is not None or self.rex_read_consume_profile is not None)
     return (controller,)
 
