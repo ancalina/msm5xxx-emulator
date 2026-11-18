@@ -161,6 +161,7 @@ int main(void) {
     instructions++;
     assert(read_at(&s, 0x214) & 8);
     assert(s.ready_poll_status == MSM5XXX_POC_READY_ACCEPTED);
+    assert(read_at(&s, 0x214) == 8);
     assert(read_at(&s, 0x1a0) == MSM5XXX_POC_UART_SR_IDLE);
     assert(read_at(&s, 0x1a2) == MSM5XXX_POC_UART_SR_IDLE);
     assert(read_at(&s, 0x333) == MSM5XXX_POC_UART_SR_IDLE); /* Existing allPC contract. */
@@ -172,6 +173,17 @@ int main(void) {
     msm5xxx_poc_ready_pulse_write(&s, 0, 1, 2);
     assert(s.ready_poll_status == MSM5XXX_POC_READY_REJECTED);
     assert(read_at(&s, 0x214) == 0); /* Rejected qualification stays closed. */
+
+    s = fresh();
+    configure(&s, "30007b4:8:3000600:100,2,c,10;f48,0,6,8");
+    instructions = 10;
+    assert(read_at(&s, 0xf48) == 0 && s.ready_poll_phase == 1);
+    pulse_at(&s, 0xf4e, 1); pulse_at(&s, 0xf50, 0);
+    instructions += MSM5XXX_POC_READY_POLL_DELAY;
+    assert(read_at(&s, 0xf48) == 9);
+    assert(s.ready_poll_status == MSM5XXX_POC_READY_ACCEPTED);
+    assert(read_at(&s, 0x102) == 8);
+    assert(read_at(&s, 0x333) == 0);
 
     const char *invalid[] = {
         "", "30007b4:8:3000600:100", "30007b4:8:3000600:100;100",

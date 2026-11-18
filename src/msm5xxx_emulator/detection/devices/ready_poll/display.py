@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 from ...facts import facts_for
 from .helpers import _LCD_HALFWORD_HELPER, _conditional_target, _find_uart_csr_sr_rx_empty_profile, _supplied
-from .semantic import (_find_compact_ready_poll_profile, _find_control_ready_poll_profile, _find_rotated_ready_poll_profile, _find_rotated_uart_csr_sr_profile)
+from .semantic import (_find_compact_ready_poll_profile, _find_control_ready_poll_profile, _find_rotated_ready_poll_profile, _find_rotated_uart_csr_sr_profile, _find_timeout_bit0_ready_poll_profile)
 from .uart_profiles import _find_control_uart_rx_empty_profile
 
 def _find_lcd_halfword_ready_poll_profile(image: bytes) -> dict[str, object] | None:
@@ -73,7 +73,21 @@ def _extract_ready_poll_profile(image: bytes) -> dict[str, object] | None:
         lcd = _find_lcd_halfword_ready_poll_profile(image)
         if lcd is not None:
             profiles.append(lcd)
-    return profiles[0] if len(profiles) == 1 else None
+    if len(profiles) > 1:
+        return None
+    profile = profiles[0] if profiles else None
+    timeout = _find_timeout_bit0_ready_poll_profile(image)
+    if timeout is None:
+        return profile
+    if profile is None:
+        return timeout
+    if profile.get("signature") == "thumb-lcd-halfword-busy-clear-v1" or "pulse_address" not in profile:
+        return profile
+    if any(profile[field] != timeout[field] for field in ("status_address", "pulse_address")):
+        return None
+    return {"signature": "thumb-byte-ready-pulse-variants-v1", "admission": "temporary-evidence-gated", "status_address": profile["status_address"],
+            "mask": profile["mask"], "pulse_address": profile["pulse_address"],
+            "variants": [*profile.get("variants", [profile]), *timeout.get("variants", [timeout])], }
 
 def find_ready_poll_profile(image: bytes) -> dict[str, object] | None:
     """Return a fresh profile copy from the immutable-image cache."""

@@ -137,6 +137,73 @@ def _called_mmio_candidates(facts, isa: str) -> tuple[int, ...]:
         return tuple(sorted(found))
     return facts.memo('ready-poll-mmio-call-candidates', (isa,), extract)
 
+def _semantic_timeout_bit0_member(facts, entry: int) -> list[dict[str, object]] | None:
+    """Bind a called timeout-or-infinite lsrs#1 / bhs byte-ready pulse helper."""
+    owner = CodeAddress(entry, 'thumb')
+    function = facts.function(owner, budget=128, symbolic_registers={})
+    if (not function.complete or function.truncated or function.unresolved or function.calls or not 2 <= len(function.back_edges) <= 4):
+        return None
+    peripheral = _closed_peripheral_accesses(facts, function)
+    if peripheral is None:
+        return None
+    reads = tuple(access for access in peripheral if access.operation == 'read')
+    writes = tuple(access for access in peripheral if access.operation == 'write')
+    if (len(reads) != 2 or len(writes) != 4 or any(access.width != 1 for access in (*reads, *writes)) or reads[0].address != reads[1].address or
+        len({access.address for access in writes}) != 1 or tuple(access.value for access in writes) != (1, 0, 1, 0)):
+        return None
+    status_address, pulse_address = reads[0].address, writes[0].address
+    if (not 0x03000000 <= status_address < 0x04000000 or not 0x03000000 <= pulse_address < 0x04000000 or status_address & 3 or pulse_address & 3 or
+        status_address == pulse_address):
+        return None
+    members: list[dict[str, object]] = []
+    pairs = ((reads[0], writes[0], writes[1]), (reads[1], writes[2], writes[3]))
+    for status, set_pulse, clear_pulse in pairs:
+        read_pc = status.instruction.address
+        branch = None
+        for delta in (2, 4, 6):
+            site = CodeAddress(read_pc + delta, 'thumb', owner.phase, owner.bank)
+            predicate = facts.branch_predicate(function, site)
+            if (predicate is not None and predicate.operation == 'lsr' and predicate.shift == 1 and predicate.condition == a.ARM_CC_HS and
+                len(predicate.read_sources) == 1 and (source := predicate.read_sources[0]).site == status.instruction and source.width == 1 and
+                source.address.kind == 'const' and source.address.value == status_address):
+                branch = site
+                break
+        set_offset = set_pulse.instruction.address - read_pc
+        clear_offset = clear_pulse.instruction.address - read_pc
+        if (branch is None or set_offset & 1 or clear_offset & 1 or set_offset <= 0 or set_offset >= clear_offset or clear_offset > 0x1000 or
+            not function.dominates(status.instruction, branch) or function.linear_path(status.instruction, branch) is None or
+            not function.linear_path(set_pulse.instruction, clear_pulse.instruction) or not function.dominates(set_pulse.instruction, clear_pulse.instruction)):
+            return None
+        members.append({
+            'signature': 'thumb-lsrs-bhs-timeout-pulse-v1', 'admission': 'temporary-evidence-gated', 'status_address': status_address, 'mask': 1,
+            'pulse_address': pulse_address, 'status_read_pc_offset': 0, 'pulse_set_pc_offset': set_offset, 'pulse_clear_pc_offset': clear_offset,
+            'entries': [read_pc],
+        })
+    if len(members) != 2 or members[0]['entries'][0] == members[1]['entries'][0]:
+        return None
+    return members
+
+
+def _find_timeout_bit0_ready_poll_profile(image: bytes) -> dict[str, object] | None:
+    facts = facts_for(image)
+    members: list[dict[str, object]] = []
+    for target in _called_mmio_candidates(facts, 'thumb'):
+        found = _semantic_timeout_bit0_member(facts, target)
+        if found is not None:
+            members.extend(found)
+    if not members:
+        return None
+    contracts = {(member['status_address'], member['pulse_address']) for member in members}
+    entries = [entry for member in members for entry in member['entries']]
+    if len(contracts) != 1 or len(set(entries)) != len(entries):
+        return None
+    first = members[0]
+    if len(members) == 1:
+        return first
+    return {'signature': 'thumb-byte-ready-pulse-variants-v1', 'admission': 'temporary-evidence-gated', 'status_address': first['status_address'],
+            'mask': 1, 'pulse_address': first['pulse_address'], 'variants': members}
+
+
 def _find_compact_ready_poll_profile(image: bytes) -> dict[str, object] | None:
     candidates = [member for member in _semantic_pulse_members(image) if member['signature'] == 'thumb-lsrs-bhs-pulse-v1']
     contracts = {(member['status_address'], member['mask'], member['pulse_address']) for member in candidates}

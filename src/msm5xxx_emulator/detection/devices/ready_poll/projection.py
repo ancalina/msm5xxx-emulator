@@ -12,7 +12,8 @@ _POLL_SITES = ('status_read_pc_offset', 'pulse_set_pc_offset', 'pulse_clear_pc_o
 _CONTROL_FIELDS = (*_POLL_COMMON, 'control_address', 'control_value', *_POLL_SITES, 'control_pc_offset')
 _POLL_PROTOCOLS = { 'thumb-lsrs-bhs-pulse-v1': ('ready-poll', _POLL_COMMON), 'thumb-lsrs-bcc-pulse-rotated-v1': ('ready-poll', (*_POLL_COMMON, *_POLL_SITES)),
     'arm-byte-tx-empty-pulse-v1': ('ready-poll', (*_POLL_COMMON, *_POLL_SITES)), 'thumb-uart-csr-sr-rx-empty-v1': ('ready-poll', (*_POLL_COMMON, *_POLL_SITES,
-    'uart_rx_empty_read_pc_offset')), 'thumb-byte-ready-pulse-control-v1': ('ready-poll-control', _CONTROL_FIELDS),
+    'uart_rx_empty_read_pc_offset')), 'thumb-lsrs-bhs-timeout-pulse-v1': ('ready-poll', (*_POLL_COMMON, *_POLL_SITES)),
+    'thumb-byte-ready-pulse-control-v1': ('ready-poll-control', _CONTROL_FIELDS),
     'thumb-byte-ready-pulse-control-uart-empty-v1': ('ready-poll-control', (*_CONTROL_FIELDS, 'uart_rx_empty_read_pc_offset')),
     'thumb-lcd-halfword-busy-clear-v1': ('lcd-status-poll', ('status_address', 'mask', 'command_address', 'command_value', 'status_read_pc_offset',
     'command_write_pc_offset')), }
@@ -39,9 +40,12 @@ def ready_poll_property(profile: object) -> tuple[str | None, str | None]:
         owned_pcs = set()
         for variant in variants:
             if (not isinstance(variant, dict) or variant.get("signature") not in ("thumb-lsrs-bhs-pulse-v1", "thumb-lsrs-bcc-pulse-rotated-v1",
-                "thumb-uart-csr-sr-rx-empty-v1", "arm-byte-tx-empty-pulse-v1")):
+                "thumb-uart-csr-sr-rx-empty-v1", "arm-byte-tx-empty-pulse-v1", "thumb-lsrs-bhs-timeout-pulse-v1")):
                 return None, "unsupported-variant"
-            if tuple(variant.get(field) for field in fields) != common:
+            if variant.get("signature") == "thumb-lsrs-bhs-timeout-pulse-v1":
+                if (variant.get("status_address"), variant.get("pulse_address")) != (common[0], common[2]) or variant.get("mask") != 1:
+                    return None, "variant-contract-mismatch"
+            elif tuple(variant.get(field) for field in fields) != common:
                 return None, "variant-contract-mismatch"
             argument, reason = ready_poll_property(variant)
             if reason is not None or argument is None:

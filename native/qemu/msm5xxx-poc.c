@@ -2560,6 +2560,13 @@ static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
         s, pc, &entry, &set_offset, &clear_offset
     );
     if (s->ready_poll_status == MSM5XXX_POC_READY_ACCEPTED) {
+        if (primary_read) {
+            s->ready_poll_reads++;
+            s->ready_poll_responses++;
+            /* Timeout lsrs#1 loops are encoded as read_offset 0 (the LDRB). */
+            return s->ready_status_backing | s->ready_status_mask |
+                   ((pc - entry) ? 0u : 1u);
+        }
         if (s->ready_uart_rx_empty_enabled &&
             (!s->ready_poll_control_enabled ||
              pc == s->ready_poll_entry +
@@ -2568,12 +2575,7 @@ static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
             s->ready_poll_responses++;
             return MSM5XXX_POC_UART_SR_IDLE;
         }
-        if (!primary_read) {
-            return s->ready_status_backing;
-        }
-        s->ready_poll_reads++;
-        s->ready_poll_responses++;
-        return s->ready_status_backing | s->ready_status_mask;
+        return s->ready_status_backing;
     }
     if (!primary_read) {
         return s->ready_status_backing;
@@ -2608,7 +2610,8 @@ static uint64_t msm5xxx_poc_ready_status_read(void *opaque, hwaddr offset,
     }
     if (s->ready_poll_status == MSM5XXX_POC_READY_ACCEPTED) {
         s->ready_poll_responses++;
-        return s->ready_status_backing | s->ready_status_mask;
+        return s->ready_status_backing | s->ready_status_mask |
+               ((pc - entry) ? 0u : 1u);
     }
     return s->ready_status_backing;
 }

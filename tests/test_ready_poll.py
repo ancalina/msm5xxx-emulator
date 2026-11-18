@@ -250,6 +250,52 @@ def uart_csr_sr_framed_fixture(status_base: int = 0x030007B0,
     return bytes(code)
 
 
+def timeout_bit0_fixture(status_base: int = 0x030007B0,
+                         pulse: int = 0x03000600) -> bytes:
+    """Called Thumb helper with timeout and infinite lsrs#1 / bhs pulse loops."""
+    code = bytearray(0x50)
+    struct.pack_into("<H", code, 0, 0x2001)  # MOVS r0, #1
+    displacement = 8 - 2 - 4
+    struct.pack_into("<2H", code, 2,
+                     0xF000 | (displacement >> 12 & 0x7FF),
+                     0xF800 | (displacement >> 1 & 0x7FF))
+    struct.pack_into("<H", code, 6, 0x4770)
+    struct.pack_into("<22H", code, 8,
+                     0xB4B0,  # PUSH {r4, r5, r7}
+                     0x4A0D,  # LDR r2, status base at 0x40
+                     0x2701,  # MOVS r7, #1
+                     0x1FD3,  # SUBS r3, r2, #7
+                     0x3BFF,  # SUBS r3, #0xFF
+                     0x3BAA,  # SUBS r3, #0xAA
+                     0x2400,  # MOVS r4, #0
+                     0x2800,  # CMP r0, #0
+                     0xD00C,  # BEQ infinite
+                     0x490A,  # LDR r1, timeout at 0x44
+                     0x7910,  # LDRB r0, [r2, #4]
+                     0x0845,  # LSRS r5, r0, #1
+                     0xD206,  # BHS return
+                     0x701F,  # STRB r7, [r3]
+                     0x701C,  # STRB r4, [r3]
+                     0x3901,  # SUBS r1, #1
+                     0x2900,  # CMP r1, #0
+                     0xDCF7,  # BGT timeout loop
+                     0x2001,  # MOVS r0, #1
+                     0x43C0,  # MVNS r0, r0
+                     0xBCB0,  # POP {r4, r5, r7}
+                     0x4770)  # BX LR
+    struct.pack_into("<6H", code, 8 + 0x2C,
+                     0x7910,  # LDRB r0, [r2, #4]
+                     0x0841,  # LSRS r1, r0, #1
+                     0xD2FA,  # BHS return
+                     0x701F,  # STRB r7, [r3]
+                     0x701C,  # STRB r4, [r3]
+                     0xE7F9)  # B infinite
+    struct.pack_into("<2I", code, 0x40, status_base, 0x000F4240)
+    if pulse != status_base - 0x1B0:
+        raise AssertionError("fixture derives pulse as status_base-0x1B0")
+    return bytes(code)
+
+
 def lcd_halfword_fixture(prefix: bytes = b"") -> bytes:
     helper = len(prefix)
     entry = helper + 22
@@ -427,6 +473,43 @@ class ReadyPollDetectionTests(unittest.TestCase):
         self.assertEqual(profile["signature"],
                          "thumb-lsrs-bcc-pulse-rotated-v1")
         self.assertNotIn("followup_entry", profile)
+
+    def test_timeout_bit0_helper_admits_both_loop_heads(self) -> None:
+        profile = find_ready_poll_profile(timeout_bit0_fixture())
+        self.assertEqual(profile["signature"], "thumb-byte-ready-pulse-variants-v1")
+        self.assertEqual(profile["mask"], 1)
+        self.assertEqual(profile["status_address"], 0x030007B4)
+        self.assertEqual(profile["pulse_address"], 0x03000600)
+        self.assertEqual([member["entries"] for member in profile["variants"]],
+                         [[0x1C], [0x34]])
+        self.assertTrue(all(member["signature"] == "thumb-lsrs-bhs-timeout-pulse-v1"
+                            and member["status_read_pc_offset"] == 0
+                            and member["pulse_set_pc_offset"] == 6
+                            and member["pulse_clear_pc_offset"] == 8
+                            for member in profile["variants"]))
+        from msm5xxx_emulator.detection.devices.ready_poll.projection import ready_poll_property
+        self.assertEqual(ready_poll_property(profile), (
+            "ready-poll-sites=30007b4:1:3000600:1c,,0,,6,,8;34,,0,,6,,8", None))
+        near = bytearray(timeout_bit0_fixture())
+        near[0x20] ^= 1
+        self.assertIsNone(find_ready_poll_profile(bytes(near)))
+
+    def test_timeout_bit0_joins_rotated_uart_as_extra_sites(self) -> None:
+        image = arithmetic_rotated_fixture() + timeout_bit0_fixture()
+        profile = find_ready_poll_profile(image)
+        self.assertEqual(profile["signature"], "thumb-byte-ready-pulse-variants-v1")
+        self.assertEqual(profile["mask"], 8)
+        signatures = [member["signature"] for member in profile["variants"]]
+        self.assertEqual(signatures[0], "thumb-lsrs-bcc-pulse-rotated-v1")
+        self.assertEqual(signatures[1:], ["thumb-lsrs-bhs-timeout-pulse-v1",
+                                          "thumb-lsrs-bhs-timeout-pulse-v1"])
+        from msm5xxx_emulator.detection.devices.ready_poll.projection import ready_poll_property
+        serialized, reason = ready_poll_property(profile)
+        self.assertIsNone(reason)
+        base = len(arithmetic_rotated_fixture())
+        self.assertTrue(serialized.startswith("ready-poll-sites=30007b4:8:3000600:"))
+        self.assertIn(f"{base + 0x1C:x},,0,,6,,8", serialized)
+        self.assertIn(f"{base + 0x34:x},,0,,6,,8", serialized)
 
     def test_arithmetic_rotated_poll_requires_closed_producer_and_unique_caller(self) -> None:
         for subtract, pulse, status in (
