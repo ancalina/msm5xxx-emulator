@@ -12,6 +12,21 @@ import struct
 
 _BYTE_GPIO_PROFILE = (0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000)
 
+def _lock_wrapped_shadow_gpio(image: bytes, write: int, read: int) -> bool:
+    """IRQ-lock shadow-copy of the f7f6 byte pins; writer is 4 bytes closer."""
+    if read - write != 0x6D8:
+        return False
+    writer, ack, reader = write - 0x168, write - 0x216, read - 0x754
+    if min(writer, ack, reader) < 0:
+        return False
+    shapes = ((writer, bytes.fromhex("f0b580260725071c")), (writer + 0x1A, bytes.fromhex("01230a781a430a70")),
+        (writer + 0x3C, bytes.fromhex("2023117819431170")), (writer + 0x60, bytes.fromhex("99431170")), (ack + 0x0A,
+        bytes.fromhex("3178490849003170")), (ack + 0x14, bytes.fromhex("29720028")), (reader, bytes.fromhex("f0b50027")),
+        (reader + 0x12, bytes.fromhex("184a202311781943")), (reader + 0x36, bytes.fromhex("400803d301203843")),)
+    literals = ((writer + 0x24, 2, 0x03000660), (writer + 0x46, 2, 0x03000660), (ack + 0x08, 5, 0x03000670),
+        (reader + 0x04, 6, 0x03000664),)
+    return _code_shapes_match(image, shapes) and _literal_values_match(image, literals)
+
 def _select_eeprom_gpio_profile(image: bytes, config: object,) -> tuple[tuple[int, int, int, int, int, int, int] | None, str | None]:
     """Return one detector-closed 24LCxx GPIO descriptor or reject reason."""
     read = getattr(config, "eeprom_read_address", None)
@@ -95,8 +110,10 @@ def _select_eeprom_gpio_profile(image: bytes, config: object,) -> tuple[tuple[in
         return (0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None
     if not common:
         return None, "transport-entry-signature-mismatch"
-    gpio = struct.pack("<II", 0x03000660, 0x03000670)
-    if (not all(value in image[write:write + 0x700] for value in (gpio[:4], gpio[4:])) or not all(value in image[read:read + 0x700] for value in (gpio[:4], gpio[4:]))):
+    if _lock_wrapped_shadow_gpio(image, write, read):
+        return _BYTE_GPIO_PROFILE, None
+    gpio = struct.pack("<III", 0x03000660, 0x03000668, 0x03000670)
+    if (not all(value in image[write:write + 0x700] for value in (gpio[:4], gpio[4:8], gpio[8:])) or not all(value in image[read:read + 0x700] for value in (gpio[:4], gpio[4:8], gpio[8:]))):
         return None, "gpio-line-shape-mismatch"
     literal = struct.pack("<I", geometry)
     for position in range(0, len(image) - 3, 4):

@@ -2664,6 +2664,24 @@ class QEMUInputTransportTests(unittest.TestCase):
             (None, "gpio-line-shape-mismatch"),
         )
 
+    def test_eeprom_gpio_profile_accepts_lock_wrapped_shadow_gpio(self) -> None:
+        path = firmware_path("incoming-20261117", "SPH-X2509.bin")
+        image = path.read_bytes()
+        config = SimpleNamespace(
+            eeprom_read_address=494788, eeprom_write_address=493036,
+            eeprom_geometry_address=18355568, load_address=0,
+        )
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(image, config),
+            ((0x03000660, 4, 1, 0, 0x20, 0x18, 0x8000), None),
+        )
+        changed = bytearray(image)
+        changed[(493036 - 0x168) + 0x3C] ^= 1
+        self.assertEqual(
+            MODULE.eeprom_gpio_profile(bytes(changed), config),
+            (None, "gpio-line-shape-mismatch"),
+        )
+
     def test_eeprom_gpio_profile_accepts_f6f7_protocol_class(self) -> None:
         image = bytearray(b"\xff" * 0x4000)
         write, read, initializer = 0x1000, 0x16D0, 0x2400
