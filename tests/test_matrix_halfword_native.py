@@ -193,7 +193,7 @@ typedef struct {
     unsigned eeprom_data_offset, eeprom_data_mask, eeprom_clock_offset;
     unsigned eeprom_clock_mask, eeprom_direction_offset;
     uint8_t eeprom_gpio_backing[MSM5XXX_POC_EEPROM_GPIO_SIZE];
-    int eeprom_i2c;
+    struct { int state; } eeprom_i2c;
 } MSM5xxxPOCMachineState;
 typedef struct { uint64_t ram_size; } MachineState;
 static MachineState machine_state={.ram_size=0x800000};
@@ -223,6 +223,7 @@ static char *g_strdup_printf(const char *format, ...) {
 }
 #define BITBANG_I2C_SDA 0
 #define BITBANG_I2C_SCL 1
+#define STOPPED 0
 static unsigned bitbang_calls;
 static bool external_sda = true;
 static bool track_edges, bus_scl, bus_sda;
@@ -580,6 +581,7 @@ int main(void) {
     /* Actual EEPROM handlers own selector/sense backing, not its stale MSM copy. */
     s = copy; s.cpu = &cpu_state;
     s.eeprom_gpio_enabled = true; s.eeprom_gpio_base = 0x3000720;
+    s.eeprom_i2c.state = 1;
     s.eeprom_data_offset = 0; s.eeprom_data_mask = 0x20;
     s.eeprom_clock_offset = 0; s.eeprom_clock_mask = 0x40;
     s.eeprom_direction_offset = 0xc;
@@ -627,6 +629,14 @@ int main(void) {
     assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == (0x6ddf & ~0x20));
     s.eeprom_sda = true;
     assert(msm5xxx_poc_matrix_halfword_read(&s,0,2) == (0x6ddf | 0x20));
+    /* Idle bus returns the latch, including a set data bit. */
+    s.eeprom_data_offset = 0;
+    s.eeprom_i2c.state = STOPPED;
+    s.eeprom_gpio_backing[0] = 0x20; s.eeprom_sda = false;
+    assert(msm5xxx_poc_halfword_backing_read(&s,0x720,1) == 0x20);
+    s.eeprom_sda = true;
+    assert(msm5xxx_poc_halfword_backing_read(&s,0x720,1) == 0x20);
+    s.eeprom_i2c.state = 1;
     s.eeprom_data_offset = 0;
     pc = 0;
     bitbang_calls = 0;
@@ -721,6 +731,7 @@ int main(void) {
     contact.matrix_input_pressed = false; pc = contact.experimental_matrix_contact_site;
 
     contact.eeprom_gpio_enabled = true; contact.eeprom_gpio_base = 0x3000720;
+    contact.eeprom_i2c.state = 1;
     contact.eeprom_data_offset = 0xc; contact.eeprom_data_mask = 0x20;
     contact.eeprom_clock_offset = 0; contact.eeprom_clock_mask = 0x40;
     contact.eeprom_direction_offset = 0xc;
@@ -944,6 +955,7 @@ int main(void) {
     assert(!msm5xxx_poc_matrix_gpio_conflict(&s));
     property=msm5xxx_poc_get_matrix_input(&s,&err); assert(!*property); free(property);
     s.eeprom_gpio_enabled=true; s.eeprom_gpio_base=0x3000660;
+    s.eeprom_i2c.state = 1;
     s.eeprom_data_offset=8; s.eeprom_data_mask=8;
     s.eeprom_clock_offset=12; s.eeprom_clock_mask=1;
     s.eeprom_direction_offset=28;
@@ -1008,6 +1020,7 @@ int main(void) {
     msm5xxx_poc_set_matrix_gpio(&s,"3000694:801fc:80442:300066c:66:3000668:6:3000664:80",&err);
     assert(!err && s.matrix_input_rows==7);
     s.eeprom_gpio_enabled=true; s.eeprom_gpio_base=0x3000660;
+    s.eeprom_i2c.state = 1;
     s.eeprom_data_offset=8; s.eeprom_data_mask=8;
     s.eeprom_clock_offset=12; s.eeprom_clock_mask=1;
     s.eeprom_direction_offset=28;
@@ -1044,6 +1057,7 @@ int main(void) {
     property=msm5xxx_poc_get_matrix_gpio(&s,&err);
     assert(!strcmp(property,sideband_gpio)); free(property);
     s.eeprom_gpio_enabled=true; s.eeprom_gpio_base=0x3000660;
+    s.eeprom_i2c.state = 1;
     s.eeprom_data_offset=8; s.eeprom_data_mask=8;
     s.eeprom_clock_offset=12; s.eeprom_clock_mask=1;
     s.eeprom_direction_offset=28;

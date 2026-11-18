@@ -7452,7 +7452,11 @@ static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset,
         return 0;
     }
     value = msm5xxx_poc_backing_read(s->eeprom_gpio_backing, offset, size);
-    if (offset <= s->eeprom_data_offset &&
+    /* Idle reads return the latch. SDA replaces that bit only after START,
+     * so an open-drain ACK or read bit is visible without changing the
+     * register value seen before the guest begins a transfer. */
+    if (s->eeprom_i2c.state != STOPPED &&
+        offset <= s->eeprom_data_offset &&
         s->eeprom_data_offset < offset + size) {
         unsigned shift = (s->eeprom_data_offset - offset) * 8;
 

@@ -33,6 +33,8 @@ typedef uint64_t hwaddr;
 #define MSM5XXX_POC_MSM_BASE 0x03000000
 #define BITBANG_I2C_SDA 0
 #define BITBANG_I2C_SCL 1
+#define STOPPED 0
+typedef struct { int state; } bitbang_i2c_interface;
 typedef struct CPUState { bool running; struct { bool can_do_io; } neg; } CPUState;
 typedef struct { uint64_t (*get_pc)(CPUState *); } CPUClass;
 static uint64_t get_pc(CPUState *cpu) { (void)cpu; return 0; }
@@ -48,13 +50,14 @@ typedef struct {
  unsigned experimental_matrix_status_site,matrix_input_descriptor;
  unsigned experimental_matrix_status_level,matrix_input_rejections;
  bool experimental_matrix_status_enabled;
- int eeprom_sda,eeprom_i2c;
+ int eeprom_sda;
+ bitbang_i2c_interface eeprom_i2c;
  CPUState *cpu;
 } MSM5xxxPOCMachineState;
 static uint32_t msm5xxx_poc_guest_u32(unsigned address) { (void)address; return 0; }
 static bool external_sda, lines[2];
 static unsigned calls;
-static int bitbang_i2c_set(int *bus,unsigned pin,bool value) {
+static int bitbang_i2c_set(bitbang_i2c_interface *bus,unsigned pin,bool value) {
  (void)bus; assert(pin<2); lines[pin]=value; calls++; return external_sda;
 }
 ''' + '\n'.join(function(name) for name in (
@@ -65,6 +68,7 @@ int main(void) {
  MSM5xxxPOCMachineState s={.eeprom_data_offset=8,.eeprom_data_mask=0x10,
   .eeprom_clock_offset=8,.eeprom_clock_mask=8,.eeprom_direction_offset=28};
  for(unsigned i=0;i<32;i++) s.eeprom_gpio_backing[i]=(uint8_t)(i*7);
+ s.eeprom_i2c.state=1;
  for(unsigned output=0;output<2;output++) {
   s.eeprom_gpio_backing[28]=output?0x91:0x81;
   for(unsigned value=0;value<256;value++) {
@@ -103,6 +107,11 @@ int main(void) {
  msm5xxx_poc_eeprom_gpio_write(&s,31,0xdead,2);
  assert(!calls && !memcmp(before,s.eeprom_gpio_backing,32));
  assert(msm5xxx_poc_eeprom_gpio_read(&s,31,2)==0);
+ s.eeprom_i2c.state=STOPPED;
+ s.eeprom_sda=0;
+ assert(msm5xxx_poc_eeprom_gpio_read(&s,8,1)==s.eeprom_gpio_backing[8]);
+ s.eeprom_sda=1;
+ assert(msm5xxx_poc_eeprom_gpio_read(&s,8,1)==s.eeprom_gpio_backing[8]);
  return 0;
 }
 '''
