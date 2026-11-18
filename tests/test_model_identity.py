@@ -199,6 +199,23 @@ class ModelIdentityTests(unittest.TestCase):
         self.assertEqual(detect_model(raw, Path('other.bin')), detect_model(raw, Path('SCH-X123.bin')))
         self.assertEqual(embedded_model_scores(at_only)['LG-CD456'], 2)
 
+    def test_at_revision_identity_needs_swver_slot(self):
+        record = (b'SAMSUNG ELECTRONICS CO.,LTD.\0SPH-X2509\0S/W VER: \0'
+                  b'OK\0CONNECT\0RING\0NO CARRIER\0')
+        notes = []
+        self.assertEqual(detect_model(record, Path('neutral.bin'), notes=notes),
+                         'SPH-X2509')
+        self.assertIsNone(verified_embedded_model(record))
+        self.assertTrue(any('at-revision-identity' in note and 'SPH-X2509' in note
+                            for note in notes))
+        self.assertIsNone(detect_model(
+            b'LG Electronics Inc.\0LG-CD456\0OK\0CONNECT\0RING\0NO CARRIER\0',
+            Path('neutral.bin')))
+        conflict = record + b'\xff' * 16 + (
+            b'SAMSUNG ELECTRONICS CO.,LTD.\0SPH-X2700\0S/W VER: \0'
+            b'OK\0CONNECT\0RING\0NO CARRIER\0')
+        self.assertIsNone(detect_model(conflict, Path('neutral.bin')))
+
 
 # Separate namespace: browser product software label, not the AT model alias.
 def browser_fixture(start=0x100, label=b'CDM-1234/T10'):

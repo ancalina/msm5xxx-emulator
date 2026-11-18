@@ -87,6 +87,8 @@ _PRODUCT_CONSTRUCTOR = bytes.fromhex("90b5742000f0cefa2ba101602ca141602ba1816001
     "b86a010a0902b962381c90bc08bc1847")
 _PRODUCT_ALLOCATOR = bytes.fromhex("80b40c4f021c9108386849000b1801219207920f002a00dc0021490059180122d203" "8a188a42396001d23860002080bc7047")
 _AT_PRODUCT_RE = re.compile(rb"([A-Za-z][A-Za-z .,&-]{1,63})\x00(" + MODEL_RE.pattern + rb") *\x00{1,3}OK\x00CONNECT\x00RING\x00NO CARRIER\x00")
+_AT_SWVER_RE = re.compile(rb"([A-Za-z][A-Za-z .,&'-]{1,63})\x00(" + MODEL_RE.pattern + rb")\x00S/W VER:[^\x00]{0,24}\x00OK\x00CONNECT\x00RING\x00NO CARRIER\x00")
+_AT_SWVER_COMPANY = (b"ELECTRONICS", b"CORPORATION", b"INCORPORATED", b"CO. LTD", b"CO.,LTD")
 
 def _company_key(value: str) -> tuple[str, ...]:
     return tuple(word for word in re.findall(r"[A-Z0-9]+", value.upper()) if word not in {"CO", "LTD", "INC", "CORPORATION", "INCORPORATED"})
@@ -306,6 +308,15 @@ def _model_evidence(image: bytes, scores: dict[str, int], chipset: str | None) -
         # Context-bound repeated literals are useful, but inherited strings are common.
         if score >= 5:
             observations.append((model, "embedded", score, tuple(offsets.get(model, ()))))
+    swver_records = []
+    for match in _AT_SWVER_RE.finditer(image):
+        company = match.group(1).upper()
+        if any(marker in company for marker in _AT_SWVER_COMPANY):
+            swver_records.append((canonical_model(match.group(2)), match.start()))
+    swver_models = {model for model, _ in swver_records}
+    if len(swver_models) == 1:
+        model = next(iter(swver_models))
+        observations.append((model, "at-revision-identity", 6, tuple(offset for _, offset in swver_records)))
     # Manufacturer-bound CDM labels are corroborated by a distinct version record.
     cdm_records = list(re.finditer(rb"(?<![A-Z0-9])CDM-?(\d{4})\x00UTSTARCOM INCORPORATED\x00", upper))
     if len(cdm_records) == 1:
