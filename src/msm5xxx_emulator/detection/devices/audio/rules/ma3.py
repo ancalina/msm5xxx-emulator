@@ -288,7 +288,7 @@ def find_ma3_packetized_candidate(image: bytes) -> dict[str, object]:
         "verifier_entry": verifier, "register_reader": reader, "fifo_writers":[0x1758B0, 0x175B10], "status_pollers":[0x1B66FE, 0x1B66D8, 0x1B676C],
         "block_write_offsets":[], "sites": expected, "register_readback":[[0x90, 0xA0, 0x60],[0xA0, 0xB0, 0x3C],[0x14A, 0x152, 0x40]], }
 
-def find_ma3_readback_candidate(image: bytes) -> dict[str, object]:
+def _find_ma3_readback_candidate(image: bytes) -> dict[str, object]:
     """Require a linked reset verifier, transaction reader, and MMIO wrappers."""
     from . import _synthesized_base_accesses, _thumb_bl_targets, _thumb_readback_verifiers, defaultdict, find_ma3_indexed_candidate, find_ma3_kp6200_candidate, find_ma3_packetized_candidate
     indexed = find_ma3_indexed_candidate(image)
@@ -333,3 +333,10 @@ def find_ma3_readback_candidate(image: bytes) -> dict[str, object]:
     return { "family": "ma3", "grammar": "ma3-readback-v1", "static_status": "accepted", "reject_reason": None, "base": base, "data_offset": stride,
         "verifier_entry": verifier, "register_reader": reader, "sites": { name:[site + 6] for name, site in wrapper.items()}, "block_write_offsets":[],
         "register_readback":[[0x90, 0xA0, 0x60],[0xA0, 0xB0, 0x3C],[0x14A, 0x152, 0x40]], }
+
+def find_ma3_readback_candidate(image: bytes) -> dict[str, object]:
+    from .linked_readback import find_linked_ma3_readback
+    original = _find_ma3_readback_candidate(image)
+    if original["static_status"] == "accepted":
+        return original
+    return find_linked_ma3_readback(image) or original

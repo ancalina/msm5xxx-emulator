@@ -28,14 +28,17 @@ typedef uint64_t hwaddr;
 typedef struct { uint8_t bytes[4096]; } MemoryRegion;
 typedef struct {
   MemoryRegion msm; bool eeprom_gpio_enabled, raw_nand_main_enabled;
+  bool matrix_input_wires;
+  uint32_t matrix_input_wire_port[2]; uint16_t matrix_input_wire_mask[2];
   uint32_t eeprom_gpio_base, board_status_input_address, raw_nand_ready_address;
   uint8_t board_status_input_backing, board_status_input_mask, raw_nand_ready_mask, raw_nand_status;
   uint32_t board_status_peer_address; uint8_t board_status_peer_mask, board_status_peer_level;
 } MSM5xxxPOCMachineState;
-static void *memory_region_get_ram_ptr(MemoryRegion *r) { return r->bytes; }
+static uint8_t *memory_region_get_ram_ptr(MemoryRegion *r) { return r->bytes; }
 static uint64_t msm5xxx_poc_eeprom_gpio_read(void *p, hwaddr a, unsigned n) { (void)p; (void)a; (void)n; return 0; }
 static void msm5xxx_poc_eeprom_gpio_write(void *p, hwaddr a, uint64_t v, unsigned n) { (void)p; (void)a; (void)v; (void)n; }
 ''' + '\n'.join(function(n) for n in (
+    'msm5xxx_poc_backing_read', 'msm5xxx_poc_backing_write',
     'msm5xxx_poc_board_status_input_read', 'msm5xxx_poc_board_status_input_write',
     'msm5xxx_poc_board_status_peer_read', 'msm5xxx_poc_board_status_peer_write')) + r'''
 int main(void) {

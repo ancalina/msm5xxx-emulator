@@ -10,15 +10,30 @@ def indexed_ram_profile(audio, config):
     return (audio_family == "ma3" and audio_grammar == "ma3-indexed-v1" and getattr(config, "chipset", None) == "MSM5100" and getattr(config, "flash_size", None)
         == 0x01000000 and getattr(config, "ram_base", None) == 0x01000000 and getattr(config, "ram_size", None) == 0x00800000)
 
-def ma2_eligible(audio, config):
+def ma2_eligible(audio, config, *, upper_nor_present=False):
     audio_family = audio.get('family') if audio is not None else None
     audio_grammar = audio.get('grammar') if audio is not None else None
-    return audio is not None and audio.get('static_status') == 'accepted' and (audio_family == 'ma2') and (audio_grammar == 'ma2-command-v1') and (config.ma2_silent_boot_address
+    shifted = audio is not None and audio.get("source_class") == "shifted-paired-port-command-v1"
+    if shifted:
+        base = audio.get("base")
+        if (upper_nor_present or config.load_address != 0 or type(base) is not int or audio.get("data_offset") != 2
+                or base < config.flash_size or base < config.ram_base + config.ram_size and base + 3 > config.ram_base
+                or any(not 0 <= at <= config.flash_size - size for at, size in audio.get("nor_dependencies", ()))
+                or any(not config.ram_base <= at <= config.ram_base + config.ram_size - size for at, size in audio.get("ram_dependencies", ()))):
+            return False
+    return audio is not None and audio.get('static_status') == 'accepted' and (audio_family == 'ma2') and (audio_grammar == 'ma2-command-v1') and (shifted or config.ma2_silent_boot_address
         is not None or audio.get('base') == 42467328)
 
 def register_transport_eligible(audio, config, ma3_indexed_ram_profile, upper_nor_present):
     audio_family = audio.get('family') if audio is not None else None
     audio_grammar = audio.get('grammar') if audio is not None else None
+    if audio is not None and audio.get("source_class") == "linked-byte-port-readback-v1":
+        base, stride = audio.get("base"), audio.get("data_offset")
+        if (config.load_address != 0 or type(base) is not int or stride != 2 or base < config.flash_size
+                or base < config.ram_base + config.ram_size and base + stride + 1 > config.ram_base
+                or any(not 0 <= at <= config.flash_size - size for at, size in audio.get("nor_dependencies", ()))
+                or any(not config.ram_base <= at <= config.ram_base + config.ram_size - size for at, size in audio.get("ram_dependencies", ()))):
+            return False
     return audio is not None and audio.get('static_status') == 'accepted' and ((audio_family, audio_grammar) in {('ma5', 'indexed-rw-v1'), ('ma3',
         'ma3-readback-v1'), ('ma3', 'ma3-readback-fifo-v1'), ('ma3', 'ma3-kp-readback-fifo-v1'), ('ma3', 'ma3-indexed-v1'), ('opaque', 'command-status-data-v1')}) and (audio_grammar
         != 'ma3-indexed-v1' or ma3_indexed_ram_profile) and (not upper_nor_present)
@@ -39,7 +54,7 @@ def boot_transport_selection(detector_image, audio, config, *, ma3_indexed_ram_p
     """Select boot-audio properties while leaving stream setup to transport."""
     audio_family = audio.get('family') if audio is not None else None
     audio_grammar = audio.get('grammar') if audio is not None else None
-    if ma2_eligible(audio, config):
+    if ma2_eligible(audio, config, upper_nor_present=upper_nor_present):
         sites = projection.qemu_audio_sites(audio)
         properties, notes = [], []
         if sites is not None:

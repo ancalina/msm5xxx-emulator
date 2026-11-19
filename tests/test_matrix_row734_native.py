@@ -107,7 +107,22 @@ int main(void) {
                  "msm5xxx_poc_board_status_halfword_read", "msm5xxx_poc_board_status_halfword_write",
                  "msm5xxx_poc_boot_storage_hex", "msm5xxx_poc_set_matrix_row734",
                  "msm5xxx_poc_get_matrix_row734", "msm5xxx_poc_get_matrix_row734_state")
-        functions = "\n".join(native_function(source, name) for name in names)
+        dependencies = (
+            "msm5xxx_poc_backing_read",
+            "msm5xxx_poc_backing_write",
+            "msm5xxx_poc_halfword_backing_read",
+            "msm5xxx_poc_halfword_backing_write",
+            "msm5xxx_poc_matrix_wire_site",
+            "msm5xxx_poc_matrix_wire_backing_read",
+            "msm5xxx_poc_matrix_encoded_read_gate",
+            "msm5xxx_poc_encoded_port_value",
+            "msm5xxx_poc_matrix_wire_contact",
+            "msm5xxx_poc_matrix_wire_sense",
+            "msm5xxx_poc_matrix_wire_boot_contact_shared",
+            "msm5xxx_poc_matrix_wire_boot_value",
+            "msm5xxx_poc_matrix_halfword_backing_read")
+        functions = "\n".join(native_function(source, name) for name in dependencies)
+        functions += "\n".join(native_function(source, name) for name in names)
         final_start = source.index("    if (s->matrix_input_row734) {",
                                    source.index("    /* Reject an EEPROM boundary"))
         final_end = source.index("    /* Final property ordering must preserve GPIO owners and code bounds. */", final_start)
@@ -150,13 +165,6 @@ static CPUClass cpu_class={get_pc};
 static bool qemu_in_vcpu_thread(void) { return vcpu; }
 static uint8_t backing[0x1000], rom[0x1000], descriptor[0x40], row_maps[2][12];
 static void *memory_region_get_ram_ptr(void *mr) { (void)mr; return backing; }
-static uint64_t msm5xxx_poc_backing_read(uint8_t *memory, hwaddr offset, unsigned size) {
-    uint64_t result=0; assert(size<=8 && offset+size<=sizeof(backing));
-    memcpy(&result,memory+offset,size);return result;
-}
-static void msm5xxx_poc_backing_write(uint8_t *memory, hwaddr offset,uint64_t value,unsigned size) {
-    assert(size<=8 && offset+size<=sizeof(backing));memcpy(memory+offset,&value,size);
-}
 static uint32_t msm5xxx_poc_guest_u32(hwaddr address) {
     uint32_t value; assert(!(address&3));
     if (address < sizeof(rom)-3) memcpy(&value,rom+address,4);
@@ -172,11 +180,17 @@ typedef struct {
     CPUState *cpu; int msm;
     bool matrix_input_enabled,matrix_input_host_enabled,matrix_input_pressed,matrix_input_electrical;
     bool matrix_input_halfword,matrix_input_low5,matrix_input_kp_low5,matrix_input_sv130_low5,matrix_input_loop,matrix_input_row734;
+    bool matrix_input_wires,matrix_input_external_wires,matrix_input_encoded,matrix_input_encoded_aliases,matrix_input_gpio;
     bool matrix_row734_boot_seen;
     uint32_t matrix_input_contact_precheck[3];
     uint32_t matrix_input_descriptor,matrix_input_presence_site,matrix_input_sense_site;
     uint32_t matrix_input_sense_site2;
     uint32_t matrix_input_contact_site,matrix_input_kp_contact2,matrix_row734_presence2,matrix_row734_sense2,matrix_row734_boot_site;
+    uint32_t matrix_input_wire_port[2],matrix_input_wire_site_count,matrix_input_wire_sites[8];
+    uint16_t matrix_input_wire_mask[2];
+    uint32_t matrix_input_encoded_row_site,matrix_input_encoded_row_site2;
+    uint32_t matrix_input_encoded_col_site,matrix_input_encoded_col_site2;
+    uint32_t matrix_input_encoded_idle_site,matrix_input_encoded_aux_site;
     uint32_t matrix_row734_row_tables[2],ram_base;
     uint32_t matrix_input_address,matrix_input_no_key,matrix_input_rows,matrix_input_sideband_mask;
     uint32_t matrix_input_sense_bitmap,matrix_input_row,matrix_input_sense,primary_nor_size;
@@ -186,20 +200,33 @@ typedef struct {
     uint8_t matrix_row734_reason;
     bool experimental_matrix_contact_enabled;
     uint32_t experimental_matrix_contact_site; uint8_t experimental_matrix_contact_level;
+    bool experimental_matrix_status_enabled; uint32_t experimental_matrix_status_site;
+    uint8_t experimental_matrix_status_level;
+    bool boot_contact_enabled; uint32_t boot_contact_address,boot_contact_mask;
+    uint32_t boot_contact_width,boot_contact_pc,boot_contact_reads,boot_contact_releases;
     bool eeprom_gpio_enabled; uint32_t eeprom_gpio_base;
+    unsigned eeprom_data_offset,eeprom_data_mask,eeprom_clock_offset,eeprom_clock_mask,eeprom_direction_offset;
+    uint8_t eeprom_gpio_backing[MSM5XXX_POC_EEPROM_GPIO_SIZE];
+    bool eeprom_sda; int eeprom_i2c;
     bool board_status_input_enabled;
     uint32_t board_status_input_descriptor,board_status_input_address;
     uint32_t board_status_input_mask,board_status_input_default,board_status_input_level;
+    uint8_t board_status_input_backing;
+    uint32_t board_status_peer_address,board_status_peer_mask,board_status_peer_level;
     uint64_t board_status_input_rejections;
 } MSM5xxxPOCMachineState;
 typedef struct { uint64_t ram_size; } MachineState;
 static MachineState machine_state={.ram_size=0x800000};
 static MachineState *machine=&machine_state;
-static uint64_t msm5xxx_poc_halfword_backing_read(MSM5xxxPOCMachineState *s,hwaddr off,unsigned size) {
-    (void)s;return msm5xxx_poc_backing_read(backing,off,size);
+static uint64_t msm5xxx_poc_backing_read(const uint8_t *memory,hwaddr offset,unsigned size);
+static void msm5xxx_poc_backing_write(uint8_t *memory,hwaddr offset,uint64_t value,unsigned size);
+static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque,hwaddr offset,unsigned size) {
+    MSM5xxxPOCMachineState *s=opaque;
+    return msm5xxx_poc_backing_read(s->eeprom_gpio_backing,offset,size);
 }
-static void msm5xxx_poc_halfword_backing_write(MSM5xxxPOCMachineState *s,hwaddr off,uint64_t value,unsigned size) {
-    (void)s;msm5xxx_poc_backing_write(backing,off,value,size);
+static void msm5xxx_poc_eeprom_gpio_write(void *opaque,hwaddr offset,uint64_t value,unsigned size) {
+    MSM5xxxPOCMachineState *s=opaque;
+    msm5xxx_poc_backing_write(s->eeprom_gpio_backing,offset,value,size);
 }
 typedef MSM5xxxPOCMachineState Object;
 typedef int Error;

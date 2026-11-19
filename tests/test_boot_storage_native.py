@@ -94,6 +94,10 @@ typedef struct {
     MemoryRegion msm;
     bool memory_profile_enabled;
     uint32_t primary_nor_size,ram_base,ram_reserved_base,ram_reserved_size;
+    bool matrix_input_wires;
+    uint8_t matrix_input_no_key;
+    uint32_t matrix_input_address, matrix_input_wire_sites[8];
+    unsigned matrix_input_wire_site_count;
 ''' + fields + r'''
 } MSM5xxxPOCMachineState;
 typedef MSM5xxxPOCMachineState Object;
@@ -131,7 +135,8 @@ static uint64_t mapped_size,mapped_address;
 static void memory_region_init_io(MemoryRegion *region,void *owner,const void *ops,void *opaque,const char *name,uint64_t size) { assert(size==1 || size==4);mapped_size=size; }
 static void memory_region_add_subregion_overlap(void *root,hwaddr address,MemoryRegion *region,int priority) { assert((address==0x03000694 || address==0x0300066c || address==0x0300072c || address==0x03000660) && priority==1);mapped_address=address;overlays++; }
 '''
-        names = ('boot_storage_guest', 'boot_storage_hex', 'boot_keysense_read',
+        names = ('matrix_wire_site', 'matrix_wire_boot_contact_shared',
+                 'boot_storage_guest', 'boot_storage_hex', 'boot_keysense_read',
                  'boot_keysense_write', 'boot_keysense_reset', 'boot_keysense_init',
                  'boot_contact_read', 'boot_contact_write', 'boot_contact_init',
                  'get_boot_contact', 'set_boot_contact', 'get_boot_contact_state',
@@ -163,6 +168,7 @@ static void setup(void) {
     state.cpu=&cpu;state.msm.data=msm;state.machine.ram=&memory;
     state.machine.ram_size=sizeof(ram);state.ram_base=0x1000000;
     state.primary_nor_size=0x200000;state.memory_profile_enabled=true;
+    state.matrix_input_no_key=0x0f;
     state.spi_nv_timer=&timer;state.spi_nv_write_ns=100;
     assert(msm5xxx_spi_nv_init(&state.spi_nv,image,sizeof(image),100));
     state.spi_nv_source_geometry=0x1000100;

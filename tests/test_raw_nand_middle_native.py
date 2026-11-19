@@ -66,6 +66,9 @@ static void *memory_region_get_ram_ptr(MemoryRegion *region) { return region->by
     uint32_t board_status_input_address, board_status_input_descriptor;
     uint32_t eeprom_gpio_base;
     uint8_t board_status_input_mask, board_status_input_backing;
+    bool matrix_input_wires;
+    uint32_t matrix_input_wire_port[2];
+    uint16_t matrix_input_wire_mask[2];
 } MSM5xxxPOCMachineState;
 typedef MSM5xxxPOCMachineState Object;
 #define MSM5XXX_POC_MACHINE(obj) (obj)

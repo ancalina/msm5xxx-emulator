@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-def find_audio_transport(image: bytes) -> dict[str, object]:
+def _find_audio_transport(image: bytes) -> dict[str, object]:
     """Return static ownership evidence; rejected classes stay fail-closed."""
     image = bytes(image) if isinstance(image, bytearray) else image
     from . import _command_status_candidates, _ma2_callback_irq_profile, _marker_families, _repeated_status_candidates, _sequence_status_profile, _transport_clusters, find_audio_irq_candidate, find_ma3_readback_candidate, find_ma5_readback_candidate
@@ -69,3 +69,10 @@ def find_audio_transport(image: bytes) -> dict[str, object]:
     if profile is not None:
         result["sites"]["write_0"].append(profile["index_restore_site"])
     return result
+
+def find_audio_transport(image: bytes) -> dict[str, object]:
+    from .shifted_ma2 import find_shifted_ma2
+    original = _find_audio_transport(image)
+    if original.get("static_status") in ("accepted", "candidate"):
+        return original
+    return find_shifted_ma2(image) or original

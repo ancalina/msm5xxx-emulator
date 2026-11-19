@@ -121,6 +121,15 @@ static MemTxResult msm5xxx_poc_audio_opaque_read(void*s,hwaddr o,uint64_t*v,unsi
 static MemTxResult msm5xxx_poc_audio_opaque_write(void*s,hwaddr o,uint64_t v,unsigned n,MemTxAttrs a) {
  (void)v;(void)a;return opaque_access(s,o,n,true);
 }
+/* A declared MA2 site that is not accepted by the device model falls back to LCD. */
+static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState*s,hwaddr o,
+                                         unsigned n,uint64_t*v) {
+ (void)s;(void)o;(void)n;(void)v;return false;
+}
+static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState*s,hwaddr o,
+                                          uint64_t v,unsigned n) {
+ (void)s;(void)o;(void)v;(void)n;return false;
+}
 '''
         setup = r'''
 static const MemoryRegionOps msm5xxx_poc_lcd_ops={0};
@@ -192,10 +201,11 @@ int main(void) {
  assert(msm5xxx_poc_ma5_shared_lcd_write(p,4,2,1,0)==MEMTX_ERROR && trace_calls==before);
  assert(msm5xxx_poc_ma5_shared_lcd_read(p,0,&value,2,0)==MEMTX_ERROR);
  assert(msm5xxx_poc_ma5_shared_lcd_write(p,8,2,1,0)==MEMTX_OK);precise=true;
- /* Defaultoff, MA2 and standalone2/128 never choose shared mapping. */
+ /* Defaultoff and standalone2/128 never choose shared mapping. */
  s.ma5_byte_ns=0;assert(msm5xxx_poc_ma5_shared_lcd_port(&s)==-1);s.ma5_byte_ns=1000;
- s.audio_ma5=false;s.audio_ma2=true;assert(msm5xxx_poc_ma5_shared_lcd_port(&s)==-1);
- s.audio_ma5=true;s.audio_ma2=false;
+ s.audio_ma5=false;s.audio_ma2=true;s.audio_data_offset=2;
+ assert(msm5xxx_poc_ma5_shared_lcd_port(&s)==2);
+ s.audio_ma5=true;s.audio_ma2=false;s.audio_data_offset=4;
  for(n=2;n<=128;n*=64) {s.audio_base=0x02400000;s.audio_data_offset=n;assert(msm5xxx_poc_ma5_shared_lcd_port(&s)==-1);}
  s.audio_base=0x02c00ffe;s.audio_data_offset=4;assert(msm5xxx_poc_ma5_shared_lcd_port(&s)==-1);
  /* A skipped LCD region must not set the actual-registration flag. */

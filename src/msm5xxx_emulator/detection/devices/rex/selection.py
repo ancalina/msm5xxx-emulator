@@ -73,7 +73,7 @@ def project_controller(self, machine, detector_image):
     return machine
 
 def loaded_controller_matches(self, loaded, limit, controller):
-    return not (self.rex_c80_profile is not None and isinstance(controller, dict) and (controller.get('vector_source_chain') is not None or
+    return loaded_row_timer_matches(self, loaded, limit) and not (self.rex_c80_profile is not None and isinstance(controller, dict) and (controller.get('vector_source_chain') is not None or
         controller.get('callback_validation_shape') == 'group10-timer-list') and
         find_rex_static_controller_callback_candidate(loaded[:limit], ram_base=self.config.ram_base, ram_size=self.config.ram_size) != controller)
 
@@ -93,7 +93,7 @@ def revalidate_loaded_stack(self, machine, original, loaded):
             self.config.detection_notes.append('A80 source IRQ rejected: loaded code changed')
     return machine
 
-REQUIRES = {'a80_machine_plan': ('rex.a80_plan', 'machine_plan'),
+REQUIRES = {'loaded_row_timer_matches': ('input.row_timer', 'loaded_row_timer_matches'), 'a80_machine_plan': ('rex.a80_plan', 'machine_plan'),
     'a80_machine_properties': ('rex.a80_plan', 'machine_properties'), 'c80_rex_irq_profile': ('rex.transport_projection', 'c80_rex_irq_profile'), 'find_rex_static_controller_callback_candidate': ('rex.rules',
     'find_rex_static_controller_callback_candidate'), 'qemu_stack_w1c_property': ('rex.transport_projection', 'qemu_stack_w1c_property'),
     'read_consume_rex_irq_profile': ('rex.transport_projection', 'read_consume_rex_irq_profile'), 'w1c_rex_irq_profile': ('rex.transport_projection',

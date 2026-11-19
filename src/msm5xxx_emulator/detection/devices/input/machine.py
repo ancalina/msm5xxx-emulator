@@ -2,6 +2,20 @@
 from __future__ import annotations
 from msm5xxx_emulator.core.config import BoardStatusInput
 from msm5xxx_emulator.core.constants import STABLE_MSM_MMIO
+from .table_rows import table_row_property
+from .sparse_rows import sparse_row_property
+from .encoded_ports import encoded_ports_property
+from .byte_rows import byte_row_property
+from .dispatch_rows import dispatch_row_property
+from .pair_rows import pair_row_property
+from .external_rows import external_row_property
+from .mapped_seven_rows import mapped_seven_row_property
+from .five_column_rows import five_column_row_property
+from .halfword_jump_rows import halfword_jump_row_property
+from .released_contact import released_contact_property
+from .stack_contact import stack_contact_property
+from .row_timer import row_timer_profile
+from .wire_boot_contact import wire_boot_contact_property
 
 def select_inputs(self, detector_image, legacy_keypad, machine, experimental_distributed, experimental_halfword, experimental_low5, experimental_ma5_irq,
     experimental_status_level, temporary):
@@ -207,6 +221,101 @@ def select_inputs(self, detector_image, legacy_keypad, machine, experimental_dis
                 self.matrix_input_profile = table7
                 self.config.detection_notes.append("Table-driven 7x4 GPIO matrix: released columns and separate "
                     "active-low scan contact; numeric semantics from same-image table")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = table_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Table-driven seven-row keypad: numeric contacts from the column/event loop and copied row table")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = sparse_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("GPIO keypad: numeric contacts and physical row wires derived from each scan path")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = encoded_ports_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Encoded keypad: numeric inputs from the linked two-port event lookup")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = byte_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            if profile.get("shared_released_column") is not None:
+                column_property = "," + _required_board_contact_property_value(board_status)
+                if machine.count(column_property) != 1:
+                    raise ValueError("released column has no unique board input owner")
+                machine = machine.replace(column_property, "", 1)
+                board_status = None
+                self.config.board_status_input = None
+                self.config.detection_notes.append("GPIO matrix columns also supply the source-proven released board input")
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Byte GPIO keypad: physical row pins and numeric contacts from the linked scan loop")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = dispatch_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Descriptor keypad: counter bounds, row dispatch and numeric contacts source-closed")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = pair_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Seven-row keypad: copied GPIO descriptor, row wiring and event-pair consumers source-closed")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = mapped_seven_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Seven-row keypad: reset-owned selector map and numeric lookup source-closed")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = five_column_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Five-column keypad: copied GPIO descriptor, row loop and numeric lookup source-closed")
+    if self.matrix_input_profile is None and direct is None:
+        property_value, profile = halfword_jump_row_property(detector_image, self.config,
+            status_descriptor_claimed=(sd810_status or self._sd840_status_source_closed or self._kp2100_status_source_closed))
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("Six-row keypad: bounded halfword dispatch, copied pin descriptor and numeric lookup source-closed")
+    contact_property, contact_profile = None, None
+    if not (isinstance(self.matrix_input_profile, dict)
+            and self.matrix_input_profile.get("released_contact")):
+        contact_property, contact_profile = released_contact_property(
+            detector_image, self.config, self.matrix_input_profile)
+        if contact_property is None:
+            contact_property, contact_profile = stack_contact_property(
+                detector_image, self.config, self.matrix_input_profile)
+    if contact_property is not None:
+        machine += "," + contact_property
+        self.matrix_input_profile = dict(self.matrix_input_profile,
+            released_contact=contact_profile)
+        self.config.detection_notes.append("Independent active-low matrix contact released at its linked debounce read")
+    if (self.matrix_input_profile is not None and self.rex_c80_profile is None
+            and self.rex_read_consume_profile is None and self.rex_w1c_profile is None
+            and self.rex_stack_w1c_profile is None and not experimental_ma5_irq):
+        timer_property, timer_profile = row_timer_profile(
+            detector_image, self.config, self.matrix_input_profile)
+        if timer_property is not None:
+            self.rex_c80_profile = timer_property
+            self.config.rex_static_controller_experimental = True
+            self.matrix_input_profile = dict(self.matrix_input_profile,
+                scanner_timer=timer_profile)
+            self.config.detection_notes.append("Keypad timer callback and copied C80 interrupt route source-closed")
     status_property, status_reject = qemu_halfword_status_property(detector_image, self.config.load_address, self.matrix_input_profile,
         experimental_status_level, board_status)
     if status_property is not None:
@@ -237,11 +346,24 @@ def project_loaded_contact(self, machine, boot_property, detector_image, primary
     amd_profile):
     contact_candidate = getattr(self.config, "boot_keysense_release", None)
     if (isinstance(contact_candidate, dict) and contact_candidate.get("signature") == "arm-thumb-single-boot-contact-v1"):
-        boot_property, contact_reject = qemu_boot_contact_property(self.config, detector_image, primary_seed, input_claimed=(self.matrix_input_profile is not
-            None or self.decoder.direct_input_profile is not None or status_property is not None or experimental_halfword or experimental_low5 or
-            experimental_status_level is not None), eeprom_window=eeprom_gpio_window(eeprom_profile), layout_claimed=any(value is not None for value in (ram_reserved,
+        other_input = (self.decoder.direct_input_profile is not None or
+            status_property is not None or experimental_halfword or experimental_low5 or experimental_status_level is not None)
+        layout_claimed = any(value is not None for value in (ram_reserved,
             primary_profile, record_profile, mapped_primary_profile, upper_x16_profile, intel_profile, amd_profile, self.config.upper_flash_address, self.config.secondary_flash_address,
-            self.config.native_nand_profile, self.config.nand_image)))
+            self.config.native_nand_profile, self.config.nand_image))
+        shared_property, shared_profile = (None, None)
+        if self.matrix_input_profile is not None and not other_input and boot_property is None:
+            shared_property, shared_profile = wire_boot_contact_property(self.config,
+                detector_image, primary_seed, self.matrix_input_profile,
+                eeprom_window=eeprom_gpio_window(eeprom_profile), layout_claimed=layout_claimed)
+        if shared_property is not None:
+            boot_property, contact_reject = shared_property, None
+            self.matrix_input_profile = dict(self.matrix_input_profile,
+                boot_contact=shared_profile)
+        else:
+            boot_property, contact_reject = qemu_boot_contact_property(self.config,
+                detector_image, primary_seed, input_claimed=(self.matrix_input_profile is not None or other_input),
+                eeprom_window=eeprom_gpio_window(eeprom_profile), layout_claimed=layout_claimed)
         if boot_property is not None:
             machine += "," + boot_property
             self.config.detection_notes.append("source-bound released boot contact enabled at its single guest read")
@@ -254,8 +376,64 @@ def validate_loaded_status(loaded, board_status, seven_row_status):
     if (seven_row_status is not None and board_status == seven_row_status and find_seven_row_board_status(loaded) != seven_row_status):
         raise ValueError('loaded seven-row lid source mismatch')
 
+def project_external_input(self, machine, detector_image):
+    """Compose a keypad only after its external bus backing is admitted."""
+    if (self.matrix_input_profile is None
+            and self.decoder.direct_input_profile is None
+            and "external-cs09=on" in machine.split(",")):
+        property_value, profile = external_row_property(detector_image, self.config)
+        if property_value is not None:
+            machine += "," + property_value
+            self.matrix_input_profile = profile
+            self.config.detection_notes.append("External keypad: source row latches, column senses and numeric event lookup")
+    return machine
+
+
+def project_five_column_fallback(self, machine, detector_image, *,
+                                 input_claimed=False, loaded_image=None,
+                                 timer_claimed=False):
+    """Replace only a matching unadmitted static scanner candidate."""
+    direct = self.decoder.direct_input_profile
+    if (self.matrix_input_profile is not None or input_claimed
+            or getattr(self.config, "board_status_input", None) is not None
+            or not isinstance(direct, dict)):
+        return machine
+    property_value, profile = five_column_row_property(detector_image, self.config)
+    if property_value is None or not isinstance(profile, dict):
+        return machine
+    matches = {
+        "descriptor_pointer": "descriptor", "register": "sense_address",
+        "rows": "rows", "columns": "columns", "event_table": "event_table",
+        "event_codes": "event_codes",
+        "single_key_column_sense": "single_key_column_sense",
+    }
+    if any(direct.get(old) != profile.get(new) or direct.get(old) is None
+           for old, new in matches.items()):
+        return machine
+    self.matrix_input_profile = profile
+    self.config.detection_notes.append(
+        "Five-column keypad: static candidate matched to reset-owned row wiring and event lookup")
+    machine += "," + property_value
+    irq_owners = ("rex_c80_profile", "rex_read_consume_profile",
+                  "rex_w1c_profile", "rex_stack_w1c_profile")
+    if (isinstance(loaded_image, bytes) and not timer_claimed
+            and not any(getattr(self, name, None) is not None for name in irq_owners)
+            and not any(field.startswith("rex-") for field in machine.split(","))):
+        timer_property, timer_profile = row_timer_profile(detector_image, self.config, profile)
+        if timer_property is not None:
+            loaded_property, loaded_profile = row_timer_profile(loaded_image, self.config, profile)
+            if (loaded_property, loaded_profile) == (timer_property, timer_profile):
+                self.rex_c80_profile = timer_property
+                self.config.rex_static_controller_experimental = True
+                self.matrix_input_profile = dict(profile, scanner_timer=timer_profile)
+                machine += ",rex-static-c80=" + timer_property
+                self.config.detection_notes.append(
+                    "Keypad clock: separate reset-owned IRQ tables and loaded source route agree")
+    return machine
+
+
 def project_row734(self, machine, detector_image, boot_property, status_property, experimental_halfword, experimental_low5, experimental_status_level,
-    eeprom_profile):
+    eeprom_profile, *, loaded_image=None, timer_claimed=False):
     row_property, row_reject = qemu_row734_property(detector_image, self.config, self.row734_source_profile, input_claimed=(self.matrix_input_profile is not
         None or boot_property is not None or status_property is not None or experimental_halfword or experimental_low5 or experimental_status_level is not None),
         eeprom_window=eeprom_gpio_window(eeprom_profile))
@@ -273,7 +451,13 @@ def project_row734(self, machine, detector_image, boot_property, status_property
         self.row734_reject_reason = row_reject
         self.config.detection_notes.append(
             f"QEMU row734 rejected: {row_reject}; native fallback retained")
-    return machine
+    machine = project_external_input(self, machine, detector_image)
+    return project_five_column_fallback(self, machine, detector_image,
+        loaded_image=loaded_image, timer_claimed=timer_claimed,
+        input_claimed=(boot_property is not None or status_property is not None
+                       or experimental_halfword or experimental_low5
+                       or experimental_status_level is not None
+                       or eeprom_profile is not None))
 
 REQUIRES = {'find_seven_row_board_status': ('input.seven_row', 'find_seven_row_board_status'), 'find_seven_row_input_profile': ('input.distributed7',
     'find_seven_row_input_profile'), 'matrix_senses': ('input.transport_projection', 'matrix_senses'), 'qemu_distributed_matrix_property': ('input.transport_projection',

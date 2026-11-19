@@ -8,14 +8,20 @@ class BoardStatusEEPROMTests(unittest.TestCase):
     def test_shared_clock_bus_and_lid_mask_are_independent(self):
         source = (Path(__file__).resolve().parents[1] / 'native/qemu/msm5xxx-poc.c').read_text()
         functions = ''.join(native_function(source, name) for name in (
+            'msm5xxx_poc_backing_read', 'msm5xxx_poc_backing_write',
             'msm5xxx_poc_board_status_input_read', 'msm5xxx_poc_board_status_input_write'))
         compile_and_run(r'''
 #include <stdint.h>
 #include <stdbool.h>
 #include <assert.h>
 #define MSM5XXX_POC_EEPROM_GPIO_SIZE 32
+#define MSM5XXX_POC_MSM_BASE 0x03000000
 #define hwaddr uint64_t
+typedef struct { uint8_t bytes[0x1000]; } MemoryRegion;
 struct State {
+    MemoryRegion msm;
+    bool matrix_input_wires;
+    uint32_t matrix_input_wire_port[2]; uint16_t matrix_input_wire_mask[2];
     bool eeprom_gpio_enabled, raw_nand_main_enabled;
     uint32_t board_status_input_address, eeprom_gpio_base, raw_nand_ready_address;
     uint32_t raw_nand_ready_mask, raw_nand_status;
@@ -23,6 +29,7 @@ struct State {
     uint8_t pins[32]; unsigned reads, writes;
 };
 typedef struct State MSM5xxxPOCMachineState;
+static uint8_t *memory_region_get_ram_ptr(MemoryRegion *region) { return region->bytes; }
 static uint64_t msm5xxx_poc_eeprom_gpio_read(void *opaque, hwaddr offset, unsigned size) {
     MSM5xxxPOCMachineState *s=opaque; assert(size==1 && offset<32);
     s->reads++; return s->pins[offset];

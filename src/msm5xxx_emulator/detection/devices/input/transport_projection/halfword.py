@@ -118,11 +118,27 @@ def matrix_input_command(profile: dict[str, object], position: tuple[int, int, i
     if position is None:
         raise ValueError("matrix key position is unavailable")
     _event, row, column = position
+    if profile.get("grammar") in ("encoded-two-port-keypad-v1", "encoded-inline-two-port-keypad-v1"):
+        tokens, codes = profile.get("event_tokens"), profile.get("event_codes")
+        if (not isinstance(tokens, list) or not isinstance(codes, list)
+                or len(tokens) != len(codes) or tokens.count(_event) != 1
+                or _event not in b"123456789*0#"):
+            raise ValueError("encoded key event is unavailable")
+        code = codes[tokens.index(_event)]
+        if (type(code) is not int or not 0 <= code <= 255 or code & 15 == 15
+                or (row, column) != (code >> 5, code & 31)):
+            raise ValueError("encoded key ports disagree with source lookup")
+        return bytes((HOST_INPUT, 1, row, column))
     senses = matrix_senses(profile)
     rows = int(profile["rows"])
     no_key = int(profile["no_key"])
     if (not 0 <= row < rows or not 0 <= column < len(senses) or int(senses[column]) == no_key):
         raise ValueError("invalid detector-resolved matrix position")
+    if profile.get("grammar") in ("sparse-halfword-six-row-v1", "sparse-halfword-seven-row-v1", "byte-row-six-keypad-v1", "descriptor-dispatch-six-row-v1", "halfword-offset-six-row-v1", "pair-row-halfword-seven-v1", "external-latches-six-row-low5-v1", "mapped-halfword-seven-row-v1", "halfword-five-column-rows-v1"):
+        order = profile.get("row_wire_order")
+        if not isinstance(order, list) or sorted(order) != list(range(rows)):
+            raise ValueError("invalid detector-resolved row wiring")
+        row = order[row]
     if profile.get("grammar") == "distributed-seven-byte-v1":
         # Native GPIO rows use port order, then ascending pin number. Firmware
         # scans the 0x04 pin last; derive its physical position from the switch.

@@ -40,7 +40,7 @@ typedef struct {
     unsigned rex_irq_bank_count, audio_core_lock;
     uint16_t audio_command_pending_count[4], rex_irq_pending[2];
     CPUState *cpu;
-    bool audio_sites_enabled;
+    bool audio_sites_enabled, audio_shared_lcd;
     uint8_t audio_data_offset, audio_stream_status_pending;
     uint32_t audio_stream_reject_code;
     MSM5xxxMA2Audio ma2_audio;
@@ -49,6 +49,14 @@ typedef struct {
 static bool msm5xxx_poc_audio_site_owned(const MSM5xxxPOCMachineState *s,
                                         bool write, hwaddr offset, uint32_t pc) {
     (void)s; return !write && offset == 2 && pc == 0x120;
+}
+static bool pc_valid = true;
+static bool msm5xxx_poc_mmio_access_pc(MSM5xxxPOCMachineState *s,
+                                       uint32_t *pc) {
+    CPUState *cpu = CPU(s->cpu);
+    if (!pc_valid || current_cpu != cpu) return false;
+    *pc = CPU_GET_CLASS(cpu)->get_pc(cpu) & ~1u;
+    return true;
 }
 static uint32_t memory[64];
 static uint32_t msm5xxx_poc_guest_u32(uint32_t address) {
@@ -105,7 +113,8 @@ int main(void) {
     msm5xxx_poc_ma2_irq_update(&s); assert(s.rex_irq_pending[1]==4);
     /* Exercise the actual owned-read branch, including pre-START occupancy.
      * These are current provisional semantics, not physical status evidence. */
-    s.cpu=&test_cpu; s.audio_sites_enabled=true; s.audio_data_offset=2;
+    s.cpu=&test_cpu; s.audio_sites_enabled=true; s.audio_shared_lcd=true;
+    s.audio_data_offset=2;
     s.ma2_audio.adpcm_irq_ctrl=0; s.ma2_audio.control=0;
     s.ma2_audio.page=MSM5XXX_MA2_PAGE_REG0;
     s.ma2_audio.index=MSM5XXX_MA2_STATUS1;
@@ -116,6 +125,9 @@ int main(void) {
     s.ma2_audio.control=MSM5XXX_MA2_FM_START;
     s.ma2_audio.fifo_count[0]=49;
     assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==14);
+    pc_valid=false; value=0xdead;
+    assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
+    pc_valid=true;
     memory[20]=0; value=0xdead;
     assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
     memory[20]=0x3001; s.audio_stream_rejected=true;

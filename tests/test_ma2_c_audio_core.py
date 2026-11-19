@@ -63,7 +63,6 @@ class TestMA2CAudioCore(unittest.TestCase):
         owned = aperture.index("msm5xxx_poc_audio_write_owned")
         self.assertLess(owned, aperture.index("s->lcd_aperture_writes++"))
         self.assertIn("return;", aperture[owned:])
-        self.assertIn("s->audio_ma2 && s->audio_base == 0x02880000", source)
         self.assertIn("MA2 audio-aperture overlaps an existing region", source)
         tick_start = source.index("static void msm5xxx_poc_ma2_audio_tick")
         tick_end = source.index("\nstatic ", tick_start + 1)
@@ -170,6 +169,67 @@ class TestMA2CAudioCore(unittest.TestCase):
         self.assertIn('object_class_property_add_bool(oc, "audio-pcm"',
                       source)
         self.assertIn("s->audio_pcm_enabled = true;", source)
+
+    def test_ma2_aperture_accepts_expanded_shared_lcd_addresses(self):
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "native" / "qemu" /
+                  "msm5xxx-poc.c").read_text(encoding="utf-8")
+        start = source.index("static void msm5xxx_poc_set_audio_aperture(")
+        end = source.index("\nstatic ", start + 1)
+        setter = source[start:end]
+        harness = textwrap.dedent(
+            r"""
+            #include <assert.h>
+            #include <stdbool.h>
+            #include <stdio.h>
+            #include <string.h>
+
+            typedef struct {
+                unsigned audio_base, audio_data_offset;
+                bool audio_ma2, audio_ma3, audio_ma5, audio_enabled;
+            } MSM5xxxPOCMachineState;
+            typedef MSM5xxxPOCMachineState Object;
+            typedef struct { int set; } Error;
+            #define MSM5XXX_POC_MACHINE(obj) (obj)
+            static Error test_error;
+            static void error_setg(Error **errp, const char *message, ...) {
+                (void)message;
+                if (errp) *errp = &test_error;
+            }
+            """) + setter + textwrap.dedent(
+            r"""
+            int main(void) {
+                MSM5xxxPOCMachineState s = {0};
+                Error *error = NULL;
+
+                msm5xxx_poc_set_audio_aperture(
+                    &s, "02012000:2:ma2", &error);
+                assert(!error && s.audio_enabled && s.audio_ma2);
+                assert(s.audio_base == 0x02012000 &&
+                       s.audio_data_offset == 2);
+
+                memset(&s, 0, sizeof(s));
+                error = NULL;
+                msm5xxx_poc_set_audio_aperture(
+                    &s, "02001000:2", &error);
+                assert(!error && s.audio_enabled && s.audio_ma2);
+                assert(s.audio_base == 0x02001000);
+
+                memset(&s, 0, sizeof(s));
+                error = NULL;
+                msm5xxx_poc_set_audio_aperture(
+                    &s, "02012000:3:ma2", &error);
+                assert(error && !s.audio_enabled && !s.audio_ma2);
+                return 0;
+            }
+            """)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "check.c").write_text(harness)
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            str(path / "check.c"), "-o", str(path / "check")],
+                           check=True)
+            subprocess.run([str(path / "check")], check=True)
 
     def test_sequence_reset_restarts_ended_streams_without_flushing_fifo(self):
         repo = Path(__file__).resolve().parents[1]

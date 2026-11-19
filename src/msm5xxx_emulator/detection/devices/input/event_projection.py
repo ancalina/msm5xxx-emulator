@@ -23,6 +23,25 @@ def _manual_event_position(profile, event_code: int) -> tuple[int, int, int] | N
 
 def _evidenced_matrix_position(self, bit: int, event_code: int | None,) -> tuple[int, int, int] | None:
         profile = self.matrix_input_profile
+        if profile is not None and profile.get("grammar") in ("encoded-two-port-keypad-v1", "encoded-inline-two-port-keypad-v1"):
+            event = dict(zip(range(11, 23), b"123456789*0#")).get(bit) if event_code is None else event_code
+            tokens, codes = profile.get("event_tokens"), profile.get("event_codes")
+            if (type(event) is not int or event not in b"123456789*0#"
+                    or not isinstance(tokens, list) or not isinstance(codes, list)
+                    or len(tokens) != len(codes) or tokens.count(event) != 1):
+                return None
+            code = codes[tokens.index(event)]
+            if type(code) is not int or not 0 <= code <= 255 or code & 15 == 15:
+                return None
+            return event, code >> 5, code & 31
+        if profile is not None and profile.get("grammar") in ("table-row-halfword-seven-v1", "sparse-halfword-six-row-v1", "sparse-halfword-seven-row-v1", "byte-row-six-keypad-v1", "descriptor-dispatch-six-row-v1", "halfword-offset-six-row-v1", "pair-row-halfword-seven-v1", "external-latches-six-row-low5-v1", "mapped-halfword-seven-row-v1", "halfword-five-column-rows-v1"):
+            event = dict(zip(range(11, 23), b"123456789*0#")).get(bit) if event_code is None else event_code
+            events = profile["event_codes"]
+            if type(event) is not int or event not in b"123456789*0#" or events.count(event) != 1:
+                return None
+            index = events.index(event)
+            rows = profile["rows"]
+            return event, index % rows, index // rows
         if profile is not None and profile.get("grammar") == "distributed-seven-byte-v1":
             mapping = profile["provisional_mappings"].get(bit)
             if mapping is None or (event_code is not None and event_code != mapping["event"]):

@@ -1002,10 +1002,9 @@ class Transport:
         audio = self.config.audio_transport
         audio_family = audio.get("family") if audio is not None else None
         audio_grammar = audio.get("grammar") if audio is not None else None
-        tone_generator = getattr(self.config, "tone_generator", None)
-        if (isinstance(tone_generator, dict) and
-                tone_generator.get("static_status") == "accepted"):
-            machine += ",tone=on"
+        tone_property = device_domain("audio.transport_projection").qemu_tone_property(detector_image, self.config)
+        if tone_property is not None:
+            machine += "," + tone_property
             if os.environ.get("MSM5XXX_TONE_LOG") == "1":
                 machine += ",tone-log=on"
             self.config.detection_notes.append(
@@ -1832,7 +1831,7 @@ class Transport:
                 "-drive", f"file={eeprom_state},if=mtd,format=raw,unit=0",
             ))
         try:
-            machine = device_domain('input.machine').project_row734(self, machine, detector_image, boot_property, status_property, experimental_halfword, experimental_low5, experimental_status_level, eeprom_profile)
+            machine = device_domain('input.machine').project_row734(self, machine, detector_image, boot_property, status_property, experimental_halfword, experimental_low5, experimental_status_level, eeprom_profile, loaded_image=primary_seed, timer_claimed=experimental_ma5_irq)
         except Exception:
             for channel in (lcd_listener, input_listener, gdb_listener,
                             audio_listener, audio_host_socket, audio_qemu_socket):

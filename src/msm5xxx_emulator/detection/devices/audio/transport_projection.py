@@ -5,6 +5,47 @@ from msm5xxx_emulator.detection.devices.audio.rules import (_KP6200_MA3_SITES, _
 from msm5xxx_emulator.detection.devices.audio.ma5_gpio_irq import find_ma5_gpio_irq_candidate
 from msm5xxx_emulator.detection.devices.audio.ma3_gpio_irq import find_ma3_gpio_irq_candidate
 AUDIO_SITE_LIMIT = 64
+_MA5_SOURCE_STRIDES = {
+    "ram-counter-synthesized-data-v1": 2,
+    "local-counter-literal-data-v1": 128,
+    "local-counter-direction-timing-v1": 4,
+    "alternate-reset-readback-v1": 2,
+    "alternate-direct-reset-readback-v1": 2,
+}
+
+def qemu_tone_property(image: bytes, config: object) -> str | None:
+    """Map a closed tone writer only when its source PCs are in primary NOR."""
+    tone = getattr(config, "tone_generator", None)
+    if not isinstance(tone, dict) or tone.get("static_status") != "accepted":
+        return None
+    grammar = tone.get("grammar")
+    linked_counts = {"linked-divider-cfg-plus-ten-strb-v1": 10,
+                     "linked-divider-cfg-plus-control-strb-v1": 12}
+    if grammar in linked_counts:
+        limit = getattr(config, "flash_size", None)
+        spans = tone.get("source_dependencies")
+        sites = tone.get("writer_store_offsets")
+        if (not isinstance(image, (bytes, bytearray)) or type(limit) is not int or limit <= 0
+                or not isinstance(spans, list) or not spans
+                or not isinstance(sites, list) or len(sites) != linked_counts[grammar]
+                or any(type(site) is not int or site < 0 or site & 1 for site in sites)
+                or len(set(sites)) != len(sites)):
+            return None
+        limit = min(limit, len(image))
+        mapped_spans = []
+        for span in spans:
+            if not isinstance(span, dict):
+                return None
+            offset, size = span.get("offset"), span.get("size")
+            if (type(offset) is not int or type(size) is not int or size <= 0
+                    or not 0 <= offset <= limit - size):
+                return None
+            mapped_spans.append((offset, offset + size))
+        if any(not any(start <= site and site + 2 <= end for start, end in mapped_spans)
+               for site in sites):
+            return None
+        return "tone=on,tone-write-sites=" + ";".join(f"{site:x}" for site in sites)
+    return "tone=on"
 
 def qemu_audio_irq_property(audio: object, config: FirmwareConfig) -> tuple[str | None, str | None]:
     """Provisional route for owned MA2 accessors; native readback gates use."""
@@ -99,8 +140,10 @@ def qemu_ma5_readback_property(image: bytes, config: object, byte_ns: int | None
         return None, "consumer-state-unmapped"
     base, stride = candidate["base"], candidate["data_offset"]
     timed = candidate.get("structural_evidence", {}).get("transport_class") == "local-counter-direction-timing-v1"
-    alternate_direct = (candidate.get("structural_evidence", {}).get("transport_class") == "alternate-direct-reset-readback-v1")
-    shared_lcd = ((timed and stride == 4) or (alternate_direct and stride == 2)) and any(lcd <= base and base + stride < lcd + 0x1000 for lcd in (0x02000000,
+    source_class = candidate.get("structural_evidence", {}).get("transport_class")
+    # The native shared aperture routes only the source-qualified accessor PCs;
+    # other accesses retain the LCD backing and trace path.
+    shared_lcd = _MA5_SOURCE_STRIDES.get(source_class) == stride and any(lcd <= base and base + stride < lcd + 0x1000 for lcd in (0x02000000,
         0x02800000, 0x02C00000, 0x02200000))
     if (not 0x02001000 <= base <= 0x02FFFF00 or not (stride in (2, 128) or (timed and stride == 4)) or base < config.flash_size or (upper_nor_present and base <
         UPPER_FLASH_ADDRESS + UPPER_FLASH_SIZE and base + stride + 1 > UPPER_FLASH_ADDRESS) or (base < ram_base + ram_size and base + stride + 1 > ram_base) or
@@ -126,10 +169,8 @@ def qemu_ma5_temporary_auto_property(image: bytes, config: object, *, audio_pcm:
     if not audio_pcm:
         return None, None
     candidate = find_ma5_readback_candidate(image)
-    if (candidate.get("static_status") != "candidate" or candidate.get("protocol_status") != "temporary-evidence-gated" or candidate.get("structural_evidence",
-        {}).get("transport_class") != "ram-counter-synthesized-data-v1" and candidate.get("structural_evidence", {}).get("transport_class") !=
-        "local-counter-literal-data-v1" and candidate.get("structural_evidence", {}).get("transport_class") != "local-counter-direction-timing-v1" and candidate.get("structural_evidence",
-        {}).get("transport_class") != "alternate-direct-reset-readback-v1"):
+    if (candidate.get("static_status") != "candidate" or candidate.get("protocol_status") != "temporary-evidence-gated"
+            or candidate.get("structural_evidence", {}).get("transport_class") not in _MA5_SOURCE_STRIDES):
         return None, None
     return qemu_ma5_readback_property(image, config, 1000, upper_nor_present=upper_nor_present, target_rate_hz= 48000)
 
@@ -246,13 +287,18 @@ def qemu_audio_sites(audio: object) -> str | None:
     grammar = audio.get("grammar")
     base = audio.get("base")
     data_offset = audio.get("data_offset")
+    shifted_ma2 = (family == "ma2" and grammar == "ma2-command-v1" and audio.get("static_status") == "accepted"
+        and audio.get("source_class") == "shifted-paired-port-command-v1" and type(base) is int
+        and 0x02001000 <= base <= 0x02ffff00 and data_offset == 2)
     ma2 = (family == "ma2" and type(base) is int and (0x02001000 <= base < 0x02800000 or base == 0x02880000 and audio.get("sites") == { "read_2":[0x1595c4],
         "write_0":[0x15953c, 0x15957e, 0x1595be, 0x159f2c], "write_2":[0x159542, 0x159590], }) and type(data_offset) is int and data_offset == 2 and (base +
-        data_offset < 0x02800000 or base == 0x02880000) and (base + data_offset < 0x02200000 or base >= 0x02201000))
+        data_offset < 0x02800000 or base == 0x02880000) and (base + data_offset < 0x02200000 or base >= 0x02201000)) or shifted_ma2
     ma5_signature = { "write_0":[0x582, 0x58A, 0x10566, 0x1056E, 0x37CAE2], "write_2":[0x586, 0x58E, 0x1056A, 0x10572, 0x37CB1E, 0x37CB48, 0x37CB74,], }
     ma5 = (family == "ma5" and type(base) is int and base == 0x02840000 and type(data_offset) is int and data_offset == 2 and audio.get("aperture_write_sites")
         == ma5_signature)
-    ma3_readback = (family == "ma3" and grammar == "ma3-readback-v1" and audio.get("static_status") == "accepted" and base == 0x02840000 and data_offset == 2
+    ma3_readback = (family == "ma3" and grammar == "ma3-readback-v1" and audio.get("static_status") == "accepted"
+        and (base == 0x02840000 or (audio.get("source_class") == "linked-byte-port-readback-v1"
+            and type(base) is int and 0x02001000 <= base <= 0x02ffff00)) and data_offset == 2
         and isinstance(audio.get("verifier_entry"), int) and isinstance(audio.get("register_reader"), int) and audio.get("register_readback") ==[[0x90, 0xA0,
         0x60],[0xA0, 0xB0, 0x3C],[0x14A, 0x152, 0x40]])
     ma3_indexed = (family == 'ma3' and grammar == 'ma3-indexed-v1' and fields_match(audio, (('static_status', 'accepted'), ('verifier_entry', 573450), ('register_reader',

@@ -50,27 +50,44 @@ int main(void) {
         def section(first, last):
             start = source.index(first)
             return source[start:source.index(last, start)]
+        def function(name):
+            start = source.index(name)
+            opening = source.index("{", start)
+            depth = 1
+            end = opening + 1
+            while depth:
+                depth += (source[end] == "{") - (source[end] == "}")
+                end += 1
+            return source[start:end] + "\n"
         helper = section("static bool msm5xxx_poc_low5_sense(",
                          "static uint32_t msm5xxx_poc_guest_u32")
+        backing_helpers = section("static uint64_t msm5xxx_poc_backing_read(",
+                                  "static bool msm5xxx_poc_lcd_stream_append")
         mapped = section("static bool msm5xxx_poc_mapped_halfword_sense(",
                          "/* Temporary electrical approximation: firmware-qualified")
         old_helper = section("static uint16_t msm5xxx_poc_halfword_sense(",
                              "/* Temporary electrical approximation")
-        owner = (section("static uint64_t msm5xxx_poc_eeprom_gpio_read(",
-                         "static uint64_t msm5xxx_poc_board_status_input_read") +
-                 section("static uint64_t msm5xxx_poc_halfword_backing_read(",
-                         "static uint64_t msm5xxx_poc_matrix_halfword_read"))
-        # This legacy harness does not exercise the new reset phase; its
-        # dedicated row734 harness extracts/tests that actual helper separately.
-        reset_start = owner.index("static void msm5xxx_poc_matrix_row734_reset(")
-        reset_end = owner.index("static uint16_t msm5xxx_poc_matrix_row734_read(", reset_start)
-        owner = owner[:reset_start] + owner[reset_end:]
-        read = section("static uint64_t msm5xxx_poc_matrix_halfword_read(",
-                       "static const MemoryRegionOps msm5xxx_poc_matrix_halfword_ops")
+        owner = "".join(function(name) for name in (
+            "static uint64_t msm5xxx_poc_halfword_backing_read(",
+            "static void msm5xxx_poc_halfword_backing_write(",
+            "static bool msm5xxx_poc_matrix_wire_site(",
+            "static uint16_t msm5xxx_poc_matrix_wire_backing_read(",
+            "static bool msm5xxx_poc_matrix_encoded_read_gate(",
+            "static uint16_t msm5xxx_poc_encoded_port_value(",
+            "static bool msm5xxx_poc_matrix_contact_site_valid(",
+            "static bool msm5xxx_poc_matrix_wire_contact(",
+            "static bool msm5xxx_poc_matrix_wire_sense(",
+            "static bool msm5xxx_poc_matrix_wire_boot_contact_shared(",
+            "static bool msm5xxx_poc_matrix_wire_boot_value(",
+            "static uint64_t msm5xxx_poc_matrix_halfword_backing_read(",
+            "static uint16_t msm5xxx_poc_row734_u16(",
+            "static uint16_t msm5xxx_poc_matrix_row734_read("))
+        read = (function("static uint64_t msm5xxx_poc_matrix_halfword_read(") +
+                function("static void msm5xxx_poc_matrix_halfword_write("))
         gpio = section("static bool msm5xxx_poc_matrix_gpio_conflict(",
                        "static const MemoryRegionOps msm5xxx_poc_matrix_input_ops")
         direct_get = section("static char *msm5xxx_poc_get_matrix_input(",
-                             "static char *msm5xxx_poc_get_board_status_input")
+                             "static char *msm5xxx_poc_get_board_status_input(")
         direct_get = direct_get.replace("    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);",
                                         "    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);\n    (void)errp;")
         board = section("static void msm5xxx_poc_set_board_status_input(",
@@ -81,10 +98,13 @@ int main(void) {
                           "    /* Final property ordering must preserve GPIO owners and code bounds. */")
         low5 = section("static char *msm5xxx_poc_get_matrix_low5(",
                        "static void msm5xxx_poc_set_fujitsu_x16_nor")
+        external_start = low5.index("static char *msm5xxx_poc_get_matrix_external_wires(")
+        external_end = low5.index("static char *msm5xxx_poc_get_matrix_gpio(", external_start)
+        low5 = low5[:external_start] + low5[external_end:]
         low5 = low5.replace("    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);",
                             "    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);\n    (void)errp;", 1)
-        half = section("static char *msm5xxx_poc_get_matrix_halfword(",
-                       "static char *msm5xxx_poc_get_matrix_low5")
+        half = (function("static char *msm5xxx_poc_get_matrix_halfword(") +
+                function("static void msm5xxx_poc_set_matrix_halfword("))
         direct = section("static void msm5xxx_poc_set_matrix_input(",
                          "static char *msm5xxx_poc_get_matrix_halfword")
         status = section("static void msm5xxx_poc_set_board_status_descriptor(",
@@ -131,14 +151,6 @@ static CPUClass cpu_class = { get_pc };
 static bool qemu_in_vcpu_thread(void) { return vcpu; }
 static uint8_t backing[0x1000];
 static void *memory_region_get_ram_ptr(void *mr) { (void)mr; return backing; }
-static uint64_t msm5xxx_poc_backing_read(uint8_t *ram, hwaddr offset, unsigned size) {
-    uint64_t value = 0; assert(offset + size <= sizeof(backing));
-    memcpy(&value, ram + offset, size); return value;
-}
-static void msm5xxx_poc_backing_write(uint8_t *ram, hwaddr offset,
-                                      uint64_t value, unsigned size) {
-    memcpy(ram+offset,&value,size);
-}
 static uint32_t descriptor_words[14];
 static uint32_t msm5xxx_poc_guest_u32(hwaddr address) {
     if (address >= 0x01103684 && address <= 0x011036b8)
@@ -153,12 +165,21 @@ typedef struct {
     bool matrix_input_gpio; uint32_t matrix_input_gpio_port[3];
     uint8_t matrix_input_gpio_mask[3];
     uint8_t matrix_input_backing;
+    bool matrix_input_wires, matrix_input_encoded, matrix_input_encoded_aliases;
+    bool matrix_input_external_wires;
+    uint32_t matrix_input_wire_port[2], matrix_input_wire_site_count;
+    uint16_t matrix_input_wire_mask[2]; uint32_t matrix_input_wire_sites[8];
+    uint32_t matrix_input_encoded_row_site, matrix_input_encoded_row_site2;
+    uint32_t matrix_input_encoded_col_site, matrix_input_encoded_col_site2;
+    uint32_t matrix_input_encoded_idle_site, matrix_input_encoded_aux_site;
     bool board_revision_enabled, ready_poll_enabled, ready_poll_lcd_enabled;
     bool ready_poll_control_enabled;
     uint32_t board_revision_address, ready_status_address;
     uint32_t ready_pulse_address, ready_control_address;
     bool board_status_input_enabled;
     uint32_t board_status_input_address, board_status_input_mask;
+    uint8_t board_status_input_backing;
+    uint32_t board_status_peer_address, board_status_peer_mask, board_status_peer_level;
     uint32_t board_status_input_default, board_status_input_level, board_status_input_rejections;
     bool matrix_input_halfword, matrix_input_low5, matrix_input_kp_low5, matrix_input_sv130_low5, matrix_input_loop, matrix_input_enabled;
     uint32_t matrix_input_kp_contact2;
@@ -182,6 +203,8 @@ typedef struct {
     uint32_t matrix_input_descriptor, matrix_input_presence_site;
     uint32_t matrix_input_sense_site, matrix_input_sense_site2;
     uint32_t matrix_input_address, matrix_input_sense_bitmap;
+    bool boot_contact_enabled; uint32_t boot_contact_address, boot_contact_mask;
+    uint32_t boot_contact_width, boot_contact_pc, boot_contact_reads, boot_contact_releases;
     unsigned matrix_input_rows, matrix_input_no_key, matrix_input_sideband_mask;
     unsigned matrix_input_reset, matrix_input_row_register;
     unsigned matrix_input_row, matrix_input_sense;
@@ -240,7 +263,15 @@ static bool bitbang_i2c_set(void *bus, unsigned pin, bool value) {
     }
     return external_sda;
 }
-""" + old_helper + mapped + helper + eeprom + owner + read + gpio + low5 + half + direct + direct_get + status + board + status_read + r"""
+"""
+        harness += (old_helper + mapped + backing_helpers + helper + eeprom + owner +
+                    read + gpio + low5 + half + direct + direct_get + status + board +
+                    status_read +
+                    function("static char *msm5xxx_poc_get_experimental_matrix_contact(") +
+                    function("static void msm5xxx_poc_set_experimental_matrix_contact(") +
+                    function("static char *msm5xxx_poc_get_experimental_matrix_status(") +
+                    function("static void msm5xxx_poc_set_experimental_matrix_status("))
+        harness += r"""
 #define error_report(...) ((void)0)
 #define exit(code) return true
 static bool partial_owner_rejected(MSM5xxxPOCMachineState *s) {
@@ -385,6 +416,18 @@ int main(void) {
     s.matrix_input_sideband_mask = 0;
     uint8_t record[] = {0x80,1,3,30};
     assert(!host_rejected(&s,record));
+    MSM5xxxPOCMachineState low5_saved = s;
+    s.matrix_input_low5 = false;
+    s.matrix_input_wires = true;
+    s.matrix_input_no_key = 31;
+    for (unsigned column = 0; column < 5; column++) {
+        record[3] = 31 ^ (1U << column);
+        assert(!host_rejected(&s,record));
+    }
+    record[3] = 30;
+    s.matrix_input_no_key = 15;
+    assert(host_rejected(&s,record));
+    s = low5_saved;
     s.matrix_input_low5 = false; assert(host_rejected(&s,record)); s.matrix_input_low5 = true;
     record[3] = 13; assert(host_rejected(&s,record));
     record[3] = 31; assert(host_rejected(&s,record));

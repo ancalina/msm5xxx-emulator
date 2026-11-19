@@ -19,7 +19,7 @@ def matrix_senses(profile: dict[str, object]) -> tuple[int, ...]:
     """Return the detector-admitted, unique physical sense values."""
     senses = tuple(int(value) for value in profile.get("senses", profile.get("single_key_column_sense", ())))
     no_key = int(profile["no_key"])
-    low5 = profile.get("grammar") in {"lg-descriptor-low5-6x5-raw-v1", "descriptor-row734-low5-6x5-v1", "lg-kp-legacy-low5-6x5-v1"}
+    low5 = profile.get("grammar") in {"lg-descriptor-low5-6x5-raw-v1", "descriptor-row734-low5-6x5-v1", "lg-kp-legacy-low5-6x5-v1", "external-latches-six-row-low5-v1", "halfword-five-column-rows-v1"}
     loop = profile.get("grammar") == "indirect-halfword-loop-six-row-v1"
     if loop and (no_key != 31 or senses != (30, 29, 27, 23)):
         raise ValueError("invalid detector-resolved loop senses")

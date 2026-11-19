@@ -28,6 +28,37 @@ def frame_repaint_needed(
             or cache[2:] != (frame_width, frame_height, canvas_width, canvas_height))
 
 
+def _resize_rgb_nearest(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    try:
+        return image.resize(size, Image.Resampling.NEAREST)
+    except SystemError as exc:
+        if ("ImagingCore" not in str(exc)
+                or "returned NULL without setting an exception" not in str(exc)):
+            raise
+        if image.mode != "RGB" or size[0] < 1 or size[1] < 1:
+            raise
+
+    source_width, source_height = image.size
+    dest_width, dest_height = size
+    source = image.tobytes()
+    rows: dict[int, bytes] = {}
+    output = bytearray(dest_width * dest_height * 3)
+    out_offset = 0
+    for y in range(dest_height):
+        source_y = (2 * y + 1) * source_height // (2 * dest_height)
+        row = rows.get(source_y)
+        if row is None:
+            row_start = source_y * source_width * 3
+            row = source[row_start:row_start + source_width * 3]
+            rows[source_y] = row
+        for x in range(dest_width):
+            source_x = (2 * x + 1) * source_width // (2 * dest_width)
+            pixel_offset = source_x * 3
+            output[out_offset:out_offset + 3] = row[pixel_offset:pixel_offset + 3]
+            out_offset += 3
+    return Image.frombytes("RGB", size, bytes(output))
+
+
 class DisplayViewMixin:
     def _bind_text_tooltip(self, widget: tk.Widget, text) -> None:
         def show(_event):
@@ -174,7 +205,7 @@ class DisplayViewMixin:
                 scale = min(width / image.width, height / image.height)
                 size = (max(1, int(image.width * scale)),
                         max(1, int(image.height * scale)))
-                image = image.resize(size, Image.Resampling.NEAREST)
+                image = _resize_rgb_nearest(image, size)
                 if self.photo is not None and (self.photo.width(), self.photo.height()) == size:
                     self.photo.paste(image)
                 else:

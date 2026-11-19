@@ -50,11 +50,10 @@ class AlternateReadbackTests(unittest.TestCase):
                         changed[offset] ^= 1
                         self.assertNotEqual(find_ma5_readback_candidate(changed)['static_status'],
                                             'candidate')
-                # A direct candidate still requires a mapped primary NOR.
-                reason = ('primary-nor-unmapped'
-                          if shape == 'alternate-direct-reset-readback-v1' else None)
+                # Both alternate candidates require a mapped primary NOR.
                 self.assertEqual(qemu_ma5_temporary_auto_property(
-                    image, object(), audio_pcm=True), (None, reason))
+                    image, object(), audio_pcm=True),
+                    (None, 'primary-nor-unmapped'))
 
 
 if __name__ == '__main__':
