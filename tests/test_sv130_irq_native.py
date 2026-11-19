@@ -110,6 +110,7 @@ int main(void) {
 typedef uint64_t hwaddr;
 typedef struct {
     uint32_t rex_irq_status_address,rex_irq_enable_address,rex_irq_controller_size;
+    uint32_t rex_irq_handler_size;
     uint8_t rex_irq_backing[0x60],rex_irq_bank_count;
     uint16_t rex_irq_pending[3],rex_irq_mask;
     bool rex_irq_c80,rex_irq_read_consume,rex_irq_route_active;
@@ -118,6 +119,7 @@ typedef struct {
     bool ma3_gpio_irq_configured,ma3_gpio_irq_qualified;
     bool sd810_fold_irq_enabled; bool *cpu_irq; unsigned rex_irq_assertions,rex_irq_acks;
 } MSM5xxxPOCMachineState;
+static bool msm5xxx_poc_rex_irq_handler_pc(MSM5xxxPOCMachineState *s) {(void)s;return true;}
 static bool msm5xxx_poc_rex_irq_shadow_active(MSM5xxxPOCMachineState *s) {(void)s;return true;}
 static uint64_t msm5xxx_poc_backing_read(uint8_t *p,hwaddr off,unsigned n) {
     uint64_t v=0;memcpy(&v,p+off,n);return v;

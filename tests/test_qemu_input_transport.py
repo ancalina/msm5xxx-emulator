@@ -1515,8 +1515,8 @@ class QEMUInputTransportTests(unittest.TestCase):
         end = source.index("\nstatic ", start + 1)
         read_body = source[start:end]
         uart_start = read_body.index("if (s->ready_uart_rx_empty_enabled")
-        uart_end = read_body.index("if (!primary_read)", uart_start)
-        uart_body = read_body[uart_start:uart_end]
+        uart_end = read_body.index("return MSM5XXX_POC_UART_SR_IDLE;", uart_start)
+        uart_body = read_body[uart_start:uart_end + len("return MSM5XXX_POC_UART_SR_IDLE;")]
 
         self.assertIn("#define MSM5XXX_POC_UART_SR_IDLE 0x0c", source)
         self.assertIn("return MSM5XXX_POC_UART_SR_IDLE;", uart_body)
