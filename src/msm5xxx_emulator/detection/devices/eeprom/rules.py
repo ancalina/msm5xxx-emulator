@@ -110,10 +110,13 @@ def _select_eeprom_gpio_profile(image: bytes, config: object,) -> tuple[tuple[in
         return (0x03000660, 8, 8, 0xC, 1, 0x1C, 0x8000), None
     if not common:
         return None, "transport-entry-signature-mismatch"
-    if _lock_wrapped_shadow_gpio(image, write, read):
-        return _BYTE_GPIO_PROFILE, None
-    gpio = struct.pack("<III", 0x03000660, 0x03000668, 0x03000670)
-    if (not all(value in image[write:write + 0x700] for value in (gpio[:4], gpio[4:8], gpio[8:])) or not all(value in image[read:read + 0x700] for value in (gpio[:4], gpio[4:8], gpio[8:]))):
+    if (read - write == 0x6D8 and write >= 0x168
+            and image[write - 0x168:write - 0x160] == bytes.fromhex("f0b580260725071c")):
+        if _lock_wrapped_shadow_gpio(image, write, read):
+            return _BYTE_GPIO_PROFILE, None
+        return None, "gpio-line-shape-mismatch"
+    gpio = struct.pack("<II", 0x03000660, 0x03000670)
+    if (not all(value in image[write:write + 0x700] for value in (gpio[:4], gpio[4:])) or not all(value in image[read:read + 0x700] for value in (gpio[:4], gpio[4:]))):
         return None, "gpio-line-shape-mismatch"
     literal = struct.pack("<I", geometry)
     for position in range(0, len(image) - 3, 4):
