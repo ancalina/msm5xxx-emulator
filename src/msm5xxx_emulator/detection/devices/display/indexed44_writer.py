@@ -493,3 +493,33 @@ def find_indexed44(image: bytes):
     facts = facts_for(image)
     return facts.memo('indexed44-source-writer', (),
                       lambda: _find_indexed44(image))
+
+
+def find_indexed44_boot(image: bytes):
+    """Admit the closed 176x220 boot panel clear and text writer."""
+    from msm5xxx_emulator.detection.arm import thumb_bl_target
+
+    window_code = bytes.fromhex(
+        '10b504321406090201431a1d0b1c44210520240ec0060180ec490b8012022243452303800a8010bd'
+    )
+    pos = image.find(window_code, 0, min(len(image), 0x100000))
+    if pos < 0 or pos % 2 or image.find(window_code, pos + 1, min(len(image), 0x100000)) >= 0:
+        return None
+    clear = pos + 0x444
+    cursor = thumb_bl_target(image, clear + 0x10)
+    if (image[clear:clear + 8] != bytes.fromhex('db230022af210020')
+            or thumb_bl_target(image, clear + 8) != pos
+            or image[clear + 0xc:clear + 0x10] != bytes.fromhex('00210020')
+            or image[clear + 0x14:clear + 0x2c] != bytes.fromhex(
+                '22202080dc20d64904e0b02200e02980013afcd20138f8d2')
+            or cursor is None
+            or image[cursor:cursor + 20] != bytes.fromhex('21220523db061a80043109020843354908807047')
+            or image[pos + 0x3ca:pos + 0x3ce] != bytes.fromhex('00010028')
+            or image[cursor + 0xe4:cursor + 0xe8] != bytes.fromhex('00010028')):
+        return None
+    return {'protocol': 'indexed44-rgb565', 'width': 176, 'height': 220,
+            'x_origin': 0, 'y_origin': 4, 'command_port': 0x28000000,
+            'data_port': 0x28000100,
+            'evidence': [{'span': [pos, len(window_code)], 'extra_spans': [[pos + 0x3ca, 4]]},
+                         {'span': [clear, 0x2c]},
+                         {'span': [cursor, 20], 'extra_spans': [[cursor + 0xe4, 4]]}]}

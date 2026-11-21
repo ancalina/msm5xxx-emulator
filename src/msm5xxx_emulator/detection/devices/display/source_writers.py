@@ -14,7 +14,7 @@ from .window43_writer import find_window43
 from .dcs_window_writer import find_dcs_window
 from .indexed28_writer import find_indexed28
 from .indexed20_writer import find_indexed20
-from .indexed44_writer import find_indexed44
+from .indexed44_writer import find_indexed44, find_indexed44_boot
 from .indexed1c_writer import find_indexed1c_profile
 from .padded_gray_writer import find_padded_gray_writer
 
@@ -124,14 +124,17 @@ def _decision(ctx):
                 if indexed1c is not None:
                     page, window51, packed2, cursor = None, None, False, False
     ram_base, ram_size = getattr(cfg, 'ram_base', None), getattr(cfg, 'ram_size', None)
-    if (layout and indexed1c is None and type(ram_base) is int and type(ram_size) is int
-            and 0x10000000 <= ram_base < ram_base + ram_size <= 0x20000000):
-        indexed44 = find_indexed44(original)
+    if layout and indexed1c is None:
+        if (type(ram_base) is int and type(ram_size) is int
+                and 0x10000000 <= ram_base < ram_base + ram_size <= 0x20000000):
+            indexed44 = find_indexed44(original)
+        if indexed44 is None:
+            indexed44 = find_indexed44_boot(original)
         if indexed44 is not None:
             spans = [span for item in indexed44['evidence']
                      for span in (item['span'], *item.get('extra_spans', ()))]
-            if (not spans or indexed44['command_port'] != 0x18000000
-                    or indexed44['data_port'] != 0x18000010
+            ports = (indexed44['command_port'], indexed44['data_port'])
+            if (not spans or ports not in ((0x18000000, 0x18000010), (0x28000000, 0x28000100))
                     or any(not 0 <= start < start + length <= min(len(original), len(loaded))
                         or original[start:start + length] != loaded[start:start + length]
                         for start, length in spans)
@@ -201,8 +204,9 @@ def _decision(ctx):
     if indexed44 is not None:
         parameters += (('indexed44', tuple(indexed44[key] for key in (
             'width', 'height', 'x_origin', 'y_origin', 'command_port', 'data_port'))),)
-        properties = (('external-lcd-18', True), ('external-lcd-18-register-offset',
-                       indexed44['data_port'] - indexed44['command_port']))
+        if indexed44['command_port'] == 0x18000000:
+            properties = (('external-lcd-18', True), ('external-lcd-18-register-offset',
+                           indexed44['data_port'] - indexed44['command_port']))
     if indexed28 is not None:
         geometry = (indexed28['width'], indexed28['height'])
         if indexed28['command_port'] != 0x28000000:
@@ -247,11 +251,13 @@ def machine_properties(plan):
             or not 1 < panel[0] <= 256 or not 1 < panel[1] <= 256
             or not 0 <= panel[2] <= 256 - panel[0]
             or not 0 <= panel[3] <= 256 - panel[1]
-            or panel[4:] != (0x18000000, 0x18000010)
+            or panel[4:] not in ((0x18000000, 0x18000010), (0x28000000, 0x28000100))
             or choice.claims != tuple(ResourceClaim('address', 'source-display-writer',
                 port, port + 2, shared_resource='indexed44-stream',
                 semantics='native-write-observer') for port in panel[4:])
-            or choice.properties != (('external-lcd-18', True),
-                                      ('external-lcd-18-register-offset', 16))):
+            or choice.properties != ((('external-lcd-18', True),
+                                      ('external-lcd-18-register-offset', 16))
+                                     if panel[4] == 0x18000000 else ())):
         raise ValueError('unsupported indexed display contract')
-    return ',external-lcd-18=on,external-lcd-18-register-offset=16'
+    return (',external-lcd-18=on,external-lcd-18-register-offset=16'
+            if panel[4] == 0x18000000 else '')
