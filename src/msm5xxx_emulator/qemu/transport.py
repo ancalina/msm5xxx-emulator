@@ -633,7 +633,7 @@ class Transport:
     _matrix_input_position = _input_event_projection._matrix_input_position
     _sideband_input_producer = _input_event_projection._sideband_input_producer
 
-    @with_fact_scope
+    @with_fact_scope(discard_cached=True)
     def __init__(self, qemu: Path, firmware: Path,
                  state_dir: Path | None = None,
                  experimental_c80: bool = False,

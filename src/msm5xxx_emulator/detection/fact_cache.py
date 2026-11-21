@@ -5,7 +5,7 @@ from .fact_context import FirmwareFacts
 from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
-from functools import wraps
+from functools import partial, wraps
 from threading import RLock
 
 _cache: OrderedDict[tuple[int, int, int], FirmwareFacts] = OrderedDict()
@@ -34,10 +34,17 @@ def fact_scope():
         _scope_prefixes.reset(prefix_token)
         _scope_bindings.reset(token)
 
-def with_fact_scope(function):
+def with_fact_scope(function=None, *, discard_cached=False):
     """Run a callable with an isolated scoped facts registry."""
+    if function is None:
+        return partial(with_fact_scope, discard_cached=discard_cached)
     @wraps(function)
     def scoped(*args, **kwargs):
+        if discard_cached:
+            with _cache_lock:
+                _cache.clear()
+            import gc
+            gc.collect()
         with fact_scope():
             return function(*args, **kwargs)
     return scoped
