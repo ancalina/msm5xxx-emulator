@@ -2,6 +2,8 @@
 
 _IRQ = bytes.fromhex('d2f021e304e0a0e1d3f021e330ff2fe10010e0e3010050e10400001a')
 _STACKS_187 = bytes.fromhex('00d27f1890e77f1800c97f1890db7f1890e87f1800da7f18')
+_STACKS_10FF = bytes.fromhex('0092ff1090a7ff100089ff10909bff1090a8ff10009aff10')
+_BOOT_10FF = bytes.fromhex('f8b59e49002008608904c8600122d2024a609b4952040a60ca60914901220a70087090492020d03108828e4896495038816011214160')
 _STACKS_300 = bytes.fromhex('00120330905f033000090330905303309060033000520330')
 _BOOT_187 = bytes.fromhex('f8b5bf49002008608904c8600121c9020b22d2065160bb4a49041160d160b24a')
 _BOOT_300 = tuple(bytes.fromhex(x) for x in (
@@ -14,6 +16,11 @@ def high_stack_irq_boot_ram(image: bytes) -> tuple[int, int] | None:
     irq = image.find(_IRQ)
     if irq < 0 or irq % 4 or image.find(_IRQ, irq + 1) >= 0:
         return None
+    boot10 = image.find(_BOOT_10FF)
+    if (image[irq + 0x130:irq + 0x134] == bytes.fromhex('0020ffff')
+            and image[irq + 0x178:irq + 0x190] == _STACKS_10FF
+            and boot10 >= 0 and boot10 % 2 == 0 and image.find(_BOOT_10FF, boot10 + 1) < 0):
+        return (0x10ff0000, 0x10000)
     boot = image.find(_BOOT_187)
     if (image[irq + 0xf0:irq + 0xf4] == bytes.fromhex('0020ffff')
             and image[irq + 0x120:irq + 0x138] == _STACKS_187

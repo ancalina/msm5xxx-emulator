@@ -25,3 +25,15 @@ class IrqBootTest(unittest.TestCase):
         self.assertEqual(high_stack_irq_boot_ram(bytes(image)), (0x30000000, 0x40000))
         image[0x334] ^= 1
         self.assertIsNone(high_stack_irq_boot_ram(bytes(image)))
+
+    def test_low_panel_stack_and_initializer(self):
+        from msm5xxx_emulator.detection.devices.memory.irq_boot import _BOOT_10FF, _IRQ, _STACKS_10FF
+
+        image = bytearray(0x800)
+        image[0x20:0x20 + len(_IRQ)] = _IRQ
+        image[0x150:0x154] = bytes.fromhex('0020ffff')
+        image[0x198:0x1b0] = _STACKS_10FF
+        image[0x300:0x300 + len(_BOOT_10FF)] = _BOOT_10FF
+        self.assertEqual(high_stack_irq_boot_ram(bytes(image)), (0x10ff0000, 0x10000))
+        image[0x198] ^= 1
+        self.assertIsNone(high_stack_irq_boot_ram(bytes(image)))

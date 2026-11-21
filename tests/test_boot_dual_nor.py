@@ -35,3 +35,16 @@ class BootDualNorTest(unittest.TestCase):
             self.assertTrue(boot_dual_nor.has_boot_dual_nor(bytes(image)))
             image[table + 4] ^= 1
             self.assertFalse(boot_dual_nor.has_boot_dual_nor(bytes(image)))
+
+    def test_low_panel_requires_linked_nor_and_dram_commands(self):
+        image = bytearray(0xc000)
+        window = 0x2104
+        dram, nor = window - 0xd5e, window + 0x9836
+        image[dram:dram + len(boot_dual_nor._LOW_DRAM)] = boot_dual_nor._LOW_DRAM
+        image[nor:nor + len(boot_dual_nor._LOW_NOR)] = boot_dual_nor._LOW_NOR
+        providers = {'high_stack_irq_boot_ram': lambda _: (0x10ff0000, 0x10000),
+                     'find_indexed44_low_boot': lambda _: {'evidence': [{'span': [window, 28]}]}}
+        with patch.dict(boot_dual_nor.__dict__, providers):
+            self.assertTrue(boot_dual_nor.has_boot_dual_nor(bytes(image)))
+            image[dram] ^= 1
+            self.assertFalse(boot_dual_nor.has_boot_dual_nor(bytes(image)))

@@ -523,3 +523,27 @@ def find_indexed44_boot(image: bytes):
             'evidence': [{'span': [pos, len(window_code)], 'extra_spans': [[pos + 0x3ca, 4]]},
                          {'span': [clear, 0x2c]},
                          {'span': [cursor, 20], 'extra_spans': [[cursor + 0xe4, 4]]}]}
+
+
+def find_indexed44_low_boot(image: bytes):
+    """Admit the linked 128x160 NOR boot panel writer."""
+    from msm5xxx_emulator.detection.arm import thumb_bl_target
+
+    window = bytes.fromhex('09020843190211430322442312071380094b18804520108019807047')
+    clear = bytes.fromhex('10b59f2300227f21002000f03df80021002000f047f82220032109070880a021274a2e4c04e0802000e014800138fcd20139f8d210bd')
+    cursor = bytes.fromhex('090208432121032212071180034908807047')
+    pos = image.find(window, 0, min(len(image), 0x100000))
+    if pos < 0 or pos % 2 or image.find(window, pos + 1, min(len(image), 0x100000)) >= 0:
+        return None
+    clear_pos, cursor_pos, literal = pos - 0x88, pos + 0x1c, pos + 0x38
+    if (clear_pos < 0 or image[clear_pos:clear_pos + len(clear)] != clear
+            or image[cursor_pos:cursor_pos + len(cursor)] != cursor
+            or image[literal:literal + 4] != bytes.fromhex('00000430')
+            or thumb_bl_target(image, clear_pos + 10) != pos
+            or thumb_bl_target(image, clear_pos + 18) != cursor_pos):
+        return None
+    return {'protocol': 'indexed44-rgb565', 'width': 128, 'height': 160,
+            'x_origin': 0, 'y_origin': 0, 'command_port': 0x30000000,
+            'data_port': 0x30040000,
+            'evidence': [{'span': [pos, len(window)], 'extra_spans': [[literal, 4]]},
+                         {'span': [clear_pos, len(clear)]}, {'span': [cursor_pos, len(cursor)]}]}

@@ -15,7 +15,7 @@ from .dcs_window_writer import find_dcs_window
 from .indexed28_boot import find_indexed28_boot
 from .indexed28_writer import find_indexed28
 from .indexed20_writer import find_indexed20
-from .indexed44_writer import find_indexed44, find_indexed44_boot
+from .indexed44_writer import find_indexed44, find_indexed44_boot, find_indexed44_low_boot
 from .indexed1c_writer import find_indexed1c_profile
 from .padded_gray_writer import find_padded_gray_writer
 
@@ -130,12 +130,12 @@ def _decision(ctx):
                 and 0x10000000 <= ram_base < ram_base + ram_size <= 0x20000000):
             indexed44 = find_indexed44(original)
         if indexed44 is None:
-            indexed44 = find_indexed44_boot(original)
+            indexed44 = find_indexed44_boot(original) or find_indexed44_low_boot(original)
         if indexed44 is not None:
             spans = [span for item in indexed44['evidence']
                      for span in (item['span'], *item.get('extra_spans', ()))]
             ports = (indexed44['command_port'], indexed44['data_port'])
-            if (not spans or ports not in ((0x18000000, 0x18000010), (0x28000000, 0x28000100))
+            if (not spans or ports not in ((0x18000000, 0x18000010), (0x28000000, 0x28000100), (0x30000000, 0x30040000))
                     or any(not 0 <= start < start + length <= min(len(original), len(loaded))
                         or original[start:start + length] != loaded[start:start + length]
                         for start, length in spans)
@@ -253,7 +253,7 @@ def machine_properties(plan):
             or not 1 < panel[0] <= 256 or not 1 < panel[1] <= 256
             or not 0 <= panel[2] <= 256 - panel[0]
             or not 0 <= panel[3] <= 256 - panel[1]
-            or panel[4:] not in ((0x18000000, 0x18000010), (0x28000000, 0x28000100))
+            or panel[4:] not in ((0x18000000, 0x18000010), (0x28000000, 0x28000100), (0x30000000, 0x30040000))
             or choice.claims != tuple(ResourceClaim('address', 'source-display-writer',
                 port, port + 2, shared_resource='indexed44-stream',
                 semantics='native-write-observer') for port in panel[4:])

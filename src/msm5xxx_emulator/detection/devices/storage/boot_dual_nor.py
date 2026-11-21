@@ -3,6 +3,7 @@
 REQUIRES = {
     'high_stack_irq_boot_ram': ('memory.irq_boot', 'high_stack_irq_boot_ram'),
     'find_indexed28_boot': ('display.indexed28_boot', 'find_indexed28_boot'),
+    'find_indexed44_low_boot': ('display.indexed44_writer', 'find_indexed44_low_boot'),
     'find_indexed44_boot': ('display.indexed44_writer', 'find_indexed44_boot'),
 }
 
@@ -22,8 +23,21 @@ _NOR_WIDE = bytes.fromhex('30b5c30660241c80dc01240e1c80ac241c80dc43e401240e1c807
 _TABLE_WIDE = bytes.fromhex('0202020206010505000000006e6e5050131328286e6e50501313141401010101000000001414141401010101')
 
 
+_LOW_NOR = bytes.fromhex('f0b5c30660251d80d0241c80ff261e80124c1c4325800327278008241c432580042525800e4cc000041921630c493031401802717020188019880906fbd5')
+_LOW_DRAM = bytes.fromhex('ff21e131c0060843021c0f49012008731048108000200873704730b5051c0024285d052802d1201cfff7eaff01342406')
+
+
 def has_boot_dual_nor(image: bytes) -> bool:
-    if high_stack_irq_boot_ram(image) != (0x187f0000, 0x10000):
+    stack = high_stack_irq_boot_ram(image)
+    if stack == (0x10ff0000, 0x10000):
+        panel = find_indexed44_low_boot(image)
+        if panel is None:
+            return False
+        window = panel['evidence'][0]['span'][0]
+        dram, nor = window - 0xd5e, window + 0x9836
+        return (dram >= 0 and image[dram:dram + len(_LOW_DRAM)] == _LOW_DRAM
+                and image[nor:nor + len(_LOW_NOR)] == _LOW_NOR)
+    if stack != (0x187f0000, 0x10000):
         return False
     panel = find_indexed44_boot(image)
     wide = panel is None

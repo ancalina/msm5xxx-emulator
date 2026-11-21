@@ -29,3 +29,21 @@ class Indexed44BootTest(unittest.TestCase):
         self.assertEqual((panel['width'], panel['height'], panel['y_origin']), (176, 220, 4))
         image[clear + 0x22] ^= 1
         self.assertIsNone(find_indexed44_boot(bytes(image)))
+
+    def test_low_port_panel_requires_linked_clear_and_cursor(self):
+        from msm5xxx_emulator.detection.devices.display.indexed44_writer import find_indexed44_low_boot
+
+        image = bytearray(0x1000)
+        window = 0x204
+        clear, cursor = window - 0x88, window + 0x1c
+        source_window = bytes.fromhex('09020843190211430322442312071380094b18804520108019807047')
+        source_clear = bytes.fromhex('10b59f2300227f21002000f03df80021002000f047f82220032109070880a021274a2e4c04e0802000e014800138fcd20139f8d210bd')
+        source_cursor = bytes.fromhex('090208432121032212071180034908807047')
+        image[window:window + len(source_window)] = source_window
+        image[clear:clear + len(source_clear)] = source_clear
+        image[cursor:cursor + len(source_cursor)] = source_cursor
+        image[window + 0x38:window + 0x3c] = bytes.fromhex('00000430')
+        panel = find_indexed44_low_boot(bytes(image))
+        self.assertEqual((panel['width'], panel['height'], panel['data_port']), (128, 160, 0x30040000))
+        image[clear + 2] ^= 1
+        self.assertIsNone(find_indexed44_low_boot(bytes(image)))
