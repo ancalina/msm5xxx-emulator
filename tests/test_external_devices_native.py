@@ -50,6 +50,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t external_lcd_18_register_offset;
     uint16_t external_lcd_18_register_selector;
     uint16_t external_lcd_18_registers[65536];
+    int64_t external_lcd_18_update_deadline;
     MemoryRegion external_lcd_18_window_region;
     uint8_t external_lcd_18_bounds[4], external_lcd_18_bounds_seen;
     uint8_t external_lcd_18_cursor_x, external_lcd_18_cursor_y;
@@ -87,7 +88,7 @@ struct MSM5xxxPOCMachineState {
 #define QEMU_CLOCK_VIRTUAL 0
 static char log_text[128];
 static unsigned small_nand_sync_calls, small_nand_arm_calls;
-static uint64_t qemu_clock_get_ns(int clock) {
+static int64_t qemu_clock_get_ns(int clock) {
     assert(clock == QEMU_CLOCK_VIRTUAL);
     return 1234;
 }

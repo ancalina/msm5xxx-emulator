@@ -248,6 +248,8 @@ typedef struct {
     void *protected_nor_blk;
     void *boot_nand_blk, *boot_nand_media;
     bool signal_memory_realized;
+    uint32_t mdsp_mailbox;
+    void *boot_rex_deadline;
     unsigned signal_memory_count;
     bool external_indexed_18;
     bool external_lcd_18_window, external_lcd_18_dcs;
@@ -390,6 +392,7 @@ static void msm5xxx_poc_dmd5100_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_small_nand_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_boot_nand_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_signal_memory_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_mdsp_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_protected_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_a80_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_watchdog_reset(void *opaque) { assert(false); }

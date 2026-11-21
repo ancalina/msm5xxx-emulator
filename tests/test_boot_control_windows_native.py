@@ -37,6 +37,11 @@ typedef struct {
     uint16_t boot_lcd_selector, boot_lcd_registers[65536];
     uint16_t boot_lcd_control, boot_bridge_registers[32768];
     bool boot_nand_word;
+    bool boot_sbi_fifo, boot_rex_timer, boot_rex_pending;
+    void *boot_rex_deadline;
+    uint32_t mdsp_mailbox, mdsp_pending, mdsp_irq_mask;
+    uint8_t boot_sbi_registers[2][64][128];
+    struct { uint16_t command; uint8_t received; bool full, rejected, start, done; } boot_sbi_channel[2];
     uint32_t boot_nand_peripherals;
     uint32_t boot_nand_data_port, boot_nand_lcd_id;
     struct { void *machine; bool data; } boot_lcd_context[2];
@@ -65,6 +70,15 @@ static void msm5xxx_boot_nand_reset(MSM5xxxBootNand *nand) {
 }
 static void msm5xxx_boot_nand_irq_ack(MSM5xxxBootNand *nand, uint32_t mask) {
     nand->pending &= ~mask;
+}
+static void timer_del(void *timer) { (void)timer; }
+static void msm5xxx_poc_boot_events_irq(MSM5xxxPOCMachineState *s) { (void)s; }
+static uint64_t msm5xxx_poc_boot_rex_ticks(void) { return 0; }
+static void msm5xxx_poc_boot_rex_schedule(MSM5xxxPOCMachineState *s, uint32_t value) { (void)s; (void)value; }
+static uint64_t msm5xxx_poc_backing_read(uint8_t *p, hwaddr offset, unsigned size) {
+    uint64_t value = 0;
+    for (unsigned i = 0; i < size; i++) value |= (uint64_t)p[offset + i] << (8 * i);
+    return value;
 }
 static hwaddr traced_address;
 static uint64_t traced_value;

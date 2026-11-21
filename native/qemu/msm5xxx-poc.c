@@ -256,6 +256,24 @@ struct MSM5xxxPOCMachineState {
     unsigned signal_memory_count;
     bool signal_memory_realized;
     MemoryRegion signal_memory[8];
+    bool boot_sbi_fifo;
+    bool boot_power_key;
+    uint32_t boot_wake_input;
+    MemoryRegion boot_power_key_region;
+    uint8_t *boot_power_key_backing;
+    bool boot_rex_timer, boot_rex_pending;
+    QEMUTimer *boot_rex_deadline;
+    uint8_t boot_sbi_registers[2][64][128];
+    struct {
+        uint16_t command;
+        uint8_t received;
+        bool full, rejected, start, done;
+    } boot_sbi_channel[2];
+    uint32_t mdsp_mailbox, mdsp_response, mdsp_irq_mask, mdsp_pending;
+    bool mdsp_held, mdsp_uploaded, boot_events_irq_level;
+    MemoryRegion mdsp_regions[4];
+    struct { MSM5xxxPOCMachineState *machine; unsigned index; } mdsp_context[4];
+    uint8_t mdsp_backing[4][0x4000];
     uint32_t boot_nand_size, boot_nand_word, boot_nand_identity, boot_nand_peripherals;
     uint32_t boot_nand_data_port, boot_nand_lcd_id;
     bool a80_timer_enabled, a80_irq_level;
@@ -297,6 +315,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t external_lcd_18_register_offset;
     uint16_t external_lcd_18_register_selector;
     uint16_t external_lcd_18_registers[65536];
+    int64_t external_lcd_18_update_deadline;
     bool experimental_contract_lcd_1c_selector;
     bool gpio_ready_bit21;
     bool experimental_contract_gpio_bit9_low;
@@ -7580,7 +7599,7 @@ static void msm5xxx_poc_rex_irq_update(MSM5xxxPOCMachineState *s)
         s->rex_irq_assertions++;
     }
     s->rex_irq_level = level;
-    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level || s->a80_irq_level);
+    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level || s->a80_irq_level || s->boot_events_irq_level);
 }
 
 static void msm5xxx_poc_rex_irq_schedule(MSM5xxxPOCMachineState *s)
@@ -12827,7 +12846,7 @@ static void msm5xxx_poc_write(void *opaque, hwaddr offset,
         break;
     case 0x0c:
         s->irq_level = value & 1;
-        qemu_set_irq(s->cpu_irq, s->irq_level || s->a80_irq_level);
+        qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level || s->a80_irq_level || s->boot_events_irq_level);
         break;
     default:
         break;
@@ -15379,6 +15398,7 @@ static void msm5xxx_poc_external_lcd_register_reset(void *opaque)
     MSM5xxxPOCMachineState *s = opaque;
 
     s->external_lcd_18_register_selector = 0;
+    s->external_lcd_18_update_deadline = 0;
     memset(s->external_lcd_18_registers, 0, sizeof(s->external_lcd_18_registers));
 }
 
@@ -15526,7 +15546,19 @@ static uint64_t msm5xxx_poc_external_lcd_read(void *opaque, hwaddr offset,
             return s->external_lcd_18_register_selector;
         }
         if (offset == s->external_lcd_18_register_offset) {
-            return s->external_lcd_18_registers[s->external_lcd_18_register_selector];
+            uint16_t *reg = &s->external_lcd_18_registers[
+                s->external_lcd_18_register_selector];
+
+            /* Indexed44 update requests complete after one modeled scan period.
+             * Bit 8 is busy; retain the guest's other control bits. */
+            if (s->external_lcd_18_register_offset == 0x10 &&
+                s->external_lcd_18_register_selector == 0x0a &&
+                (*reg & 0x100) &&
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >=
+                    s->external_lcd_18_update_deadline) {
+                *reg &= ~0x100;
+            }
+            return *reg;
         }
     }
     return msm5xxx_poc_backing_read(
@@ -15556,6 +15588,11 @@ static void msm5xxx_poc_external_lcd_write(void *opaque, hwaddr offset,
             s->external_lcd_18_register_selector = value;
         } else if (size == 2 && offset == s->external_lcd_18_register_offset) {
             s->external_lcd_18_registers[s->external_lcd_18_register_selector] = value;
+            if (s->external_lcd_18_register_offset == 0x10 &&
+                s->external_lcd_18_register_selector == 0x0a) {
+                s->external_lcd_18_update_deadline = (value & 0x100) ?
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 16666667 : 0;
+            }
         } else {
             return;
         }
@@ -15921,6 +15958,154 @@ static void msm5xxx_poc_boot_nand_write(void *opaque, hwaddr offset,
     }
 }
 
+/* Uploaded MDSP master: device-owned ready, mailbox and module result.
+ * Selection comes from linked reset/upload/completion instructions, and a
+ * command completes only after an actual program upload and reset release. */
+static const hwaddr mdsp_bases[] = {
+    0x50000000, 0x50200000, 0x50400000, 0x50c00000
+};
+static const unsigned mdsp_sizes[] = { 0x4000, 0x4000, 0x1000, 0x1000 };
+
+static void msm5xxx_poc_boot_events_irq(MSM5xxxPOCMachineState *s)
+{
+    uint32_t pending = s->mdsp_pending |
+        (s->boot_rex_pending ? UINT32_C(0x40000000) : 0);
+    s->boot_events_irq_level = pending & msm5xxx_poc_backing_read(
+        s->boot_events_backing, 0x914, 4);
+    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level ||
+                 s->a80_irq_level || s->boot_events_irq_level);
+}
+
+/* The admitted REX owner uses a free 32768-Hz counter and absolute compare.
+ * IRQ delivery is masked; time and the pending latch are not. */
+static uint64_t msm5xxx_poc_boot_rex_ticks(void)
+{
+    uint64_t ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    return (ns / 1000000000) * 32768 +
+           (ns % 1000000000) * 32768 / 1000000000;
+}
+
+static void msm5xxx_poc_boot_rex_expired(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    s->boot_rex_pending = true;
+    msm5xxx_poc_boot_events_irq(s);
+}
+
+static void msm5xxx_poc_boot_rex_schedule(MSM5xxxPOCMachineState *s,
+                                          uint32_t value)
+{
+    uint64_t ticks = msm5xxx_poc_boot_rex_ticks();
+    uint64_t target = ticks + (uint32_t)(value - (uint32_t)ticks);
+    int64_t deadline = (target / 32768) * 1000000000 +
+        ((target % 32768) * 1000000000 + 32767) / 32768;
+    timer_mod(s->boot_rex_deadline, deadline);
+}
+
+static uint64_t msm5xxx_poc_mdsp_read(void *opaque, hwaddr offset, unsigned size)
+{
+    const typeof(((MSM5xxxPOCMachineState *)0)->mdsp_context[0]) *port = opaque;
+    if (!size || size > 4 || offset >= mdsp_sizes[port->index] ||
+        size > mdsp_sizes[port->index] - offset) {
+        return 0;
+    }
+    return msm5xxx_poc_backing_read(
+        port->machine->mdsp_backing[port->index], offset, size);
+}
+
+static void msm5xxx_poc_mdsp_write(void *opaque, hwaddr offset,
+                                    uint64_t value, unsigned size)
+{
+    const typeof(((MSM5xxxPOCMachineState *)0)->mdsp_context[0]) *port = opaque;
+    MSM5xxxPOCMachineState *s = port->machine;
+    hwaddr address = mdsp_bases[port->index] + offset;
+    unsigned command;
+    uint8_t *data = s->mdsp_backing[1];
+    uint8_t *modules = s->mdsp_backing[2];
+
+    if (!size || size > 4 || offset >= mdsp_sizes[port->index] ||
+        size > mdsp_sizes[port->index] - offset) {
+        return;
+    }
+    msm5xxx_poc_backing_write(s->mdsp_backing[port->index], offset, value, size);
+    if (port->index == 0 && value &&
+        msm5xxx_poc_backing_read(s->mdsp_backing[3], 0, 4) & 1) {
+        s->mdsp_uploaded = true;
+    }
+    if (address == 0x50c00000 && size == 4) {
+        if (value & 1) {
+            s->mdsp_held = true;
+            s->mdsp_uploaded = false;
+            s->mdsp_pending = 0;
+            msm5xxx_poc_backing_write(data, 0x1514, 0, 2);
+            msm5xxx_poc_backing_write(data, s->mdsp_mailbox - 0x50200000, 0, 2);
+            msm5xxx_poc_boot_events_irq(s);
+        } else if (s->mdsp_held && s->mdsp_uploaded &&
+                   (msm5xxx_poc_backing_read(s->mdsp_backing[3], 0x10, 4) &
+                    0x3b) == 0x3b) {
+            msm5xxx_poc_backing_write(data, 0x1514, 1, 2);
+        }
+    }
+    if (address != 0x50c00008 || size != 4 || !(value & 0x80000000) ||
+        !msm5xxx_poc_backing_read(data, 0x1514, 2)) {
+        return;
+    }
+    command = msm5xxx_poc_backing_read(data, s->mdsp_mailbox - 0x50200000, 2);
+    if (command == 1) {
+        value = msm5xxx_poc_backing_read(modules,
+                                          s->mdsp_response + 4 - 0x50400000, 4);
+        msm5xxx_poc_backing_write(modules,
+                                  s->mdsp_response - 0x50400000, value, 4);
+    } else if (command != 4 && command != 5) {
+        return; /* Unsupported commands stay pending for firmware timeout. */
+    }
+    msm5xxx_poc_backing_write(data, s->mdsp_mailbox - 0x50200000, 0, 2);
+    if (command == 1) {
+        s->mdsp_pending |= s->mdsp_irq_mask;
+        msm5xxx_poc_boot_events_irq(s);
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_mdsp_ops = {
+    .read = msm5xxx_poc_mdsp_read,
+    .write = msm5xxx_poc_mdsp_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static void msm5xxx_poc_mdsp_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    memset(s->mdsp_backing, 0, sizeof(s->mdsp_backing));
+    s->mdsp_held = s->mdsp_uploaded = s->boot_events_irq_level = false;
+    s->mdsp_pending = 0;
+    msm5xxx_poc_boot_events_irq(s);
+}
+
+static void msm5xxx_poc_mdsp_init(MachineState *machine,
+                                  MSM5xxxPOCMachineState *s)
+{
+    unsigned i;
+    if (!s->mdsp_mailbox) {
+        return;
+    }
+    if (!s->boot_nand_word) {
+        error_report("MDSP master requires the admitted word-bootstrap bus");
+        exit(EXIT_FAILURE);
+    }
+    for (i = 0; i < ARRAY_SIZE(mdsp_bases); i++) {
+        s->mdsp_context[i].machine = s;
+        s->mdsp_context[i].index = i;
+        memory_region_init_io(&s->mdsp_regions[i], OBJECT(machine),
+            &msm5xxx_poc_mdsp_ops, &s->mdsp_context[i],
+            "msm5xxx-poc.mdsp-master", mdsp_sizes[i]);
+        memory_region_add_subregion_overlap(get_system_memory(), mdsp_bases[i],
+                                            &s->mdsp_regions[i], 3);
+    }
+    qemu_register_reset(msm5xxx_poc_mdsp_reset, s);
+}
+
 static uint64_t msm5xxx_poc_boot_events_read(void *opaque, hwaddr offset,
                                              unsigned size)
 {
@@ -15932,13 +16117,40 @@ static uint64_t msm5xxx_poc_boot_events_read(void *opaque, hwaddr offset,
         size > sizeof(s->boot_events_backing) - offset) {
         return 0;
     }
+    if (s->boot_rex_timer && offset == 0x1b34 && size == 4) {
+        return (uint32_t)msm5xxx_poc_boot_rex_ticks();
+    }
+    if (s->boot_sbi_fifo && size == 4 && offset >= 0x1200 && offset < 0x1280) {
+        unsigned channel = (offset - 0x1200) / 0x40;
+        unsigned reg = offset & 0x3f;
+        if (reg == 0x18) {
+            return (msm5xxx_poc_backing_read(s->boot_events_backing, offset, 4) & ~4u) |
+                   (s->boot_sbi_channel[channel].full ? 4 : 0);
+        }
+        if (reg == 0x20) {
+            return s->boot_sbi_channel[channel].received;
+        }
+        if (reg == 0x24 || reg == 0x28) {
+            return 0; /* Admitted producers submit one byte per transfer. */
+        }
+        if (reg == 0x2c) {
+            return s->boot_sbi_channel[channel].done;
+        }
+    }
     for (i = 0; i < size; i++) {
         hwaddr at = offset + i;
         uint8_t value = s->boot_events_backing[at];
 
         hwaddr pending = s->boot_nand_word ? 0x950 : 0xc84;
 
-        if (at >= pending && at < pending + 4) {
+        if ((s->mdsp_mailbox || s->boot_rex_timer) && at >= 0x94c && at < 0x950) {
+            uint32_t owned = s->mdsp_irq_mask |
+                (s->boot_rex_timer ? UINT32_C(0x40000000) : 0);
+            uint32_t pending = s->mdsp_pending |
+                (s->boot_rex_pending ? UINT32_C(0x40000000) : 0);
+            value = (value & ~(owned >> (8 * (at - 0x94c)))) |
+                    (pending >> (8 * (at - 0x94c)));
+        } else if (at >= pending && at < pending + 4) {
             value = s->boot_nand.pending >> (8 * (at - pending));
 
         } else if (!s->boot_nand_word &&
@@ -15971,14 +16183,90 @@ static void msm5xxx_poc_boot_events_write(void *opaque, hwaddr offset,
 
         hwaddr acknowledge = s->boot_nand_word ? 0x904 : 0xc84;
 
-        if (at >= acknowledge && at < acknowledge + 4) {
+        if ((s->mdsp_mailbox || s->boot_rex_timer) && at >= 0x900 && at < 0x904) {
+            uint32_t acknowledge_bits = (uint32_t)byte << (8 * (at - 0x900));
+            s->mdsp_pending &= ~acknowledge_bits;
+            if (acknowledge_bits & UINT32_C(0x40000000)) {
+                s->boot_rex_pending = false;
+            }
+        } else if (at >= acknowledge && at < acknowledge + 4) {
             msm5xxx_boot_nand_irq_ack(&s->boot_nand,
                                       (uint32_t)byte << (8 * (at - acknowledge)));
         } else {
             s->boot_events_backing[at] = byte;
         }
     }
+    if (s->boot_sbi_fifo && size == 4 && offset >= 0x1200 && offset < 0x1280) {
+        unsigned channel = (offset - 0x1200) / 0x40;
+        unsigned reg = offset & 0x3f;
+        typeof(s->boot_sbi_channel[0]) *bus = &s->boot_sbi_channel[channel];
+        if (reg == 0x0c) {
+            if (bus->full || value > UINT16_MAX) {
+                bus->rejected = true;
+            } else {
+                bus->command = value;
+                bus->full = true;
+            }
+        } else if (reg == 0x2c && !value) {
+            bus->done = false;
+        } else if (reg == 0x10) {
+            if (!bus->start && (value & 1) && !bus->rejected) {
+                unsigned slave = msm5xxx_poc_backing_read(s->boot_events_backing,
+                    0x1204 + channel * 0x40, 4) & 63;
+                unsigned address = (bus->command >> 8) & 127;
+                if (bus->full) {
+                    if (bus->command & 0x8000) {
+                        bus->received = s->boot_sbi_registers[channel][slave][address];
+                    } else {
+                        s->boot_sbi_registers[channel][slave][address] = bus->command;
+                    }
+                }
+                bus->full = false;
+                bus->done = true;
+            }
+            bus->start = value & 1;
+        }
+    }
+    if (s->boot_rex_timer && offset == 0x1d08 && size == 4) {
+        msm5xxx_poc_boot_rex_schedule(s, value);
+    }
+    if (s->mdsp_mailbox || s->boot_rex_timer) {
+        msm5xxx_poc_boot_events_irq(s);
+    }
 }
+
+/* Independently source-bound external GPIO inputs: End/Power released and
+ * inactive RTC-wake indication. The boot loader derives reason5 from the
+ * selected active-low input; other bits retain original control backing. */
+static uint64_t msm5xxx_poc_boot_power_key_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!size || size > 4 || offset >= 4 || size > 4 - offset) {
+        return 0;
+    }
+    uint32_t levels = (s->boot_power_key ? 4u : 0) | s->boot_wake_input;
+    return msm5xxx_poc_backing_read(s->boot_power_key_backing, offset, size) |
+           (levels >> (8 * offset));
+}
+
+static void msm5xxx_poc_boot_power_key_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!size || size > 4 || offset >= 4 || size > 4 - offset) {
+        return;
+    }
+    msm5xxx_poc_backing_write(s->boot_power_key_backing, offset, value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_boot_power_key_ops = {
+    .read = msm5xxx_poc_boot_power_key_read,
+    .write = msm5xxx_poc_boot_power_key_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
 
 static uint64_t msm5xxx_poc_boot_presence_read(void *opaque, hwaddr offset,
                                                unsigned size)
@@ -16105,6 +16393,15 @@ static void msm5xxx_poc_boot_nand_reset(void *opaque)
     msm5xxx_boot_nand_reset(&s->boot_nand);
     memset(s->boot_nand_backing, 0, sizeof(s->boot_nand_backing));
     memset(s->boot_events_backing, 0, sizeof(s->boot_events_backing));
+    memset(s->boot_sbi_registers, 0, sizeof(s->boot_sbi_registers));
+    memset(s->boot_sbi_channel, 0, sizeof(s->boot_sbi_channel));
+    if (s->boot_rex_timer) {
+        s->boot_rex_pending = false;
+        if (s->boot_rex_deadline) {
+            timer_del(s->boot_rex_deadline);
+        }
+        msm5xxx_poc_boot_events_irq(s);
+    }
     memset(s->boot_lcd_registers, 0, sizeof(s->boot_lcd_registers));
     s->boot_lcd_selector = 0;
     s->boot_lcd_control = 0;
@@ -16113,6 +16410,31 @@ static void msm5xxx_poc_boot_nand_reset(void *opaque)
         memset(memory_region_get_ram_ptr(&s->boot_control[i]), 0,
                memory_region_size(&s->boot_control[i]));
     }
+}
+
+static char *msm5xxx_poc_get_mdsp_master(Object *obj, Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    return g_strdup_printf("%x:%x:%x", s->mdsp_mailbox, s->mdsp_response,
+                            s->mdsp_irq_mask);
+}
+
+static void msm5xxx_poc_set_mdsp_master(Object *obj, const char *value,
+                                        Error **errp)
+{
+    MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    uint32_t fields[3];
+    if (s->signal_memory_realized || s->mdsp_mailbox ||
+        !msm5xxx_poc_boot_storage_hex(value, fields, 3) ||
+        fields[0] < 0x50201500 || fields[0] >= 0x50201600 || (fields[0] & 1) ||
+        fields[1] < 0x50400000 || fields[1] > 0x50400ff8 || (fields[1] & 3) ||
+        !fields[2] || (fields[2] & (fields[2] - 1))) {
+        error_setg(errp, "MDSP master requires source-bound MAILBOX:RESULT:IRQ_MASK before realization");
+        return;
+    }
+    s->mdsp_mailbox = fields[0];
+    s->mdsp_response = fields[1];
+    s->mdsp_irq_mask = fields[2];
 }
 
 static char *msm5xxx_poc_get_signal_memory(Object *obj, Error **errp)
@@ -16265,7 +16587,7 @@ static void msm5xxx_poc_a80_update(MSM5xxxPOCMachineState *s)
     int64_t now = s->a80_clock_ns;
 
     s->a80_irq_level = msm5xxx_timer_irq_level(&s->a80_irq);
-    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level || s->a80_irq_level);
+    qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level || s->a80_irq_level || s->boot_events_irq_level);
     if (s->a80_irq.armed) {
         uint64_t remaining = s->a80_irq.remaining_ns;
         int64_t next = remaining > INT64_MAX - now ? INT64_MAX :
@@ -16626,6 +16948,11 @@ static void msm5xxx_poc_set_##suffix(Object *obj, bool value, Error **errp) \
     s->field = value; \
 }
 
+EXTERNAL_BOOL_PROPERTY(boot_sbi_fifo, boot_sbi_fifo)
+EXTERNAL_BOOL_PROPERTY(boot_rex_timer, boot_rex_timer)
+EXTERNAL_BOOL_PROPERTY(boot_power_key, boot_power_key)
+EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
+                      "boot-wake-input must be a source-bound GPIO mask before realization")
 EXTERNAL_BOOL_PROPERTY(a80_timer, a80_timer_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs09, external_cs09_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs0a, external_cs0a_enabled)
@@ -17826,7 +18153,37 @@ static void msm5xxx_poc_init(MachineState *machine)
                            MSM5XXX_POC_MSM_SIZE, &error_fatal);
     memory_region_add_subregion(get_system_memory(), MSM5XXX_POC_MSM_BASE,
                                 &s->msm);
+    if ((s->boot_sbi_fifo || s->boot_rex_timer || s->boot_power_key ||
+         s->boot_wake_input) &&
+        !s->boot_nand_word) {
+        error_report("SBI/timer/key input requires the admitted word-bootstrap bus");
+        exit(EXIT_FAILURE);
+    }
     msm5xxx_poc_boot_nand_init(machine, s);
+    if (s->boot_power_key || s->boot_wake_input) {
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), 0x48000040, 4);
+        if (!section.mr || !memory_region_is_ram(section.mr) ||
+            section.offset_within_address_space != 0x48000040 ||
+            !int128_ge(section.size, int128_make64(4)) ||
+            section.offset_within_region > memory_region_size(section.mr) ||
+            memory_region_size(section.mr) - section.offset_within_region < 4) {
+            memory_region_unref(section.mr);
+            error_report("boot GPIO inputs require the source-bound control backing");
+            exit(EXIT_FAILURE);
+        }
+        s->boot_power_key_backing = (uint8_t *)memory_region_get_ram_ptr(section.mr) +
+            section.offset_within_region;
+        memory_region_unref(section.mr);
+        memory_region_init_io(&s->boot_power_key_region, OBJECT(machine),
+            &msm5xxx_poc_boot_power_key_ops, s, "boot-gpio-inputs", 4);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x48000040,
+                                            &s->boot_power_key_region, 10);
+    }
+    if (s->boot_rex_timer) {
+        s->boot_rex_deadline = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                          msm5xxx_poc_boot_rex_expired, s);
+    }
     msm5xxx_poc_a80_init(machine, s);
     if (!!s->external_ram_base != !!s->external_ram_size ||
         (s->external_ram_size &&
@@ -17852,6 +18209,7 @@ static void msm5xxx_poc_init(MachineState *machine)
                                     &s->external_ram);
     }
     msm5xxx_poc_signal_memory_init(machine, s);
+    msm5xxx_poc_mdsp_init(machine, s);
     {
         const struct { hwaddr base; uint64_t size; bool enabled; } windows[] = {
             { 0x09000000, 0x1000, s->external_cs09_enabled },
@@ -23900,6 +24258,17 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add(oc, "external-ram-base", "uint32",
         msm5xxx_poc_get_external_ram_base,
         msm5xxx_poc_set_external_ram_base, NULL, NULL);
+    object_class_property_add_bool(oc, "boot-sbi-fifo",
+        msm5xxx_poc_get_boot_sbi_fifo, msm5xxx_poc_set_boot_sbi_fifo);
+    object_class_property_add_bool(oc, "boot-rex-timer",
+        msm5xxx_poc_get_boot_rex_timer, msm5xxx_poc_set_boot_rex_timer);
+    object_class_property_add_bool(oc, "boot-power-key",
+        msm5xxx_poc_get_boot_power_key, msm5xxx_poc_set_boot_power_key);
+    object_class_property_add(oc, "boot-wake-input", "uint32",
+        msm5xxx_poc_get_boot_wake_input, msm5xxx_poc_set_boot_wake_input,
+        NULL, NULL);
+    object_class_property_add_str(oc, "mdsp-master",
+        msm5xxx_poc_get_mdsp_master, msm5xxx_poc_set_mdsp_master);
     object_class_property_add_str(oc, "signal-memory",
         msm5xxx_poc_get_signal_memory, msm5xxx_poc_set_signal_memory);
     object_class_property_set_description(oc, "external-ram-base",
@@ -24521,9 +24890,15 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
 static void msm5xxx_poc_instance_finalize(Object *obj)
 {
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
+    if (s->mdsp_mailbox && s->signal_memory_realized) {
+        qemu_unregister_reset(msm5xxx_poc_mdsp_reset, s);
+    }
     if (s->a80_timer) {
         qemu_unregister_reset(msm5xxx_poc_a80_reset, s);
         timer_free(s->a80_timer);
+    }
+    if (s->boot_rex_deadline) {
+        timer_free(s->boot_rex_deadline);
     }
     if (s->boot_nand_blk) {
         qemu_unregister_reset(msm5xxx_poc_boot_nand_reset, s);

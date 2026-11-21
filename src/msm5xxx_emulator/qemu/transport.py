@@ -1343,12 +1343,87 @@ class Transport:
             machine += ',' + signal_property
             self.config.detection_notes.append(
                 'source-linked upload-table memory apertures enabled')
+        boot_rules = device_domain('dmd.boot_rules')
+        mdsp_profile = boot_rules.find_mdsp_master_profile(
+            detector_image, code_limit=self.config.flash_size)
+        sbi_fifo = boot_rules.find_boot_sbi_fifo_profile(
+            detector_image, code_limit=self.config.flash_size)
+        rex_timer = boot_rules.find_boot_rex_timer_profile(
+            detector_image, code_limit=self.config.flash_size)
+        power_key = boot_rules.find_boot_power_key_profile(
+            detector_image, code_limit=self.config.flash_size)
+        wake_input = boot_rules.find_boot_wake_input_profile(
+            detector_image, code_limit=self.config.flash_size)
+        extensions = []
+        if bootstrap_binding is not None:
+            if (mdsp_profile is not None and boot_rules.find_mdsp_master_profile(
+                    firmware_image, code_limit=self.config.flash_size) == mdsp_profile):
+                extensions.append(('mdsp-master',
+                    f"{mdsp_profile['mailbox']:x}:{mdsp_profile['response']:x}:"
+                    f"{mdsp_profile['irq_mask']:x}"))
+            if (sbi_fifo is not None and boot_rules.find_boot_sbi_fifo_profile(
+                    firmware_image, code_limit=self.config.flash_size) == sbi_fifo):
+                extensions.append(('boot-sbi-fifo', 'on'))
+            if (rex_timer is not None and boot_rules.find_boot_rex_timer_profile(
+                    firmware_image, code_limit=self.config.flash_size) == rex_timer):
+                extensions.append(('boot-rex-timer', 'on'))
+            if (power_key is not None and boot_rules.find_boot_power_key_profile(
+                    firmware_image, code_limit=self.config.flash_size) == power_key):
+                extensions.append(('boot-power-key', 'on'))
+            if (wake_input is not None and boot_rules.find_boot_wake_input_profile(
+                    firmware_image, code_limit=self.config.flash_size) == wake_input):
+                extensions.append(('boot-wake-input', str(wake_input['mask'])))
+        if extensions:
+            # Keep older native binaries usable, with the missing model explicit.
+            native_help = subprocess.run(
+                [*qemu_prefix, str(qemu), '-machine', 'msm5xxx-poc,help'],
+                capture_output=True, text=True, timeout=10)
+            for name, value in extensions:
+                if native_help.returncode == 0 and any(
+                        line.lstrip().startswith(name + '=')
+                        for line in native_help.stdout.splitlines()):
+                    machine += f',{name}={value}'
+                    self.config.detection_notes.append(
+                        f'source-linked {name} device enabled')
+                else:
+                    self.config.detection_notes.append(
+                        f'{name} source admitted; native model unavailable in this QEMU build')
         from ..devices.display.source_plan import apply_source_plan
         display_plan = device_domain("display.source_writers").machine_plan(
             detector_image, firmware_image if bootstrap_binding is not None else primary_seed,
             self.config)
         apply_source_plan(self.decoder, display_plan)
         machine += device_domain('display.source_writers').machine_properties(display_plan)
+        # Keep every existing selected display owner intact.
+        if not (self.decoder._lcd_b0_source_page
+                or self.decoder._lcd_packed_window2
+                or self.decoder._lcd_source_packed_cursor):
+            indexed = device_domain('external_bus.indexed').find_indexed44_incrementing(
+                detector_image)
+            loaded_display = firmware_image if bootstrap_binding is not None else primary_seed
+            layout = (self.config.image_kind == 'firmware'
+                      and (self.config.load_address, self.config.image_offset,
+                           self.config.entry) == (0, 0, 0)
+                      and not self.config.missing_overlays
+                      and self.config.ram_bootstrap_profile is None)
+            spans = ([span for item in indexed['evidence']
+                      for span in (item['span'], *item.get('extra_spans', ()))]
+                     if indexed is not None else [])
+            if (layout and indexed is not None and spans
+                    and all(0 <= start < start + length <= min(len(detector_image), len(loaded_display))
+                            and detector_image[start:start + length] == loaded_display[start:start + length]
+                            for start, length in spans)
+                    and (self.config.display_geometry_source == 'auto-default'
+                         or (self.config.width, self.config.height)
+                         == (indexed['width'], indexed['height']))):
+                from ..devices.display.indexed44 import Indexed44
+                self.decoder._lcd_b0_source_page = Indexed44(
+                    indexed['width'], indexed['height'],
+                    command_port=indexed['command_port'], data_port=indexed['data_port'],
+                    x_origin=indexed['x_origin'], y_origin=indexed['y_origin'])
+                machine += ',external-lcd-18=on,external-lcd-18-register-offset=16'
+                self.config.detection_notes.append(
+                    'source-linked incrementing clear and halfword LCD pixel writer enabled')
         gpio_lcd_property = device_domain('display.binding').bind_loaded_sources(
             self.decoder, detector_image, primary_seed, allowed_patch=dmd_patch,
             ram_claimed=any(value is not None for value in (
