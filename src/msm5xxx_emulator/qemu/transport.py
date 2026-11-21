@@ -2008,11 +2008,37 @@ class Transport:
             high_stack_boot = (bootstrap_binding is None and high_stack_ram is not None
                 and not any(name in machine for name in
                             ("signal-memory=", "external-ram-base=", "external-ram-size=")))
+            boot_dual_nor = (high_stack_boot and pflash_unit == 0 and loader_exclude is None
+                and self.config.flash_size == 0x01000000 and len(primary_seed) == 0x01000000
+                and not self.config.secondary_flash_image and not self.config.secondary_flash_address
+                and not self.config.upper_flash_address and not self.config.nand_enabled
+                and not legacy_secondary_state.exists()
+                and (legacy_upper_state is None or not legacy_upper_state.exists())
+                and device_domain('storage.boot_dual_nor').has_boot_dual_nor(detector_image)
+                and device_domain('storage.boot_dual_nor').has_boot_dual_nor(primary_seed))
             if high_stack_boot:
-                # shortcut: only the proven stack-bearing RAM window is mapped; upgrade when the full external memory map is proven.
-                base, size = high_stack_ram
-                machine += (f",signal-memory=ffff0000:2000,external-ram-base=0x{base:x},"
-                            f"external-ram-size=0x{size:x},standalone-boot-events=on")
+                if boot_dual_nor:
+                    # shortcut: the second SDRAM bank has only its command and stack pages; upgrade when its full map is proven.
+                    machine += (",signal-memory=ffff0000:2000:187f0000:10000:18122000:1000,"
+                                "external-ram-base=0x10000000,external-ram-size=0x800000,"
+                                "standalone-boot-events=on,boot-dual-nor=on,"
+                                "bootstrap-nand-control-windows=58000000:1000:60000000:1000")
+                    primary_nor = temporary / 'boot-nor-0.raw'
+                    secondary_nor = temporary / 'boot-nor-1.raw'
+                    primary_nor.write_bytes(primary_seed)
+                    # shortcut: an unprovided second NOR is erased and read-only; upgrade when its contents and geometry are available.
+                    secondary_nor.write_bytes(b'\xff' * 0x01000000)
+                    for unit, path in enumerate((primary_nor, secondary_nor)):
+                        qemu_path = str(path).replace(',', ',,')
+                        storage_args.extend(('-drive', f'file={qemu_path},if=pflash,format=raw,unit={unit},readonly=on'))
+                    loader_exclude = (0, self.config.flash_size)
+                    self.config.detection_notes.append(
+                        'source-linked boot NORs use read-only media; second NOR contents unprovided')
+                else:
+                    # shortcut: only the proven stack-bearing RAM window is mapped; upgrade when the full external memory map is proven.
+                    base, size = high_stack_ram
+                    machine += (f",signal-memory=ffff0000:2000,external-ram-base=0x{base:x},"
+                                f"external-ram-size=0x{size:x},standalone-boot-events=on")
             self.process = launch_qemu(
                 [
                     *qemu_prefix, str(qemu), "-M", machine, "-cpu",

@@ -254,7 +254,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t external_ram_base, external_ram_size;
     uint32_t signal_memory_ranges[16];
     unsigned signal_memory_count;
-    bool signal_memory_realized, standalone_boot_events;
+    bool signal_memory_realized, standalone_boot_events, boot_dual_nor;
     MemoryRegion signal_memory[8];
     bool boot_sbi_fifo;
     bool boot_power_key;
@@ -16388,8 +16388,18 @@ static const MemoryRegionOps msm5xxx_poc_boot_video_ops = {
 static void msm5xxx_poc_standalone_boot_events_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
+    unsigned i;
 
     memset(s->boot_events_backing, 0, sizeof(s->boot_events_backing));
+    for (i = 0; i < s->boot_control_count; i++) {
+        memset(memory_region_get_ram_ptr(&s->boot_control[i]), 0,
+               memory_region_size(&s->boot_control[i]));
+    }
+    if (s->boot_dual_nor) {
+        s->boot_lcd_selector = 0;
+        s->boot_lcd_control = 0;
+        memset(s->boot_lcd_registers, 0, sizeof(s->boot_lcd_registers));
+    }
 }
 
 static void msm5xxx_poc_boot_nand_reset(void *opaque)
@@ -16749,6 +16759,28 @@ static void msm5xxx_poc_a80_init(MachineState *machine,
     msm5xxx_poc_a80_reset(s);
 }
 
+static void msm5xxx_poc_boot_control_init(MSM5xxxPOCMachineState *s)
+{
+    unsigned i;
+
+    for (i = 0; i < s->boot_control_count; i++) {
+        uint32_t base = s->boot_control_ranges[i * 2];
+        uint32_t length = s->boot_control_ranges[i * 2 + 1];
+        g_autofree char *name = g_strdup_printf("boot-control-%u", i);
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), base, length);
+        bool conflict = section.mr != NULL;
+
+        memory_region_unref(section.mr);
+        if (conflict) {
+            error_report("bootstrap control bank overlaps an existing route");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_ram(&s->boot_control[i], NULL, name, length, &error_fatal);
+        memory_region_add_subregion(get_system_memory(), base, &s->boot_control[i]);
+    }
+}
+
 static void msm5xxx_poc_boot_nand_init(MachineState *machine,
                                        MSM5xxxPOCMachineState *s)
 {
@@ -16758,7 +16790,7 @@ static void msm5xxx_poc_boot_nand_init(MachineState *machine,
 
     if (!s->boot_nand_size) {
         if (s->boot_nand_word || s->boot_nand_identity ||
-            s->boot_nand_peripherals || s->boot_control_count || s->boot_nand_data_port ||
+            s->boot_nand_peripherals || (s->boot_control_count && !s->boot_dual_nor) || s->boot_nand_data_port ||
             s->boot_nand_lcd_id) {
             error_report("bootstrap NAND peripherals require split-page media");
             exit(EXIT_FAILURE);
@@ -16827,22 +16859,7 @@ static void msm5xxx_poc_boot_nand_init(MachineState *machine,
         memcpy(s->boot_control_ranges, ranges, sizeof(ranges));
         s->boot_control_count = 3;
     }
-    for (i = 0; i < s->boot_control_count; i++) {
-        uint32_t base = s->boot_control_ranges[i * 2];
-        uint32_t length = s->boot_control_ranges[i * 2 + 1];
-        g_autofree char *name = g_strdup_printf("boot-control-%u", i);
-        MemoryRegionSection section = memory_region_find(
-            get_system_memory(), base, length);
-        bool conflict = section.mr != NULL;
-
-        memory_region_unref(section.mr);
-        if (conflict) {
-            error_report("bootstrap control bank overlaps an existing route");
-            exit(EXIT_FAILURE);
-        }
-        memory_region_init_ram(&s->boot_control[i], NULL, name, length, &error_fatal);
-        memory_region_add_subregion(get_system_memory(), base, &s->boot_control[i]);
-    }
+    msm5xxx_poc_boot_control_init(s);
     {
         const uint32_t bases[] = { 0x64000000, 0x80000000,
             s->boot_nand_word ? 0x20000000 : 0x28000000,
@@ -16960,6 +16977,7 @@ EXTERNAL_BOOL_PROPERTY(boot_rex_timer, boot_rex_timer)
 EXTERNAL_BOOL_PROPERTY(boot_power_key, boot_power_key)
 EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
                       "boot-wake-input must be a source-bound GPIO mask before realization")
+EXTERNAL_BOOL_PROPERTY(boot_dual_nor, boot_dual_nor)
 EXTERNAL_BOOL_PROPERTY(standalone_boot_events, standalone_boot_events)
 EXTERNAL_BOOL_PROPERTY(a80_timer, a80_timer_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs09, external_cs09_enabled)
@@ -17778,6 +17796,50 @@ static void msm5xxx_poc_init(MachineState *machine)
                            s->primary_nor_size, &error_fatal);
     memory_region_add_subregion(get_system_memory(), 0, &s->nor);
     msm5xxx_poc_protected_realize(s);
+    if (s->boot_dual_nor) {
+        unsigned bank;
+        MemoryRegionSection section;
+
+        if (!s->standalone_boot_events || s->boot_nand_size ||
+            s->primary_nor_size != 0x01000000 ||
+            s->primary_x16_nor_enabled || s->record_x16_nor_enabled ||
+            s->mapped_primary_x16_nor_enabled || s->intel_x16_nor_enabled ||
+            s->amd_x16_nor_enabled || s->fujitsu_x16_nor_enabled ||
+            s->upper_x8_nor_enabled || s->upper_x16_nor_enabled ||
+            s->whole_primary_x16_enabled || s->protected_nor_enabled) {
+            error_report("boot dual NOR conflicts with the selected storage route");
+            exit(EXIT_FAILURE);
+        }
+        section = memory_region_find(get_system_memory(), 0x08000000, 0x01000000);
+        if (section.mr) {
+            memory_region_unref(section.mr);
+            error_report("boot second NOR overlaps an existing route");
+            exit(EXIT_FAILURE);
+        }
+        /* shortcut: both NORs are read-only with unknown IDs and virtual 64 KiB sectors; upgrade when physical geometry and writable media are proven. */
+        for (bank = 0; bank < 2; bank++) {
+            DeviceState *flash = qdev_new(TYPE_PFLASH_CFI01);
+            DriveInfo *flash_drive = drive_get(IF_PFLASH, 0, bank);
+            BlockBackend *backend = flash_drive ? blk_by_legacy_dinfo(flash_drive) : NULL;
+
+            if (!backend || blk_is_writable(backend) ||
+                blk_getlength(backend) != 0x01000000) {
+                error_report("boot dual NOR requires two exact read-only 16 MiB backends");
+                exit(EXIT_FAILURE);
+            }
+            qdev_prop_set_drive(flash, "drive", backend);
+            qdev_prop_set_uint32(flash, "num-blocks", 0x100);
+            qdev_prop_set_uint64(flash, "sector-length", 0x10000);
+            qdev_prop_set_uint8(flash, "width", 2);
+            qdev_prop_set_uint8(flash, "device-width", 2);
+            qdev_prop_set_uint8(flash, "max-device-width", 2);
+            qdev_prop_set_bit(flash, "big-endian", false);
+            qdev_prop_set_string(flash, "name", bank ? "boot-nor-1" : "boot-nor-0");
+            sysbus_realize_and_unref(SYS_BUS_DEVICE(flash), &error_fatal);
+            sysbus_mmio_map_overlap(SYS_BUS_DEVICE(flash), 0,
+                                    bank ? 0x08000000 : 0, 1);
+        }
+    }
     if (s->primary_x16_nor_enabled) {
         DeviceState *dev = qdev_new(TYPE_PFLASH_CFI02);
         unsigned region;
@@ -18211,6 +18273,29 @@ static void msm5xxx_poc_init(MachineState *machine)
                               "boot-events", sizeof(s->boot_events_backing));
         memory_region_add_subregion(get_system_memory(), 0x80000000,
                                     &s->boot_events_region);
+        if (s->boot_dual_nor) {
+            unsigned i;
+
+            msm5xxx_poc_boot_control_init(s);
+            for (i = 0; i < 2; i++) {
+                hwaddr base = i ? 0x28000100 : 0x28000000;
+                MemoryRegionSection port = memory_region_find(get_system_memory(), base, 2);
+                bool occupied = port.mr != NULL;
+
+                memory_region_unref(port.mr);
+                if (occupied) {
+                    error_report("boot LCD port overlaps an existing route");
+                    exit(EXIT_FAILURE);
+                }
+                s->boot_lcd_context[i].machine = s;
+                s->boot_lcd_context[i].data = i != 0;
+                memory_region_init_io(&s->boot_lcd_region[i], OBJECT(machine),
+                    &msm5xxx_poc_boot_lcd_ops, &s->boot_lcd_context[i],
+                    i ? "boot-lcd-data" : "boot-lcd-command", 2);
+                memory_region_add_subregion(get_system_memory(), base,
+                                            &s->boot_lcd_region[i]);
+            }
+        }
         qemu_register_reset(msm5xxx_poc_standalone_boot_events_reset, s);
     }
     msm5xxx_poc_a80_init(machine, s);
@@ -24284,6 +24369,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                  msm5xxx_poc_set_uart2_tx_ready);
     object_class_property_set_description(oc, "uart2-tx-ready",
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add_bool(oc, "boot-dual-nor",
+        msm5xxx_poc_get_boot_dual_nor, msm5xxx_poc_set_boot_dual_nor);
     object_class_property_add_bool(oc, "standalone-boot-events",
         msm5xxx_poc_get_standalone_boot_events,
         msm5xxx_poc_set_standalone_boot_events);

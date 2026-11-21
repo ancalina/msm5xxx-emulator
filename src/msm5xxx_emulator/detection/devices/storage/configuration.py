@@ -12,7 +12,11 @@ from .upper_nor import UPPER_FLASH_ADDRESS, UPPER_FLASH_SIZE, find_upper_nor
 
 DEFAULT_STATE_ROOT = Path(os.environ.get("MSM5XXX_STATE_DIR", Path.home() / ".msm5xxx-emulator")).expanduser()
 
+REQUIRES = {'has_boot_dual_nor': ('storage.boot_dual_nor', 'has_boot_dual_nor')}
+
 def configuration_fields(layout, drivers, storage):
+    if has_boot_dual_nor(layout.image):
+        layout.detection_notes.append('source-linked read-only dual NOR boot hardware detected')
     return {'flash_size': storage.flash_size, 'secondary_flash_address': layout.requested_load_address + storage.flash_size if layout.compound_fujitsu else
         storage.adjacent[0] if storage.adjacent else None, 'secondary_flash_size': storage.compound_secondary_size or storage.adjacent_secondary_size or storage.flash_size,
         'secondary_flash_image': None, 'secondary_flash_image_offset': storage.compound_secondary_offset, 'secondary_flash_state': storage.default_secondary_state,
