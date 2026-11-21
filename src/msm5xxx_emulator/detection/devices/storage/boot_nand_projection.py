@@ -79,6 +79,17 @@ def project(plan):
         raise ValueError('ambiguous NAND bootstrap plan')
     parameters = dict(choices[0].parameters)
     word = parameters.pop('word_interface', False)
+    dram_windows = parameters.pop('dram_windows', ())
+    if (not isinstance(dram_windows, tuple) or len(dram_windows) > 4
+            or word and dram_windows
+            or any(not isinstance(window, tuple) or len(window) != 2
+                   or any(type(value) is not int for value in window)
+                   or not 0x08000000 <= window[0] < window[1] <= 0xffff0000
+                   or window[0] & 0xfff or window[1] - window[0] != 0x1000
+                   for window in dram_windows)
+            or any(left[1] > right[0] for left, right
+                   in zip(dram_windows, dram_windows[1:]))):
+        raise ValueError('invalid bootstrap SDRAM command pages')
     extra = {key: parameters.pop(key) for key in
              ('identity_status', 'peripherals', 'control_windows',
               'lcd_data_port', 'lcd_identity') if key in parameters}
@@ -89,6 +100,9 @@ def project(plan):
     raw, main, high = (parameters[key] for key in ('raw_size', 'main_size', 'high_code_size'))
     properties = (('bootstrap-nand-main-size', main),) + (
         _word_properties(extra) if word else ())
+    if dram_windows:
+        value = ':'.join(f'{start:x}:{end - start:x}' for start, end in dram_windows)
+        properties += (('signal-memory', value),)
     if (cpu != 'arm926,reset-hivecs=on'
             or word and main not in (0x04000000, 0x08000000)
             or any(type(value) is not int for value in (raw, main, high))

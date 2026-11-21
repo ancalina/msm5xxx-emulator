@@ -24,6 +24,17 @@ def plan_for(*, main=0x4000, raw=None, high=0x2000, cpu='arm926,reset-hivecs=on'
 
 
 class BootNandProjectionTests(unittest.TestCase):
+    def test_byte_command_pages_are_bounded_and_match_properties(self):
+        plan = plan_for()
+        capability = plan.capabilities[0]
+        capability.parameters += (("dram_windows", ((0x0800c000, 0x0800d000),)),)
+        capability.properties += (("signal-memory", "800c000:1000"),)
+        self.assertIn("signal-memory=800c000:1000", project(plan).machine)
+        capability.parameters = capability.parameters[:-1] + (
+            ("dram_windows", ((0x0800c000, 0x0800e000),)),)
+        with self.assertRaisesRegex(ValueError, "invalid bootstrap SDRAM command pages"):
+            project(plan)
+
     def test_word_interface_requires_matching_geometry_and_property(self):
         plan = plan_for(main=0x04000000,
             properties=(('bootstrap-nand-main-size', 0x04000000),

@@ -14,6 +14,7 @@ REQUIRES = {
     'find_indexed28': ('display.indexed28_writer', 'find_indexed28'),
     'find_boot_nand_word': ('storage.boot_nand_word', 'find_boot_nand_word'),
     'word_machine_plan': ('storage.boot_nand_word_plan', 'machine_plan'),
+    'find_dram_command_profile': ('memory.dram_commands', 'find_dram_command_profile'),
 }
 
 _HIGH = 0xffff0000
@@ -361,8 +362,7 @@ def machine_plan(original: bytes, loaded: bytes, config):
     if (profile is None or getattr(config, 'image_kind', None) != 'firmware'
             or (getattr(config, 'load_address', None), getattr(config, 'image_offset', None),
                 getattr(config, 'entry', None), getattr(config, 'ram_base', None)) != (0, 0, 0, 0x01000000)
-            or getattr(config, 'ram_size', None) not in (
-                (0x00800000, 0x01000000) if word else (0x01000000,))
+            or getattr(config, 'ram_size', None) not in (0x00800000, 0x01000000)
             or getattr(config, 'flash_size', None) != 0x01000000
             or any(getattr(config, name, None) for name in (
                 'missing_overlays', 'ram_bootstrap_profile', 'native_nand_profile',
@@ -372,13 +372,20 @@ def machine_plan(original: bytes, loaded: bytes, config):
     if word:
         return word_machine_plan(original, loaded, config, profile)
     panel = find_indexed28(original, profile)
+    dram = find_dram_command_profile(original)
+    dram_windows = tuple((item['base'], item['base'] + item['length'])
+                         for item in (dram['windows'] if dram else ()))
     size = getattr(config, 'file_size', 0)
     main_size = size // 528 * 512
-    if (panel is None or size != len(original)
+    if (size != len(original)
             or size <= 0 or size % 528 or main_size % 16384
             or not profile['blocks'] * 16384 <= main_size <= 0x08000000):
         return resolve_proposals(()).plan
-    spans = [span for item in (*profile['evidence'], *panel['evidence'])
+    # Storage admission does not require a decoded display writer. The
+    # native byte controller owns its low/high RAM and fixed boot ports.
+    panel_evidence = panel['evidence'] if panel is not None else ()
+    spans = [span for item in (*profile['evidence'], *panel_evidence,
+                              *(dram['evidence'] if dram else ()))
              for span in (item['span'], *item.get('extra_spans', ()))]
     if any(not 0 <= start < start + length <= min(len(original), len(loaded))
            or original[start:start + length] != loaded[start:start + length]
@@ -395,11 +402,20 @@ def machine_plan(original: bytes, loaded: bytes, config):
               (0x80000000, 0x80010000),
               (ports[0], ports[0] + 2),
               (ports[1], ports[1] + 2)]
+    if any(start < hi and lo < end for start, end in dram_windows
+           for lo, hi in ranges):
+        return resolve_proposals(()).plan
+    ranges.extend(dram_windows)
+    properties = (('bootstrap-nand-main-size', main_size),)
+    if dram_windows:
+        value = ':'.join(f'{start:x}:{end - start:x}' for start, end in dram_windows)
+        properties += (('signal-memory', value),)
     capability = Capability('high-linked-nand-bootstrap', (evidence.name,), (evidence,),
-        properties=(('bootstrap-nand-main-size', main_size),),
+        properties=properties,
         parameters=(('cpu', 'arm926,reset-hivecs=on'),
                     ('high_code_size', profile.get('high_code_size', 0x2000)),
-                    ('raw_size', size), ('main_size', main_size)),
+                    ('raw_size', size), ('main_size', main_size),
+                    ('dram_windows', dram_windows)),
         claims=tuple(ResourceClaim('address', 'high-linked-nand-bootstrap', start, end,
                          shared_resource='indexed28-stream' if start in ports else None,
                          semantics='native-write-observer' if start in ports else None)
