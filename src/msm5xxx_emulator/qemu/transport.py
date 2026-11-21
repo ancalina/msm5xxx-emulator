@@ -2004,14 +2004,15 @@ class Transport:
                 {"pass_fds": (audio_qemu_socket.fileno(),)}
                 if audio_qemu_socket is not None else {}
             )
-            high_stack_boot = (bootstrap_binding is None
-                and device_domain("memory.irq_boot").has_high_stack_irq_boot(detector_image)
+            high_stack_ram = device_domain("memory.irq_boot").high_stack_irq_boot_ram(detector_image)
+            high_stack_boot = (bootstrap_binding is None and high_stack_ram is not None
                 and not any(name in machine for name in
                             ("signal-memory=", "external-ram-base=", "external-ram-size=")))
             if high_stack_boot:
-                # shortcut: only the stack-bearing upper 64 KiB is mapped; upgrade when the full external memory map is proven.
-                machine += (",signal-memory=ffff0000:2000,external-ram-base=0x187f0000,"
-                            "external-ram-size=0x10000,standalone-boot-events=on")
+                # shortcut: only the proven stack-bearing RAM window is mapped; upgrade when the full external memory map is proven.
+                base, size = high_stack_ram
+                machine += (f",signal-memory=ffff0000:2000,external-ram-base=0x{base:x},"
+                            f"external-ram-size=0x{size:x},standalone-boot-events=on")
             self.process = launch_qemu(
                 [
                     *qemu_prefix, str(qemu), "-M", machine, "-cpu",

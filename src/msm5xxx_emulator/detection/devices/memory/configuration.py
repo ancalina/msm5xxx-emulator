@@ -1,8 +1,8 @@
 """Projection of captured evidence into firmware configuration."""
 
 def configuration_fields(layout, drivers, storage):
-    from .irq_boot import has_high_stack_irq_boot
-    if has_high_stack_irq_boot(layout.image):
+    from .irq_boot import high_stack_irq_boot_ram
+    if high_stack_irq_boot_ram(layout.image):
         layout.detection_notes.append("high-stack ARMv5 boot hardware detected")
     return {'ram_base': layout.ram_base, 'ram_size': layout.ram_size, 'ram_bootstrap_profile': layout.ram_bootstrap_profile}
 
