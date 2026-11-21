@@ -2004,10 +2004,18 @@ class Transport:
                 {"pass_fds": (audio_qemu_socket.fileno(),)}
                 if audio_qemu_socket is not None else {}
             )
+            high_stack_boot = (bootstrap_binding is None
+                and device_domain("memory.irq_boot").has_high_stack_irq_boot(detector_image)
+                and not any(name in machine for name in
+                            ("signal-memory=", "external-ram-base=", "external-ram-size=")))
+            if high_stack_boot:
+                # shortcut: only the stack-bearing upper 64 KiB is mapped; upgrade when the full external memory map is proven.
+                machine += (",signal-memory=ffff0000:2000,external-ram-base=0x187f0000,"
+                            "external-ram-size=0x10000,standalone-boot-events=on")
             self.process = launch_qemu(
                 [
                     *qemu_prefix, str(qemu), "-M", machine, "-cpu",
-                    bootstrap_binding.cpu if bootstrap_binding is not None else "ti925t",
+                    bootstrap_binding.cpu if bootstrap_binding is not None else ("arm926" if high_stack_boot else "ti925t"),
                     "-m", qemu_ram_argument(native_ram_size),
                     *(bootstrap_loader_args if bootstrap_binding is not None else (
                         *raw_loader_arguments(

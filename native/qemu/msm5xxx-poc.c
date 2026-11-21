@@ -254,7 +254,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t external_ram_base, external_ram_size;
     uint32_t signal_memory_ranges[16];
     unsigned signal_memory_count;
-    bool signal_memory_realized;
+    bool signal_memory_realized, standalone_boot_events;
     MemoryRegion signal_memory[8];
     bool boot_sbi_fifo;
     bool boot_power_key;
@@ -16385,6 +16385,13 @@ static const MemoryRegionOps msm5xxx_poc_boot_video_ops = {
     .impl = { .min_access_size = 2, .max_access_size = 4 },
 };
 
+static void msm5xxx_poc_standalone_boot_events_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+
+    memset(s->boot_events_backing, 0, sizeof(s->boot_events_backing));
+}
+
 static void msm5xxx_poc_boot_nand_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
@@ -16953,6 +16960,7 @@ EXTERNAL_BOOL_PROPERTY(boot_rex_timer, boot_rex_timer)
 EXTERNAL_BOOL_PROPERTY(boot_power_key, boot_power_key)
 EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
                       "boot-wake-input must be a source-bound GPIO mask before realization")
+EXTERNAL_BOOL_PROPERTY(standalone_boot_events, standalone_boot_events)
 EXTERNAL_BOOL_PROPERTY(a80_timer, a80_timer_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs09, external_cs09_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs0a, external_cs0a_enabled)
@@ -18183,6 +18191,27 @@ static void msm5xxx_poc_init(MachineState *machine)
     if (s->boot_rex_timer) {
         s->boot_rex_deadline = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                           msm5xxx_poc_boot_rex_expired, s);
+    }
+    if (s->standalone_boot_events) {
+        if (s->boot_nand_size) {
+            error_report("standalone boot events conflict with bootstrap NAND");
+            exit(EXIT_FAILURE);
+        }
+        MemoryRegionSection section = memory_region_find(
+            get_system_memory(), 0x80000000, sizeof(s->boot_events_backing));
+        bool conflict = section.mr != NULL;
+
+        memory_region_unref(section.mr);
+        if (conflict) {
+            error_report("standalone boot events overlap an existing route");
+            exit(EXIT_FAILURE);
+        }
+        memory_region_init_io(&s->boot_events_region, OBJECT(machine),
+                              &msm5xxx_poc_boot_events_ops, s,
+                              "boot-events", sizeof(s->boot_events_backing));
+        memory_region_add_subregion(get_system_memory(), 0x80000000,
+                                    &s->boot_events_region);
+        qemu_register_reset(msm5xxx_poc_standalone_boot_events_reset, s);
     }
     msm5xxx_poc_a80_init(machine, s);
     if (!!s->external_ram_base != !!s->external_ram_size ||
@@ -24255,6 +24284,9 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                  msm5xxx_poc_set_uart2_tx_ready);
     object_class_property_set_description(oc, "uart2-tx-ready",
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add_bool(oc, "standalone-boot-events",
+        msm5xxx_poc_get_standalone_boot_events,
+        msm5xxx_poc_set_standalone_boot_events);
     object_class_property_add(oc, "external-ram-base", "uint32",
         msm5xxx_poc_get_external_ram_base,
         msm5xxx_poc_set_external_ram_base, NULL, NULL);
@@ -24892,6 +24924,9 @@ static void msm5xxx_poc_instance_finalize(Object *obj)
     MSM5xxxPOCMachineState *s = MSM5XXX_POC_MACHINE(obj);
     if (s->mdsp_mailbox && s->signal_memory_realized) {
         qemu_unregister_reset(msm5xxx_poc_mdsp_reset, s);
+    }
+    if (s->standalone_boot_events) {
+        qemu_unregister_reset(msm5xxx_poc_standalone_boot_events_reset, s);
     }
     if (s->a80_timer) {
         qemu_unregister_reset(msm5xxx_poc_a80_reset, s);

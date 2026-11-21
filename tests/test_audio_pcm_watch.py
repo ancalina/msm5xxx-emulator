@@ -247,6 +247,7 @@ typedef struct {
     struct { bool initialized; void *image; } protected_nor;
     void *protected_nor_blk;
     void *boot_nand_blk, *boot_nand_media;
+    bool standalone_boot_events;
     bool signal_memory_realized;
     uint32_t mdsp_mailbox;
     void *boot_rex_deadline;
@@ -391,6 +392,7 @@ static void msm5xxx_poc_uart_console_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_dmd5100_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_small_nand_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_boot_nand_reset(void *opaque) { assert(false); }
+static void msm5xxx_poc_standalone_boot_events_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_signal_memory_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_mdsp_reset(void *opaque) { assert(false); }
 static void msm5xxx_poc_protected_reset(void *opaque) { assert(false); }
