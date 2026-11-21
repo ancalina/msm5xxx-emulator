@@ -255,6 +255,7 @@ struct MSM5xxxPOCMachineState {
     uint32_t signal_memory_ranges[16];
     unsigned signal_memory_count;
     bool signal_memory_realized, standalone_boot_events, boot_dual_nor;
+    bool boot_dual_nor_wide_lcd;
     MemoryRegion signal_memory[8];
     bool boot_sbi_fifo;
     bool boot_power_key;
@@ -16312,7 +16313,8 @@ static void msm5xxx_poc_boot_lcd_write(void *opaque, hwaddr offset,
             if (s->boot_lcd_selector >> 1 || !s->boot_nand_lcd_id) {
                 s->boot_bridge_registers[s->boot_lcd_selector >> 1] = value;
             }
-            msm5xxx_poc_lcd_trace_write(s, 0x20000004, value, size);
+            msm5xxx_poc_lcd_trace_write(s, s->boot_dual_nor_wide_lcd ?
+                                        0x28000004 : 0x20000004, value, size);
         }
         return;
     } else if (port->data) {
@@ -16322,7 +16324,8 @@ static void msm5xxx_poc_boot_lcd_write(void *opaque, hwaddr offset,
     }
     msm5xxx_poc_lcd_trace_write(s, s->boot_nand_word ?
         (port->data ? s->boot_nand_data_port : 0x20000000) :
-        (port->data ? 0x28000100 : 0x28000000), value, size);
+        (port->data ? (s->boot_dual_nor_wide_lcd ? 0x28080000 : 0x28000100) :
+                      0x28000000), value, size);
 }
 
 static const MemoryRegionOps msm5xxx_poc_boot_nand_ops = {
@@ -16978,6 +16981,7 @@ EXTERNAL_BOOL_PROPERTY(boot_power_key, boot_power_key)
 EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
                       "boot-wake-input must be a source-bound GPIO mask before realization")
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor, boot_dual_nor)
+EXTERNAL_BOOL_PROPERTY(boot_dual_nor_wide_lcd, boot_dual_nor_wide_lcd)
 EXTERNAL_BOOL_PROPERTY(standalone_boot_events, standalone_boot_events)
 EXTERNAL_BOOL_PROPERTY(a80_timer, a80_timer_enabled)
 EXTERNAL_BOOL_PROPERTY(external_cs09, external_cs09_enabled)
@@ -17796,6 +17800,10 @@ static void msm5xxx_poc_init(MachineState *machine)
                            s->primary_nor_size, &error_fatal);
     memory_region_add_subregion(get_system_memory(), 0, &s->nor);
     msm5xxx_poc_protected_realize(s);
+    if (s->boot_dual_nor_wide_lcd && !s->boot_dual_nor) {
+        error_report("wide boot LCD requires boot dual NOR");
+        exit(EXIT_FAILURE);
+    }
     if (s->boot_dual_nor) {
         unsigned bank;
         MemoryRegionSection section;
@@ -18278,8 +18286,9 @@ static void msm5xxx_poc_init(MachineState *machine)
 
             msm5xxx_poc_boot_control_init(s);
             for (i = 0; i < 2; i++) {
-                hwaddr base = i ? 0x28000100 : 0x28000000;
-                MemoryRegionSection port = memory_region_find(get_system_memory(), base, 2);
+                hwaddr base = i ? (s->boot_dual_nor_wide_lcd ? 0x28080000 : 0x28000100) : 0x28000000;
+                hwaddr length = !i && s->boot_dual_nor_wide_lcd ? 8 : 2;
+                MemoryRegionSection port = memory_region_find(get_system_memory(), base, length);
                 bool occupied = port.mr != NULL;
 
                 memory_region_unref(port.mr);
@@ -18291,7 +18300,7 @@ static void msm5xxx_poc_init(MachineState *machine)
                 s->boot_lcd_context[i].data = i != 0;
                 memory_region_init_io(&s->boot_lcd_region[i], OBJECT(machine),
                     &msm5xxx_poc_boot_lcd_ops, &s->boot_lcd_context[i],
-                    i ? "boot-lcd-data" : "boot-lcd-command", 2);
+                    i ? "boot-lcd-data" : "boot-lcd-command", length);
                 memory_region_add_subregion(get_system_memory(), base,
                                             &s->boot_lcd_region[i]);
             }
@@ -24369,6 +24378,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                  msm5xxx_poc_set_uart2_tx_ready);
     object_class_property_set_description(oc, "uart2-tx-ready",
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add_bool(oc, "boot-dual-nor-wide-lcd",
+        msm5xxx_poc_get_boot_dual_nor_wide_lcd, msm5xxx_poc_set_boot_dual_nor_wide_lcd);
     object_class_property_add_bool(oc, "boot-dual-nor",
         msm5xxx_poc_get_boot_dual_nor, msm5xxx_poc_set_boot_dual_nor);
     object_class_property_add_bool(oc, "standalone-boot-events",

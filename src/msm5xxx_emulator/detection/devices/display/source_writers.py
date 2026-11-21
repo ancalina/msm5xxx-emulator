@@ -12,6 +12,7 @@ from .source_packed12_writer import find_source_packed12
 from .window51_writer import find_window51
 from .window43_writer import find_window43
 from .dcs_window_writer import find_dcs_window
+from .indexed28_boot import find_indexed28_boot
 from .indexed28_writer import find_indexed28
 from .indexed20_writer import find_indexed20
 from .indexed44_writer import find_indexed44, find_indexed44_boot
@@ -95,7 +96,7 @@ def _decision(ctx):
         if page and getattr(cfg, 'display_geometry_source', 'external-config') != 'auto-default' and (cfg.width, cfg.height) != dimensions[page]:
             page = None
     if layout and len(original) >= 0x14000 and len(loaded) >= 0x14000:
-        indexed28 = find_indexed28(original) or find_indexed20(original)
+        indexed28 = find_indexed28(original) or find_indexed20(original) or find_indexed28_boot(original)
         if indexed28 is not None:
             spans = [span for item in indexed28['evidence']
                      for span in (item['span'], *item.get('extra_spans', ()))]
@@ -209,9 +210,10 @@ def _decision(ctx):
                            indexed44['data_port'] - indexed44['command_port']))
     if indexed28 is not None:
         geometry = (indexed28['width'], indexed28['height'])
-        if indexed28['command_port'] != 0x28000000:
+        if (indexed28['command_port'], indexed28['data_port']) != (0x28000000, 0x28000100):
+            aperture = 32 if indexed28['command_port'] == 0x20000000 else 2
             geometry += (indexed28['command_port'], indexed28['data_port'],
-                         indexed28['x_origin'], indexed28['y_origin'], 32)
+                         indexed28['x_origin'], indexed28['y_origin'], aperture)
         parameters += (('indexed28', geometry),)
     if indexed1c is not None:
         parameters += (('indexed1c', (indexed1c['width'], indexed1c['height'])),)

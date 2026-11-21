@@ -2023,6 +2023,9 @@ class Transport:
                                 "external-ram-base=0x10000000,external-ram-size=0x800000,"
                                 "standalone-boot-events=on,boot-dual-nor=on,"
                                 "bootstrap-nand-control-windows=58000000:1000:60000000:1000")
+                    from msm5xxx_emulator.detection.devices.display.indexed28_boot import find_indexed28_boot
+                    if find_indexed28_boot(detector_image) and find_indexed28_boot(primary_seed):
+                        machine += ',boot-dual-nor-wide-lcd=on'
                     primary_nor = temporary / 'boot-nor-0.raw'
                     secondary_nor = temporary / 'boot-nor-1.raw'
                     primary_nor.write_bytes(primary_seed)
