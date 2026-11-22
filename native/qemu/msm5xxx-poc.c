@@ -17842,6 +17842,7 @@ static void msm5xxx_poc_init(MachineState *machine)
     if (s->boot_dual_nor) {
         unsigned bank;
         MemoryRegionSection section;
+        hwaddr second_base = s->boot_dual_nor_low_lcd ? 0x01000000 : 0x08000000;
 
         if (!s->standalone_boot_events || s->boot_nand_size ||
             s->primary_nor_size != 0x01000000 ||
@@ -17853,21 +17854,22 @@ static void msm5xxx_poc_init(MachineState *machine)
             error_report("boot dual NOR conflicts with the selected storage route");
             exit(EXIT_FAILURE);
         }
-        section = memory_region_find(get_system_memory(), 0x08000000, 0x01000000);
+        section = memory_region_find(get_system_memory(), second_base, 0x01000000);
         if (section.mr) {
             memory_region_unref(section.mr);
             error_report("boot second NOR overlaps an existing route");
             exit(EXIT_FAILURE);
         }
-        /* shortcut: both NORs are read-only with unknown IDs and virtual 64 KiB sectors; upgrade when physical geometry and writable media are proven. */
+        /* shortcut: NOR IDs and 64 KiB virtual sectors are unverified; upgrade when physical geometry is proven. */
         for (bank = 0; bank < 2; bank++) {
             DeviceState *flash = qdev_new(TYPE_PFLASH_CFI01);
             DriveInfo *flash_drive = drive_get(IF_PFLASH, 0, bank);
             BlockBackend *backend = flash_drive ? blk_by_legacy_dinfo(flash_drive) : NULL;
 
-            if (!backend || blk_is_writable(backend) ||
+            if (!backend || blk_supports_write_perm(backend) !=
+                    (bank == 1 && s->boot_dual_nor_low_lcd) ||
                 blk_getlength(backend) != 0x01000000) {
-                error_report("boot dual NOR requires two exact read-only 16 MiB backends");
+                error_report("boot dual NOR backends have incorrect size or write permissions");
                 exit(EXIT_FAILURE);
             }
             qdev_prop_set_drive(flash, "drive", backend);
@@ -17880,7 +17882,7 @@ static void msm5xxx_poc_init(MachineState *machine)
             qdev_prop_set_string(flash, "name", bank ? "boot-nor-1" : "boot-nor-0");
             sysbus_realize_and_unref(SYS_BUS_DEVICE(flash), &error_fatal);
             sysbus_mmio_map_overlap(SYS_BUS_DEVICE(flash), 0,
-                                    bank ? 0x08000000 : 0, 1);
+                                    bank ? second_base : 0, 1);
         }
     }
     if (s->primary_x16_nor_enabled) {

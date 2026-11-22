@@ -55,3 +55,11 @@ def has_boot_dual_nor(image: bytes) -> bool:
             and image[nor:nor + len(nor_code)] == nor_code
             and image[table:table + len(table_code)] == table_code
             and image[dram + 0x80:dram + 0x84] == bytes.fromhex('a6221200'))
+
+
+def low_boot_secondary_seed(image: bytes) -> bytes:
+    """Copy the source-linked contiguous second bank, or an erased bank."""
+    size = 0x01000000
+    if len(image) >= 2 * size:
+        return image[size:2 * size]
+    return b'\xff' * size

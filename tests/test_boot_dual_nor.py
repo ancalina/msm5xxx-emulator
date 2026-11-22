@@ -48,3 +48,9 @@ class BootDualNorTest(unittest.TestCase):
             self.assertTrue(boot_dual_nor.has_boot_dual_nor(bytes(image)))
             image[dram] ^= 1
             self.assertFalse(boot_dual_nor.has_boot_dual_nor(bytes(image)))
+
+    def test_low_secondary_seed_uses_full_bank_or_erased_media(self):
+        size = 0x01000000
+        image = b'\x12' * size + b'\x34' * size
+        self.assertEqual(boot_dual_nor.low_boot_secondary_seed(image), b'\x34' * size)
+        self.assertEqual(boot_dual_nor.low_boot_secondary_seed(image[:size]), b'\xff' * size)

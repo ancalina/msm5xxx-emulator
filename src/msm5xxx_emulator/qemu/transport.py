@@ -2037,13 +2037,19 @@ class Transport:
                     primary_nor = temporary / 'boot-nor-0.raw'
                     secondary_nor = temporary / 'boot-nor-1.raw'
                     primary_nor.write_bytes(primary_seed)
-                    # shortcut: an unprovided second NOR is erased and read-only; upgrade when its contents and geometry are available.
-                    secondary_nor.write_bytes(b'\xff' * 0x01000000)
+                    if low_lcd:
+                        # shortcut: second NOR writes are session-local; upgrade when durable media state is supported.
+                        secondary_nor.write_bytes(device_domain('storage.boot_dual_nor').low_boot_secondary_seed(detector_image))
+                    else:
+                        # shortcut: an unprovided second NOR is erased and read-only; upgrade when its contents and geometry are available.
+                        secondary_nor.write_bytes(b'\xff' * 0x01000000)
                     for unit, path in enumerate((primary_nor, secondary_nor)):
                         qemu_path = str(path).replace(',', ',,')
-                        storage_args.extend(('-drive', f'file={qemu_path},if=pflash,format=raw,unit={unit},readonly=on'))
+                        readonly = '' if low_lcd and unit == 1 else ',readonly=on'
+                        storage_args.extend(('-drive', f'file={qemu_path},if=pflash,format=raw,unit={unit}{readonly}'))
                     loader_exclude = (0, self.config.flash_size)
                     self.config.detection_notes.append(
+                        'source-linked boot NORs use a session-local second bank' if low_lcd else
                         'source-linked boot NORs use read-only media; second NOR contents unprovided')
                 else:
                     # shortcut: only the proven stack-bearing RAM window is mapped; upgrade when the full external memory map is proven.
