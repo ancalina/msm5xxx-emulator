@@ -288,7 +288,7 @@ struct MSM5xxxPOCMachineState {
     MSM5xxxBootNand boot_nand;
     BlockBackend *boot_nand_blk;
     uint8_t *boot_nand_media;
-    MemoryRegion boot_low_ram, boot_high_ram, boot_control[16];
+    MemoryRegion boot_low_ram, boot_high_ram, boot_control[16], boot_keys;
     MemoryRegion boot_presence, boot_nand_region, boot_events_region;
     MemoryRegion boot_lcd_region[2];
     struct { MSM5xxxPOCMachineState *machine; bool data; } boot_lcd_context[2];
@@ -16763,6 +16763,32 @@ static void msm5xxx_poc_a80_init(MachineState *machine,
     msm5xxx_poc_a80_reset(s);
 }
 
+static uint64_t msm5xxx_poc_boot_keys_read(void *opaque, hwaddr offset,
+                                             unsigned size)
+{
+    /* shortcut: only released key contacts are modeled; upgrade when matrix wiring and host events are proven. */
+    (void)opaque;
+    (void)size;
+    return UINT64_C(0x1f) >> (offset * 8);
+}
+
+static void msm5xxx_poc_boot_keys_write(void *opaque, hwaddr offset,
+                                        uint64_t value, unsigned size)
+{
+    (void)opaque;
+    (void)offset;
+    (void)value;
+    (void)size;
+}
+
+static const MemoryRegionOps msm5xxx_poc_boot_keys_ops = {
+    .read = msm5xxx_poc_boot_keys_read,
+    .write = msm5xxx_poc_boot_keys_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
 static void msm5xxx_poc_boot_control_init(MSM5xxxPOCMachineState *s)
 {
     unsigned i;
@@ -16782,6 +16808,12 @@ static void msm5xxx_poc_boot_control_init(MSM5xxxPOCMachineState *s)
         }
         memory_region_init_ram(&s->boot_control[i], NULL, name, length, &error_fatal);
         memory_region_add_subregion(get_system_memory(), base, &s->boot_control[i]);
+    }
+    if (s->boot_dual_nor_low_lcd) {
+        memory_region_init_io(&s->boot_keys, OBJECT(s), &msm5xxx_poc_boot_keys_ops,
+                              s, "boot-key-input", 4);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x58000070,
+                                            &s->boot_keys, 1);
     }
 }
 

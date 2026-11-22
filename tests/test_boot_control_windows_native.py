@@ -89,6 +89,8 @@ static void msm5xxx_poc_lcd_trace_write(MSM5xxxPOCMachineState *state,
     traced_address = address; traced_value = value; traced_size = size;
 }
 ''' + '\n'.join(function(source, name) for name in (
+            'msm5xxx_poc_boot_keys_read',
+            'msm5xxx_poc_boot_keys_write',
             'msm5xxx_poc_boot_storage_hex',
             'msm5xxx_poc_set_boot_control_windows',
             'msm5xxx_poc_boot_nand_reset',
@@ -100,6 +102,10 @@ static void msm5xxx_poc_lcd_trace_write(MSM5xxxPOCMachineState *state,
             'msm5xxx_poc_boot_video_write')) + r'''
 int main(void) {
     MSM5xxxPOCMachineState state = {0}, before;
+    assert(msm5xxx_poc_boot_keys_read(&state, 0, 1) == 0x1f);
+    assert(msm5xxx_poc_boot_keys_read(&state, 1, 1) == 0);
+    msm5xxx_poc_boot_keys_write(&state, 0, 0, 1);
+    assert(msm5xxx_poc_boot_keys_read(&state, 0, 4) == 0x1f);
     Error *error = NULL;
     msm5xxx_poc_set_boot_control_windows(&state,
         "48000000:1000:50203000:1000", &error);
