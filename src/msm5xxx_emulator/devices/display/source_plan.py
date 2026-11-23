@@ -8,6 +8,7 @@ from .source_cursor import SourcePackedCursor
 from .source_packed12 import SourcePacked12
 from .window51 import Window51
 from .dcs_window import DcsWindow
+from .byte_dcs_window import ByteDcsWindow
 from .indexed28 import Indexed28
 from .indexed44 import Indexed44
 from .indexed1c import Indexed1C
@@ -43,3 +44,5 @@ def apply_source_plan(decoder, plan):
         decoder._lcd_b0_source_page = Window51(*choices['window51'])
     elif choices.get('dcs_window'):
         decoder._lcd_b0_source_page = DcsWindow(*choices['dcs_window'])
+    elif choices.get('byte_dcs'):
+        decoder._lcd_b0_source_page = ByteDcsWindow(*choices['byte_dcs'])

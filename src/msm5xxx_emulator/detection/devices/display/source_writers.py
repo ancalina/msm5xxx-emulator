@@ -12,6 +12,7 @@ from .source_packed12_writer import find_source_packed12
 from .window51_writer import find_window51
 from .window43_writer import find_window43
 from .dcs_window_writer import find_dcs_window
+from .byte_dcs_writer import find_byte_dcs_writer
 from .indexed28_boot import find_indexed28_boot
 from .indexed28_writer import find_indexed28
 from .indexed20_writer import find_indexed20
@@ -146,9 +147,16 @@ def _decision(ctx):
             indexed28, indexed1c, page, window51, packed2, cursor = None, None, None, None, False, False
     if page:
         window51 = None
-    if not (packed2 or cursor or page or window51 or indexed28 or indexed44 or indexed1c):
+    byte_dcs = find_byte_dcs_writer(original) if layout else ()
+    if (byte_dcs and (packed2 or cursor or page or window51 or indexed28 or indexed44 or indexed1c
+            or any(start + length > len(loaded) or original[start:start + length] != loaded[start:start + length]
+                   for start, length in byte_dcs)
+            or (getattr(cfg, 'display_geometry_source', 'external-config') != 'auto-default'
+                and (cfg.width, cfg.height) != (128, 128)))):
+        byte_dcs = ()
+    if not (packed2 or cursor or page or window51 or indexed28 or indexed44 or indexed1c or byte_dcs):
         return None
-    selected = (packed2, cursor, page)
+    selected = (packed2, cursor, page) + (('byte-dcs', 128, 128),) if byte_dcs else (packed2, cursor, page)
     if indexed28 is not None:
         selected += (('indexed28', indexed28['width'], indexed28['height']),)
     if window51 is not None:
@@ -164,6 +172,8 @@ def _decision(ctx):
                  tuple(sorted({span[0] for item in indexed1c['evidence']
                    for span in (item['span'], *item.get('extra_spans', ()))}))
                  if indexed1c is not None else (0, evidence_end))
+    if byte_dcs:
+        locations = tuple(start for start, _ in byte_dcs)
     evidence = Evidence('display-writer', selected, locations, 'linkage')
     ports = {
         'paired': ((0x02000000, 2), (0x02000002, 2)),
@@ -189,6 +199,8 @@ def _decision(ctx):
         selected.extend(((0x02000000, 2), (0x02000004, 2)))
     if window51 is not None:
         selected.extend(((0x02000000, 2), (0x02000002, 2)))
+    if byte_dcs:
+        selected.extend(((0x40000000, 1), (0x401e0004, 1)))
     if packed2:
         selected.extend(((0x02000000, 1), (0x02000004, 1)))
     if cursor:
@@ -201,7 +213,9 @@ def _decision(ctx):
         else:
             ranges.append((address, end))
     parameters = (('packed2', packed2), ('cursor', cursor), ('page', page))
-    properties = ()
+    properties = (('byte-dcs-lcd', True),) if byte_dcs else ()
+    if byte_dcs:
+        parameters += (('byte_dcs', (128, 128)),)
     if indexed44 is not None:
         parameters += (('indexed44', tuple(indexed44[key] for key in (
             'width', 'height', 'x_origin', 'y_origin', 'command_port', 'data_port'))),)
@@ -244,6 +258,13 @@ def machine_properties(plan):
     if len(choices) != 1:
         raise ValueError('ambiguous source display plan')
     choice = choices[0]
+    if dict(choice.parameters).get('byte_dcs') is not None:
+        if (dict(choice.parameters)['byte_dcs'] != (128, 128)
+                or choice.properties != (('byte-dcs-lcd', True),)
+                or choice.claims != tuple(ResourceClaim('address', 'source-display-writer',
+                    port, port + 1) for port in (0x40000000, 0x401e0004))):
+            raise ValueError('unsupported byte DCS display contract')
+        return ',byte-dcs-lcd=on'
     panel = dict(choice.parameters).get('indexed44')
     if panel is None:
         if choice.properties:

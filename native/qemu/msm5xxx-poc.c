@@ -290,6 +290,9 @@ struct MSM5xxxPOCMachineState {
     uint8_t *boot_nand_media;
     MemoryRegion boot_low_ram, boot_high_ram, boot_control[16], boot_keys;
     MemoryRegion boot_presence, boot_nand_region, boot_events_region;
+    bool byte_dcs_lcd;
+    MemoryRegion byte_dcs_region[2];
+    struct { MSM5xxxPOCMachineState *machine; bool data; } byte_dcs_port[2];
     MemoryRegion boot_lcd_region[2];
     struct { MSM5xxxPOCMachineState *machine; bool data; } boot_lcd_context[2];
     uint8_t boot_nand_backing[0x1000], boot_events_backing[0x10000];
@@ -16329,6 +16332,30 @@ static void msm5xxx_poc_boot_lcd_write(void *opaque, hwaddr offset,
                       (s->boot_dual_nor_low_lcd ? 0x30000000 : 0x28000000)), value, size);
 }
 
+/* Byte-wide DCS controller: command and data are separate chip selects. */
+static uint64_t msm5xxx_poc_byte_dcs_read(void *opaque, hwaddr offset,
+                                          unsigned size)
+{
+    return 0;
+}
+
+static void msm5xxx_poc_byte_dcs_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size)
+{
+    const typeof(((MSM5xxxPOCMachineState *)0)->byte_dcs_port[0]) *port = opaque;
+    msm5xxx_poc_lcd_trace_write(port->machine,
+                                port->data ? 0x401e0004 : 0x40000000,
+                                value, size);
+}
+
+static const MemoryRegionOps msm5xxx_poc_byte_dcs_ops = {
+    .read = msm5xxx_poc_byte_dcs_read,
+    .write = msm5xxx_poc_byte_dcs_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 1 },
+    .impl = { .min_access_size = 1, .max_access_size = 1 },
+};
+
 static const MemoryRegionOps msm5xxx_poc_boot_nand_ops = {
     .read = msm5xxx_poc_boot_nand_read,
     .write = msm5xxx_poc_boot_nand_write,
@@ -17013,6 +17040,7 @@ EXTERNAL_BOOL_PROPERTY(boot_rex_timer, boot_rex_timer)
 EXTERNAL_BOOL_PROPERTY(boot_power_key, boot_power_key)
 EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
                       "boot-wake-input must be a source-bound GPIO mask before realization")
+EXTERNAL_BOOL_PROPERTY(byte_dcs_lcd, byte_dcs_lcd)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor, boot_dual_nor)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_wide_lcd, boot_dual_nor_wide_lcd)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_low_lcd, boot_dual_nor_low_lcd)
@@ -18371,6 +18399,27 @@ static void msm5xxx_poc_init(MachineState *machine)
                                     &s->external_ram);
     }
     msm5xxx_poc_signal_memory_init(machine, s);
+    if (s->byte_dcs_lcd) {
+        static const hwaddr ports[] = { 0x40000000, 0x401e0004 };
+        unsigned port;
+        for (port = 0; port < ARRAY_SIZE(ports); port++) {
+            MemoryRegionSection section = memory_region_find(get_system_memory(), ports[port], 1);
+            bool conflict = section.mr != NULL;
+            memory_region_unref(section.mr);
+            if (conflict) {
+                error_report("byte DCS LCD port overlaps an existing route");
+                exit(EXIT_FAILURE);
+            }
+            s->byte_dcs_port[port].machine = s;
+            s->byte_dcs_port[port].data = port != 0;
+            memory_region_init_io(&s->byte_dcs_region[port], OBJECT(machine),
+                &msm5xxx_poc_byte_dcs_ops, &s->byte_dcs_port[port],
+                port ? "byte-dcs-data" : "byte-dcs-command", 1);
+            memory_region_add_subregion(get_system_memory(), ports[port],
+                                        &s->byte_dcs_region[port]);
+        }
+    }
+
     msm5xxx_poc_mdsp_init(machine, s);
     {
         const struct { hwaddr base; uint64_t size; bool enabled; } windows[] = {
@@ -24417,6 +24466,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                  msm5xxx_poc_set_uart2_tx_ready);
     object_class_property_set_description(oc, "uart2-tx-ready",
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add_bool(oc, "byte-dcs-lcd",
+        msm5xxx_poc_get_byte_dcs_lcd, msm5xxx_poc_set_byte_dcs_lcd);
     object_class_property_add_bool(oc, "boot-dual-nor-low-lcd",
         msm5xxx_poc_get_boot_dual_nor_low_lcd, msm5xxx_poc_set_boot_dual_nor_low_lcd);
     object_class_property_add_bool(oc, "boot-dual-nor-wide-lcd",
