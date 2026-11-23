@@ -37,7 +37,7 @@ typedef struct {
     uint16_t boot_lcd_selector, boot_lcd_registers[65536];
     uint16_t boot_lcd_control, boot_bridge_registers[32768];
     bool boot_nand_word, boot_dual_nor_wide_lcd, boot_dual_nor_low_lcd;
-    bool boot_sbi_fifo, boot_rex_timer, boot_rex_pending;
+    bool boot_sbi_fifo, boot_rex_timer, boot_rex_pending, boot_legacy_clock;
     void *boot_rex_deadline;
     uint32_t mdsp_mailbox, mdsp_pending, mdsp_irq_mask;
     uint8_t boot_sbi_registers[2][64][128];
