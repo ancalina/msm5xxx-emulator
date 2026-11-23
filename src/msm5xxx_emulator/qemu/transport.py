@@ -2041,6 +2041,9 @@ class Transport:
                         machine += ',boot-legacy-clock=on'
                     if legacy_map:
                         machine += ',boot-legacy-map=on'
+                        services = w18_rules.has_boot_legacy_services
+                        if services(detector_image) and services(primary_seed):
+                            machine += ',boot-legacy-services=on'
                     legacy_primary_state.parent.mkdir(parents=True, exist_ok=True)
                     with tempfile.NamedTemporaryFile(
                             prefix=legacy_primary_state.name + '.w18-working-', suffix='.raw',

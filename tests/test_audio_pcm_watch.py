@@ -250,7 +250,7 @@ typedef struct {
     bool standalone_boot_events;
     bool signal_memory_realized;
     uint32_t mdsp_mailbox;
-    void *boot_rex_deadline, *boot_legacy_deadline;
+    void *boot_rex_deadline, *boot_legacy_deadline, *boot_legacy_key_deadline;
     bool boot_legacy_map;
     unsigned signal_memory_count;
     bool external_indexed_18;

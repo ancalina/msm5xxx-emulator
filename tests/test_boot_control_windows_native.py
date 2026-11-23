@@ -38,7 +38,8 @@ typedef struct {
     uint16_t boot_lcd_control, boot_bridge_registers[32768];
     bool boot_nand_word, boot_dual_nor_wide_lcd, boot_dual_nor_low_lcd;
     bool boot_sbi_fifo, boot_rex_timer, boot_rex_pending, boot_legacy_clock;
-    void *boot_rex_deadline;
+    bool boot_legacy_services, boot_legacy_key_armed;
+    void *boot_rex_deadline, *boot_legacy_key_deadline;
     uint32_t mdsp_mailbox, mdsp_pending, mdsp_irq_mask;
     uint8_t boot_sbi_registers[2][64][128];
     struct { uint16_t command; uint8_t received; bool full, rejected, start, done; } boot_sbi_channel[2];
@@ -73,6 +74,9 @@ static void msm5xxx_boot_nand_irq_ack(MSM5xxxBootNand *nand, uint32_t mask) {
 }
 static void timer_del(void *timer) { (void)timer; }
 static void msm5xxx_poc_boot_events_irq(MSM5xxxPOCMachineState *s) { (void)s; }
+#define QEMU_CLOCK_VIRTUAL 0
+static int64_t qemu_clock_get_ns(int clock) { (void)clock; return 0; }
+static void timer_mod(void *timer, int64_t deadline) { (void)timer; (void)deadline; }
 static uint64_t msm5xxx_poc_boot_rex_ticks(void) { return 0; }
 static void msm5xxx_poc_boot_rex_schedule(MSM5xxxPOCMachineState *s, uint32_t value) { (void)s; (void)value; }
 static uint64_t msm5xxx_poc_backing_read(uint8_t *p, hwaddr offset, unsigned size) {

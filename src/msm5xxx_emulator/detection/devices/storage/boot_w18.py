@@ -43,3 +43,18 @@ def boot_legacy_ram_size(image):
     if limit not in (0x1fffff, 0x3fffff):
         return None
     return 0x4000 + limit + 1
+
+
+_SERVICES_SBI = bytes.fromhex('0298ff21405d090400040840012109064018b060')
+_SERVICES_DSP = bytes.fromhex('5848012260308282')
+
+
+def has_boot_legacy_services(image):
+    from msm5xxx_emulator.detection.arm import thumb_literal_value
+
+    sbi_at, dsp_at = image.find(_SERVICES_SBI), image.find(_SERVICES_DSP)
+    return (has_boot_legacy_clock(image) and sbi_at >= 26 and dsp_at >= 0
+            and image.find(_SERVICES_SBI, sbi_at + 1) < 0
+            and image.find(_SERVICES_DSP, dsp_at + 1) < 0
+            and thumb_literal_value(image, sbi_at - 26, 1) == 0x88004500
+            and thumb_literal_value(image, dsp_at, 0) == 0x482010c0)

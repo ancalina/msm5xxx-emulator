@@ -290,13 +290,18 @@ struct MSM5xxxPOCMachineState {
     uint8_t *boot_nand_media;
     MemoryRegion boot_low_ram, boot_high_ram, boot_control[16], boot_keys;
     MemoryRegion boot_presence, boot_nand_region, boot_events_region;
-    bool byte_dcs_lcd, boot_w18, boot_legacy_clock, boot_legacy_map;
-    MemoryRegion boot_legacy_map_region[8];
-    struct { MSM5xxxPOCMachineState *machine; unsigned index; } boot_legacy_map_port[8];
-    uint8_t boot_legacy_map_data[8][0x2000];
+    bool byte_dcs_lcd, boot_w18, boot_legacy_clock, boot_legacy_map, boot_legacy_services;
+    MemoryRegion boot_legacy_map_region[16];
+    struct { MSM5xxxPOCMachineState *machine; unsigned index; } boot_legacy_map_port[16];
+    uint8_t boot_legacy_map_data[16][0x8000];
     MemoryRegion boot_legacy_region;
     uint8_t boot_legacy_regs[0x5000];
     QEMUTimer *boot_legacy_deadline;
+    QEMUTimer *boot_legacy_key_deadline;
+    uint32_t boot_legacy_sbi[0x108 / 4];
+    uint8_t boot_legacy_pmic[4][256];
+    bool boot_legacy_key_armed, boot_legacy_dsp_held;
+    bool boot_legacy_dsp_program, boot_legacy_dsp_data, boot_legacy_dsp_ready;
     uint32_t boot_legacy_compare, boot_legacy_sleep_state;
     bool boot_legacy_compare_ready, boot_legacy_sleep_ready[2];
     MemoryRegion byte_dcs_region[2];
@@ -16016,7 +16021,16 @@ static void msm5xxx_poc_boot_rex_schedule(MSM5xxxPOCMachineState *s,
     timer_mod(s->boot_rex_deadline, deadline);
 }
 
-/* 32768 Hz compare and sleep-controller register bank. */
+static void msm5xxx_poc_boot_legacy_key_expired(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    s->boot_legacy_pmic[2][0x30] |= 8;
+    s->boot_legacy_pmic[2][0x33] |= 8;
+    s->boot_nand.pending |= UINT32_C(0x800);
+    msm5xxx_poc_boot_events_irq(s);
+}
+
+/* 32768 Hz compare, sleep controller and serial power bus. */
 static void msm5xxx_poc_boot_legacy_expired(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
@@ -16031,6 +16045,10 @@ static uint64_t msm5xxx_poc_boot_legacy_read(void *opaque, hwaddr offset,
     if (!size || size > 4 || offset >= sizeof(s->boot_legacy_regs) ||
         size > sizeof(s->boot_legacy_regs) - offset) {
         return 0;
+    }
+    if (s->boot_legacy_services && size == 4 && !(offset & 3) &&
+        offset >= 0x500 && offset < 0x608) {
+        return s->boot_legacy_sbi[(offset - 0x500) / 4];
     }
     if (size == 4) {
         switch (offset) {
@@ -16052,6 +16070,31 @@ static void msm5xxx_poc_boot_legacy_write(void *opaque, hwaddr offset,
     MSM5xxxPOCMachineState *s = opaque;
     if (!size || size > 4 || offset >= sizeof(s->boot_legacy_regs) ||
         size > sizeof(s->boot_legacy_regs) - offset) {
+        return;
+    }
+    if (s->boot_legacy_services && size == 4 && !(offset & 3) &&
+        offset >= 0x500 && offset < 0x608) {
+        unsigned off = offset - 0x500, channel = off / 0x40;
+        unsigned reg = (value >> 16) & 0xff;
+        if (off == 0x100) {
+            s->boot_legacy_sbi[0x104 / 4] &= ~value;
+            return;
+        }
+        s->boot_legacy_sbi[off / 4] = value;
+        if (off < 0x100 && off % 0x40 == 8) {
+            uint8_t *pmic = s->boot_legacy_pmic[channel];
+            if (value & UINT32_C(0x1000000)) {
+                s->boot_legacy_sbi[(channel * 0x40 + 0x10) / 4] = pmic[reg];
+            } else if (channel == 2 && reg == 0x33) {
+                pmic[reg] &= ~value;
+                if (!pmic[reg]) {
+                    pmic[0x30] &= ~8;
+                }
+            } else {
+                pmic[reg] = value;
+            }
+            s->boot_legacy_sbi[0x104 / 4] |= 1u << channel;
+        }
         return;
     }
     /* shortcut: other control registers retain writes; upgrade as their device semantics are identified. */
@@ -16091,6 +16134,16 @@ static void msm5xxx_poc_boot_legacy_reset(void *opaque)
     s->boot_legacy_compare_ready = false;
     s->boot_nand.pending &= ~UINT32_C(0x00200000);
     timer_del(s->boot_legacy_deadline);
+    if (s->boot_legacy_services) {
+        memset(s->boot_legacy_sbi, 0, sizeof(s->boot_legacy_sbi));
+        memset(s->boot_legacy_pmic, 0, sizeof(s->boot_legacy_pmic));
+        s->boot_legacy_pmic[2][2] = 0x20;
+        s->boot_legacy_pmic[2][0x33] = 8;
+        s->boot_legacy_pmic[2][0x41] = 8;
+        s->boot_legacy_key_armed = false;
+        s->boot_nand.pending &= ~UINT32_C(0x800);
+        timer_del(s->boot_legacy_key_deadline);
+    }
     msm5xxx_poc_boot_events_irq(s);
 }
 
@@ -16099,6 +16152,10 @@ static void msm5xxx_poc_boot_legacy_init(MachineState *machine,
 {
     MemoryRegionSection section;
     bool conflict;
+    if (s->boot_legacy_services && (!s->boot_legacy_clock || !s->boot_legacy_map)) {
+        error_report("legacy boot services require the source-bound clock and map");
+        exit(EXIT_FAILURE);
+    }
     if (!s->boot_legacy_clock) {
         return;
     }
@@ -16115,6 +16172,10 @@ static void msm5xxx_poc_boot_legacy_init(MachineState *machine,
     }
     s->boot_legacy_deadline = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                            msm5xxx_poc_boot_legacy_expired, s);
+    if (s->boot_legacy_services) {
+        s->boot_legacy_key_deadline = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+            msm5xxx_poc_boot_legacy_key_expired, s);
+    }
     memory_region_init_io(&s->boot_legacy_region, OBJECT(machine),
         &msm5xxx_poc_boot_legacy_ops, s, "boot-legacy-clock", 0x5000);
     memory_region_add_subregion(get_system_memory(), 0x88004000,
@@ -16126,11 +16187,15 @@ static void msm5xxx_poc_boot_legacy_init(MachineState *machine,
 /* Source-bound bus configuration and DSP data apertures. */
 static const hwaddr boot_legacy_map_bases[] = {
     0x60000000, 0x64800000, 0x50c00000, 0x78000000,
-    0x20100000, 0x88000000, 0x48200000, 0x62000400
+    0x20100000, 0x88000000, 0x48200000, 0x62000400, 0x50000000, 0x50200000,
+    0x50400000, 0x50800000, 0x48400000, 0x48c00000, 0x48000000, 0x48800000
 };
 static const unsigned boot_legacy_map_sizes[] = {
-    0x200, 0x300, 0x10, 4, 2, 4, 0x2000, 0x60
+    0x200, 0x300, 0x10, 4, 2, 0x500, 0x2000, 0x60, 0x8000, 0x8000, 0x4000, 0x4000,
+    0x1000, 0x1000, 0x8000, 0x8000
 };
+enum { LEGACY_DSP_DATA = 6, LEGACY_DSP_SHARED = 12,
+       LEGACY_DSP_CONTROL = 13, LEGACY_DSP_PROGRAM = 14 };
 
 static uint64_t msm5xxx_poc_boot_legacy_map_read(void *opaque, hwaddr offset,
                                                 unsigned size)
@@ -16155,6 +16220,34 @@ static void msm5xxx_poc_boot_legacy_map_write(void *opaque, hwaddr offset,
     /* shortcut: unobserved controller side effects are not modelled; upgrade on source evidence. */
     msm5xxx_poc_backing_write(port->machine->boot_legacy_map_data[port->index],
                               offset, value, size);
+    MSM5xxxPOCMachineState *s = port->machine;
+    if (!s->boot_legacy_services) {
+        return;
+    }
+    if (port->index == LEGACY_DSP_PROGRAM && s->boot_legacy_dsp_held) {
+        s->boot_legacy_dsp_program = true;
+    } else if (port->index == LEGACY_DSP_DATA && s->boot_legacy_dsp_held && offset < 0x1000) {
+        s->boot_legacy_dsp_data = true;
+    } else if (port->index == LEGACY_DSP_CONTROL && offset == 0 && size == 4) {
+        if (value & 1) {
+            s->boot_legacy_dsp_held = true;
+            s->boot_legacy_dsp_program = s->boot_legacy_dsp_data = false;
+            s->boot_legacy_dsp_ready = false;
+            msm5xxx_poc_backing_write(s->boot_legacy_map_data[LEGACY_DSP_DATA], 0x10d4, 0, 2);
+        } else if (s->boot_legacy_dsp_held && s->boot_legacy_dsp_program &&
+                   s->boot_legacy_dsp_data) {
+            s->boot_legacy_dsp_held = false;
+            s->boot_legacy_dsp_ready = true;
+            msm5xxx_poc_backing_write(s->boot_legacy_map_data[LEGACY_DSP_DATA], 0x10d4, 1, 2);
+        }
+    } else if (port->index == LEGACY_DSP_CONTROL && offset == 8 && size == 4 &&
+               (value & UINT32_C(0x80000000)) && s->boot_legacy_dsp_ready &&
+               msm5xxx_poc_backing_read(s->boot_legacy_map_data[LEGACY_DSP_DATA], 0x1134, 2) == 1) {
+        uint64_t requested = msm5xxx_poc_backing_read(
+            s->boot_legacy_map_data[LEGACY_DSP_SHARED], 0x700, 4);
+        msm5xxx_poc_backing_write(s->boot_legacy_map_data[LEGACY_DSP_SHARED], 0x6fc, requested, 4);
+        msm5xxx_poc_backing_write(s->boot_legacy_map_data[LEGACY_DSP_DATA], 0x1134, 0, 2);
+    }
 }
 
 static const MemoryRegionOps msm5xxx_poc_boot_legacy_map_ops = {
@@ -16169,6 +16262,8 @@ static void msm5xxx_poc_boot_legacy_map_reset(void *opaque)
 {
     MSM5xxxPOCMachineState *s = opaque;
     memset(s->boot_legacy_map_data, 0, sizeof(s->boot_legacy_map_data));
+    s->boot_legacy_dsp_held = s->boot_legacy_dsp_program = false;
+    s->boot_legacy_dsp_data = s->boot_legacy_dsp_ready = false;
 }
 
 static void msm5xxx_poc_boot_legacy_map_init(MachineState *machine,
@@ -16438,6 +16533,14 @@ static void msm5xxx_poc_boot_events_write(void *opaque, hwaddr offset,
     }
     if (s->boot_rex_timer && offset == 0x1d08 && size == 4) {
         msm5xxx_poc_boot_rex_schedule(s, value);
+    }
+    if (s->boot_legacy_services && offset == 0xc98 && size == 4 &&
+        (value & UINT32_C(0x800)) && !s->boot_legacy_key_armed) {
+        /* shortcut: initial power-key assertion follows interrupt enable by 300 ms;
+         * upgrade when host power-key wiring and timing are modelled. */
+        s->boot_legacy_key_armed = true;
+        timer_mod(s->boot_legacy_key_deadline,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 300000000);
     }
     if (s->mdsp_mailbox || s->boot_rex_timer || s->boot_legacy_clock) {
         msm5xxx_poc_boot_events_irq(s);
@@ -17249,6 +17352,7 @@ EXTERNAL_BOOL_PROPERTY(byte_dcs_lcd, byte_dcs_lcd)
 EXTERNAL_BOOL_PROPERTY(boot_w18, boot_w18)
 EXTERNAL_BOOL_PROPERTY(boot_legacy_clock, boot_legacy_clock)
 EXTERNAL_BOOL_PROPERTY(boot_legacy_map, boot_legacy_map)
+EXTERNAL_BOOL_PROPERTY(boot_legacy_services, boot_legacy_services)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor, boot_dual_nor)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_wide_lcd, boot_dual_nor_wide_lcd)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_low_lcd, boot_dual_nor_low_lcd)
@@ -24702,6 +24806,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
     object_class_property_add_bool(oc, "boot-legacy-map",
         msm5xxx_poc_get_boot_legacy_map, msm5xxx_poc_set_boot_legacy_map);
+    object_class_property_add_bool(oc, "boot-legacy-services",
+        msm5xxx_poc_get_boot_legacy_services, msm5xxx_poc_set_boot_legacy_services);
     object_class_property_add_bool(oc, "boot-legacy-clock",
         msm5xxx_poc_get_boot_legacy_clock, msm5xxx_poc_set_boot_legacy_clock);
     object_class_property_add_bool(oc, "boot-w18",
@@ -25371,6 +25477,9 @@ static void msm5xxx_poc_instance_finalize(Object *obj)
     if (s->boot_legacy_deadline) {
         qemu_unregister_reset(msm5xxx_poc_boot_legacy_reset, s);
         timer_free(s->boot_legacy_deadline);
+    }
+    if (s->boot_legacy_key_deadline) {
+        timer_free(s->boot_legacy_key_deadline);
     }
     if (s->boot_nand_blk) {
         qemu_unregister_reset(msm5xxx_poc_boot_nand_reset, s);
