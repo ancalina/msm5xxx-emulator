@@ -2027,11 +2027,20 @@ class Transport:
             if high_stack_boot:
                 if boot_w18:
                     base, size = high_stack_ram
+                    w18_rules = device_domain('storage.boot_w18')
+                    legacy_clock = (w18_rules.has_boot_legacy_clock(detector_image)
+                                    and w18_rules.has_boot_legacy_clock(primary_seed))
+                    legacy_size = w18_rules.boot_legacy_ram_size(detector_image) if legacy_clock else None
+                    legacy_map = (base == 0x30000000 and legacy_size is not None
+                                  and legacy_size == w18_rules.boot_legacy_ram_size(primary_seed))
+                    if legacy_map:
+                        size = legacy_size
                     machine += (f",signal-memory=ffff0000:2000,external-ram-base=0x{base:x},"
                                 f"external-ram-size=0x{size:x},standalone-boot-events=on,boot-w18=on")
-                    legacy_clock = device_domain('storage.boot_w18').has_boot_legacy_clock
-                    if legacy_clock(detector_image) and legacy_clock(primary_seed):
+                    if legacy_clock:
                         machine += ',boot-legacy-clock=on'
+                    if legacy_map:
+                        machine += ',boot-legacy-map=on'
                     legacy_primary_state.parent.mkdir(parents=True, exist_ok=True)
                     with tempfile.NamedTemporaryFile(
                             prefix=legacy_primary_state.name + '.w18-working-', suffix='.raw',

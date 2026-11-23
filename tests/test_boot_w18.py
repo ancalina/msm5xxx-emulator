@@ -4,8 +4,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from msm5xxx_emulator.detection.devices.storage.boot_w18 import (
-    _CHIP, _CLOCK, _DESCRIPTOR, _POWER_REASON, _PROGRAM,
-    has_boot_legacy_clock, has_boot_w18)
+    _BUS_INIT, _CHIP, _CLOCK, _DESCRIPTOR, _POWER_REASON, _PROGRAM, _RAM_TEST,
+    boot_legacy_ram_size, has_boot_legacy_clock, has_boot_w18)
 from msm5xxx_emulator.devices.storage.nor import NORFlash
 from msm5xxx_emulator.qemu.transport import Transport
 
@@ -29,6 +29,12 @@ class BootW18Tests(unittest.TestCase):
         seed[558] ^= 1
         self.assertFalse(has_boot_legacy_clock(bytes(seed)))
         seed[558] ^= 1
+        seed[2000:2000 + len(_RAM_TEST)] = _RAM_TEST
+        seed[2228:2232] = (0x1fffff).to_bytes(4, 'little')
+        seed[3000:3000 + len(_BUS_INIT)] = _BUS_INIT
+        self.assertEqual(boot_legacy_ram_size(bytes(seed)), 0x204000)
+        seed[2228:2232] = (0x3fffff).to_bytes(4, 'little')
+        self.assertEqual(boot_legacy_ram_size(bytes(seed)), 0x404000)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             flash = NORFlash(bytes(seed), root / 'state.json')

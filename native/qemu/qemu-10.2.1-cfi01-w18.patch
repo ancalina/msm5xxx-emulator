@@ -11,7 +11,7 @@
      uint64_t counter;
      uint32_t writeblock_size;
      MemoryRegion mem;
-@@ -329,6 +333,51 @@
+@@ -329,6 +333,54 @@
      }
  };
  
@@ -19,6 +19,8 @@
 +{
 +    return ((PFlashCFI01 *)opaque)->w18;
 +}
++
++static void pflash_w18_update_romd(PFlashCFI01 *pfl);
 +
 +static int pflash_w18_post_load(void *opaque, int version_id)
 +{
@@ -41,6 +43,7 @@
 +            return -EINVAL;
 +        }
 +    }
++    pflash_w18_update_romd(pfl);
 +    return 0;
 +}
 +
@@ -63,7 +66,7 @@
  static const VMStateDescription vmstate_pflash = {
      .name = "pflash_cfi01",
      .version_id = 1,
-@@ -347,6 +396,7 @@
+@@ -347,6 +399,7 @@
          &vmstate_pflash_sharp_locks,
          &vmstate_pflash_sharp_status_mirror,
          &vmstate_pflash_deferred_erase,
@@ -71,7 +74,7 @@
          NULL
      }
  };
-@@ -373,6 +423,9 @@
+@@ -373,6 +426,9 @@
       * so that they will match the addresses used when
       * device_width==max_device_width.
       */
@@ -81,7 +84,7 @@
      boff = offset >> (ctz32(pfl->bank_width) +
                        ctz32(pfl->max_device_width) - ctz32(pfl->device_width));
  
-@@ -977,6 +1030,145 @@
+@@ -977,6 +1033,157 @@
  }
  
  
@@ -224,10 +227,22 @@
 +    }
 +}
 +
++static void pflash_w18_update_romd(PFlashCFI01 *pfl)
++{
++    unsigned i;
++    for (i = 0; i < ARRAY_SIZE(pfl->w18_mode); i++) {
++        if (pfl->w18_mode[i]) {
++            memory_region_rom_device_set_romd(&pfl->mem, false);
++            return;
++        }
++    }
++    memory_region_rom_device_set_romd(&pfl->mem, true);
++}
++
  static MemTxResult pflash_mem_read_with_attrs(void *opaque, hwaddr addr, uint64_t *value,
                                                unsigned len, MemTxAttrs attrs)
  {
-@@ -985,6 +1177,8 @@
+@@ -985,6 +1192,8 @@
  
      if ((pfl->features & (1 << PFLASH_SECURE)) && !attrs.secure) {
          *value = pflash_data_read(opaque, addr, len, be);
@@ -236,20 +251,21 @@
      } else {
          *value = pflash_read(opaque, addr, len, be);
      }
-@@ -1000,7 +1194,11 @@
+@@ -1000,7 +1209,12 @@
      if ((pfl->features & (1 << PFLASH_SECURE)) && !attrs.secure) {
          return MEMTX_ERROR;
      } else {
 -        pflash_write(opaque, addr, value, len, be);
 +        if (pfl->w18) {
 +            pflash_w18_write(pfl, addr, value, len);
++            pflash_w18_update_romd(pfl);
 +        } else {
 +            pflash_write(opaque, addr, value, len, be);
 +        }
          return MEMTX_OK;
      }
  }
-@@ -1124,6 +1322,16 @@
+@@ -1124,6 +1338,16 @@
      uint64_t total_len;
      int ret;
  
@@ -266,14 +282,14 @@
      if (pfl->sharp_pcr_enabled &&
          (pfl->bank_width != 2 || pfl->device_width != 2 ||
           (pfl->max_device_width && pfl->max_device_width != 2) ||
-@@ -1218,6 +1426,21 @@
+@@ -1218,6 +1442,21 @@
      pfl->cmd = 0x00;
      pfl->status = 0x80; /* WSM ready */
      pflash_cfi01_fill_cfi_table(pfl);
 +    if (pfl->w18) {
 +        memset(pfl->w18_status, 0x80, sizeof(pfl->w18_status));
 +        memset(pfl->w18_locks, 1, sizeof(pfl->w18_locks));
-+        memory_region_rom_device_set_romd(&pfl->mem, false);
++        memory_region_rom_device_set_romd(&pfl->mem, true);
 +        pfl->cfi_table[0x15] = 0x39;
 +        pfl->cfi_table[0x2a] = pfl->cfi_table[0x2b] = 0;
 +        pfl->cfi_table[0x2c] = 2;
@@ -288,12 +304,10 @@
  
      pfl->blk_bytes = g_malloc(pfl->writeblock_size);
      pfl->blk_offset = -1;
-@@ -1234,7 +1457,14 @@
-      */
+@@ -1235,6 +1474,13 @@
      pfl->cmd = 0x00;
      pfl->wcycle = 0;
--    memory_region_rom_device_set_romd(&pfl->mem, true);
-+    memory_region_rom_device_set_romd(&pfl->mem, !pfl->w18);
+     memory_region_rom_device_set_romd(&pfl->mem, true);
 +    if (pfl->w18) {
 +        memset(pfl->w18_mode, 0, sizeof(pfl->w18_mode));
 +        memset(pfl->w18_cycle, 0, sizeof(pfl->w18_cycle));
@@ -304,7 +318,7 @@
      /*
       * The WSM ready timer occurs at most 150ns after system reset.
       * This model deliberately ignores this delay.
-@@ -1251,6 +1481,7 @@
+@@ -1251,6 +1497,7 @@
  
  static const Property pflash_cfi01_properties[] = {
      DEFINE_PROP_DRIVE("drive", PFlashCFI01, blk),

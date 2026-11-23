@@ -23,7 +23,7 @@ class BootW18NativeTests(unittest.TestCase):
             with (root / 'qemu.log').open('w') as log:
                 process = subprocess.Popen([
                     'taskset', '-c', '4', os.environ['MSM5XXX_W18_QEMU'],
-                    '-M', 'msm5xxx-poc,standalone-boot-events=on,boot-w18=on,boot-legacy-clock=on',
+                    '-M', 'msm5xxx-poc,standalone-boot-events=on,boot-w18=on,boot-legacy-clock=on,boot-legacy-map=on',
                     '-m', '32M', '-nographic', '-S', '-monitor', 'none', '-serial', 'none',
                     '-drive', f'file={flash},if=pflash,format=raw,unit=0',
                     '-qtest', f'unix:{qtest},server=on,wait=off',
@@ -99,6 +99,10 @@ class BootW18NativeTests(unittest.TestCase):
                     write(0, 0xff)
                     check(0, 0xffff)
                     check(0x2000, 0)
+                    write(0x600001b0, 0x20)
+                    check(0x600001b0, 0x20)
+                    write(0x482007b6, 0x55aa)
+                    check(0x482007b6, 0x55aa)
                     command('writel 0x80000c98 0x200000')
                     tick = command('readl 0x88004008')
                     command(f'writel 0x880040c4 0x{(tick + 4) & 0xffffffff:x}')

@@ -27,3 +27,19 @@ def has_boot_legacy_clock(image):
     return (image[clock + 46:clock + 58] == bytes.fromhex('08400088c4400088c0400088')
             and image[chip_literal:chip_literal + 4] == bytes.fromhex('40070080')
             and image[reason_literal:reason_literal + 4] == bytes.fromhex('40070080'))
+
+_RAM_TEST = bytes.fromhex(
+    '28119fe5001091e5001081e0031001e50420a0e314319fe5003093e50240e0e1004082e78220a0e1030052e1faffffba')
+_BUS_INIT = bytes.fromhex('002102286a4a6d4b05d0002803d0012801d0032801d1d36011617047')
+
+
+def boot_legacy_ram_size(image):
+    if not has_boot_legacy_clock(image) or _BUS_INIT not in image:
+        return None
+    at = image.find(_RAM_TEST)
+    if at < 0 or at % 4 or image.find(_RAM_TEST, at + 1) >= 0:
+        return None
+    limit = int.from_bytes(image[at + 0xe4:at + 0xe8], 'little')
+    if limit not in (0x1fffff, 0x3fffff):
+        return None
+    return 0x4000 + limit + 1
