@@ -290,7 +290,7 @@ struct MSM5xxxPOCMachineState {
     uint8_t *boot_nand_media;
     MemoryRegion boot_low_ram, boot_high_ram, boot_control[16], boot_keys;
     MemoryRegion boot_presence, boot_nand_region, boot_events_region;
-    bool byte_dcs_lcd;
+    bool byte_dcs_lcd, boot_w18;
     MemoryRegion byte_dcs_region[2];
     struct { MSM5xxxPOCMachineState *machine; bool data; } byte_dcs_port[2];
     MemoryRegion boot_lcd_region[2];
@@ -17041,6 +17041,7 @@ EXTERNAL_BOOL_PROPERTY(boot_power_key, boot_power_key)
 EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
                       "boot-wake-input must be a source-bound GPIO mask before realization")
 EXTERNAL_BOOL_PROPERTY(byte_dcs_lcd, byte_dcs_lcd)
+EXTERNAL_BOOL_PROPERTY(boot_w18, boot_w18)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor, boot_dual_nor)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_wide_lcd, boot_dual_nor_wide_lcd)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_low_lcd, boot_dual_nor_low_lcd)
@@ -18399,6 +18400,30 @@ static void msm5xxx_poc_init(MachineState *machine)
                                     &s->external_ram);
     }
     msm5xxx_poc_signal_memory_init(machine, s);
+    if (s->boot_w18) {
+        DriveInfo *drive = drive_get(IF_PFLASH, 0, 0);
+        BlockBackend *backend = drive ? blk_by_legacy_dinfo(drive) : NULL;
+        DeviceState *flash;
+        if (!s->standalone_boot_events || s->boot_dual_nor || !backend ||
+            !blk_supports_write_perm(backend) || blk_getlength(backend) != 0x800000) {
+            error_report("W18 boot flash requires an exclusive writable 8 MiB backend");
+            exit(EXIT_FAILURE);
+        }
+        flash = qdev_new(TYPE_PFLASH_CFI01);
+        qdev_prop_set_drive(flash, "drive", backend);
+        qdev_prop_set_uint32(flash, "num-blocks", 128);
+        qdev_prop_set_uint64(flash, "sector-length", 0x10000);
+        qdev_prop_set_uint8(flash, "width", 2);
+        qdev_prop_set_uint8(flash, "device-width", 2);
+        qdev_prop_set_uint8(flash, "max-device-width", 2);
+        qdev_prop_set_uint16(flash, "id0", 0x89);
+        qdev_prop_set_uint16(flash, "id1", 0x8865);
+        qdev_prop_set_bit(flash, "w18", true);
+        qdev_prop_set_string(flash, "name", "boot-w18");
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(flash), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(flash), 0, 0, 1);
+    }
+
     if (s->byte_dcs_lcd) {
         static const hwaddr ports[] = { 0x40000000, 0x401e0004 };
         unsigned port;
@@ -24466,6 +24491,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                  msm5xxx_poc_set_uart2_tx_ready);
     object_class_property_set_description(oc, "uart2-tx-ready",
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add_bool(oc, "boot-w18",
+        msm5xxx_poc_get_boot_w18, msm5xxx_poc_set_boot_w18);
     object_class_property_add_bool(oc, "byte-dcs-lcd",
         msm5xxx_poc_get_byte_dcs_lcd, msm5xxx_poc_set_byte_dcs_lcd);
     object_class_property_add_bool(oc, "boot-dual-nor-low-lcd",

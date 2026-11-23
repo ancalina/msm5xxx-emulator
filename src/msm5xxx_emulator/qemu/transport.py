@@ -2016,8 +2016,30 @@ class Transport:
                 and (legacy_upper_state is None or not legacy_upper_state.exists())
                 and device_domain('storage.boot_dual_nor').has_boot_dual_nor(detector_image)
                 and device_domain('storage.boot_dual_nor').has_boot_dual_nor(primary_seed))
+            boot_w18 = (high_stack_boot and pflash_unit == 0 and loader_exclude is None
+                and self.config.flash_size == 0x800000 and len(self.decoder.flash.data) == 0x800000
+                and not self.config.secondary_flash_image and not self.config.secondary_flash_address
+                and not self.config.upper_flash_address and not self.config.nand_enabled
+                and not legacy_secondary_state.exists()
+                and (legacy_upper_state is None or not legacy_upper_state.exists())
+                and device_domain('storage.boot_w18').has_boot_w18(detector_image)
+                and device_domain('storage.boot_w18').has_boot_w18(primary_seed))
             if high_stack_boot:
-                if boot_dual_nor:
+                if boot_w18:
+                    base, size = high_stack_ram
+                    machine += (f",signal-memory=ffff0000:2000,external-ram-base=0x{base:x},"
+                                f"external-ram-size=0x{size:x},standalone-boot-events=on,boot-w18=on")
+                    legacy_primary_state.parent.mkdir(parents=True, exist_ok=True)
+                    with tempfile.NamedTemporaryFile(
+                            prefix=legacy_primary_state.name + '.w18-working-', suffix='.raw',
+                            dir=legacy_primary_state.parent, delete=False) as working:
+                        self._w18_working = Path(working.name)
+                        working.write(self.decoder.flash.data)
+                    qemu_path = str(self._w18_working).replace(',', ',,')
+                    storage_args.extend(('-drive', f'file={qemu_path},if=pflash,format=raw,unit=0'))
+                    loader_exclude = (0, self.config.flash_size)
+                    self.config.detection_notes.append('source-linked partitioned W18 boot NOR enabled')
+                elif boot_dual_nor:
                     low_panel = device_domain("display.indexed44_writer").find_indexed44_low_boot
                     low_lcd = low_panel(detector_image) and low_panel(primary_seed)
                     if low_lcd:
@@ -3133,5 +3155,18 @@ class Transport:
         self._close_audio_channel()
         self._terminate_process()
         self.stderr.close()
-        self.decoder.close()
+        w18_working = getattr(self, '_w18_working', None)
+        try:
+            if w18_working is not None:
+                data = w18_working.read_bytes()
+                if len(data) != len(self.decoder.flash.data):
+                    raise ValueError("W18 working flash size changed")
+                self.decoder.flash.data[:] = data
+            self.decoder.close()
+        except Exception as error:
+            if w18_working is not None:
+                raise RuntimeError(f"W18 state save failed; working image preserved at {w18_working}") from error
+            raise
+        if w18_working is not None:
+            w18_working.unlink()
         self.temporary.cleanup()
