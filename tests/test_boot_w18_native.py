@@ -23,7 +23,7 @@ class BootW18NativeTests(unittest.TestCase):
             with (root / 'qemu.log').open('w') as log:
                 process = subprocess.Popen([
                     'taskset', '-c', '4', os.environ['MSM5XXX_W18_QEMU'],
-                    '-M', 'msm5xxx-poc,standalone-boot-events=on,boot-w18=on',
+                    '-M', 'msm5xxx-poc,standalone-boot-events=on,boot-w18=on,boot-legacy-clock=on',
                     '-m', '32M', '-nographic', '-S', '-monitor', 'none', '-serial', 'none',
                     '-drive', f'file={flash},if=pflash,format=raw,unit=0',
                     '-qtest', f'unix:{qtest},server=on,wait=off',
@@ -52,7 +52,7 @@ class BootW18NativeTests(unittest.TestCase):
                 def command(text):
                     channel.write((text + '\n').encode())
                     response = channel.readline().decode().split()
-                    self.assertEqual(response[0], 'OK')
+                    self.assertEqual(response[0], 'OK', response)
                     return int(response[1], 0) if len(response) > 1 else None
                 def write(address, value):
                     command(f'writew 0x{address:x} 0x{value:x}')
@@ -99,6 +99,20 @@ class BootW18NativeTests(unittest.TestCase):
                     write(0, 0xff)
                     check(0, 0xffff)
                     check(0x2000, 0)
+                    command('writel 0x80000c98 0x200000')
+                    tick = command('readl 0x88004008')
+                    command(f'writel 0x880040c4 0x{(tick + 4) & 0xffffffff:x}')
+                    self.assertEqual(command('readl 0x880040c0'), 1)
+                    mon.write(b'{"execute":"cont"}\n')
+                    while 'return' not in json.loads(mon.readline()):
+                        pass
+                    time.sleep(.05)
+                    mon.write(b'{"execute":"stop"}\n')
+                    while 'return' not in json.loads(mon.readline()):
+                        pass
+                    self.assertEqual(command('readl 0x80000c84') & 0x200000, 0x200000)
+                    command('writel 0x80000c84 0x200000')
+                    self.assertEqual(command('readl 0x80000c84') & 0x200000, 0)
                 finally:
                     mon.write(b'{"execute":"quit"}\n')
                     process.wait(timeout=15)

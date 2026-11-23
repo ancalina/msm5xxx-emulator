@@ -2029,6 +2029,9 @@ class Transport:
                     base, size = high_stack_ram
                     machine += (f",signal-memory=ffff0000:2000,external-ram-base=0x{base:x},"
                                 f"external-ram-size=0x{size:x},standalone-boot-events=on,boot-w18=on")
+                    legacy_clock = device_domain('storage.boot_w18').has_boot_legacy_clock
+                    if legacy_clock(detector_image) and legacy_clock(primary_seed):
+                        machine += ',boot-legacy-clock=on'
                     legacy_primary_state.parent.mkdir(parents=True, exist_ok=True)
                     with tempfile.NamedTemporaryFile(
                             prefix=legacy_primary_state.name + '.w18-working-', suffix='.raw',

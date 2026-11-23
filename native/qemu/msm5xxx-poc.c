@@ -290,7 +290,12 @@ struct MSM5xxxPOCMachineState {
     uint8_t *boot_nand_media;
     MemoryRegion boot_low_ram, boot_high_ram, boot_control[16], boot_keys;
     MemoryRegion boot_presence, boot_nand_region, boot_events_region;
-    bool byte_dcs_lcd, boot_w18;
+    bool byte_dcs_lcd, boot_w18, boot_legacy_clock;
+    MemoryRegion boot_legacy_region;
+    uint8_t boot_legacy_regs[0x5000];
+    QEMUTimer *boot_legacy_deadline;
+    uint32_t boot_legacy_compare, boot_legacy_sleep_state;
+    bool boot_legacy_compare_ready, boot_legacy_sleep_ready[2];
     MemoryRegion byte_dcs_region[2];
     struct { MSM5xxxPOCMachineState *machine; bool data; } byte_dcs_port[2];
     MemoryRegion boot_lcd_region[2];
@@ -15974,8 +15979,10 @@ static void msm5xxx_poc_boot_events_irq(MSM5xxxPOCMachineState *s)
 {
     uint32_t pending = s->mdsp_pending |
         (s->boot_rex_pending ? UINT32_C(0x40000000) : 0);
-    s->boot_events_irq_level = pending & msm5xxx_poc_backing_read(
-        s->boot_events_backing, 0x914, 4);
+    s->boot_events_irq_level = (pending & msm5xxx_poc_backing_read(
+        s->boot_events_backing, 0x914, 4)) ||
+        (s->boot_legacy_clock && (s->boot_nand.pending &
+         msm5xxx_poc_backing_read(s->boot_events_backing, 0xc98, 4)));
     qemu_set_irq(s->cpu_irq, s->irq_level || s->rex_irq_level ||
                  s->a80_irq_level || s->boot_events_irq_level);
 }
@@ -16004,6 +16011,113 @@ static void msm5xxx_poc_boot_rex_schedule(MSM5xxxPOCMachineState *s,
     int64_t deadline = (target / 32768) * 1000000000 +
         ((target % 32768) * 1000000000 + 32767) / 32768;
     timer_mod(s->boot_rex_deadline, deadline);
+}
+
+/* 32768 Hz compare and sleep-controller register bank. */
+static void msm5xxx_poc_boot_legacy_expired(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    s->boot_nand.pending |= UINT32_C(0x00200000);
+    msm5xxx_poc_boot_events_irq(s);
+}
+
+static uint64_t msm5xxx_poc_boot_legacy_read(void *opaque, hwaddr offset,
+                                            unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!size || size > 4 || offset >= sizeof(s->boot_legacy_regs) ||
+        size > sizeof(s->boot_legacy_regs) - offset) {
+        return 0;
+    }
+    if (size == 4) {
+        switch (offset) {
+        case 0x008: case 0x220:
+            return (uint32_t)msm5xxx_poc_boot_rex_ticks();
+        case 0x0c0: return s->boot_legacy_compare_ready;
+        case 0x0c4: return s->boot_legacy_compare;
+        case 0x210: return s->boot_legacy_sleep_ready[0];
+        case 0x218: return s->boot_legacy_sleep_ready[1];
+        case 0x224: return s->boot_legacy_sleep_state;
+        }
+    }
+    return msm5xxx_poc_backing_read(s->boot_legacy_regs, offset, size);
+}
+
+static void msm5xxx_poc_boot_legacy_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    if (!size || size > 4 || offset >= sizeof(s->boot_legacy_regs) ||
+        size > sizeof(s->boot_legacy_regs) - offset) {
+        return;
+    }
+    /* shortcut: other control registers retain writes; upgrade as their device semantics are identified. */
+    msm5xxx_poc_backing_write(s->boot_legacy_regs, offset, value, size);
+    if (size != 4) {
+        return;
+    }
+    if (offset == 0x0c4) {
+        uint64_t ticks = msm5xxx_poc_boot_rex_ticks();
+        uint64_t target = ticks + (uint32_t)((uint32_t)value - (uint32_t)ticks);
+        int64_t deadline = (target / 32768) * 1000000000 +
+            ((target % 32768) * 1000000000 + 32767) / 32768;
+        s->boot_legacy_compare = value;
+        s->boot_legacy_compare_ready = true;
+        timer_mod(s->boot_legacy_deadline, deadline);
+    } else if (offset == 0x20c || offset == 0x214) {
+        s->boot_legacy_sleep_ready[(offset - 0x20c) / 8] = true;
+    } else if (offset == 0x230 && !value) {
+        s->boot_legacy_sleep_state = 1;
+    }
+}
+
+static const MemoryRegionOps msm5xxx_poc_boot_legacy_ops = {
+    .read = msm5xxx_poc_boot_legacy_read,
+    .write = msm5xxx_poc_boot_legacy_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
+};
+
+static void msm5xxx_poc_boot_legacy_reset(void *opaque)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    memset(s->boot_legacy_regs, 0, sizeof(s->boot_legacy_regs));
+    memset(s->boot_legacy_sleep_ready, 0, sizeof(s->boot_legacy_sleep_ready));
+    s->boot_legacy_compare = s->boot_legacy_sleep_state = 0;
+    s->boot_legacy_compare_ready = false;
+    s->boot_nand.pending &= ~UINT32_C(0x00200000);
+    timer_del(s->boot_legacy_deadline);
+    msm5xxx_poc_boot_events_irq(s);
+}
+
+static void msm5xxx_poc_boot_legacy_init(MachineState *machine,
+                                         MSM5xxxPOCMachineState *s)
+{
+    MemoryRegionSection section;
+    bool conflict;
+    if (!s->boot_legacy_clock) {
+        return;
+    }
+    if (!s->boot_w18 || !s->standalone_boot_events) {
+        error_report("legacy boot clock requires the W18 boot bus");
+        exit(EXIT_FAILURE);
+    }
+    section = memory_region_find(get_system_memory(), 0x88004000, 0x5000);
+    conflict = section.mr != NULL;
+    memory_region_unref(section.mr);
+    if (conflict) {
+        error_report("legacy boot clock overlaps an existing route");
+        exit(EXIT_FAILURE);
+    }
+    s->boot_legacy_deadline = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                           msm5xxx_poc_boot_legacy_expired, s);
+    memory_region_init_io(&s->boot_legacy_region, OBJECT(machine),
+        &msm5xxx_poc_boot_legacy_ops, s, "boot-legacy-clock", 0x5000);
+    memory_region_add_subregion(get_system_memory(), 0x88004000,
+                                &s->boot_legacy_region);
+    qemu_register_reset(msm5xxx_poc_boot_legacy_reset, s);
+    msm5xxx_poc_boot_legacy_reset(s);
 }
 
 static uint64_t msm5xxx_poc_mdsp_read(void *opaque, hwaddr offset, unsigned size)
@@ -16147,7 +16261,14 @@ static uint64_t msm5xxx_poc_boot_events_read(void *opaque, hwaddr offset,
 
         hwaddr pending = s->boot_nand_word ? 0x950 : 0xc84;
 
-        if ((s->mdsp_mailbox || s->boot_rex_timer) && at >= 0x94c && at < 0x950) {
+        if (s->boot_legacy_clock && at >= 0xc80 && at < 0xc84) {
+            value = 0;
+        } else if (s->boot_legacy_clock && at == 0x75c) {
+            /* shortcut: chip revision is unverified; upgrade with board identification. */
+            value = 0xe0;
+        } else if (s->boot_legacy_clock && at == 0x75f) {
+            value = 0x10; /* Power-on reason. */
+        } else if ((s->mdsp_mailbox || s->boot_rex_timer) && at >= 0x94c && at < 0x950) {
             uint32_t owned = s->mdsp_irq_mask |
                 (s->boot_rex_timer ? UINT32_C(0x40000000) : 0);
             uint32_t pending = s->mdsp_pending |
@@ -16234,7 +16355,7 @@ static void msm5xxx_poc_boot_events_write(void *opaque, hwaddr offset,
     if (s->boot_rex_timer && offset == 0x1d08 && size == 4) {
         msm5xxx_poc_boot_rex_schedule(s, value);
     }
-    if (s->mdsp_mailbox || s->boot_rex_timer) {
+    if (s->mdsp_mailbox || s->boot_rex_timer || s->boot_legacy_clock) {
         msm5xxx_poc_boot_events_irq(s);
     }
 }
@@ -17042,6 +17163,7 @@ EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
                       "boot-wake-input must be a source-bound GPIO mask before realization")
 EXTERNAL_BOOL_PROPERTY(byte_dcs_lcd, byte_dcs_lcd)
 EXTERNAL_BOOL_PROPERTY(boot_w18, boot_w18)
+EXTERNAL_BOOL_PROPERTY(boot_legacy_clock, boot_legacy_clock)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor, boot_dual_nor)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_wide_lcd, boot_dual_nor_wide_lcd)
 EXTERNAL_BOOL_PROPERTY(boot_dual_nor_low_lcd, boot_dual_nor_low_lcd)
@@ -18400,6 +18522,7 @@ static void msm5xxx_poc_init(MachineState *machine)
                                     &s->external_ram);
     }
     msm5xxx_poc_signal_memory_init(machine, s);
+    msm5xxx_poc_boot_legacy_init(machine, s);
     if (s->boot_w18) {
         DriveInfo *drive = drive_get(IF_PFLASH, 0, 0);
         BlockBackend *backend = drive ? blk_by_legacy_dinfo(drive) : NULL;
@@ -24491,6 +24614,8 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
                                  msm5xxx_poc_set_uart2_tx_ready);
     object_class_property_set_description(oc, "uart2-tx-ready",
         "Source-bound ROM read PC for synchronous UART2 TX sink ready bit");
+    object_class_property_add_bool(oc, "boot-legacy-clock",
+        msm5xxx_poc_get_boot_legacy_clock, msm5xxx_poc_set_boot_legacy_clock);
     object_class_property_add_bool(oc, "boot-w18",
         msm5xxx_poc_get_boot_w18, msm5xxx_poc_set_boot_w18);
     object_class_property_add_bool(oc, "byte-dcs-lcd",
@@ -25151,6 +25276,10 @@ static void msm5xxx_poc_instance_finalize(Object *obj)
     }
     if (s->boot_rex_deadline) {
         timer_free(s->boot_rex_deadline);
+    }
+    if (s->boot_legacy_deadline) {
+        qemu_unregister_reset(msm5xxx_poc_boot_legacy_reset, s);
+        timer_free(s->boot_legacy_deadline);
     }
     if (s->boot_nand_blk) {
         qemu_unregister_reset(msm5xxx_poc_boot_nand_reset, s);
