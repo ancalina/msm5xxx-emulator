@@ -5,6 +5,18 @@ from msm5xxx_emulator.devices.display.byte_dcs_window import ByteDcsWindow
 
 
 class ByteDcsWindowTests(unittest.TestCase):
+    def test_byte_and_halfword_accessors_require_data_port(self):
+        image = bytearray(0x400)
+        accessors = bytes.fromhex(
+            '0121890708707047a349087170470120800700787047a04800797047'
+            '01218907088070479c49888070470120800700887047994880887047'
+            '01040a0e96490a7108717047')
+        image[0x40:0x40 + len(accessors)] = accessors
+        image[0x2d8:0x2dc] = bytes.fromhex('00001e40')
+        self.assertEqual(find_byte_dcs_writer(image), ((0x40, len(accessors)),))
+        image[0x2db] ^= 1
+        self.assertFalse(find_byte_dcs_writer(image))
+
     def test_source_and_offset_rgb565_stream(self):
         image = bytearray(512)
         image[64:102] = bytes.fromhex(

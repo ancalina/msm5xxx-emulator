@@ -13,4 +13,15 @@ def find_byte_dcs_writer(image):
                 and image[pos + 90:pos + 108] == pixels):
             found.append((pos, 108))
         start = pos + 1
+    # This driver has separate byte and halfword port accessors. Its boot
+    # initialization configures the same 128 by 128 DCS panel.
+    accessors = bytes.fromhex(
+        '0121890708707047a349087170470120800700787047a04800797047'
+        '01218907088070479c49888070470120800700887047994880887047'
+        '01040a0e96490a7108717047')
+    start = 0
+    while (pos := image.find(accessors, start)) >= 0:
+        if image[pos + 0x298:pos + 0x29c] == bytes.fromhex('00001e40'):
+            found.append((pos, len(accessors)))
+        start = pos + 1
     return tuple(found)
