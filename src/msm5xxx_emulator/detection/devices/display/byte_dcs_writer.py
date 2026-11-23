@@ -19,9 +19,16 @@ def find_byte_dcs_writer(image):
         '0121890708707047a349087170470120800700787047a04800797047'
         '01218907088070479c49888070470120800700887047994880887047'
         '01040a0e96490a7108717047')
+    loads = (8, 22, 36, 50, 60)
     start = 0
-    while (pos := image.find(accessors, start)) >= 0:
-        if image[pos + 0x298:pos + 0x29c] == bytes.fromhex('00001e40'):
-            found.append((pos, len(accessors)))
+    while (pos := image.find(accessors[:8], start)) >= 0:
+        candidate = image[pos:pos + len(accessors)]
+        if (pos % 2 == 0 and len(candidate) == len(accessors)
+                and all(a == b or i in loads
+                        for i, (a, b) in enumerate(zip(candidate, accessors)))):
+            addresses = [((pos + i + 4) & ~3) + candidate[i] * 4 for i in loads]
+            if (len(set(addresses)) == 1
+                    and image[addresses[0]:addresses[0] + 4] == bytes.fromhex('00001e40')):
+                found.append((pos, len(accessors)))
         start = pos + 1
     return tuple(found)
