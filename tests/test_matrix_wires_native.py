@@ -30,7 +30,7 @@ class MatrixWireNativeTests(unittest.TestCase):
         source = SOURCE.read_text()
         sensing = "\n".join(_function(source, "msm5xxx_poc_" + name) for name in (
             "matrix_wire_register", "matrix_wire_field_count_valid", "matrix_wire_site",
-            "matrix_wire_registers", "matrix_wire_backing_read", "matrix_halfword_backing_read",
+            "matrix_wire_registers", "matrix_wire_backing_read", "matrix_wire_board_shared", "matrix_halfword_backing_read",
             "matrix_wire_sense", "matrix_contact_site_valid", "matrix_wire_contact",
             "matrix_wire_boot_contact_shared", "matrix_wire_boot_value"))
         conflicts = _function(source, "msm5xxx_poc_matrix_wires_conflict")
@@ -55,6 +55,11 @@ typedef uint32_t hwaddr;
             "typedef struct {\n" + declarations + "\n} MSM5xxxPOCMachineState;\n" + r"""
 static uint8_t backing[0x1000];
 static unsigned last_write_offset;
+static void msm5xxx_poc_board_status_input_write(MSM5xxxPOCMachineState *s,
+        uint32_t offset, uint64_t value, unsigned size)
+{ (void)offset; (void)size; s->board_status_input_backing =
+    (value & ~s->board_status_input_mask) |
+    (s->board_status_input_backing & s->board_status_input_mask); }
 static void msm5xxx_poc_halfword_backing_write(MSM5xxxPOCMachineState *s,
         uint32_t offset, uint64_t value, unsigned size)
 { (void)s; (void)value; assert(size == 2); last_write_offset = offset; }
@@ -275,6 +280,16 @@ int main(void)
     s.board_status_input_mask = 1;
     assert(!msm5xxx_poc_matrix_wires_conflict(&s));
     s.board_status_input_address = 0x0300066c;
+    assert(!msm5xxx_poc_matrix_wires_conflict(&s));
+    output(0x66c, 0xabcd);
+    s.board_status_input_backing = 0;
+    assert(msm5xxx_poc_matrix_halfword_backing_read(&s, 0, 2) == 0xabcc);
+    s.board_status_input_backing = 1;
+    assert(msm5xxx_poc_matrix_halfword_backing_read(&s, 0, 2) == 0xabcd);
+    msm5xxx_poc_matrix_halfword_write(&s, 0, 0x1234, 2);
+    assert((s.board_status_input_backing & 1) == 1);
+    assert(last_write_offset == 0x66c);
+    s.board_status_input_descriptor = 0x100;
     assert(msm5xxx_poc_matrix_wires_conflict(&s));
     s = matrix();
     assert(msm5xxx_poc_matrix_halfword_backing_read(&s, 0, 2) == 0xabcd);
@@ -323,6 +338,8 @@ int main(void)
         s.board_status_input_enabled = true;
         s.board_status_input_address = s.matrix_input_address;
         s.board_status_input_mask = 16;
+        assert(!msm5xxx_poc_matrix_wires_conflict(&s));
+        s.board_status_input_mask = 32;
         assert(msm5xxx_poc_matrix_wires_conflict(&s));
     }
     return 0;

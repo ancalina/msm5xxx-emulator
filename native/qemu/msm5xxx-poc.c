@@ -4909,14 +4909,31 @@ static uint16_t msm5xxx_poc_matrix_wire_backing_read(
     return value;
 }
 
+/* Source-qualified matrix reads own the sense bits while ordinary reads
+ * retain the independent board contact. Both use the same GPIO backing. */
+static bool msm5xxx_poc_matrix_wire_board_shared(MSM5xxxPOCMachineState *s)
+{
+    return s->matrix_input_wires && s->board_status_input_enabled &&
+        !s->board_status_input_descriptor &&
+        s->board_status_input_address == s->matrix_input_address &&
+        s->board_status_input_mask &&
+        !(s->board_status_input_mask & ~(unsigned)s->matrix_input_no_key);
+}
+
 static uint64_t msm5xxx_poc_matrix_halfword_backing_read(
     MSM5xxxPOCMachineState *s, hwaddr offset, unsigned size)
 {
     uint32_t address = s->matrix_input_wires ? s->matrix_input_address :
                        MSM5XXX_POC_MSM_BASE + 0x72c;
 
-    return msm5xxx_poc_halfword_backing_read(
+    uint64_t value = msm5xxx_poc_halfword_backing_read(
         s, address - MSM5XXX_POC_MSM_BASE + offset, size);
+
+    if (msm5xxx_poc_matrix_wire_board_shared(s) && !offset && size <= 2) {
+        value = (value & ~(uint64_t)s->board_status_input_mask) |
+                (s->board_status_input_backing & s->board_status_input_mask);
+    }
+    return value;
 }
 
 static bool msm5xxx_poc_matrix_encoded_read_gate(
@@ -5493,6 +5510,9 @@ static void msm5xxx_poc_matrix_halfword_write(void *opaque, hwaddr offset,
     uint32_t address = s->matrix_input_wires ? s->matrix_input_address :
                        MSM5XXX_POC_MSM_BASE + 0x72c;
 
+    if (msm5xxx_poc_matrix_wire_board_shared(s) && !offset && size <= 2) {
+        msm5xxx_poc_board_status_input_write(s, 0, value & 0xff, 1);
+    }
     msm5xxx_poc_halfword_backing_write(s,
         address - MSM5XXX_POC_MSM_BASE + offset, value, size);
 }
@@ -17545,7 +17565,8 @@ static bool msm5xxx_poc_matrix_wires_conflict(MSM5xxxPOCMachineState *s)
     }
     if ((s->board_status_input_enabled &&
          s->board_status_input_address >= sense_start &&
-         s->board_status_input_address < sense_end) ||
+         s->board_status_input_address < sense_end &&
+         !msm5xxx_poc_matrix_wire_board_shared(s)) ||
         (s->board_status_peer_address >= sense_start &&
          s->board_status_peer_address < sense_end) ||
         (s->board_revision_enabled &&
@@ -18086,6 +18107,7 @@ static void msm5xxx_poc_init(MachineState *machine)
          ((s->matrix_input_loop || s->matrix_input_kp_low5 || s->matrix_input_sv130_low5) &&
           s->matrix_input_contact_site >= s->primary_nor_size - 2) ||
          (s->board_status_input_enabled &&
+          !msm5xxx_poc_matrix_wire_board_shared(s) &&
           s->board_status_input_address >=
               (s->matrix_input_wires ? s->matrix_input_address :
                MSM5XXX_POC_MSM_BASE + 0x72c) &&
@@ -19511,10 +19533,12 @@ static void msm5xxx_poc_init(MachineState *machine)
                                s->board_status_input_address ==
                                    MSM5XXX_POC_MSM_BASE + 0x720) ? 4 :
                               s->board_status_input_descriptor ? 2 : 1);
-        memory_region_add_subregion_overlap(
-            get_system_memory(), s->board_status_input_address,
-            &s->board_status_input, 2
-        );
+        if (!msm5xxx_poc_matrix_wire_board_shared(s)) {
+            memory_region_add_subregion_overlap(
+                get_system_memory(), s->board_status_input_address,
+                &s->board_status_input, 2
+            );
+        }
     }
     if ((s->gpio_ready_bit21 || s->experimental_contract_gpio_bit9_low ||
          s->experimental_contract_gpio_pmic_serial) &&

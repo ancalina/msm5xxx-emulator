@@ -46,6 +46,8 @@ typedef struct { bool running; struct { bool can_do_io; } neg;
 typedef struct {
 """ + declarations + r"""
 } MSM5xxxPOCMachineState;
+static bool msm5xxx_poc_matrix_wire_board_shared(MSM5xxxPOCMachineState *s)
+{ (void)s; return false; }
 static uint8_t backing[0x1000];
 static CPUState active_cpu;
 static CPUState other_cpu;

@@ -215,6 +215,11 @@ typedef struct {
     uint32_t board_status_peer_address,board_status_peer_mask,board_status_peer_level;
     uint64_t board_status_input_rejections;
 } MSM5xxxPOCMachineState;
+static bool msm5xxx_poc_matrix_wire_board_shared(MSM5xxxPOCMachineState *s)
+{ (void)s; return false; }
+static void msm5xxx_poc_board_status_input_write(void *s, hwaddr offset,
+        uint64_t value, unsigned size)
+{ (void)s; (void)offset; (void)value; (void)size; }
 typedef struct { uint64_t ram_size; } MachineState;
 static MachineState machine_state={.ram_size=0x800000};
 static MachineState *machine=&machine_state;
