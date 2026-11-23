@@ -29,6 +29,9 @@ class ByteDcsWindowTests(unittest.TestCase):
             _, frame = panel.write(0x401e0004, 1, value)
         self.assertEqual(frame, bytes((255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255)))
         self.assertEqual((panel.x_origin, panel.y_origin), (4, 4))
+        send(0x36, 0x20)
+        _, oriented = panel.write(0x40000000, 1, 0x29)
+        self.assertEqual(oriented, bytes((255, 0, 0, 0, 0, 255, 0, 255, 0, 255, 255, 255)))
 
 
 if __name__ == '__main__':

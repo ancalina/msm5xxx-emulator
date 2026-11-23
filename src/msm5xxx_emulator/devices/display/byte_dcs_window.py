@@ -10,6 +10,26 @@ class ByteDcsWindow(DcsWindow):
         super().__init__(width, height, x_origin, y_origin)
         self.byte_parameters = []
         self.pixel_byte = None
+        self.address_mode = 0
+        self.address_mode_pending = False
+
+    def _oriented(self, frame):
+        if frame is None or not self.address_mode & 0xe0:
+            return frame
+        if self.address_mode & 0x20 and self.width != self.height:
+            return None
+        rotated = bytearray(len(frame))
+        for y in range(self.height):
+            for x in range(self.width):
+                dx, dy = (y, x) if self.address_mode & 0x20 else (x, y)
+                if self.address_mode & 0x40:
+                    dx = self.width - dx - 1
+                if self.address_mode & 0x80:
+                    dy = self.height - dy - 1
+                source = (y * self.width + x) * 3
+                target = (dy * self.width + dx) * 3
+                rotated[target:target + 3] = frame[source:source + 3]
+        return bytes(rotated)
 
     def write(self, address, size, value):
         if address not in (0x40000000, 0x401e0004):
@@ -17,12 +37,19 @@ class ByteDcsWindow(DcsWindow):
         if size != 1 or type(value) is not int or not 0 <= value <= 0xff:
             self.pending = self.window = self.pixel_byte = None
             self.byte_parameters = []
+            self.address_mode_pending = False
             self.writing = False
             return True, None
         if address == 0x40000000:
             self.byte_parameters = []
             self.pixel_byte = None
-            return super().write(0x02000000, 2, value)
+            self.address_mode_pending = value == 0x36
+            consumed, frame = super().write(0x02000000, 2, value)
+            return consumed, self._oriented(frame)
+        if self.address_mode_pending:
+            self.address_mode_pending = False
+            self.address_mode = value
+            return True, None
         if self.pending is not None:
             self.byte_parameters.append(value)
             if len(self.byte_parameters) == 2:
@@ -48,5 +75,6 @@ class ByteDcsWindow(DcsWindow):
                 return True, None
             pixel = self.pixel_byte << 8 | value
             self.pixel_byte = None
-            return super().write(0x02000002, 2, pixel)
+            consumed, frame = super().write(0x02000002, 2, pixel)
+            return consumed, self._oriented(frame)
         return True, None
