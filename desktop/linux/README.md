@@ -110,8 +110,9 @@ it for toolkit-owned system dialogs; app windows and Settings labels update live
   the Network Time submenu. Header buttons use the stock Adwaita style in every power state.
 - The title bar shows the model name only. Info contains chipset, actual LCD dimensions,
   network status, power and secondary-display details. There is no subtitle or extra status row.
-- The LCD refits to actual frame dimensions. Its opening width is the smallest integer
-  LCD scale that fits the keypad buttons plus their own margins and the header minimum.
+- The LCD refits to actual frame dimensions. Its opening width fits the keypad buttons
+  plus their own margins and the header minimum, with the native LCD width as a
+  lower bound, without rounding the width up to an integer LCD scale.
   The model title may ellipsize and never supplies its natural width to this calculation.
   Keypad columns 1–3 have exactly equal widths; column 0 fits its longest button label.
   The keypad-only CSS keeps square, flat buttons; Done uses the spare column-0, row-8 cell.
@@ -130,8 +131,9 @@ it for toolkit-owned system dialogs; app windows and Settings labels update live
 - Right-click a key, or enable **Edit Key Layout**, then activate it to enter a decimal
   or hexadecimal event byte. Empty clears a mapping. Unavailable keys can be edited in
   edit mode. **Done** exits editing. `session.keys` refreshes availability after a change.
-- A qualified secondary LCD opens once automatically per boot at 3×. Its window is
-  resizable, with a minimum 1× LCD content area plus native window chrome. GTK letterboxes
+- A qualified secondary LCD opens once automatically per boot at its measured minimum:
+  a 1× LCD content area plus native window chrome, widened if needed for header controls.
+  Its window remains resizable. GTK letterboxes
   the pixels at their original aspect ratio. Closing hides it; the menu reopens it.
 - On native X11 sessions, dragging the secondary display within 16 logical pixels of
   either main-window side snaps the visible edges flush and aligns the LCD tops. Moving

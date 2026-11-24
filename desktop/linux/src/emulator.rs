@@ -169,7 +169,7 @@ impl Emulator {
             .settings()
             .connect_gtk_decoration_layout_notify(controls);
         let secondary_screen = Display::new(&text.tr("Secondary Display"));
-        secondary_screen.set_scale(3);
+        secondary_screen.set_scale(1);
         secondary_screen.set_flexible(true);
         let secondary_view = adw::ToolbarView::new();
         secondary_view.add_top_bar(&secondary_header);
@@ -625,10 +625,10 @@ impl Emulator {
             .max(self.header.measure(gtk::Orientation::Horizontal, -1).0);
         let old = self.opening.get();
         let changed = self.opening_geometry.replace((w, h)) != (w, h);
-        let width = ((natural + w - 1) / w).max(1) * w;
-        let scale = width / w;
+        let width = natural.max(w);
+        let scale = (width / w).max(1);
         self.screen.set_scale(scale);
-        let height = h * scale
+        let height = self.screen.measure(gtk::Orientation::Vertical, width).1
             + self.keypad.measure(gtk::Orientation::Vertical, width).1
             + self.header.measure(gtk::Orientation::Vertical, width).1;
         self.opening.set((width, height));
@@ -1006,12 +1006,14 @@ impl Emulator {
                         self.update_secondary_title();
                         self.secondary_screen.set_size_request(w, h);
                         if changed || !self.secondary_seen.get() {
+                            let width = w.max(self.secondary_header
+                                .measure(gtk::Orientation::Horizontal, -1).0);
                             self.secondary.set_default_size(
-                                w * 3,
-                                h * 3
+                                width,
+                                h
                                     + self
                                         .secondary_header
-                                        .measure(gtk::Orientation::Vertical, w * 3)
+                                        .measure(gtk::Orientation::Vertical, width)
                                         .1,
                             );
                         }
