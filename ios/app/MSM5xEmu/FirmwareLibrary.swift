@@ -553,6 +553,7 @@ struct FirmwareLibraryView: View {
                     }
                     Button(text("Library add folder")) { showingSettings = false; folderPicker = true }
                     Button(text("Library import")) { showingSettings = false; filePicker = true }
+                        .disabled(store.importing)
                 }
                 Section {
                     AppIconPicker(text: text)
@@ -639,12 +640,25 @@ struct FirmwareLibraryView: View {
 
     private var libraryContent: some View {
             VStack {
-                if store.scanning || preparing || engine.starting { ProgressView(text("Library loading")) }
+                if store.importing { ProgressView(text("Library importing")) }
+                else if store.scanning || preparing || engine.starting { ProgressView(text("Library loading")) }
                 if engine.sessionFailed {
                     Text(text("Error")).foregroundColor(.secondary)
                 }
-                if store.entries.isEmpty && !store.scanning { Text(text("Library empty")) }
+                if store.entries.isEmpty && !store.scanning && !store.importing && store.failedSources.isEmpty && store.error == nil {
+                    Text(text("Library empty"))
+                }
                 if let error = store.error { Text(text(error)).foregroundColor(.secondary) }
+                if !store.failedSources.isEmpty {
+                    DisclosureGroup(String(format: text("Library partial scan"), store.failedSources.count)) {
+                        ScrollView {
+                            Text(store.failedSources.joined(separator: "\n"))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }.frame(maxHeight: 160)
+                        Text(text("Library scan retry")).font(.footnote)
+                    }.padding(.horizontal)
+                }
                 List(groups) { group in
                     let entry = group.latest
                     let spoken = String(format: text("Library row"), entry.displayName,
@@ -700,11 +714,12 @@ struct FirmwareLibraryView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button(text("Library add folder")) { folderPicker = true }
-                        Button(text("Library import")) { filePicker = true }
+                        Button(text("Library import")) { filePicker = true }.disabled(store.importing)
                     } label: { Image(systemName: "plus") }
                     .accessibilityLabel(text("Library add"))
                     Button { store.refresh(engine: engine) } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel(text("Library refresh"))
+                        .disabled(store.importing)
                     Button { showingSettings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel(text("Settings"))
                 }
@@ -746,7 +761,7 @@ struct FirmwareLibraryView: View {
             .fileImporter(isPresented: $filePicker, allowedContentTypes: [.data]) { result in
                 switch result {
                 case .success(let url): store.importFile(url, engine: engine)
-                case .failure(let error): store.error = "Library error"
+                case .failure: store.error = "Library error"
                 }
             }
             .confirmationDialog(selectedGroup?.latest.displayName ?? text("Choose firmware"), isPresented: $choosingFiles, titleVisibility: .visible) {

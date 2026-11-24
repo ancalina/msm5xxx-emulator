@@ -204,3 +204,7 @@
 "Library delete copies" = "동일 내용 앱 사본 삭제";
 "Library file actions" = "%@ 파일 작업";
 "Library delete copies detail" = "%@ 항목을 제거하면 내용이 같은 항목이 라이브러리에서 제외되고, 가져온 앱 사본이 있으면 함께 삭제돼요. 외부 원본 파일은 보존돼요. 앱 사본 삭제는 되돌릴 수 없어요.";
+
+"Library importing" = "펌웨어를 가져오는 중…";
+"Library partial scan" = "파일 또는 폴더 %ld개를 읽지 못했어요";
+"Library scan retry" = "사용 가능한 항목은 계속 사용할 수 있어요. 접근 권한을 복구하고 새로고침하거나, 설정에서 폴더를 제거한 뒤 다시 추가하세요.";
