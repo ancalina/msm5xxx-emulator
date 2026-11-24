@@ -17,6 +17,10 @@ struct Firmware: Identifiable {
     @Published var scanning = false
     @Published var error = ""
     @Published var settings: [String: JSON] = [:]
+    @Published var networkTimeDraft: String?
+    @Published var generalSettingsSaving = false
+    @Published var generalSettingsError = ""
+    @Published var generalSettingsStatus = ""
     @Published var languageRevision = 0
     var windows: [String: EmulatorSceneModel] = [:]
     @Published var settingsEmulator: EmulatorSceneModel?

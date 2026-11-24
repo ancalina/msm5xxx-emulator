@@ -24,10 +24,6 @@ struct ApplicationSettings: View {
 struct GeneralSettings: View {
     @ObservedObject private var appearance = AppPreferences.shared
     @ObservedObject var library: LibraryModel
-    @State private var error = ""
-    @State private var saving = false
-    @State private var startTime = ""
-    @State private var status = ""
     var body: some View {
         Form {
             Section {
@@ -35,11 +31,15 @@ struct GeneralSettings: View {
                 settingToggle("virtual_network")
                 settingToggle("network_host_time")
                 HStack(alignment: .firstTextBaseline) {
-                    TextField(L("network_start_time"), text: $startTime)
+                    TextField(L("network_start_time"), text: Binding(
+                        get: { library.networkTimeDraft ?? library.settings["network_start_time"]?.string ?? "" },
+                        set: { library.networkTimeDraft = $0 }
+                    ))
+                        .disabled(library.generalSettingsSaving)
                         .accessibilityLabel(Text(L("network_start_time")))
                         .help(L("time_format"))
                         .accessibilityHint(L("time_format"))
-                    Button(L("apply")) { saveTime() }.disabled(saving)
+                    Button(L("apply")) { saveTime() }.disabled(library.generalSettingsSaving)
                 }
                 settingToggle("experimental_rex")
             } footer: { Text(L("settings_notice")) }
@@ -49,36 +49,48 @@ struct GeneralSettings: View {
                     Text(L("korean")).tag("ko")
                     Text(L("english_language")).tag("en")
                 }
+                .disabled(library.generalSettingsSaving)
             } footer: { Text(L("language_notice")) }
             Section {
                 Picker(L("app_icon"), selection: Binding(get: { appearance.iconStyle }, set: { style in
-                    Task { do { try await appearance.setIcon(style) } catch { self.error = error.localizedDescription } }
+                    Task { do { try await appearance.setIcon(style) } catch { library.generalSettingsError = error.localizedDescription } }
                 })) {
                     Text(L("icon_full")).tag(AppIconStyle.full)
                     Text(L("icon_simple")).tag(AppIconStyle.simple)
                 }
             }
-            if saving { ProgressView(L("saving")) }
-            if !status.isEmpty { Text(status).foregroundStyle(.secondary).accessibilityLabel(status) }
-            ErrorBanner(message: error)
+            if library.generalSettingsSaving { ProgressView(L("saving")) }
+            if !library.generalSettingsStatus.isEmpty {
+                Text(library.generalSettingsStatus).foregroundStyle(.secondary).accessibilityLabel(library.generalSettingsStatus)
+            }
+            ErrorBanner(message: library.generalSettingsError)
         }.formStyle(.grouped)
             .task {
-                do { try await library.loadSettings(); startTime = library.settings["network_start_time"]?.string ?? "" }
-                catch { self.error = error.localizedDescription }
+                do { try await library.loadSettings() }
+                catch { library.generalSettingsError = error.localizedDescription }
             }
     }
     private func settingToggle(_ key: String) -> some View {
-        Toggle(L(key), isOn: Binding(get: { library.settings[key]?.bool ?? false }, set: { save(key, .bool($0)) })).disabled(saving)
+        Toggle(L(key), isOn: Binding(get: { library.settings[key]?.bool ?? false }, set: { save(key, .bool($0)) })).disabled(library.generalSettingsSaving)
     }
     private func save(_ key: String, _ value: JSON) {
-        saving = true; error = ""; status = ""
+        guard !library.generalSettingsSaving else { return }
+        library.generalSettingsSaving = true
+        library.generalSettingsError = ""; library.generalSettingsStatus = ""
         Task {
-            do { try await library.set(key, value: value); status = L("saved") }
-            catch { self.error = error.localizedDescription }
-            saving = false
+            defer { library.generalSettingsSaving = false }
+            do {
+                try await library.set(key, value: value)
+                if key == "network_start_time", library.networkTimeDraft == value.string {
+                    library.networkTimeDraft = nil
+                }
+                library.generalSettingsStatus = L("saved")
+            } catch { library.generalSettingsError = error.localizedDescription }
         }
     }
-    private func saveTime() { save("network_start_time", .string(startTime)) }
+    private func saveTime() {
+        save("network_start_time", .string(library.networkTimeDraft ?? library.settings["network_start_time"]?.string ?? ""))
+    }
 }
 
 struct DeviceSettings: View {
