@@ -31,6 +31,7 @@ typedef struct MSM5xxxAudioEvent {
     uint8_t pan;
     uint8_t expression;
     uint8_t pitch_bend;
+    uint32_t direct_phase_step;
     uint8_t timbre_algorithm;
     uint8_t timbre_operator_count;
     uint8_t timbre_feedback;

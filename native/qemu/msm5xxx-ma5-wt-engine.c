@@ -50,7 +50,9 @@ struct MA5WTEngine {
     bool ck[564], sk[8192], bk[64], bend_ok[16];
     MSM5xxxMA5GainTables gain;
     MSM5xxxMA5ChannelGain volume[16];
+    MSM5xxxMA5ChannelGain pan[16][2];
     uint16_t channel_gain[16];
+    uint16_t pan_gain[16][2];
     Voice voice[MA5_WT_SLOTS];
     FMVoice fm[32];
     uint32_t fm_lfo_phase[16], fm_lfo_step[16];
@@ -274,14 +276,11 @@ static bool fm_mode_ok(const MA5WTEngine *e)
 static void fm_side_gain(MA5WTEngine *e, FMVoice *v, unsigned base)
 {
     unsigned channel = v->channel;
-    unsigned pan = e->c[208 + channel] >> 2;
     unsigned level = e->c[base + 2] >> 2;
     unsigned master = e->b[41] >> 3;
     uint32_t gain = (e->gain.slotgain[level] * e->channel_gain[channel]) >> 15;
     for (unsigned lane = 0; lane < 2; lane++) {
-        uint32_t pan_gain = e->gain.a[(lane ? e->gain.cp_r[pan] :
-                                                e->gain.cp_l[pan]) >> 16];
-        uint32_t side = (gain * pan_gain) >> 15;
+        uint32_t side = (gain * e->pan_gain[channel][lane]) >> 15;
         v->side[lane] = (side * e->gain.g32[master]) >> 15;
     }
 }
@@ -336,11 +335,11 @@ static MA5WTSkip fm_start(MA5WTEngine *e, FMVoice *v, unsigned slot)
         !e->ck[224 + channel] ||
         !e->bend_ok[channel] || !e->ck[bend] || !e->ck[bend + 1] ||
         (e->c[base + 3] & 0x40u) || (e->c[bend] & 0x60u) ||
-        (e->c[bend + 1] & 1u) || (e->c[208 + channel] & 1u)) {
+        (e->c[bend + 1] & 1u)) {
         return MA5_WT_SKIP_CONTROL;
     }
     if (d->operator_count != (d->algorithm < 2u ? 2u : 4u) ||
-        d->reserved || d->pan_enable || d->pan_off) {
+        d->pan_enable || d->pan_off) {
         return MA5_WT_SKIP_DESCRIPTOR;
     }
     /* Manual and ROM descriptor mapping both make raw BO=1 neutral; the
@@ -361,7 +360,7 @@ static MA5WTSkip fm_start(MA5WTEngine *e, FMVoice *v, unsigned slot)
         const MSM5xxxMA5FMOperatorParams *p = &d->operators[i];
         uint32_t step;
         bool feedback_op = i == 0 || (d->algorithm == 5u && i == 2);
-        if (p->reserved || p->xof ||
+        if (p->xof ||
             (p->feedback && !feedback_op) ||
             !e->fm_wave_ready[p->waveform]) {
             return MA5_WT_SKIP_DESCRIPTOR;
@@ -578,7 +577,7 @@ static uint32_t be16(const uint8_t *p)
 static void descriptor(MA5WTEngine *e, Voice *v, unsigned base)
 {
     v->descriptor_ok = false;
-    if (!e->ck[base]) return;
+    if (!e->ck[base] || !e->ck[base+1]) return;
     v->descriptor_address = ((uint32_t)e->c[base] << 8) | (e->c[base+1] << 1);
     if (!known_span(e, v->descriptor_address, 13)) return;
     memcpy(v->descriptor, v->descriptor_address < 0x4000u ?
@@ -599,11 +598,10 @@ static void side_gain(MA5WTEngine *e, Voice *v, unsigned base)
 {
     uint32_t gain = (e->gain.slotgain[e->c[base+2] >> 2] *
                      (uint32_t)e->channel_gain[v->channel]) >> 15;
-    unsigned pan = e->c[208+v->channel] >> 2;
     unsigned tl = v->descriptor[5] >> 2;
     if (tl) gain=(gain*e->gain.tl[tl])>>15;
-    v->side[0] = (gain * e->gain.a[e->gain.cp_l[pan] >> 16]) >> 15;
-    v->side[1] = (gain * e->gain.a[e->gain.cp_r[pan] >> 16]) >> 15;
+    v->side[0] = (gain * e->pan_gain[v->channel][0]) >> 15;
+    v->side[1] = (gain * e->pan_gain[v->channel][1]) >> 15;
     for (unsigned i = 0; i < 2; i++)
         v->side[i] = (v->side[i] * e->gain.g32[e->b[42] >> 3]) >> 15;
 }
@@ -618,7 +616,8 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
     uint8_t *d = v->descriptor;
     unsigned ch = e->c[base+5] & 15;
     if (!v->descriptor_ok) {
-        skip(e,v,v->descriptor_address < 0x4000u && !e->rom ?
+        skip(e,v,e->ck[base] && e->ck[base+1] &&
+                 v->descriptor_address < 0x4000u && !e->rom ?
                  MA5_WT_SKIP_ROM : MA5_WT_SKIP_UPLOAD);
         return;
     }
@@ -644,7 +643,7 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
     if ((e->c[base+2]&3) || (e->c[base+3]&64) ||
         !v->pitch_ok || !e->ck[192+ch] || !e->ck[208+ch] || !e->ck[224+ch] ||
         e->c[224+ch] || !e->bend_ok[ch] ||
-        (e->c[bend]&0x60) || (e->c[bend+1]&1) || (e->c[208+ch]&3) ||
+        (e->c[bend]&0x60) || (e->c[bend+1]&1) || (e->c[208+ch]&2) ||
         ((e->c[192+ch]&3) && (e->b[55] != 0 || (e->c[192+ch]&3) != 1))) {
         skip(e,v,MA5_WT_SKIP_CONTROL); return;
     }
@@ -727,9 +726,13 @@ static void render(MA5WTEngine *e, uint64_t target)
         for (size_t j=0;j<count;j++,e->stats.frame++) {
             int64_t mix[2]={0,0};
             int64_t fm_mix[2]={0,0};
-            for (unsigned ch=0;ch<16;ch++)
+            for (unsigned ch=0;ch<16;ch++) {
                 (void)msm5xxx_ma5_channel_gain_step(&e->gain,&e->volume[ch],
                     (e->b[55]&32) ? 65536 : 262144,&e->channel_gain[ch]);
+                for (unsigned lane=0;lane<2;lane++)
+                    (void)msm5xxx_ma5_channel_gain_step(&e->gain,&e->pan[ch][lane],
+                        (e->b[55]&32) ? 65536 : 262144,&e->pan_gain[ch][lane]);
+            }
             for (unsigned i=0;i<MA5_WT_SLOTS;i++) {
                 Voice *v=&e->voice[i];
                 if (!v->info.active) continue;
@@ -801,6 +804,20 @@ bool ma5_wt_engine_set_rom(MA5WTEngine *e, const uint8_t *data, size_t size)
 
 void ma5_wt_engine_free(MA5WTEngine *e) { if (e) free(e->rom); free(e); }
 
+static void reset_channel_gains(MA5WTEngine *e)
+{
+    for (unsigned ch=0;ch<16;ch++) {
+        uint32_t volume=e->gain.cv[24];
+        uint32_t left=e->gain.cp_l[15], right=e->gain.cp_r[15];
+        e->volume[ch]=(MSM5xxxMA5ChannelGain){volume,volume,false};
+        e->channel_gain[ch]=e->gain.a[volume>>16];
+        e->pan[ch][0]=(MSM5xxxMA5ChannelGain){left,left,false};
+        e->pan[ch][1]=(MSM5xxxMA5ChannelGain){right,right,false};
+        e->pan_gain[ch][0]=e->gain.a[left>>16];
+        e->pan_gain[ch][1]=e->gain.a[right>>16];
+    }
+}
+
 void ma5_wt_engine_reset(MA5WTEngine *e, uint64_t origin)
 {
     if (!e) return;
@@ -813,10 +830,7 @@ void ma5_wt_engine_reset(MA5WTEngine *e, uint64_t origin)
             waveform, e->fm_wave[waveform], MSM5XXX_MA5_WAVEFORM_BINS);
     }
     fm_lfo_tables_build(e);
-    for (unsigned ch=0;ch<16;ch++) {
-        e->volume[ch]=(MSM5xxxMA5ChannelGain){e->gain.cv[24],e->gain.cv[24],false};
-        e->channel_gain[ch]=e->gain.a[e->gain.cv[24]>>16];
-    }
+    reset_channel_gains(e);
 }
 
 void ma5_wt_engine_advance(MA5WTEngine *e, uint64_t time)
@@ -933,6 +947,13 @@ static void apply_control(MA5WTEngine *e, unsigned address, uint8_t raw)
             (void)msm5xxx_ma5_channel_gain_configure(&e->volume[ch],e->gain.cv[value>>2],!!(value&1));
             if (!(value&1)) e->channel_gain[ch]=e->gain.a[e->gain.cv[value>>2]>>16];
         }
+        if (address>=208 && address<224) {
+            uint32_t target[2]={e->gain.cp_l[value>>2],e->gain.cp_r[value>>2]};
+            for (unsigned lane=0;lane<2;lane++) {
+                (void)msm5xxx_ma5_channel_gain_configure(&e->pan[ch][lane],target[lane],!!(value&1));
+                if (!(value&1)) e->pan_gain[ch][lane]=e->gain.a[target[lane]>>16];
+            }
+        }
         if (address>=240) {
             if (address&1) e->bend_ok[ch]=e->ck[address-1];
             else if (!known || old!=value) e->bend_ok[ch]=false;
@@ -941,10 +962,10 @@ static void apply_control(MA5WTEngine *e, unsigned address, uint8_t raw)
             Voice *v=&e->voice[i];
             if (v->info.active && v->channel==ch) skip(e,v,MA5_WT_SKIP_MUTATION);
         }
-        /* Direct volume/pan use the existing gain refresh; interpolated controls stay closed. */
+        /* Volume and pan gains update through their per-channel ramps. */
         if ((!known || old!=value) && !(address>=224 && address<240) &&
             !(address>=192 && address<208 && !(value&3)) &&
-            !(address>=208 && address<224 && !(value&3)))
+            !(address>=208 && address<224 && !(value&2)))
           for (unsigned i=0;i<32;i++) {
             FMVoice *v=&e->fm[i];
             if (v->active && v->channel==ch) fm_skip(e,v,MA5_WT_SKIP_MUTATION);
@@ -996,8 +1017,7 @@ void ma5_wt_engine_commit(MA5WTEngine *e, const MSM5xxxMA5Commit *c)
             memset(e->ck,0,sizeof(e->ck)); memset(e->sk,0,sizeof(e->sk));
             memset(e->bk,0,sizeof(e->bk));
             memset(e->bend_ok,0,sizeof(e->bend_ok));
-            memset(e->volume,0,sizeof(e->volume));
-            memset(e->channel_gain,0,sizeof(e->channel_gain));
+            reset_channel_gains(e);
             for (unsigned i=0;i<MA5_WT_SLOTS;i++) e->voice[i].descriptor_ok=false;
             for (unsigned i=0;i<32;i++) e->fm[i].descriptor_ok=false;
         }

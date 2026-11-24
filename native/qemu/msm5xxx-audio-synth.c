@@ -846,7 +846,8 @@ msm5xxx_audio_synth_event(MSM5xxxAudioSynth *synth,
             memset(voice->timbre_envelope_state, 2,
                    voice->timbre_operator_count);
         }
-        voice->base_step = audio_note_step(event->note);
+        voice->base_step = event->direct_phase_step ? event->direct_phase_step :
+                           audio_note_step(event->note);
         voice->phase_step = audio_bent_step(voice->base_step,
                                             voice->pitch_bend);
         return true;
@@ -865,6 +866,7 @@ msm5xxx_audio_synth_event(MSM5xxxAudioSynth *synth,
             voice->pan = event->pan;
             voice->expression = event->expression;
             voice->pitch_bend = event->pitch_bend;
+            if (event->direct_phase_step) voice->base_step = event->direct_phase_step;
             voice->phase_step = audio_bent_step(voice->base_step,
                                                 voice->pitch_bend);
         }

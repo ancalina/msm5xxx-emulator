@@ -268,6 +268,9 @@ ma2_valid_adpcm_irq(uint8_t value)
 }
 
 static bool
+ma2_build_direct_voice(MSM5xxxMA2Audio *audio, unsigned channel);
+
+static bool
 ma2_write_page0(MSM5xxxMA2Audio *audio, uint8_t index, uint8_t value)
 {
     if (index <= MSM5XXX_MA2_ADPCM_WAVE_DATA) {
@@ -311,6 +314,25 @@ ma2_write_page0(MSM5xxxMA2Audio *audio, uint8_t index, uint8_t value)
         return false;
     default:
         audio->register_shadow[0][index] = value;
+        if (index >= 0xb0u && index < 0xd0u) {
+            unsigned channel = index & 15u;
+            uint8_t high = audio->register_shadow[0][0xc0u + channel];
+            audio->fm_channel[channel].direct_fnum =
+                audio->register_shadow[0][0xb0u + channel] |
+                ((uint16_t)(high & 3u) << 8);
+            audio->fm_channel[channel].direct_block = (high >> 2) & 7u;
+            if (index >= 0xc0u) {
+                bool on = !!(value & 0x20u);
+                if (on && !audio->fm_channel[channel].key_on) {
+                    (void)ma2_build_direct_voice(audio, channel);
+                }
+                audio->fm_channel[channel].key_on = on;
+            }
+        } else if (index >= 0xe0u && index < 0xf0u) {
+            audio->fm_channel[index & 15u].volume = (value & 31u) * 127u / 31u;
+        } else if (index >= 0xf0u) {
+            audio->fm_channel[index & 15u].pan = value > 127u ? 127u : value;
+        }
         return true;
     }
 }
@@ -401,6 +423,7 @@ ma2_write_page1(MSM5xxxMA2Audio *audio, uint8_t index, uint8_t value)
                  channel++) {
                 audio->fm_channel[channel].key_on = false;
             }
+            audio->fm_stop_pending = true;
         }
         if ((value & MSM5XXX_MA2_SEQUENCE_SOFT_RESET) != 0u) {
             /* A new sequence must not inherit END or a partially decoded event. */
@@ -497,6 +520,47 @@ ma2_empty_status(const MSM5xxxMA2Audio *audio)
 }
 
 static uint8_t
+ma2_fm_flags(const MSM5xxxMA2Audio *audio)
+{
+    uint8_t flags = 0;
+    unsigned threshold = (audio->fm_irq_ctrl & 7u) == 3u ? 48u : 0u;
+    for (unsigned i = 0; i < MSM5XXX_MA2_FM_FIFO_COUNT; i++) {
+        if (audio->fifo_count[i] <= threshold) flags |= 1u << i;
+    }
+    return flags;
+}
+
+uint8_t msm5xxx_ma2_wave_status(const MSM5xxxMA2Audio *audio)
+{
+    unsigned count = audio->fifo_count[MSM5XXX_MA2_FIFO_ADPCM_WAVE];
+    unsigned threshold = (audio->adpcm_irq_ctrl & 7u) == 4u ? 192u : 0u;
+    return (count == 0 ? 4u : 0u) |
+           (count == MSM5XXX_MA2_ADPCM_WAVE_CAPACITY ? 2u : 0u) |
+           (count <= threshold ? 1u : 0u);
+}
+
+uint8_t msm5xxx_ma2_status1(const MSM5xxxMA2Audio *audio)
+{
+    unsigned threshold = (audio->adpcm_irq_ctrl & 0x18u) == 0x10u ? 16u : 0u;
+    uint8_t value = ma2_fm_flags(audio);
+    if (audio->fifo_count[MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE] <= threshold) value |= 0x10u;
+    if (audio->gend_status & 0x10u) value |= 0x40u;
+    if (audio->gend_status & 0x0fu) value |= 0x20u;
+    return value;
+}
+
+bool msm5xxx_ma2_irq_pending(const MSM5xxxMA2Audio *audio)
+{
+    uint8_t status = msm5xxx_ma2_status1(audio);
+    return ((audio->control & MSM5XXX_MA2_FM_START) &&
+            (status & (audio->fm_irq_ctrl >> 4) & 0x0fu)) ||
+           ((audio->control & MSM5XXX_MA2_ADPCM_START) &&
+            (((audio->adpcm_irq_ctrl & 0x80u) && (status & 0x10u)) ||
+             ((audio->adpcm_irq_ctrl & 0x40u) && (msm5xxx_ma2_wave_status(audio) & 1u)) ||
+             ((audio->adpcm_irq_ctrl & 0x20u) && (audio->gend_status & 0x20u))));
+}
+
+static uint8_t
 ma2_read_page0(const MSM5xxxMA2Audio *audio, uint8_t index, bool *ok)
 {
     *ok = true;
@@ -507,6 +571,10 @@ ma2_read_page0(const MSM5xxxMA2Audio *audio, uint8_t index, bool *ok)
         return audio->adpcm_irq_ctrl;
     case MSM5XXX_MA2_STATUS2:
         return (uint8_t)(audio->gend_status & 0x30u);
+    case MSM5XXX_MA2_STATUS1:
+        return msm5xxx_ma2_status1(audio);
+    case MSM5XXX_MA2_WAVE_STATUS:
+        return msm5xxx_ma2_wave_status(audio);
     case MSM5XXX_MA2_FULL_STATUS:
         return ma2_full_status(audio);
     case MSM5XXX_MA2_EMPTY_STATUS:
@@ -519,8 +587,6 @@ ma2_read_page0(const MSM5xxxMA2Audio *audio, uint8_t index, bool *ok)
     case MSM5XXX_MA2_FM_DATA3:
     case MSM5XXX_MA2_ADPCM_SEQ_DATA:
     case MSM5XXX_MA2_ADPCM_WAVE_DATA:
-    case MSM5XXX_MA2_STATUS1:
-    case MSM5XXX_MA2_WAVE_STATUS:
         *ok = false;
         return 0u;
     default:
@@ -1148,6 +1214,40 @@ ma2_decode_voice(const uint8_t *source, size_t operators,
 }
 
 static bool
+ma2_build_direct_voice(MSM5xxxMA2Audio *audio, unsigned channel)
+{
+    MSM5xxxMA2FMChannel *ch = &audio->fm_channel[channel];
+    if (!ch->voice_slot_valid) return false;
+    unsigned slot = ch->voice_slot;
+    uint8_t source[25] = {0};
+    source[3] = audio->register_shadow[0][0xd0u + slot];
+    source[4] = audio->register_shadow[1][0xd0u + slot] & 3u;
+    unsigned operators = (source[3] & 7u) <= 1u ? 2u : 4u;
+    unsigned mapped = operators == 4u && slot >= 8u ? slot - 4u : slot;
+    if (operators == 4u && mapped >= 8u) return false;
+    for (unsigned op = 0; op < operators; op++) {
+        unsigned base = 0x10u + (operators == 2u ? 8u : 16u) * (mapped / 4u) +
+                        mapped % 4u + 4u * op;
+        for (unsigned plane = 0; plane < 5u; plane++) {
+            source[5u + op * 5u + plane] =
+                audio->register_shadow[0][base + 0x20u * plane];
+        }
+    }
+    MSM5xxxMA2FMVoice *voice = &audio->fm_voice[slot];
+    memset(voice, 0, sizeof(*voice));
+    voice->valid = true;
+    voice->info = source[3];
+    voice->basic_octave = source[4];
+    voice->operator_count = operators;
+    for (unsigned op = 0; op < operators; op++) {
+        memcpy(voice->operation[op].data, source + 5u + op * 5u, 5u);
+    }
+    ma2_decode_voice(source, operators, voice->decoded);
+    ch->active_voice_slot = slot;
+    return true;
+}
+
+static bool
 ma2_apply_fm_sysex(MSM5xxxMA2Audio *audio,
                    const MSM5xxxMA2CompactEvent *event)
 {
@@ -1157,6 +1257,40 @@ ma2_apply_fm_sysex(MSM5xxxMA2Audio *audio,
     size_t slot;
     size_t operation;
 
+    if (event->sysex_length == 19u && bytes[0] == 0x43u &&
+        bytes[1] == 0x02u && bytes[2] < 8u && bytes[18] == 0xf7u) {
+        uint8_t payload[19];
+        memcpy(payload, bytes, sizeof(payload));
+        unsigned release = ((payload[10] & 3u) << 2) | (payload[11] >> 6);
+        if (!(payload[10] & 8u) && release <= 5u) {
+            payload[10] = (uint8_t)((payload[10] & ~11u) | 10u);
+            payload[11] = (uint8_t)((payload[11] % 64u) + 64u);
+        }
+        memset(&voice, 0, sizeof(voice));
+        voice.valid = voice.legacy = true;
+        voice.bank = payload[3];
+        voice.program = payload[4];
+        voice.operator_count = 2u;
+        for (operation = 0; operation < 2; operation++) {
+            const uint8_t *p = payload + 6u + operation * 4u;
+            uint32_t word = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                            ((uint32_t)p[2] << 8) | p[3];
+            uint8_t *d = voice.decoded + 6u + operation * 18u;
+            d[0] = (word >> 29) & 7u;
+            d[1] = (word >> 28) & 1u;
+            d[2] = (word >> 27) & 1u;
+            d[3] = (word >> 26) & 1u;
+            d[4] = (word >> 22) & 15u;
+            d[5] = (word >> 18) & 15u;
+            d[6] = (word >> 14) & 15u;
+            d[7] = (word >> 10) & 15u;
+            d[8] = (word >> 4) & 63u;
+            d[15] = (word >> 3) & 1u;
+            d[17] = word & 7u;
+        }
+        audio->fm_voice[payload[2]] = voice;
+        return true;
+    }
     if (event->sysex_length == 6u && bytes[0] == 0x43u &&
         bytes[1] == 0x03u && bytes[2] == 0x91u && bytes[3] >= 0x18u &&
         bytes[3] <= 0x1fu && bytes[5] == 0xf7u) {
@@ -1640,6 +1774,49 @@ msm5xxx_ma2_adpcm_decode_byte(MSM5xxxMA2AdpcmDecoder *decoder,
     }
     samples[0] = ma2_adpcm_decode_nibble(decoder, value);
     samples[1] = ma2_adpcm_decode_nibble(decoder, value >> 4);
+    return true;
+}
+
+static uint64_t ma2_pcm_frame(uint64_t ns)
+{
+    return (ns / 1000000000u) * 44100u +
+           (ns % 1000000000u) * 44100u / 1000000000u;
+}
+
+void msm5xxx_ma2_pcm_start(MSM5xxxMA2PCM *pcm, uint64_t time_ns)
+{
+    memset(pcm, 0, sizeof(*pcm));
+    msm5xxx_ma2_adpcm_decoder_reset(&pcm->decoder);
+    pcm->frame = ma2_pcm_frame(time_ns);
+    pcm->phase = 44100u;
+    pcm->initialized = pcm->active = true;
+}
+
+bool msm5xxx_ma2_pcm_advance(MSM5xxxMA2PCM *pcm, MSM5xxxMA2Audio *audio,
+                             uint64_t time_ns, MSM5xxxMA2PCMEmit emit, void *opaque)
+{
+    uint64_t target = ma2_pcm_frame(time_ns);
+    if (!pcm || !audio || (pcm->initialized && target < pcm->frame)) return false;
+    if (!pcm->initialized) { pcm->frame = target; pcm->initialized = true; }
+    if (!pcm->active) { pcm->frame = target; return true; }
+    while (pcm->frame < target) {
+        if (pcm->active) {
+            if (pcm->phase >= 44100u) {
+                pcm->phase -= 44100u;
+                if (!pcm->pending) {
+                    uint8_t byte;
+                    if (msm5xxx_ma2_chip_fifo_pop(audio, MSM5XXX_MA2_FIFO_ADPCM_WAVE, &byte)) {
+                        msm5xxx_ma2_adpcm_decode_byte(&pcm->decoder, byte, pcm->samples);
+                        pcm->pending = 2;
+                    }
+                }
+                pcm->current = pcm->pending ? pcm->samples[2u - pcm->pending--] : 0;
+            }
+            if (emit) emit(opaque, pcm->frame, pcm->current);
+            pcm->phase += (audio->control & MSM5XXX_MA2_SAMPLE_RATE_8KHZ) ? 8000u : 4000u;
+        }
+        pcm->frame++;
+    }
     return true;
 }
 

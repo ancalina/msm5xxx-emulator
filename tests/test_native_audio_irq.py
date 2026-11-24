@@ -18,7 +18,10 @@ class NativeAudioIRQTests(unittest.TestCase):
             functions.append(source[start:source.index('\nstatic ', start + 1)])
         code = r'''
 #include <assert.h>
+#include <inttypes.h>
 #include "msm5xxx-ma2-audio.c"
+#define LOG_UNIMP 1
+#define qemu_log_mask(...) ((void)0)
 typedef uint64_t hwaddr;
 typedef struct { bool running; struct { bool can_do_io; } neg; } CPUState;
 typedef struct { uint32_t (*get_pc)(CPUState *); } CPUClass;
@@ -110,7 +113,14 @@ int main(void) {
     s.ma2_audio.control=0;
     msm5xxx_poc_ma2_irq_update(&s); assert(s.rex_irq_pending[1]==4);
     s.ma2_audio.control=1; s.ma2_audio.adpcm_irq_ctrl=1;
+    msm5xxx_poc_ma2_irq_update(&s); assert(s.rex_irq_pending[1]==6);
+    s.ma2_audio.control=MSM5XXX_MA2_ADPCM_START;
+    s.ma2_audio.adpcm_irq_ctrl=0x40;
+    s.ma2_audio.fifo_count[MSM5XXX_MA2_FIFO_ADPCM_WAVE]=0;
+    msm5xxx_poc_ma2_irq_update(&s); assert(s.rex_irq_pending[1]==6);
+    s.ma2_audio.fifo_count[MSM5XXX_MA2_FIFO_ADPCM_WAVE]=1;
     msm5xxx_poc_ma2_irq_update(&s); assert(s.rex_irq_pending[1]==4);
+    s.ma2_audio.fifo_count[MSM5XXX_MA2_FIFO_ADPCM_WAVE]=0;
     /* Exercise the actual owned-read branch, including pre-START occupancy.
      * These are current provisional semantics, not physical status evidence. */
     s.cpu=&test_cpu; s.audio_sites_enabled=true; s.audio_shared_lcd=true;
@@ -121,22 +131,22 @@ int main(void) {
     s.ma2_audio.fm_irq_ctrl=0x13;
     s.ma2_audio.fifo_count[0]=48;
     uint64_t value=0xdead;
-    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==15);
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==31);
     s.ma2_audio.control=MSM5XXX_MA2_FM_START;
     s.ma2_audio.fifo_count[0]=49;
-    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==14);
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==30);
     pc_valid=false; value=0xdead;
     assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
     pc_valid=true;
     memory[20]=0; value=0xdead;
-    assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==30);
     memory[20]=0x3001; s.audio_stream_rejected=true;
-    assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==30);
     s.audio_stream_rejected=false; s.audio_base=0x02880000;
     memory[20]=0; value=0xdead;
-    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==14);
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==30);
     s.ma2_audio.index=MSM5XXX_MA2_WAVE_STATUS; value=0xdead;
-    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0);
+    assert(msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==5);
     s.ma2_audio.index=MSM5XXX_MA2_STATUS1;
     s.audio_base=0; value=0xdead; test_pc=0x122;
     assert(!msm5xxx_poc_audio_read_owned(&s,2,1,&value) && value==0xdead);

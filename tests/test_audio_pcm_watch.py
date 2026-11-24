@@ -316,6 +316,7 @@ typedef struct {
     bool dmd5100_enabled;
     uint16_t *dmd5100_even, *dmd5100_odd;
     MSM5xxxMA2Audio ma2_audio;
+    MSM5xxxMA2PCM ma2_pcm;
     void *ma3_audio_timer;
     uint32_t ma3_bus_log_count;
     bool audio_ma3;

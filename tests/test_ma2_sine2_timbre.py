@@ -11,7 +11,7 @@ class Sine2TimbreTests(unittest.TestCase):
     def test_descriptor_fallback_and_feedback_lifetime(self):
         source = (CORE / 'msm5xxx-poc.c').read_text()
         start = source.index('static bool msm5xxx_poc_ma2_timbre(')
-        adapter = source[start:source.index('\nstatic bool ', start + 1)]
+        adapter = source[start:source.index('\nstatic void ', start + 1)]
         code = r'''
 #include <assert.h>
 #include <limits.h>
@@ -46,12 +46,29 @@ static MSM5xxxAudioEvent candidate(void) {
     for (unsigned i=0; i<sizeof(descriptor); i++) {
         MSM5xxxAudioEvent rejected = {0};
         voice->decoded[i] ^= 1;
-        assert(!msm5xxx_poc_ma2_timbre(&s, &channel, &rejected));
-        assert(!rejected.timbre_valid);
+        assert(msm5xxx_poc_ma2_timbre(&s, &channel, &rejected));
+        assert(rejected.timbre_valid);
+        MSM5xxxAudioSynth check;
+        msm5xxx_audio_synth_init(&check);
+        rejected.kind = MSM5XXX_AUDIO_EVENT_NOTE_ON;
+        rejected.voice_id = 1; rejected.note = 60;
+        rejected.velocity = rejected.volume = rejected.expression = 127;
+        rejected.pan = rejected.pitch_bend = 64;
+        assert(msm5xxx_audio_synth_event(&check, 0, &rejected));
         voice->decoded[i] ^= 1;
     }
     voice->operator_count = 4;
     assert(!msm5xxx_poc_ma2_timbre(&s, &channel, &event));
+    voice->decoded[5] = 2;
+    MSM5xxxAudioEvent four = {0};
+    assert(msm5xxx_poc_ma2_timbre(&s, &channel, &four));
+    MSM5xxxAudioSynth four_synth;
+    msm5xxx_audio_synth_init(&four_synth);
+    four.kind = MSM5XXX_AUDIO_EVENT_NOTE_ON; four.voice_id = 1; four.note = 60;
+    four.velocity = four.volume = four.expression = 127;
+    four.pan = four.pitch_bend = 64;
+    assert(msm5xxx_audio_synth_event(&four_synth, 0, &four));
+    voice->decoded[5] = 0;
     voice->operator_count = 2; voice->valid = false;
     assert(!msm5xxx_poc_ma2_timbre(&s, &channel, &event));
     voice->valid = true; channel.key_on = false;
@@ -135,7 +152,9 @@ int main(void) {
     assert(memcmp(&whole.voice[0], &skipped.voice[0], sizeof(before)) == 0);
 
     event.kind = MSM5XXX_AUDIO_EVENT_NOTE_ON;
+    event.direct_phase_step = 1234567;
     assert(msm5xxx_audio_synth_event(&whole, 2010000000, &event));
+    assert(whole.voice[0].base_step == 1234567);
     assert(whole.voice[0].timbre_feedback_history[0] == 0 &&
            whole.voice[0].timbre_feedback_history[1] == 0);
     /* Widen signed history arithmetic before multiplying phase units. */

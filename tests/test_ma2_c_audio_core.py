@@ -23,7 +23,6 @@ class TestMA2CAudioCore(unittest.TestCase):
         self.assertIn("msm5xxx_poc_audio_site_owned(s, false", read)
         self.assertIn("MSM5XXX_MA2_ADPCM_WAVE_DATA", read)
         self.assertIn("MSM5XXX_MA2_STATUS1", read)
-        self.assertIn("MSM5XXX_MA2_WAVE_STATUS", read)
         self.assertIn("msm5xxx_ma2_data_read", read)
         write_start = source.index("static bool msm5xxx_poc_audio_write_owned")
         write_end = source.index("\nstatic ", write_start + 1)
@@ -149,7 +148,7 @@ class TestMA2CAudioCore(unittest.TestCase):
         self.assertIn("if (s->audio_pcm_failed)", tick)
         self.assertIn("!stream_rejected", source)
         self.assertIn("msm5xxx_poc_audio_pcm_flush(s)", tick)
-        self.assertLess(tick.index("msm5xxx_audio_synth_advance"),
+        self.assertLess(tick.index("msm5xxx_poc_ma2_pcm_advance"),
                         tick.index("msm5xxx_poc_audio_pcm_flush(s)"))
         self.assertIn("s->audio_pcm_failed = true;", tick)
         self.assertNotIn("static void msm5xxx_poc_audio_pcm_tick", source)
@@ -548,10 +547,8 @@ int main(void) {
                         &audio, MSM5XXX_MA2_FIFO_FM0, &value));
                 }
                 assert(msm5xxx_ma2_index_write(&audio, MSM5XXX_MA2_STATUS1));
-                assert(!msm5xxx_ma2_data_read(&audio, &value));
-                assert(msm5xxx_ma2_reject_reason(&audio) ==
-                       MSM5XXX_MA2_REJECT_UNSUPPORTED_READ);
-                msm5xxx_ma2_clear_rejection(&audio);
+                assert(msm5xxx_ma2_data_read(&audio, &value));
+                assert(value == msm5xxx_ma2_status1(&audio));
                 assert(msm5xxx_ma2_index_write(&audio,
                                                MSM5XXX_MA2_PAGE_SELECT));
                 assert(msm5xxx_ma2_data_write(&audio, MSM5XXX_MA2_PAGE_REG1));
@@ -631,10 +628,8 @@ int main(void) {
                         &audio, MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE, &value));
                 }
                 assert(msm5xxx_ma2_index_write(&audio, MSM5XXX_MA2_STATUS1));
-                assert(!msm5xxx_ma2_data_read(&audio, &value));
-                assert(msm5xxx_ma2_reject_reason(&audio) ==
-                       MSM5XXX_MA2_REJECT_UNSUPPORTED_READ);
-                msm5xxx_ma2_clear_rejection(&audio);
+                assert(msm5xxx_ma2_data_read(&audio, &value));
+                assert(value == msm5xxx_ma2_status1(&audio));
                 for (i = 0u; i < MSM5XXX_MA2_ADPCM_SEQUENCE_CAPACITY / 2u;
                      ++i) {
                     assert(msm5xxx_ma2_chip_fifo_pop(
@@ -667,10 +662,8 @@ int main(void) {
                        MSM5XXX_MA2_ADPCM_WAVE_CAPACITY / 2u);
                 assert(msm5xxx_ma2_index_write(&audio,
                                                MSM5XXX_MA2_WAVE_STATUS));
-                assert(!msm5xxx_ma2_data_read(&audio, &value));
-                assert(msm5xxx_ma2_reject_reason(&audio) ==
-                       MSM5XXX_MA2_REJECT_UNSUPPORTED_READ);
-                msm5xxx_ma2_clear_rejection(&audio);
+                assert(msm5xxx_ma2_data_read(&audio, &value));
+                assert(value == msm5xxx_ma2_wave_status(&audio));
                 for (i = 0u; i < MSM5XXX_MA2_ADPCM_WAVE_CAPACITY / 2u;
                      ++i) {
                     assert(msm5xxx_ma2_chip_fifo_pop(

@@ -877,6 +877,7 @@ struct MSM5xxxPOCMachineState {
     bool ma5_pcm_initialized;
     uint64_t ma5_pcm_timeline_gaps;
     uint64_t ma5_fm_admitted_logged, ma5_fm_skipped_logged;
+    uint64_t ma5_wt_admitted_logged, ma5_wt_skipped_logged, ma5_invalid_logged;
     uint64_t ma5_fm_wave_uploads_logged, ma5_fm_wave_rejects_logged;
     int16_t ma5_pcm_storage[MSM5XXX_AUDIO_MAX_FRAMES][2];
     MSM5xxxMA5PCMOutput ma5_pcm_output;
@@ -949,6 +950,8 @@ struct MSM5xxxPOCMachineState {
     bool audio_output_started;
     MSM5xxxAudioSynth audio_synth;
     MSM5xxxMA2Audio ma2_audio;
+    MSM5xxxMA2PCM ma2_pcm;
+    uint64_t ma2_mix_origin;
     MSM5xxxMA3Audio ma3_audio;
     MSM5xxxMA3Renderer ma3_renderer;
     MSM5xxxMA3StreamEngine ma3_stream;
@@ -3995,8 +3998,7 @@ static bool msm5xxx_poc_ma2_irq_gate(MSM5xxxPOCMachineState *s)
         s->rex_irq_c80 || s->rex_irq_read_consume ||
         s->rex_irq_bank_count != 2 || s->rex_irq_status_address != 0x03000620 ||
         s->rex_irq_enable_address != 0x03000628 || s->audio_stream_rejected ||
-        s->ma2_audio.adpcm_irq_ctrl || s->ma2_audio.soft_reset_mask ||
-        (s->ma2_audio.control & (MSM5XXX_MA2_ADPCM_START | MSM5XXX_MA2_DIRECT_START)) ||
+        s->ma2_audio.soft_reset_mask ||
         msm5xxx_ma2_rejected(&s->ma2_audio)) {
         return false;
     }
@@ -4063,8 +4065,15 @@ static void msm5xxx_poc_ma2_irq_update(MSM5xxxPOCMachineState *s)
     mask = s->audio_irq_route[3];
     qemu_mutex_lock(&s->audio_core_lock);
     level = msm5xxx_poc_ma2_irq_gate(s) &&
-            (s->ma2_audio.control & MSM5XXX_MA2_FM_START) &&
-            (msm5xxx_poc_ma2_fifo_flags(s) & (s->ma2_audio.fm_irq_ctrl >> 4));
+            (((s->ma2_audio.control & MSM5XXX_MA2_FM_START) &&
+              (msm5xxx_poc_ma2_fifo_flags(s) & (s->ma2_audio.fm_irq_ctrl >> 4))) ||
+             ((s->ma2_audio.control & MSM5XXX_MA2_ADPCM_START) &&
+              (((s->ma2_audio.adpcm_irq_ctrl & 0x80u) &&
+                (msm5xxx_ma2_status1(&s->ma2_audio) & 0x10u)) ||
+               ((s->ma2_audio.adpcm_irq_ctrl & 0x40u) &&
+                (msm5xxx_ma2_wave_status(&s->ma2_audio) & 1u)) ||
+               ((s->ma2_audio.adpcm_irq_ctrl & 0x20u) &&
+                (s->ma2_audio.gend_status & 0x20u)))));
     qemu_mutex_unlock(&s->audio_core_lock);
     if (level) {
         s->rex_irq_pending[1] |= mask;
@@ -6062,6 +6071,7 @@ static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
     static const uint8_t level[] = {24u, 0u, 36u, 5u};
     const MSM5xxxMA2FMVoice *voice;
     size_t index;
+    bool generic = false;
 
     if (!channel->key_on ||
         channel->active_voice_slot >= MSM5XXX_MA2_FM_VOICE_COUNT) {
@@ -6071,7 +6081,21 @@ static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
     if (!voice->valid) {
         return false;
     }
-    if (voice->operator_count == 4u &&
+    if (voice->legacy && voice->operator_count == 2u) {
+        generic = true;
+        event->timbre_algorithm = 0u;
+        event->timbre_operator_count = 2u;
+        event->timbre_operator_feedback_valid = true;
+        event->timbre_decay_threshold_valid = voice->operator_count == 2u;
+        for (index = 0u; index < 2u; index++) {
+            const uint8_t *d = voice->decoded + 6u + 18u * index;
+            /* shortcut: zero multiplier uses unity; upgrade when half-rate phase is supported. */
+            event->timbre_multiplier[index] = d[0] ? d[0] : 1u;
+            event->timbre_level[index] = d[8];
+            event->timbre_waveform[index] = d[15];
+            event->timbre_operator_feedback[index] = index ? 0u : d[17];
+        }
+    } else if (voice->operator_count == 4u &&
         memcmp(voice->decoded, descriptor, sizeof(descriptor)) == 0) {
         event->timbre_algorithm = 5u;
         event->timbre_operator_count = 4u;
@@ -6090,14 +6114,38 @@ static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
             event->timbre_multiplier[index] = 1u;
             event->timbre_level[index] = voice->decoded[14u + index * 18u];
         }
+    } else if ((voice->operator_count == 2u && voice->decoded[5] < 2u) ||
+               (voice->operator_count == 4u && voice->decoded[5] >= 2u &&
+                voice->decoded[5] < 8u)) {
+        generic = true;
+        event->timbre_algorithm = voice->decoded[5];
+        event->timbre_operator_count = voice->operator_count;
+        event->timbre_operator_feedback_valid = true;
+        event->timbre_decay_threshold_valid = voice->operator_count == 2u;
+        for (index = 0; index < voice->operator_count; index++) {
+            const uint8_t *d = voice->decoded + 6u + 18u * index;
+            /* shortcut: zero multiplier uses unity; upgrade when half-rate phase is supported. */
+            event->timbre_multiplier[index] = d[14] ? d[14] : 1u;
+            event->timbre_level[index] = d[8];
+            event->timbre_waveform[index] = d[15];
+            event->timbre_operator_feedback[index] =
+                (index == 0u || (index == 2u && event->timbre_algorithm == 5u)) ?
+                d[17] : 0u;
+        }
     } else {
         return false;
     }
 
-    /* ponytail: bounded descriptor classes; unmatched voices keep triangle. */
+    /* shortcut: general envelopes are approximate; upgrade with calibrated vectors. */
     event->timbre_valid = true;
     for (index = 0u; index < event->timbre_operator_count; index++) {
         event->timbre_attack_step[index] = UINT32_C(0x0094f20a);
+        if (generic) {
+            unsigned rate = voice->decoded[12u + index * 18u];
+            /* shortcut: nominal envelope rates; upgrade with calibrated clock vectors. */
+            event->timbre_attack_step[index] = rate ? (uint32_t)(
+                ldexp(2147483648.0 / (4.0 * MSM5XXX_AUDIO_SAMPLE_RATE), rate - 1u)) : 0u;
+        }
         event->timbre_decay_factor[index] = UINT32_C(0x40000000);
         event->timbre_sustain_factor[index] = UINT32_C(0x40000000);
         event->timbre_release_factor[index] = UINT32_C(0x3eb1aa70);
@@ -6125,6 +6173,40 @@ static bool msm5xxx_poc_ma2_timbre(const MSM5xxxPOCMachineState *s,
     return true;
 }
 
+static void msm5xxx_poc_ma2_pcm_mix(void *opaque, uint64_t frame, int16_t sample)
+{
+    MSM5xxxPOCMachineState *s = opaque;
+    MSM5xxxAudioSynth *synth = &s->audio_synth;
+    if (frame < s->ma2_mix_origin) return;
+    frame -= s->ma2_mix_origin;
+    if (frame < synth->ring_start_frame ||
+        frame - synth->ring_start_frame >= synth->ring_count) return;
+    size_t pos = (synth->ring_read + frame - synth->ring_start_frame) %
+                 MSM5XXX_AUDIO_MAX_FRAMES;
+    /* shortcut: linear volume curve; upgrade with calibrated gain measurements. */
+    int32_t scaled = (int32_t)sample * (int)(s->ma2_audio.register_shadow[1][0x20] & 31u) *
+                     (int)(s->ma2_audio.register_shadow[1][0x21] & 31u) / (31 * 31 * 2);
+    for (unsigned ch = 0; ch < 2; ch++) {
+        int32_t value = synth->ring[pos][ch] + scaled;
+        synth->ring[pos][ch] = MAX(INT16_MIN, MIN(INT16_MAX, value));
+    }
+}
+
+static bool msm5xxx_poc_ma2_pcm_advance(MSM5xxxPOCMachineState *s, uint64_t now)
+{
+    MSM5xxxAudioSynth *synth = &s->audio_synth;
+    if (s->audio_pcm_enabled) {
+        synth->external_active = s->ma2_pcm.active;
+        if (!msm5xxx_audio_synth_advance(synth, now)) return false;
+        uint64_t absolute = (uint64_t)(((__uint128_t)now * MSM5XXX_AUDIO_SAMPLE_RATE) /
+                                      UINT64_C(1000000000));
+        s->ma2_mix_origin = absolute >= synth->generated_frame ?
+                            absolute - synth->generated_frame : 0;
+    }
+    return msm5xxx_ma2_pcm_advance(&s->ma2_pcm, &s->ma2_audio, now,
+        s->audio_pcm_enabled ? msm5xxx_poc_ma2_pcm_mix : NULL, s);
+}
+
 static bool msm5xxx_poc_ma2_synth_output(MSM5xxxPOCMachineState *s,
                                          const MSM5xxxMA2Output *output)
 {
@@ -6133,8 +6215,21 @@ static bool msm5xxx_poc_ma2_synth_output(MSM5xxxPOCMachineState *s,
     uint64_t timestamp_ns = output->timestamp_ns;
     bool accepted;
 
-    if (output->stream >= MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE ||
-        output->channel >= MSM5XXX_MA2_FM_CHANNEL_COUNT) {
+    if (s->audio_pcm_enabled) {
+        timestamp_ns = msm5xxx_audio_synth_clamp_event_timestamp(
+            &s->audio_synth, timestamp_ns);
+    }
+    if (!msm5xxx_poc_ma2_pcm_advance(s, timestamp_ns)) return false;
+    if (output->stream == MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE) {
+        if (output->kind == MSM5XXX_MA2_OUTPUT_EVENT &&
+            output->event.kind == MSM5XXX_MA2_COMPACT_WAVE) {
+            msm5xxx_ma2_pcm_start(&s->ma2_pcm, timestamp_ns);
+        } else if (output->kind == MSM5XXX_MA2_OUTPUT_GATE_OFF) {
+            s->ma2_pcm.active = false;
+        }
+        return true;
+    }
+    if (!s->audio_pcm_enabled || output->channel >= MSM5XXX_MA2_FM_CHANNEL_COUNT) {
         return true;
     }
     channel = &s->ma2_audio.fm_channel[output->channel];
@@ -6192,6 +6287,34 @@ static bool msm5xxx_poc_ma2_synth_stop(MSM5xxxPOCMachineState *s)
     }
     qemu_mutex_unlock(&s->audio_synth_lock);
     return true;
+}
+
+static bool msm5xxx_poc_ma2_direct_update(MSM5xxxPOCMachineState *s,
+                                           uint8_t index, bool prior_key)
+{
+    unsigned number = index & 15u;
+    const MSM5xxxMA2FMChannel *ch = &s->ma2_audio.fm_channel[number];
+    MSM5xxxAudioEvent event = {
+        .voice_id = MSM5XXX_MA2_FM_GATE_COUNT + 1u + number,
+        .channel = number, .note = 0, .velocity = 127,
+        .volume = ch->volume, .pan = ch->pan,
+        .expression = ch->expression, .pitch_bend = ch->pitch_bend,
+    };
+    /* shortcut: fixed nominal clock; upgrade when CLKI adjustment is modeled. */
+    uint64_t phase = (uint64_t)ch->direct_fnum << ch->direct_block;
+    phase = phase * UINT64_C(196608000) / MSM5XXX_AUDIO_SAMPLE_RATE;
+    event.direct_phase_step = MIN(phase, UINT32_MAX);
+    if (!event.direct_phase_step) event.direct_phase_step = 1u;
+    if (index >= 0xe0u) event.direct_phase_step = 0u;
+    if (index >= 0xc0u && index < 0xd0u && prior_key != ch->key_on) {
+        event.kind = ch->key_on ? MSM5XXX_AUDIO_EVENT_NOTE_ON : MSM5XXX_AUDIO_EVENT_NOTE_OFF;
+        if (ch->key_on) (void)msm5xxx_poc_ma2_timbre(s, ch, &event);
+    } else {
+        event.kind = MSM5XXX_AUDIO_EVENT_CONTROL;
+    }
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    now = msm5xxx_audio_synth_clamp_event_timestamp(&s->audio_synth, now);
+    return msm5xxx_audio_synth_event(&s->audio_synth, now, &event);
 }
 
 static void msm5xxx_poc_ma2_pending_clear(MSM5xxxPOCMachineState *s)
@@ -6331,10 +6454,10 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
             break;
         }
         if (output.kind != MSM5XXX_MA2_OUTPUT_NONE) {
-            if (s->audio_pcm_enabled) {
-                qemu_mutex_lock(&s->audio_synth_lock);
+            {
+                if (s->audio_pcm_enabled) qemu_mutex_lock(&s->audio_synth_lock);
                 if (!msm5xxx_poc_ma2_synth_output(s, &output)) {
-                    qemu_mutex_unlock(&s->audio_synth_lock);
+                    if (s->audio_pcm_enabled) qemu_mutex_unlock(&s->audio_synth_lock);
                     s->ma2_audio_timer_rejected = true;
                     s->audio_stream_reject_code =
                         MSM5XXX_POC_AUDIO_REJECT_SYNTH_EVENT;
@@ -6346,7 +6469,7 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
                     msm5xxx_poc_ma2_irq_update(s);
                     return;
                 }
-                qemu_mutex_unlock(&s->audio_synth_lock);
+                if (s->audio_pcm_enabled) qemu_mutex_unlock(&s->audio_synth_lock);
             }
         } else if (!msm5xxx_poc_ma2_pending_refill(s)) {
             break;
@@ -6355,7 +6478,7 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
 
     if (s->audio_pcm_enabled) {
         qemu_mutex_lock(&s->audio_synth_lock);
-        if (!msm5xxx_audio_synth_advance(&s->audio_synth, now)) {
+        if (!msm5xxx_poc_ma2_pcm_advance(s, now)) {
             qemu_mutex_unlock(&s->audio_synth_lock);
             s->ma2_audio_timer_rejected = true;
             s->audio_stream_reject_code = MSM5XXX_POC_AUDIO_REJECT_SYNTH_CLOCK;
@@ -6367,7 +6490,8 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
             return;
         }
         if (!s->audio_output_started &&
-            s->audio_synth.ring_count >= MSM5XXX_AUDIO_TARGET_FRAMES) {
+            (s->audio_synth.ring_count >= MSM5XXX_AUDIO_TARGET_FRAMES ||
+             (!s->ma2_pcm.active && s->audio_synth.ring_count >= MSM5XXX_AUDIO_CHUNK_FRAMES))) {
             if (s->audio_stream_chardev) {
                 s->audio_output_started = true;
             } else if (s->audio_voice) {
@@ -6380,6 +6504,10 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
             msm5xxx_poc_audio_pcm_flush(s) < 0) {
             s->audio_pcm_failed = true;
         }
+    }
+    if (!s->audio_pcm_enabled &&
+        !msm5xxx_poc_ma2_pcm_advance(s, now)) {
+        s->ma2_audio_timer_rejected = true;
     }
 
     if (msm5xxx_ma2_scheduler_next_deadline(&s->ma2_audio, &deadline)) {
@@ -6405,6 +6533,9 @@ static void msm5xxx_poc_ma2_audio_tick(void *opaque)
             deadline = MIN(deadline, now + 10000000u);
         }
         qemu_mutex_unlock(&s->audio_synth_lock);
+    }
+    if (s->ma2_pcm.active && now <= UINT64_MAX - 10000000u) {
+        deadline = MIN(deadline, now + 10000000u);
     }
     qemu_mutex_unlock(&s->audio_core_lock);
     msm5xxx_poc_ma2_irq_update(s);
@@ -6505,6 +6636,19 @@ static void msm5xxx_poc_ma5_commit_consume(void *opaque,
         if (status.timeline_gaps > s->ma5_pcm_timeline_gaps) {
             s->ma5_pcm_timeline_gaps = status.timeline_gaps;
             s->ma5_pcm_resync_pending = true;
+        }
+        if (qemu_loglevel_mask(LOG_GUEST_ERROR) &&
+            (status.admitted != s->ma5_wt_admitted_logged ||
+             status.skipped != s->ma5_wt_skipped_logged ||
+             status.invalid != s->ma5_invalid_logged)) {
+            s->ma5_wt_admitted_logged = status.admitted;
+            s->ma5_wt_skipped_logged = status.skipped;
+            s->ma5_invalid_logged = status.invalid;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "MA5 WT admitted=%" PRIu64 " skipped=%" PRIu64
+                          " rom=%" PRIu64 " invalid=%" PRIu64 "\n",
+                          status.admitted, status.skipped, status.wt_skip_rom,
+                          status.invalid);
         }
         if (qemu_loglevel_mask(LOG_GUEST_ERROR) &&
             (status.fm_admitted != s->ma5_fm_admitted_logged ||
@@ -6903,7 +7047,7 @@ static MemTxResult msm5xxx_poc_audio_opaque_read(
         return ok ? MEMTX_OK : MEMTX_ERROR;
     }
     if (s->ma5_byte_ns) {
-        uint8_t result;
+        uint8_t result = 0;
         uint64_t reads_before = s->ma5_device.reads;
         uint64_t sram_before = s->ma5_device.backing.sram_writes;
         uint64_t control_before = s->ma5_device.backing.control_writes;
@@ -6915,6 +7059,10 @@ static MemTxResult msm5xxx_poc_audio_opaque_read(
         msm5xxx_poc_ma5_audio_kick(s);
         msm5xxx_poc_ma5_irq_update(s);
         ok &= s->ma5_device.reject == MSM5XXX_MA5_REJECT_NONE;
+        qemu_log_mask(LOG_UNIMP, "audio-bus MA5 read time=%" PRIu64
+                      " port=%" PRIx64 " value=%02x ok=%u\n",
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), (uint64_t)offset,
+                      result, ok);
         if (!ok) {
             if (!s->audio_readback_rejection_reported) {
                 warn_report("experimental MA5 rejected read: reason=%u pc=%x "
@@ -7027,6 +7175,10 @@ static MemTxResult msm5xxx_poc_audio_opaque_write(
         bool ok = msm5xxx_ma5_device_write(
             &s->ma5_device, offset == 0, value,
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+        qemu_log_mask(LOG_UNIMP, "audio-bus MA5 write time=%" PRIu64
+                      " port=%" PRIx64 " value=%02x ok=%u\n",
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), (uint64_t)offset,
+                      (unsigned)value & 0xffu, ok);
 
         msm5xxx_poc_ma5_audio_kick(s);
         msm5xxx_poc_ma5_irq_update(s);
@@ -7273,8 +7425,50 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
                 s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG1 &&
                 s->ma2_audio.index == MSM5XXX_MA2_FIFO_CONTROL &&
                 (value & MSM5XXX_MA2_FM_FIFO_CLEAR);
+            bool direct_register = selected_page == MSM5XXX_MA2_PAGE_REG0 &&
+                                   selected_index >= 0xb0u &&
+                                   (selected_index < 0xd0u || selected_index >= 0xe0u);
+            bool prior_key = direct_register &&
+                             s->ma2_audio.fm_channel[selected_index & 15u].key_on;
+
+            if (s->ma2_pcm.active) {
+                uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+                if (s->audio_pcm_enabled) qemu_mutex_lock(&s->audio_synth_lock);
+                accepted = msm5xxx_poc_ma2_pcm_advance(s, now);
+                if (s->audio_pcm_enabled) qemu_mutex_unlock(&s->audio_synth_lock);
+                if (!accepted) {
+                    qemu_mutex_unlock(&s->audio_core_lock);
+                    return false;
+                }
+            }
 
             accepted = msm5xxx_ma2_data_write(&s->ma2_audio, value);
+            if (accepted && direct_register && s->audio_pcm_enabled) {
+                qemu_mutex_lock(&s->audio_synth_lock);
+                accepted = msm5xxx_poc_ma2_direct_update(s, selected_index, prior_key);
+                qemu_mutex_unlock(&s->audio_synth_lock);
+            }
+            if (accepted && selected_page == MSM5XXX_MA2_PAGE_REG1 &&
+                selected_index == MSM5XXX_MA2_CONTROL &&
+                ((selected_control ^ value) & MSM5XXX_MA2_DIRECT_START)) {
+                if (value & MSM5XXX_MA2_DIRECT_START) {
+                    msm5xxx_ma2_pcm_start(&s->ma2_pcm,
+                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+                } else {
+                    s->ma2_pcm.active = false;
+                }
+            }
+            if (accepted && selected_page == MSM5XXX_MA2_PAGE_REG1 &&
+                selected_index == MSM5XXX_MA2_CONTROL &&
+                (selected_control & MSM5XXX_MA2_ADPCM_START) &&
+                !(value & (MSM5XXX_MA2_ADPCM_START | MSM5XXX_MA2_DIRECT_START))) {
+                s->ma2_pcm.active = false;
+            }
+            if (accepted && selected_page == MSM5XXX_MA2_PAGE_REG1 &&
+                selected_index == MSM5XXX_MA2_FIFO_CONTROL &&
+                (value & MSM5XXX_MA2_ADPCM_SOFT_RESET)) {
+                s->ma2_pcm.active = false;
+            }
             if (accepted && msm5xxx_ma2_take_fm_stop(&s->ma2_audio) &&
                 s->audio_pcm_enabled &&
                 !msm5xxx_poc_ma2_synth_stop(s)) {
@@ -7305,6 +7499,10 @@ static bool msm5xxx_poc_audio_write_owned(MSM5xxxPOCMachineState *s,
             MSM5XXX_POC_AUDIO_STATUS_REJECTED;
     }
     qemu_mutex_unlock(&s->audio_core_lock);
+    qemu_log_mask(LOG_UNIMP, "audio-bus MA2 write time=%" PRIu64
+                  " port=%" PRIx64 " value=%02x ok=%u\n",
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), (uint64_t)offset,
+                  (unsigned)value & 0xffu, accepted);
     if (accepted) {
         msm5xxx_poc_ma2_audio_kick(s);
         msm5xxx_poc_ma2_irq_update(s);
@@ -7363,32 +7561,19 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
         return false;
     }
     qemu_mutex_lock(&s->audio_core_lock);
-    if (s->audio_base == 0x02880000 &&
-        s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
+    if (s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
         s->ma2_audio.index == MSM5XXX_MA2_STATUS1) {
-        *value = msm5xxx_poc_ma2_fifo_flags(s);
-        qemu_mutex_unlock(&s->audio_core_lock);
-        return true;
-    }
-    if (s->audio_base == 0x02880000 &&
-        s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
-        s->ma2_audio.index == MSM5XXX_MA2_WAVE_STATUS &&
-        !s->ma2_audio.adpcm_irq_ctrl &&
-        !(s->ma2_audio.control & MSM5XXX_MA2_ADPCM_START)) {
-        *value = 0;
-        qemu_mutex_unlock(&s->audio_core_lock);
-        return true;
-    }
-    if (s->audio_irq_configured && s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
-        s->ma2_audio.index == MSM5XXX_MA2_STATUS1 && msm5xxx_poc_ma2_irq_gate(s)) {
-        *value = msm5xxx_poc_ma2_fifo_flags(s);
+        *value = (msm5xxx_ma2_status1(&s->ma2_audio) & 0xf0u) |
+                 msm5xxx_poc_ma2_fifo_flags(s);
+        qemu_log_mask(LOG_UNIMP, "audio-bus MA2 read time=%" PRIu64
+                      " port=%" PRIx64 " value=%02x ok=1\n",
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), (uint64_t)offset,
+                      (unsigned)*value);
         qemu_mutex_unlock(&s->audio_core_lock);
         return true;
     }
     if (s->ma2_audio.page == MSM5XXX_MA2_PAGE_REG0 &&
-        (s->ma2_audio.index <= MSM5XXX_MA2_ADPCM_WAVE_DATA ||
-         s->ma2_audio.index == MSM5XXX_MA2_STATUS1 ||
-         s->ma2_audio.index == MSM5XXX_MA2_WAVE_STATUS)) {
+        s->ma2_audio.index <= MSM5XXX_MA2_ADPCM_WAVE_DATA) {
         qemu_mutex_unlock(&s->audio_core_lock);
         return false;
     }
@@ -7408,6 +7593,9 @@ static bool msm5xxx_poc_audio_read_owned(MSM5xxxPOCMachineState *s,
         return false;
     }
     *value = data;
+    qemu_log_mask(LOG_UNIMP, "audio-bus MA2 read time=%" PRIu64
+                  " port=%" PRIx64 " value=%02x ok=1\n",
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), (uint64_t)offset, data);
     qemu_mutex_unlock(&s->audio_core_lock);
     return true;
 }
@@ -13056,6 +13244,7 @@ static void msm5xxx_poc_audio_reset(void *opaque)
     if (core_locked) {
         msm5xxx_poc_ma2_pending_clear(s);
         msm5xxx_ma2_reset(&s->ma2_audio);
+        memset(&s->ma2_pcm, 0, sizeof(s->ma2_pcm));
     } else {
         msm5xxx_poc_ma2_pending_clear(s);
     }
@@ -19866,19 +20055,17 @@ static void msm5xxx_poc_init(MachineState *machine)
                     } else {
                         const char *path = getenv("MSM5XXX_MA5_ROM");
                         if (path && *path) {
-                            gchar *contents = NULL;
-                            gsize length = 0;
-                            GError *error = NULL;
-                            if (!g_file_get_contents(path, &contents, &length, &error) ||
-                                !ma5_wt_engine_set_rom(s->ma5_wt_engine,
-                                    (const uint8_t *)contents, length)) {
-                                error_report("MA5 ROM load failed: %s", error ?
-                                             error->message : "expected 16384 bytes");
-                                g_clear_error(&error);
-                                g_free(contents);
+                            uint8_t contents[0x4000];
+                            FILE *file = fopen(path, "rb");
+                            bool ok = file &&
+                                fread(contents, 1, sizeof(contents), file) == sizeof(contents) &&
+                                fgetc(file) == EOF && !ferror(file);
+                            if (file && fclose(file)) ok = false;
+                            if (!ok || !ma5_wt_engine_set_rom(s->ma5_wt_engine,
+                                                               contents, sizeof(contents))) {
+                                error_report("MA5 ROM load failed: expected 16384 readable bytes");
                                 exit(1);
                             }
-                            g_free(contents);
                         }
                     }
                 }

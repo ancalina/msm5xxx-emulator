@@ -135,6 +135,7 @@ typedef struct MSM5xxxMA2FMOperator {
 
 typedef struct MSM5xxxMA2FMVoice {
     bool valid;
+    bool legacy;
     uint8_t bank;
     uint8_t program;
     uint8_t info;
@@ -183,6 +184,8 @@ typedef struct MSM5xxxMA2FMChannel {
     uint8_t note_octave;
     uint8_t note_id;
     uint8_t note;
+    uint16_t direct_fnum;
+    uint8_t direct_block;
     bool voice_slot_valid;
     bool key_on;
 } MSM5xxxMA2FMChannel;
@@ -197,6 +200,18 @@ typedef struct MSM5xxxMA2AdpcmDecoder {
     int32_t accumulator;
     uint32_t step;
 } MSM5xxxMA2AdpcmDecoder;
+
+typedef struct MSM5xxxMA2PCM {
+    MSM5xxxMA2AdpcmDecoder decoder;
+    uint64_t frame;
+    uint32_t phase;
+    int16_t samples[2], current;
+    uint8_t pending;
+    bool active;
+    bool initialized;
+} MSM5xxxMA2PCM;
+
+typedef void (*MSM5xxxMA2PCMEmit)(void *opaque, uint64_t frame, int16_t sample);
 
 typedef struct MSM5xxxMA2SequenceState {
     MSM5xxxMA2CompactParser parser;
@@ -293,6 +308,13 @@ typedef struct MSM5xxxMA2Audio {
     bool rejected;
     MSM5xxxMA2RejectReason reject_reason;
 } MSM5xxxMA2Audio;
+
+void msm5xxx_ma2_pcm_start(MSM5xxxMA2PCM *pcm, uint64_t time_ns);
+bool msm5xxx_ma2_pcm_advance(MSM5xxxMA2PCM *pcm, MSM5xxxMA2Audio *audio,
+                             uint64_t time_ns, MSM5xxxMA2PCMEmit emit, void *opaque);
+uint8_t msm5xxx_ma2_status1(const MSM5xxxMA2Audio *audio);
+uint8_t msm5xxx_ma2_wave_status(const MSM5xxxMA2Audio *audio);
+bool msm5xxx_ma2_irq_pending(const MSM5xxxMA2Audio *audio);
 
 void msm5xxx_ma2_reset(MSM5xxxMA2Audio *audio);
 

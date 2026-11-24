@@ -475,12 +475,20 @@ class TestMA5CAudioCore(unittest.TestCase):
             MSM5xxxMA5Commit c = {kind, address, value, value, 0};
             ma5_wt_engine_commit(engine, &c);
         }
-        static void render(unsigned loop, bool held, uint32_t phase) {
+        static void render(unsigned loop, bool held, uint32_t phase, bool use_rom) {
             MA5WTEngine *engine = ma5_wt_engine_new(0, emit, 0);
             uint8_t desc[13] = {0x78,0,0,0xf0,0xf0,0,0,0x41,0,
                                 (uint8_t)(loop >> 8),(uint8_t)loop,0,8};
             const uint8_t sample[4] = {0x17,0x29,0x3b,0x4d};
             assert(engine);
+            if (use_rom) {
+                uint8_t rom[0x4000] = {0};
+                desc[7] = 2;
+                memcpy(rom + 0x100, desc, sizeof(desc));
+                memcpy(rom + 0x200, sample, sizeof(sample));
+                assert(ma5_wt_engine_set_rom(engine, rom, sizeof(rom)));
+                ma5_wt_engine_reset(engine, 0);
+            }
             emitted = 0;
             commit(engine, MSM5XXX_MA5_COMMIT_B,39,0xf8);
             commit(engine, MSM5XXX_MA5_COMMIT_B,40,0xf8);
@@ -492,11 +500,13 @@ class TestMA5CAudioCore(unittest.TestCase):
             commit(engine, MSM5XXX_MA5_COMMIT_CONTROL,224,0);
             commit(engine, MSM5XXX_MA5_COMMIT_CONTROL,240,8);
             commit(engine, MSM5XXX_MA5_COMMIT_CONTROL,241,0);
-            for (unsigned i=0;i<13;i++)
-                commit(engine,MSM5XXX_MA5_COMMIT_SRAM,0x4000+i,desc[i]);
-            for (unsigned i=0;i<sizeof(sample);i++)
-                commit(engine,MSM5XXX_MA5_COMMIT_SRAM,0x4100+i,sample[i]);
-            commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,102,0x40);
+            if (!use_rom) {
+                for (unsigned i=0;i<13;i++)
+                    commit(engine,MSM5XXX_MA5_COMMIT_SRAM,0x4000+i,desc[i]);
+                for (unsigned i=0;i<sizeof(sample);i++)
+                    commit(engine,MSM5XXX_MA5_COMMIT_SRAM,0x4100+i,sample[i]);
+            }
+            commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,102,use_rom ? 1 : 0x40);
             commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,103,0);
             commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,104,0x40);
             commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,105,0);
@@ -515,8 +525,16 @@ class TestMA5CAudioCore(unittest.TestCase):
             ma5_wt_engine_free(engine);
         }
         int main(void) {
-            render(4,false,4u<<16); /* loop starts at LP, not sample zero */
-            render(8,true,0);       /* LP=EP remains one-shot */
+            render(4,false,4u<<16, false); /* loop starts at LP */
+            render(8,true,0, false);       /* LP=EP remains one-shot */
+            render(4,false,4u<<16, true);  /* ROM descriptor and samples */
+            MA5WTEngine *engine = ma5_wt_engine_new(0, emit, 0);
+            commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,102,1);
+            commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,103,0);
+            commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,107,0);
+            commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,107,0x40);
+            assert(ma5_wt_engine_status(engine).wt_skip_rom == 1);
+            ma5_wt_engine_free(engine);
             return 0;
         }
         """

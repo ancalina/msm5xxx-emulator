@@ -118,6 +118,17 @@ int main(void) {
 
     emitted=nonzero=0;
     e=ma5_wt_engine_new(0,emit,NULL);
+    uint8_t ignored_bits[30];
+    memcpy(ignored_bits, voice, sizeof(ignored_bits));
+    ignored_bits[2] |= 4u;
+    start_uploaded_voice(e, ignored_bits);
+    assert(ma5_wt_engine_status(e).fm_admitted == 1);
+    ma5_wt_engine_advance(e,100000000);
+    assert(nonzero > 100);
+    ma5_wt_engine_free(e);
+
+    emitted=nonzero=0;
+    e=ma5_wt_engine_new(0,emit,NULL);
     assert(e);
     commit(e,MSM5XXX_MA5_COMMIT_B,39,0xf8,0);
     commit(e,MSM5XXX_MA5_COMMIT_B,40,0xf8,0);
@@ -222,7 +233,11 @@ int main(void) {
     assert(status.active==1 && status.fm_admitted==1 && status.fm_skipped==0);
     commit(e,MSM5XXX_MA5_COMMIT_CONTROL,208,0x01,200000000);
     status=ma5_wt_engine_status(e);
-    assert(status.active==0 && status.fm_skip_mutation==1);
+    assert(status.active==1 && status.fm_skip_mutation==0);
+    ma5_wt_engine_advance(e,250000000);
+    lane_nonzero[0]=lane_nonzero[1]=0;
+    ma5_wt_engine_advance(e,300000000);
+    assert(lane_nonzero[0]>100 && lane_nonzero[1]==0);
     ma5_wt_engine_free(e);
 
     emitted=nonzero=0;
