@@ -12,6 +12,7 @@ namespace Msm5xxx.Desktop;
 public sealed class LauncherWindow : DesktopWindow
 {
     private BackendClient? backend;
+    private readonly CancellationTokenSource backendLifetime = new();
     private readonly ListView list = new() { IsItemClickEnabled = true, SelectionMode = ListViewSelectionMode.Single };
     private readonly ProgressBar progress = new() { IsIndeterminate = true, Visibility = Visibility.Collapsed };
     private readonly StackPanel empty = new() { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
@@ -80,8 +81,8 @@ public sealed class LauncherWindow : DesktopWindow
         progress.Visibility = Visibility.Visible;
         try
         {
-            backend = await BackendClient.StartAsync(App.Instance.Options);
-            if (IsClosing) return;
+            backend = await BackendClient.StartAsync(App.Instance.Options, backendLifetime.Token);
+            if (IsClosing) { await backend.DisposeAsync(); return; }
             await ReloadLanguageAsync();
             await RefreshAsync();
         }
@@ -98,7 +99,7 @@ public sealed class LauncherWindow : DesktopWindow
     private async Task EnsureBackendAsync()
     {
         if (backend is { IsConnected: false }) { await backend.DisposeAsync(); backend = null; }
-        if (backend is null) backend = await BackendClient.StartAsync(App.Instance.Options);
+        if (backend is null) backend = await BackendClient.StartAsync(App.Instance.Options, backendLifetime.Token);
     }
 
     internal Task RefreshLanguageAsync() => Guard(async () =>
@@ -213,6 +214,12 @@ public sealed class LauncherWindow : DesktopWindow
     }
 
     protected override Task<bool> CanCloseAsync() => App.Instance.CloseSessionsAsync();
+
+    protected override void ForceShutdown()
+    {
+        backendLifetime.Cancel();
+        backend?.Abort();
+    }
 
     protected override async Task ShutdownAsync()
     {

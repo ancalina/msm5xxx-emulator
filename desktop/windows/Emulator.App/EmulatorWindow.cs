@@ -16,6 +16,7 @@ public sealed class EmulatorWindow : DesktopWindow
 {
     private readonly FirmwareEntry firmware;
     private BackendClient? backend;
+    private readonly CancellationTokenSource backendLifetime = new();
     private KeypadLayout? layout;
     private KeypadInput? input;
     private readonly ScreenView screen;
@@ -136,8 +137,8 @@ public sealed class EmulatorWindow : DesktopWindow
 
     private async Task InitializeAsync()
     {
-        backend = await BackendClient.StartAsync(App.Instance.Options);
-        if (IsClosing) return;
+        backend = await BackendClient.StartAsync(App.Instance.Options, backendLifetime.Token);
+        if (IsClosing) { await backend.DisposeAsync(); return; }
         await backend.CallAsync("session.open", new { firmware = firmware.Path });
         await ReloadLayoutAsync();
         await BootAsync();
@@ -646,6 +647,15 @@ public sealed class EmulatorWindow : DesktopWindow
     private async Task SettingsAsync()
     {
         await ShowSettingsAsync(backend!, RestartAsync);
+    }
+
+    protected override void ForceShutdown()
+    {
+        backendLifetime.Cancel();
+        backend?.Abort();
+        secondary?.DisposeWindow();
+        secondary = null;
+        screen.Stop();
     }
 
     protected override async Task ShutdownAsync()

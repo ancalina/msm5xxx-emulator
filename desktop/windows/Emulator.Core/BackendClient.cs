@@ -26,6 +26,7 @@ public sealed class BackendClient : IAsyncDisposable
     private readonly StringBuilder diagnostics = new();
     private StreamWriter? protocolLog;
     private int closing;
+    private int aborted;
     private long nextId;
 
     public BackendClient(TextReader reader, TextWriter writer)
@@ -64,7 +65,7 @@ public sealed class BackendClient : IAsyncDisposable
     }
 
     public string Diagnostics { get { lock (diagnostics) return diagnostics.ToString(); } }
-    public bool IsConnected => Volatile.Read(ref closing) == 0 && !pump.IsCompleted;
+    public bool IsConnected => Volatile.Read(ref closing) == 0 && Volatile.Read(ref aborted) == 0 && !pump.IsCompleted;
 
     private void Trace(string direction, long id, string method, object? parameters = null, object? result = null)
     {
@@ -77,18 +78,19 @@ public sealed class BackendClient : IAsyncDisposable
         }
     }
 
-    public static async Task<BackendClient> StartAsync(BackendOptions options)
+    public static async Task<BackendClient> StartAsync(BackendOptions options, CancellationToken cancellation = default)
     {
         Exception? failure = null;
         foreach (var start in options.StartCandidates())
         {
+            cancellation.ThrowIfCancellationRequested();
             BackendClient? client = null;
             try
             {
                 var process = Process.Start(start) ?? throw new IOException("Backend process did not start.");
                 client = new BackendClient(process);
                 client.processJob = BackendProcessJob.Attach(process);
-                var hello = await client.CallAsync("hello").WaitAsync(TimeSpan.FromSeconds(30));
+                var hello = await client.CallAsync("hello").WaitAsync(TimeSpan.FromSeconds(30), cancellation);
                 if (hello.GetProperty("protocol").GetInt32() != 1)
                     throw new IOException("Unsupported backend protocol.");
                 return client;
@@ -96,7 +98,12 @@ public sealed class BackendClient : IAsyncDisposable
             catch (Exception error)
             {
                 failure = new IOException(error.Message + (client is null ? "" : "\n" + client.Diagnostics), error);
-                if (client is not null) await client.DisposeAsync();
+                if (client is not null)
+                {
+                    client.Abort();
+                    await client.DisposeAsync();
+                }
+                cancellation.ThrowIfCancellationRequested();
             }
         }
         throw failure ?? new IOException("No Python interpreter is available.");
@@ -104,7 +111,8 @@ public sealed class BackendClient : IAsyncDisposable
 
     public Task<JsonElement> CallAsync(string method, object? parameters = null, CancellationToken cancellation = default)
     {
-        if (Volatile.Read(ref closing) != 0) return Task.FromException<JsonElement>(new ObjectDisposedException(nameof(BackendClient)));
+        if (Volatile.Read(ref closing) != 0 || Volatile.Read(ref aborted) != 0)
+            return Task.FromException<JsonElement>(new ObjectDisposedException(nameof(BackendClient)));
         var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!requests.Writer.TryWrite(new(method, parameters, cancellation, completion)))
             completion.TrySetException(new IOException("Backend connection is closed."));
@@ -163,6 +171,24 @@ public sealed class BackendClient : IAsyncDisposable
         {
             requests.Writer.TryComplete();
             while (requests.Reader.TryRead(out var request)) request.Completion.TrySetException(terminal);
+        }
+    }
+
+    public void Abort()
+    {
+        if (Interlocked.Exchange(ref aborted, 1) != 0) return;
+        requests.Writer.TryComplete();
+        try { lifetime.Cancel(); }
+        catch (ObjectDisposedException) { return; }
+        if (process is not null)
+        {
+            try
+            {
+                if (processJob is not null) processJob.Dispose();
+                else if (!process.HasExited) process.Kill(entireProcessTree: true);
+            }
+            catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
+            { Debug.WriteLine(error); }
         }
     }
 

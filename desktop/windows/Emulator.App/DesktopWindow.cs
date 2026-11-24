@@ -83,7 +83,19 @@ public abstract class DesktopWindow : Window
         IsClosing = true;
         Commands.IsEnabled = false;
         Body.IsHitTestVisible = false;
-        try { await ShutdownAsync(); }
+        Task? cleanup = null;
+        try
+        {
+            cleanup = ShutdownAsync();
+            await cleanup.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        catch (TimeoutException)
+        {
+            ForceShutdown();
+            if (cleanup is not null)
+                try { await cleanup.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch (Exception error) { System.Diagnostics.Debug.WriteLine(error); }
+        }
         catch (Exception error) { System.Diagnostics.Debug.WriteLine(error); }
         finally { allowClose = true; Close(); }
         return true;
@@ -105,6 +117,7 @@ public abstract class DesktopWindow : Window
 
     protected virtual Task<bool> CanCloseAsync() => Task.FromResult(true);
     protected virtual Task ShutdownAsync() => Task.CompletedTask;
+    protected virtual void ForceShutdown() { }
     protected virtual Task BeforeDialogAsync() => Task.CompletedTask;
     protected virtual Task RetryAsync() => Task.CompletedTask;
     protected virtual bool CanRetry => true;
