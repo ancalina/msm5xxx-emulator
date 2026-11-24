@@ -516,11 +516,17 @@ final class FirmwareLibraryScreen {
                 excluded = read("excluded");
                 migrated = preferences.getBoolean("private_migrated", false);
             }
+            File migrationCopy = null;
+            boolean migrationIncluded = false;
+            boolean migrationCommitted = false;
+            try {
             if (!migrated) {
                 if (previousCopy != null && previousName != null) {
                     File old = new File(previousCopy);
                     File sessions = new File(activity.getNoBackupFilesDir(), "session");
-                    File target = new File(new File(activity.getFilesDir(), "firmware-library"), "migrated.bin");
+                    File target = new File(new File(activity.getFilesDir(), "firmware-library"),
+                            "migrated-" + java.util.UUID.randomUUID() + ".bin");
+                    migrationCopy = target;
                     try {
                         if (old.getCanonicalPath().startsWith(sessions.getCanonicalPath() + File.separator)
                                 && old.isFile() && old.canRead()
@@ -528,11 +534,15 @@ final class FirmwareLibraryScreen {
                             if (!target.getParentFile().isDirectory() && !target.getParentFile().mkdirs()) throw new IOException("directory");
                             try (InputStream input = new FileInputStream(old); FileOutputStream output = new FileOutputStream(target)) {
                                 byte[] buffer = new byte[65536]; int count;
-                                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                                while ((count = input.read(buffer)) != -1) {
+                                    if (token != revision.get()) return;
+                                    output.write(buffer, 0, count);
+                                }
                             }
                             entries.put(new JSONObject().put("uri", Uri.fromFile(target).toString())
                                     .put("name", previousName).put("size", target.length())
                                     .put("imported", true).put("available", true));
+                            migrationIncluded = true;
                         }
                     } catch (IOException | JSONException ignored) { target.delete(); }
                 }
@@ -653,9 +663,11 @@ final class FirmwareLibraryScreen {
             boolean stale;
             synchronized (INDEX_LOCK) {
                 if (token != revision.get()) return;
-                stale = dataVersion != preferences.getLong(DATA_REVISION, 0L);
+                stale = dataVersion != preferences.getLong(DATA_REVISION, 0L)
+                        || migrated != preferences.getBoolean("private_migrated", false);
                 if (!stale) {
                     preferences.edit().putString("entries", entries.toString()).putBoolean("private_migrated", true).apply();
+                    migrationCommitted = migrationIncluded;
                 }
             }
             if (stale) {
@@ -674,6 +686,9 @@ final class FirmwareLibraryScreen {
                 }
                 visible.clear(); visible.addAll(rows); loading = false; schedulePublish();
             });
+            } finally {
+                if (!migrationCommitted && migrationCopy != null) migrationCopy.delete();
+            }
         });
     }
 }
