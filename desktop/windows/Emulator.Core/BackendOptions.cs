@@ -18,7 +18,8 @@ public sealed record BackendOptions(string Bundle, string Qemu, string? Python =
         }
         bundle = Path.GetFullPath(bundle);
         return new(bundle, Environment.GetEnvironmentVariable("MSM5XXX_QEMU") ?? Path.Combine(bundle, "bin", "qemu-system-arm.exe"),
-            Environment.GetEnvironmentVariable("MSM5XXX_PYTHON"), Environment.GetEnvironmentVariable("MSM5XXX_STATE_DIR"));
+            Environment.GetEnvironmentVariable("MSM5XXX_PYTHON"), Environment.GetEnvironmentVariable("MSM5XXX_STATE_DIR") ??
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSM5xxx"));
     }
 
     public IEnumerable<ProcessStartInfo> StartCandidates()
@@ -45,6 +46,7 @@ public sealed record BackendOptions(string Bundle, string Qemu, string? Python =
             info.Environment["PYTHONPATH"] = Path.Combine(Bundle, "src");
             info.Environment["PYTHONIOENCODING"] = "utf-8";
             info.Environment["PYTHONUNBUFFERED"] = "1";
+            info.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
             if (StateDirectory is not null) info.Environment["MSM5XXX_STATE_DIR"] = StateDirectory;
             yield return info;
         }

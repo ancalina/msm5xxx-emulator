@@ -31,7 +31,8 @@ PLATE = f'<rect width="{S}" height="{S}" fill="url(#pkg)"/><rect width="{S}" hei
 
 def marking_lines(version: str, day: datetime.date, commit: str, platform: str) -> list[str]:
     """Six marking lines below the wordmark (QEM = QEMU backend, final A = release build)."""
-    major, minor, patch = (int(x) for x in (version.split(".") + ["0", "0"])[:3])
+    numeric = re.split(r"[-+a-zA-Z]", version, maxsplit=1)[0]
+    major, minor, patch = (int(x) for x in (numeric.split(".") + ["0", "0"])[:3])
     year, week, _ = day.isocalendar()
     yyww = f"{year % 100:02d}{week:02d}"
     return ["EMULATOR", f"QT10-V{major}{minor:02d}{patch}-0", f"14 {yyww}{commit[:5].upper()}",

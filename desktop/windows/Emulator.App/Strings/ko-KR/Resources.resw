@@ -531,4 +531,15 @@
   <data name="appearance_notice" xml:space="preserve">
     <value>언어와 앱 아이콘은 기기를 다시 시작하지 않고 바로 변경됩니다.</value>
   </data>
+  <data name="updates" xml:space="preserve"><value>업데이트</value></data>
+  <data name="update_automatic" xml:space="preserve"><value>시작할 때 업데이트 확인</value></data>
+  <data name="update_check" xml:space="preserve"><value>지금 확인</value></data>
+  <data name="update_checking" xml:space="preserve"><value>업데이트 확인 중…</value></data>
+  <data name="update_current" xml:space="preserve"><value>최신 버전입니다.</value></data>
+  <data name="update_ready" xml:space="preserve"><value>업데이트 준비 완료</value></data>
+  <data name="update_restart_notice" xml:space="preserve"><value>다음에 앱을 시작할 때 업데이트를 설치합니다.</value></data>
+  <data name="update_restart" xml:space="preserve"><value>지금 다시 시작</value></data>
+  <data name="desktop_shortcut" xml:space="preserve"><value>바탕 화면 바로 가기 만들기</value></data>
+  <data name="install_welcome" xml:space="preserve"><value>MSM5xxx 에뮬레이터에 오신 것을 환영합니다</value></data>
+  <data name="done" xml:space="preserve"><value>완료</value></data>
 </root>

@@ -21,6 +21,7 @@ public sealed class LauncherWindow : DesktopWindow
     private bool scanning;
     private bool refreshPending;
     private readonly Task initialize;
+    private readonly InfoBar updateNotice = new() { Severity = InfoBarSeverity.Informational, IsClosable = true };
 
     public LauncherWindow()
     {
@@ -37,9 +38,13 @@ public sealed class LauncherWindow : DesktopWindow
             catch (Exception error) { ShowError(error); }
         };
         Body.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        Body.RowDefinitions.Add(new() { Height = GridLength.Auto });
         Body.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
-        Body.Children.Add(progress); Grid.SetRow(list, 1); Body.Children.Add(list);
-        Grid.SetRow(empty, 1); Body.Children.Add(empty);
+        Body.Children.Add(progress); Grid.SetRow(updateNotice, 1); Body.Children.Add(updateNotice);
+        Grid.SetRow(list, 2); Body.Children.Add(list);
+        Grid.SetRow(empty, 2); Body.Children.Add(empty);
+        DesktopUpdates.Instance.Changed += RefreshUpdateNotice;
+        Closed += (_, _) => DesktopUpdates.Instance.Changed -= RefreshUpdateNotice;
         BuildCommands();
         AddShortcut(VirtualKey.O, ImportAsync);
         AddShortcut(VirtualKey.R, RefreshAsync);
@@ -73,7 +78,9 @@ public sealed class LauncherWindow : DesktopWindow
         refresh.AccessKey = "R";
         menu.Items.Add(refresh);
         menu.Items.Add(new MenuFlyoutSeparator());
-        menu.Items.Add(MenuItem(Text["settings"], SettingsAsync));
+        var settingsItem = MenuItem(Text["settings"], SettingsAsync);
+        AutomationProperties.SetAutomationId(settingsItem, "settings-open");
+        menu.Items.Add(settingsItem);
         empty.Children.Clear(); empty.Children.Add(Label(Text["library_empty"], 20));
         empty.Children.Add(Button(Text["library_import"], () => Guard(ImportAsync)));
         AutomationProperties.SetName(list, Text["library_title"]);
@@ -93,8 +100,46 @@ public sealed class LauncherWindow : DesktopWindow
             if (IsClosing) { await backend.DisposeAsync(); return; }
             await ReloadLanguageAsync();
             await RefreshAsync();
+            await ConfigureInstallationAsync();
         }
         finally { Commands.IsEnabled = !IsClosing; progress.Visibility = Visibility.Collapsed; }
+    }
+
+    private void RefreshUpdateNotice()
+    {
+        updateNotice.Title = Text["update_ready"];
+        updateNotice.Message = Text["update_restart_notice"];
+        updateNotice.ActionButton = Button(Text["update_restart"], () => Guard(DesktopUpdates.Instance.RestartAsync));
+        AutomationProperties.SetAutomationId(updateNotice.ActionButton, "updates-restart");
+        updateNotice.IsOpen = DesktopUpdates.Instance.Ready;
+    }
+
+    private async Task ConfigureInstallationAsync()
+    {
+        if (!DesktopUpdates.Instance.Installed || IsClosing) return;
+        var preferences = InstallPreferences.Load();
+        if (!preferences.Completed)
+        {
+            var desktop = new CheckBox { Content = Text["desktop_shortcut"], IsChecked = false };
+            var automatic = new CheckBox { Content = Text["update_automatic"], IsChecked = preferences.Automatic };
+            AutomationProperties.SetAutomationId(desktop, "install-desktop-shortcut");
+            AutomationProperties.SetAutomationId(automatic, "install-automatic");
+            var choices = new StackPanel { Spacing = 16 };
+            choices.Children.Add(desktop); choices.Children.Add(automatic);
+            var result = await ShowDialogAsync(new ContentDialog { Title = Text["install_welcome"], Content = choices,
+                PrimaryButtonText = Text["done"], DefaultButton = ContentDialogButton.Primary });
+            if (result != ContentDialogResult.Primary) return;
+            if (desktop.IsChecked == true) InstallPreferences.CreateDesktopShortcut();
+            preferences = new(true, automatic.IsChecked == true); preferences.Save();
+        }
+        RefreshUpdateNotice();
+        if (preferences.Automatic) _ = CheckAutomaticallyAsync();
+    }
+
+    private static async Task CheckAutomaticallyAsync()
+    {
+        try { await DesktopUpdates.Instance.CheckAsync(); }
+        catch (Exception error) { System.Diagnostics.Debug.WriteLine(error); }
     }
 
     private async Task ReloadLanguageAsync()

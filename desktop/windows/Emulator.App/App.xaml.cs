@@ -16,7 +16,7 @@ public partial class App : Application
         {
             try
             {
-                var directory = Environment.GetEnvironmentVariable("MSM5XXX_STATE_DIR") ?? AppContext.BaseDirectory;
+                var directory = InstallPreferences.StateDirectory;
                 Directory.CreateDirectory(directory);
                 File.AppendAllText(Path.Combine(directory, "desktop.log"), DateTimeOffset.Now + "\n" + args.Exception + "\n");
             }

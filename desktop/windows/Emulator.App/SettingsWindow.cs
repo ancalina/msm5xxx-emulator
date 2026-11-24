@@ -55,6 +55,7 @@ internal sealed class SettingsWindow : DesktopWindow
             if (IsClosing) return;
             form.Children.Add(Heading(restart is null ? "defaults_notice" : "restart_notice", 14));
             form.Children.Add(Heading("app_settings"));
+            AddUpdates();
             foreach (var key in new[] { "persistent_state", "virtual_network", "network_host_time", "experimental_rex" })
             {
                 var saved = current.GetProperty(key).GetBoolean();
@@ -182,6 +183,54 @@ internal sealed class SettingsWindow : DesktopWindow
             Relabel();
         }
         finally { page.IsEnabled = true; }
+    }
+
+    private void AddUpdates()
+    {
+        var content = new StackPanel { Spacing = 16 };
+        var section = new Expander { Content = content, HorizontalAlignment = HorizontalAlignment.Stretch, IsExpanded = true };
+        var preferences = InstallPreferences.Load();
+        var automatic = new ToggleSwitch { IsOn = preferences.Automatic };
+        var check = new Button();
+        AutomationProperties.SetAutomationId(check, "updates-check");
+        AutomationProperties.SetAutomationId(automatic, "updates-automatic");
+        var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        var restartUpdate = new Button { Visibility = DesktopUpdates.Instance.Ready ? Visibility.Visible : Visibility.Collapsed };
+        AutomationProperties.SetAutomationId(restartUpdate, "updates-restart");
+        translate.Add(() =>
+        {
+            section.Header = Text["updates"];
+            automatic.Header = Text["update_automatic"];
+            automatic.OnContent = Text["power_on"]; automatic.OffContent = Text["power_off"];
+            check.Content = Text["update_check"];
+            restartUpdate.Content = Text["update_restart"];
+            AutomationProperties.SetName(automatic, Text["update_automatic"]);
+        });
+        automatic.Toggled += async (_, _) =>
+        {
+            if (updating) return;
+            await ChangeAsync(automatic, () =>
+            {
+                try { preferences = preferences with { Automatic = automatic.IsOn }; preferences.Save(); }
+                catch { updating = true; automatic.IsOn = !automatic.IsOn; updating = false; throw; }
+                return Task.CompletedTask;
+            });
+        };
+        check.Click += async (_, _) => await ChangeAsync(check, async () =>
+        {
+            status.Text = Text["update_checking"];
+            try
+            {
+                var ready = await DesktopUpdates.Instance.CheckAsync();
+                status.Text = Text[ready ? "update_ready" : "update_current"];
+                restartUpdate.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+            }
+            catch { status.Text = ""; throw; }
+        });
+        restartUpdate.Click += async (_, _) => await Guard(DesktopUpdates.Instance.RestartAsync);
+        content.Children.Add(automatic); content.Children.Add(check); content.Children.Add(status); content.Children.Add(restartUpdate);
+        form.Children.Add(section);
     }
 
     private void Relabel()

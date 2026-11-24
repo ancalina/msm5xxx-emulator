@@ -35,7 +35,7 @@ archives for license texts, notices, modifications and build recipes.
   its preparation and source inputs are in `android/prepare_runtime.sh`. The
   iOS bundle uses BeeWare's CPython 3.14.10 iOS support distribution and its
   native dependencies; the pinned distribution and build instructions are in
-  [iOS Python instructions](ios/PYTHON.md). Desktop uses the user's Python.
+  [iOS Python instructions](ios/PYTHON.md). Windows installers embed CPython 3.12.10 from python.org with its license; other desktop runtime versions are recorded by their packaging scripts.
 - **NumPy** is BSD-3-Clause, with additional notices for bundled components.
   Android includes 2.5.1, built from the source archive identified by
   `android/build_numpy_android.sh`; desktop installs `numpy>=1.26,<3`.
@@ -50,7 +50,7 @@ archives for license texts, notices, modifications and build recipes.
 
 ## Platform-specific components
 
-- **Windows:** the build collects the MinGW DLL dependency closure. The pinned
+- **Windows:** Velopack 1.2.161 is MIT-licensed; its license is included as `Velopack-LICENSE`. The app-local Microsoft Visual C++ runtime comes from the redistributable Desktop VCLibs package at https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx and retains its package manifest. The build collects the MinGW DLL dependency closure. The pinned
   package list in `native/qemu/windows_dependency_sources.json` identifies
   GLib, PCRE2, gettext runtime (GPL-3.0-or-later and LGPL-2.1-or-later package
   metadata), libiconv (GPL-3.0-or-later package metadata, with library notices),

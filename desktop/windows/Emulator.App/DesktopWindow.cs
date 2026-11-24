@@ -201,6 +201,7 @@ public abstract class DesktopWindow : Window
         var menu = new MenuFlyout();
         var button = new Button { Content = TitleCommandIcon(Symbol.More), Flyout = menu, Style = (Style)Application.Current.Resources["SubtleButtonStyle"], Width = 48, Height = 48, Padding = new(0) };
         AutomationProperties.SetName(button, Text["menu_access"]);
+        AutomationProperties.SetAutomationId(button, "app-menu");
         ToolTipService.SetToolTip(button, Text["menu_access"]);
         TitleActions.Children.Add(button); RefreshTitleBar();
         return menu;

@@ -531,4 +531,15 @@
   <data name="appearance_notice" xml:space="preserve">
     <value>Language and app icon changes apply immediately without restarting the device.</value>
   </data>
+  <data name="updates" xml:space="preserve"><value>Updates</value></data>
+  <data name="update_automatic" xml:space="preserve"><value>Check for updates on start</value></data>
+  <data name="update_check" xml:space="preserve"><value>Check now</value></data>
+  <data name="update_checking" xml:space="preserve"><value>Checking for updates…</value></data>
+  <data name="update_current" xml:space="preserve"><value>You’re up to date.</value></data>
+  <data name="update_ready" xml:space="preserve"><value>Update ready</value></data>
+  <data name="update_restart_notice" xml:space="preserve"><value>The update will be installed when you next start the app.</value></data>
+  <data name="update_restart" xml:space="preserve"><value>Restart now</value></data>
+  <data name="desktop_shortcut" xml:space="preserve"><value>Create a desktop shortcut</value></data>
+  <data name="install_welcome" xml:space="preserve"><value>Welcome to MSM5xxx Emulator</value></data>
+  <data name="done" xml:space="preserve"><value>Done</value></data>
 </root>

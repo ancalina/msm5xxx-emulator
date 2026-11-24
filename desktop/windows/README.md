@@ -1,12 +1,12 @@
 # MSM5xxx Windows desktop
 
-Native C# / WinUI 3 frontend for the MSM5xxx QEMU feature-phone emulator. The app uses stock Windows controls, the WinUI TitleBar with system caption buttons, Mica and the system theme, native file pickers, and English/Korean Windows resources. Each firmware window owns its own backend process. Firmware and the emulator runtime are supplied separately.
+Native C# / WinUI 3 frontend for the MSM5xxx QEMU feature-phone emulator. The app uses stock Windows controls, the WinUI TitleBar with system caption buttons, Mica and the system theme, native file pickers, and English/Korean Windows resources. Each firmware window owns its own backend process. Firmware is user-supplied; the installer includes the complete emulator runtime.
 
 ## Requirements
 
 - Windows x64, Windows 10 version 1809 (build 17763) or later; Windows 11 recommended. OS servicing depends on the Windows edition.
 - To build: .NET 10 SDK, Python 3 and Git on PATH, and a Windows 10/11 SDK. NuGet restores pinned Windows App SDK 2.6.5 and Windows SDK build tools. The Visual Studio IDE is optional. The GitHub `windows-2022` image supplies the SDK and native redistributable files.
-- To run: a matching Windows QEMU runtime bundle containing `bin/qemu-system-arm.exe`, `src/msm5xxx_emulator/`, and Python with the backend's dependencies (Capstone and Pillow). The existing QEMU Windows build workflow produces this runtime bundle.
+- To run: a matching Windows QEMU runtime bundle containing `bin/qemu-system-arm.exe`, `src/msm5xxx_emulator/`, and Python with the backend's dependencies (Capstone, Pillow and NumPy). The installer build assembles this runtime bundle.
 
 The published frontend is unpackaged and self-contained for both .NET and Windows App SDK. It needs no MSIX registration or separate .NET/Windows App Runtime installation. Publish the entire directory; copying only the executable will not work. The workflow also copies Visual Studio's redistributable x64 C++ runtime DLLs beside the executable.
 
@@ -22,33 +22,32 @@ dotnet build desktop/windows/Emulator.App/Emulator.App.csproj -c Release -r win-
 dotnet publish desktop/windows/Emulator.App/Emulator.App.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true --no-build --no-restore -o desktop/windows/artifacts/bin
 ```
 
-For deployment from a local build, also copy the x64 `Microsoft.VC143.CRT` DLLs from your Visual Studio `VC/Redist/MSVC/<version>/x64/` directory to the publish directory, as the workflow does. Observe Microsoft's redistribution license. No installer or signing certificate is needed to run the unpackaged app.
+For deployment from a local build, also copy the x64 `Microsoft.VC143.CRT` DLLs from your Visual Studio `VC/Redist/MSVC/<version>/x64/` directory to the publish directory, as the workflow does. Observe Microsoft's redistribution license. The unpackaged publish remains available for development; release distribution uses Velopack.
 
 On GitHub, select **Actions → Build Windows desktop → Run workflow**, choosing the branch containing this app. Download `MSM5xxx-Desktop-windows-x64`. The workflow restores, tests, builds and publishes; `windows-desktop-build-results` contains TRX results and the MSBuild binary log. The real-firmware integration test is explicitly skipped when no test firmware is configured; no firmware is uploaded or downloaded by CI.
 
-## Run
+## Install and update
 
-Extract the desktop artifact into the matching runtime bundle, merging its `bin/` directory. Keep all the published files together:
+Run `MSM5xxx-win-Setup.exe`. Velopack installs per user, registers an uninstall entry and creates a Start menu shortcut. The first app launch offers **Create a desktop shortcut** (off) and **Check for updates on start** (on) in a stock WinUI dialog. Firmware and the optional sound-chip ROM are never included.
 
-```text
-MSM5xxx-QEMU-windows-x64/
-  bin/
-    MSM5xxx.Desktop.exe
-    MSM5xxx.Desktop.dll
-    resources.pri
-    ...all other desktop publish files...
-    qemu-system-arm.exe
-    ...QEMU runtime DLLs...
-  python/
-    python.exe
-    ...Python runtime and dependencies...
-  src/
-    msm5xxx_emulator/
+**Settings → Updates** provides the automatic-check toggle and **Check now**. Updates come from GitHub Releases, including delta packages when a previous full package is available. A stock InfoBar announces a verified, downloaded update. **Restart now** stops emulator sessions before applying it; closing and reopening the app also applies it. Library, settings and saved state live in `%LOCALAPPDATA%\MSM5xxx`, outside the installed version directory. Windows Settings → Apps uninstalls the app and asks whether to delete this data; the default answer preserves it.
+
+[Velopack Setup 1.2.161](https://docs.velopack.io/reference/cli/content/setup-windows) supports `--silent` (`-s`), `--verbose` (`-v`), `--log FILE` (`-l`), `--installto DIR` (`-t`), and `--help` (`-h`). Arguments after `--` are passed to the launched app. Shortcut and automatic-update choices are in the app. An unanswered uninstall data prompt preserves data when Velopack's 30-second hook deadline expires.
+
+Build the runtime in a MINGW64 shell, then package in PowerShell with .NET 10 and Python 3.12 on PATH:
+
+```sh
+bash packaging/windows/build-qemu.sh /absolute/path/to/runtime-work
 ```
 
 ```powershell
-& 'C:\Emulators\MSM5xxx-QEMU-windows-x64\bin\MSM5xxx.Desktop.exe'
+$env:BUILD_COMMIT = git rev-parse HEAD
+./packaging/windows/build.ps1 -Version 0.2.0-rc -RuntimeDirectory runtime-work/runtime -OutputDirectory artifacts/windows
 ```
+
+The pack directory contains the self-contained WinUI app at its root, `bin/qemu-system-arm.exe` and its DLL closure, `python/python.exe` with Capstone/Pillow/NumPy, and `src/msm5xxx_emulator`. The app-local Microsoft VC runtime is extracted from Microsoft's redistributable Desktop VCLibs package. The pinned `vpk` tool is restored from `.config/dotnet-tools.json`. Keep the previous full package in the output directory when packing the next version to generate a delta.
+
+For local update testing, set `MSM5XXX_UPDATE_FEED` to a directory containing Velopack's `releases.win.json` and packages before launching the installed app. Use an isolated `MSM5XXX_STATE_DIR`; install 0.1.99 first, then put the 0.2.0-rc packages in that feed. Production uses the public GitHub Releases source.
 
 For development, use the publish output against an existing bundle:
 
@@ -118,3 +117,13 @@ Implementation references: [stock SubtleButtonStyle](https://github.com/microsof
 The shared icon generator includes dev `f3e648e`: the small MSM5 marking is centered horizontally on the drawn strokes and vertically on the package, and uses the smaller 0.68× package width. Only the bundled font path and checkout-root discovery differ from the shared script.
 
 Platform guidance in `design-standards/` is binding. The only product-specific presentation exceptions are the phone LCD/keypad content (including square flat keys), specified opening/minimum/edge-to-edge LCD geometry, and model-only emulator title. The surrounding UI uses stock WinUI controls, styles, native caption buttons, pickers and dialogs. Earlier native English/Korean command verification includes opening More options with Enter and inspecting the complete MenuFlyout command set; those captures remain as `standards-final-{en,ko}-opening.png` and `standards-final-{en,ko}-menu-open.png` under workspace `tmp/windows-validation/`.
+
+## Installer validation
+
+In an interactive Windows desktop, build 0.1.99 first and keep its Setup separately, then pack 0.2.0-rc into the same feed directory. Run:
+
+```powershell
+./packaging/windows/test-install.ps1 -BaselineSetup baseline/MSM5xxx-win-Setup.exe -Feed releases -WorkDirectory installer-test
+```
+
+The work directory must not exist. The test uses an isolated state directory and installs under that directory. It checks first-run defaults and saved choices, shortcuts and uninstall registration, Settings controls, a delta-only local-feed update, restarted version and retained data, uninstall with No, and a fresh install/uninstall with Yes. Screenshots, automation snapshots and `result.txt` are written there. The fake 0.1.99 feed is test evidence and must not be published as a production release.
