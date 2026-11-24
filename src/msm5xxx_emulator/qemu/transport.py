@@ -2005,12 +2005,6 @@ class Transport:
                 if audio_qemu_socket is not None else {}
             )
             high_stack_ram = device_domain("memory.irq_boot").high_stack_irq_boot_ram(detector_image)
-            boot_events_500 = (bootstrap_binding is None and
-                device_domain('memory.boot_rules').has_boot_event_500_reset(detector_image))
-            high_handoff = (bootstrap_binding is None and
-                device_domain('memory.boot_rules').has_high_handoff(detector_image))
-            callback_control = (device_domain('memory.boot_rules').callback_control_address(detector_image)
-                                if bootstrap_binding is None else None)
             high_stack_boot = (bootstrap_binding is None and high_stack_ram is not None
                 and not any(name in machine for name in
                             ("signal-memory=", "external-ram-base=", "external-ram-size=")))
@@ -2099,50 +2093,10 @@ class Transport:
                     base, size = high_stack_ram
                     machine += (f",signal-memory=ffff0000:2000,external-ram-base=0x{base:x},"
                                 f"external-ram-size=0x{size:x},standalone-boot-events=on")
-            elif (boot_events_500 and 'memory-profile=' in machine and
-                  'signal-memory=' not in machine and 'standalone-boot-events=' not in machine):
-                # shortcut: only the proven high stack and call window is mapped; upgrade when the SRAM extent is known.
-                machine += ',standalone-boot-events=on,signal-memory=ffff0000:2000'
-            elif (bootstrap_binding is None and 'memory-profile=' in machine and
-                  'signal-memory=' not in machine and 'standalone-boot-events=' not in machine and
-                  device_domain('memory.boot_rules').has_high_context_reset(detector_image)):
-                # shortcut: only context and stack pages are mapped; upgrade when the SRAM extent is known.
-                machine += ',standalone-boot-events=on,signal-memory=ffff0000:3000'
-            elif (high_handoff and 'memory-profile=' in machine and
-                  'signal-memory=' not in machine):
-                # shortcut: handoff SRAM power-on contents are unknown; upgrade when a retained image is supplied.
-                machine += ',signal-memory=ffffd000:1000'
-            if (bootstrap_binding is None and 'memory-profile=' in machine and
-                    device_domain('memory.boot_rules').has_boot_event_control_reset(detector_image)):
-                if 'standalone-boot-events=' not in machine:
-                    machine += ',standalone-boot-events=on'
-                machine += ',boot-output-580=on'
-            if callback_control == 0x80000320 and 'standalone-boot-events=' not in machine:
-                machine += ',standalone-boot-events=on'
-            elif callback_control == 0x60000240 and 'memory-profile=' in machine:
-                machine += ',boot-output-600=on'
-            if (bootstrap_binding is None and 'standalone-boot-events=on' in machine and
-                    device_domain('memory.boot_rules').has_boot_output_880(detector_image)):
-                machine += ',boot-output-880=on'
-            if (bootstrap_binding is None and 'memory-profile=' in machine and
-                    'signal-memory=' not in machine):
-                stack_page = device_domain('memory.irq_boot').constructor_stack_page(detector_image)
-                if (stack_page is not None and stack_page >= self.config.flash_size and
-                        not (stack_page < self.config.ram_base + native_ram_size and
-                             self.config.ram_base < stack_page + 0x1000)):
-                    # shortcut: only the constructor stack page is known; upgrade when the SRAM extent is established.
-                    machine += f',signal-memory={stack_page:x}:1000'
-            if (bootstrap_binding is None and raw_nand_profile is None and native_nand is None and
-                    not self.config.nand_enabled and
-                    device_domain('external_bus.observations.lcd').has_lcd029_output(
-                        detector_image, self.config.ram_base, self.config.ram_size)):
-                machine += ',experimental-lcd029=1'
             self.process = launch_qemu(
                 [
                     *qemu_prefix, str(qemu), "-M", machine, "-cpu",
-                    bootstrap_binding.cpu if bootstrap_binding is not None else (
-                        "arm926" if high_stack_boot or boot_events_500 or high_handoff or device_domain("memory.irq_boot").requires_armv5(detector_image)
-                        else "ti925t"),
+                    bootstrap_binding.cpu if bootstrap_binding is not None else ("arm926" if high_stack_boot else "ti925t"),
                     "-m", qemu_ram_argument(native_ram_size),
                     *(bootstrap_loader_args if bootstrap_binding is not None else (
                         *raw_loader_arguments(

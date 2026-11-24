@@ -352,9 +352,6 @@ struct MSM5xxxPOCMachineState {
     MemoryRegion experimental_contract_region_18, experimental_contract_region_1c;
     MemoryRegion external_uart_region, external_lcd_region[3];
     MemoryRegion external_lcd_1c_data_region;
-    bool boot_output_580, boot_output_600, boot_output_880;
-    MemoryRegion boot_output_regions[4];
-    uint32_t boot_output_values[4];
     struct { MSM5xxxPOCMachineState *machine; unsigned index; } external_lcd_context[3];
     uint8_t external_lcd_backing[3][0x1000];
     MemoryRegion external_lcd_18_window_region;
@@ -16456,47 +16453,6 @@ static void msm5xxx_poc_mdsp_init(MachineState *machine,
     qemu_register_reset(msm5xxx_poc_mdsp_reset, s);
 }
 
-/* shortcut: output readback is unknown; upgrade when register semantics are established. */
-static MemTxResult msm5xxx_poc_boot_output_read(void *opaque, hwaddr offset,
-                                                 uint64_t *value, unsigned size,
-                                                 MemTxAttrs attrs)
-{
-    (void)opaque;
-    (void)offset;
-    (void)value;
-    (void)size;
-    (void)attrs;
-    return MEMTX_DECODE_ERROR;
-}
-
-static MemTxResult msm5xxx_poc_boot_output_write(void *opaque, hwaddr offset,
-                                                  uint64_t value, unsigned size,
-                                                  MemTxAttrs attrs)
-{
-    uint32_t *output = opaque;
-
-    (void)offset;
-    (void)attrs;
-    *output = size == 2 ? (uint16_t)value : (uint32_t)value;
-    return MEMTX_OK;
-}
-
-static const MemoryRegionOps msm5xxx_poc_boot_output_16_ops = {
-    .read_with_attrs = msm5xxx_poc_boot_output_read,
-    .write_with_attrs = msm5xxx_poc_boot_output_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 2, .max_access_size = 2 },
-    .impl = { .min_access_size = 2, .max_access_size = 2 },
-};
-
-static const MemoryRegionOps msm5xxx_poc_boot_output_32_ops = {
-    .read_with_attrs = msm5xxx_poc_boot_output_read,
-    .write_with_attrs = msm5xxx_poc_boot_output_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 4 },
-    .impl = { .min_access_size = 4, .max_access_size = 4 },
-};
-
 static uint64_t msm5xxx_poc_boot_events_read(void *opaque, hwaddr offset,
                                              unsigned size)
 {
@@ -17438,9 +17394,6 @@ static void msm5xxx_poc_set_##suffix(Object *obj, bool value, Error **errp) \
 }
 
 EXTERNAL_BOOL_PROPERTY(boot_sbi_fifo, boot_sbi_fifo)
-EXTERNAL_BOOL_PROPERTY(boot_output_580, boot_output_580)
-EXTERNAL_BOOL_PROPERTY(boot_output_600, boot_output_600)
-EXTERNAL_BOOL_PROPERTY(boot_output_880, boot_output_880)
 EXTERNAL_BOOL_PROPERTY(boot_rex_timer, boot_rex_timer)
 EXTERNAL_BOOL_PROPERTY(boot_power_key, boot_power_key)
 EXTERNAL_U32_PROPERTY(boot_wake_input, boot_wake_input, UINT8_MAX,
@@ -18784,36 +18737,6 @@ static void msm5xxx_poc_init(MachineState *machine)
             }
         }
         qemu_register_reset(msm5xxx_poc_standalone_boot_events_reset, s);
-    }
-    {
-        static const hwaddr bases[] = { 0x58000000, 0x58000008, 0x60000240, 0x88004010 };
-        static const char *names[] = { "boot-output-580-0", "boot-output-580-8",
-                                      "boot-output-600", "boot-output-880" };
-        const bool enabled[] = { s->boot_output_580, s->boot_output_580,
-                                 s->boot_output_600, s->boot_output_880 };
-        unsigned i;
-
-        for (i = 0; i < ARRAY_SIZE(bases); i++) {
-            unsigned size = i < 2 ? 2 : 4;
-            MemoryRegionSection section;
-            bool conflict;
-
-            if (!enabled[i]) {
-                continue;
-            }
-            section = memory_region_find(get_system_memory(), bases[i], size);
-            conflict = section.mr != NULL;
-            memory_region_unref(section.mr);
-            if (conflict) {
-                error_report("boot output overlaps an existing route");
-                exit(EXIT_FAILURE);
-            }
-            memory_region_init_io(&s->boot_output_regions[i], OBJECT(machine),
-                i < 2 ? &msm5xxx_poc_boot_output_16_ops : &msm5xxx_poc_boot_output_32_ops,
-                &s->boot_output_values[i], names[i], size);
-            memory_region_add_subregion(get_system_memory(), bases[i],
-                                        &s->boot_output_regions[i]);
-        }
     }
     msm5xxx_poc_a80_init(machine, s);
     if (!!s->external_ram_base != !!s->external_ram_size ||
@@ -24969,12 +24892,6 @@ static void msm5xxx_poc_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "standalone-boot-events",
         msm5xxx_poc_get_standalone_boot_events,
         msm5xxx_poc_set_standalone_boot_events);
-    object_class_property_add_bool(oc, "boot-output-580",
-        msm5xxx_poc_get_boot_output_580, msm5xxx_poc_set_boot_output_580);
-    object_class_property_add_bool(oc, "boot-output-600",
-        msm5xxx_poc_get_boot_output_600, msm5xxx_poc_set_boot_output_600);
-    object_class_property_add_bool(oc, "boot-output-880",
-        msm5xxx_poc_get_boot_output_880, msm5xxx_poc_set_boot_output_880);
     object_class_property_add(oc, "external-ram-base", "uint32",
         msm5xxx_poc_get_external_ram_base,
         msm5xxx_poc_set_external_ram_base, NULL, NULL);
