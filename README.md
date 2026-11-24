@@ -57,7 +57,8 @@ For build information and licenses, see [QEMU backend](docs/QEMU_TCG_BACKEND.md)
 [third-party notices](THIRD_PARTY_NOTICES.md), and
 [source distribution](docs/SOURCE_DISTRIBUTION.md). The project is
 GPL-2.0-or-later; bundled components retain their own licenses.
-# MA5 voice ROM
+
+## MA5 voice ROM
 
 For MA5 PCM output, set `MSM5XXX_MA5_ROM` to a user-supplied raw 16384-byte
 file. File offset 0 maps to chip address 0x0000 and offset 0x3fff to 0x3fff.
