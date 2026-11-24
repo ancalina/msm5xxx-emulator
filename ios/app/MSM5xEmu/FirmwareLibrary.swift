@@ -405,6 +405,13 @@ final class FirmwareLibraryStore: ObservableObject {
         }
     }
 
+    func removesImportedCopies(_ entry: LibraryEntry) -> Bool {
+        index.entries.contains { candidate in
+            candidate.imported && (candidate.id == entry.id ||
+                (entry.sha256 != nil && !entry.sha256!.isEmpty && candidate.sha256 == entry.sha256))
+        }
+    }
+
     func remove(_ entry: LibraryEntry) {
         guard indexReadable else { error = "Library index unreadable"; return }
         _ = nextGeneration()
@@ -608,6 +615,13 @@ struct FirmwareLibraryView: View {
         boot(entry)
     }
 
+    @ViewBuilder private func fileActions(_ entry: LibraryEntry) -> some View {
+        Button(text("Library info")) { infoEntry = entry }
+        Button(text(store.removesImportedCopies(entry) ? "Library delete copies" : "Library remove"), role: .destructive) {
+            store.remove(entry)
+        }
+    }
+
     private func lastBoot(_ entry: LibraryEntry) -> String {
         guard let date = entry.lastBooted else { return text("Library never") }
         return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
@@ -636,36 +650,43 @@ struct FirmwareLibraryView: View {
                     let spoken = String(format: text("Library row"), entry.displayName,
                                         entry.chipset ?? "—", lastBoot(entry))
                     HStack {
-                        if let path = entry.thumbnail, let image = UIImage(contentsOfFile: path) {
-                            Image(uiImage: image).resizable().interpolation(.none)
-                                .scaledToFit().frame(width: 60, height: 60)
+                        Button { select(group) } label: {
+                            HStack {
+                                if let path = entry.thumbnail, let image = UIImage(contentsOfFile: path) {
+                                    Image(uiImage: image).resizable().interpolation(.none)
+                                        .scaledToFit().frame(width: 60, height: 60)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.displayName).font(.headline).foregroundColor(.white).lineLimit(1)
+                                    Text("\(entry.chipset ?? "—") · \(group.sizes) · \(lastBoot(entry))")
+                                        .font(.footnote).foregroundColor(Color(white: 0.63))
+                                    if !group.files.contains(where: { $0.available }) {
+                                        Text(text("Library unavailable")).font(.caption)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
                         }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.displayName).font(.headline).foregroundColor(.white).lineLimit(1)
-                            Text("\(entry.chipset ?? "—") · \(group.sizes) · \(lastBoot(entry))")
-                                .font(.footnote).foregroundColor(Color(white: 0.63))
-                            if !entry.available { Text(text("Library unavailable")).font(.caption) }
+                        .buttonStyle(.borderless)
+                        .disabled(!group.files.contains(where: { $0.available }) || engine.starting || preparing)
+                        .accessibilityLabel(spoken)
+                        Menu {
+                            if group.files.count == 1 { fileActions(entry) }
+                            else {
+                                ForEach(group.files) { file in
+                                    Menu(file.name) { fileActions(file) }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis").frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
-                        Spacer(minLength: 0)
-                        if entry.available && (entry.sha256 ?? "").isEmpty { ProgressView().accessibilityHidden(true) }
+                        .accessibilityLabel(String(format: text("Library file actions"), entry.displayName))
                     }
                     .padding(.vertical, 6)
                     .listRowBackground(Color(white: 0.07))
                     .listRowSeparatorTint(Color(white: 0.25))
-                    .contentShape(Rectangle())
-                    .onTapGesture { select(group) }
-                    .contextMenu {
-                        if group.files.count == 1 {
-                            Button(text("Library info")) { infoEntry = entry }
-                            Button(text("Library remove"), role: .destructive) { store.remove(entry) }
-                        }
-                    }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(spoken)
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAction { select(group) }
-                    .accessibilityAction(named: Text(text("Library info"))) { infoEntry = entry }
-                    .accessibilityAction(named: Text(text("Library remove"))) { store.remove(entry) }
                 }
                 .listStyle(.plain)
                 .modifier(LibraryListBackground())
@@ -736,9 +757,10 @@ struct FirmwareLibraryView: View {
             }
             .alert(item: $infoEntry) { entry in
                 Alert(title: Text(text("Library info")),
-                      message: Text(String(format: text("Library info body"), entry.displayName,
-                                           entry.chipset ?? "—", entry.sha256 ?? "—", store.sourceDescription(entry))),
-                      dismissButton: .default(Text(text("Done"))))
+                    message: Text(String(format: text("Library info body"), entry.displayName,
+                        entry.chipset ?? "—", entry.sha256 ?? "—", store.sourceDescription(entry))
+                        + "\n\n" + String(format: text("Library delete copies detail"), entry.name)),
+                    dismissButton: .default(Text(text("Done"))))
             }
 
     }

@@ -200,3 +200,7 @@
 "Library index unreadable" = "저장된 라이브러리를 읽을 수 없어요. 기존 파일은 그대로 보존했어요. 라이브러리 파일을 복원한 다음 새로고침하세요.";
 "Library import in progress" = "파일을 가져오는 중이에요. 완료된 다음 다시 시도하세요.";
 "Library removal incomplete" = "일부 앱 사본을 제거하지 못했어요. 이미 제거한 파일은 사용할 수 없음으로 표시돼요. 접근 권한을 복구한 다음 다시 시도하세요. 외부 원본은 그대로 보존했어요.";
+
+"Library delete copies" = "동일 내용 앱 사본 삭제";
+"Library file actions" = "%@ 파일 작업";
+"Library delete copies detail" = "%@ 항목을 제거하면 내용이 같은 항목이 라이브러리에서 제외되고, 가져온 앱 사본이 있으면 함께 삭제돼요. 외부 원본 파일은 보존돼요. 앱 사본 삭제는 되돌릴 수 없어요.";

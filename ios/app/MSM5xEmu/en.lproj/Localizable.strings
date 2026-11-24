@@ -200,3 +200,7 @@
 "Library index unreadable" = "The saved library could not be read. Its file was kept unchanged. Restore the library file, then refresh.";
 "Library import in progress" = "A file is already being imported. Wait for it to finish, then try again.";
 "Library removal incomplete" = "Some app copies could not be removed. Files already removed are marked unavailable. Restore access and retry. External originals were kept.";
+
+"Library delete copies" = "Delete matching app copies";
+"Library file actions" = "Actions for %@";
+"Library delete copies detail" = "Removing %@ excludes matching entries from the library and deletes any imported app copies with the same contents. External original files are kept. Deleting app copies cannot be undone.";
