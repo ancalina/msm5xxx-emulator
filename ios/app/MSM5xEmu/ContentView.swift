@@ -395,11 +395,16 @@ struct ContentView: View {
                         displayedComponents: [.date, .hourAndMinute])
                 }.navigationTitle(text("Time"))
                     .toolbar {
-                        Button(text("Save")) {
-                            networkStartTime = timeDraft.timeIntervalSince1970
-                            networkHostTime = false
-                            networkStartTimeEnabled = true
-                            showingTime = false
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button(text("Cancel"), role: .cancel) { showingTime = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(text("Save")) {
+                                networkStartTime = timeDraft.timeIntervalSince1970
+                                networkHostTime = false
+                                networkStartTimeEnabled = true
+                                showingTime = false
+                            }
                         }
                     }
             }
