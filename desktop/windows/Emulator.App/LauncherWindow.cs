@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Msm5xxx.Desktop.Core;
 using Windows.System;
@@ -128,8 +129,7 @@ public sealed class LauncherWindow : DesktopWindow
             await EnsureBackendAsync();
             snapshot = (await backend!.CallAsync("library.scan")).As<LibrarySnapshot>();
             if (IsClosing) return;
-            list.Items.Clear();
-            foreach (var entry in snapshot.Entries) list.Items.Add(CreateRow(entry));
+            ReplaceRows(snapshot.Entries);
             empty.Visibility = snapshot.Entries.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
             Error.IsOpen = false;
         }
@@ -138,6 +138,58 @@ public sealed class LauncherWindow : DesktopWindow
             scanning = false; progress.Visibility = Visibility.Collapsed;
             if (refreshPending && !IsClosing) { refreshPending = false; _ = Guard(RefreshAsync); }
         }
+    }
+
+    private void ReplaceRows(FirmwareEntry[] entries)
+    {
+        var selectedPath = (list.SelectedItem as ListViewItem)?.Tag is FirmwareEntry selected ? selected.Path : null;
+        var selectedIndex = list.SelectedIndex;
+        var focused = FocusManager.GetFocusedElement(Root.XamlRoot) as DependencyObject;
+        string? focusedPath = null, role = null;
+        var hadListFocus = false;
+        for (var node = focused; node is not null; node = VisualTreeHelper.GetParent(node))
+        {
+            if (node is Button { Tag: string action }) role = action;
+            if (node is ListViewItem { Tag: FirmwareEntry entry }) focusedPath = entry.Path;
+            if (ReferenceEquals(node, list)) { hadListFocus = true; break; }
+        }
+        var offset = FindChild<ScrollViewer>(list)?.VerticalOffset ?? 0;
+        list.Items.Clear();
+        foreach (var entry in entries) list.Items.Add(CreateRow(entry));
+        ListViewItem? Row(string? path) => path is null ? null : list.Items.OfType<ListViewItem>().FirstOrDefault(item =>
+            item.Tag is FirmwareEntry entry && string.Equals(entry.Path, path, StringComparison.OrdinalIgnoreCase));
+        var restored = Row(selectedPath);
+        if (restored is null && selectedIndex >= 0 && list.Items.Count > 0)
+            restored = (ListViewItem)list.Items[Math.Min(selectedIndex, list.Items.Count - 1)];
+        list.SelectedItem = restored;
+        var focusRow = Row(focusedPath) ?? restored;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (IsClosing) return;
+            list.UpdateLayout();
+            FindChild<ScrollViewer>(list)?.ChangeView(null, offset, null, disableAnimation: true);
+            if (!hadListFocus) return;
+            if (focusRow is null)
+            {
+                (empty.Children.OfType<Button>().FirstOrDefault())?.Focus(FocusState.Keyboard);
+                return;
+            }
+            list.ScrollIntoView(focusRow);
+            list.UpdateLayout();
+            var action = role is null ? null : FindChild<Button>(focusRow, button => Equals(button.Tag, role));
+            (action as Control ?? focusRow).Focus(FocusState.Keyboard);
+        });
+    }
+
+    private static T? FindChild<T>(DependencyObject parent, Func<T, bool>? match = null) where T : DependencyObject
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T value && (match is null || match(value))) return value;
+            if (FindChild(child, match) is { } descendant) return descendant;
+        }
+        return null;
     }
 
     private ListViewItem CreateRow(FirmwareEntry entry)
@@ -157,8 +209,10 @@ public sealed class LauncherWindow : DesktopWindow
         labels.Children.Add(name); labels.Children.Add(detail); Grid.SetColumn(labels, 1); row.Children.Add(labels);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         var info = Button(Text["library_info"], () => Guard(() => InfoAsync(entry)));
+        info.Tag = "info";
         AutomationProperties.SetName(info, Text["library_info"] + " · " + entry.Name);
         var remove = Button(Text["library_remove"], () => Guard(() => RemoveAsync(entry)));
+        remove.Tag = "remove";
         AutomationProperties.SetName(remove, Text["library_remove"] + " · " + entry.Name);
         actions.Children.Add(info); actions.Children.Add(remove); Grid.SetColumn(actions, 2); row.Children.Add(actions);
         var item = new ListViewItem { Content = row, Tag = entry, HorizontalContentAlignment = HorizontalAlignment.Stretch };
