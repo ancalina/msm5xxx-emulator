@@ -99,7 +99,7 @@ var desktopDebugArguments: [String] {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil); window.displayIfNeeded(); await pause(0.6)
         if LibraryModel.shared.windows.values.contains(where: { $0.secondaryWindow === window }) {
-            try require(window.subtitle.contains(L("secondary_preview")) || window.subtitle.contains(L("secondary_unknown")), "Secondary window subtitle is missing its display note")
+            try require(window.subtitle.isEmpty && window.title == LibraryModel.shared.windows.values.first(where: { $0.secondaryWindow === window })?.window?.title, "Secondary title must contain only the model name")
             log("PASS secondary subtitle note \(name): \(window.subtitle)", output)
         }
         guard let view = window.contentView?.superview,

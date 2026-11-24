@@ -123,7 +123,7 @@ import AppKit
         case "language": try await library.set("ui_language", value: request["value"])
         case "theme": NSApp.appearance = NSAppearance(named: request["value"].string == "dark" ? .darkAqua : .aqua)
         case "snapshot":
-            guard let window = request["window"].string == "library" ? NSApp.windows.first(where: { $0.title == L("library_title") }) : (controller?.window?.sheets.first ?? controller?.window ?? NSApp.keyWindow) else { throw BackendError(message: "No inspection window") }
+            guard let window = request["window"].string == "library" ? NSApp.windows.first(where: { $0.title == L("library_title") }) : (request["window"].string == "secondary" ? controller?.secondaryWindow : request["window"].string == "settings" ? NSApp.windows.first(where: { $0.title.hasPrefix("MSM5xxx Emulator") }) : (controller?.window?.sheets.first ?? controller?.window ?? NSApp.keyWindow)) else { throw BackendError(message: "No inspection window") }
             try await VerificationHarness.snapshot(window, request["name"].string, folder)
         case "quit": DispatchQueue.main.async { NSApp.terminate(nil) }
         default: throw BackendError(message: "Unknown inspection action")

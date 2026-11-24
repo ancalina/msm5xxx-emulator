@@ -149,8 +149,7 @@ struct SecondaryScene: View {
         let size = session.secondary.frame.map { CGSize(width: $0.width, height: $0.height) } ?? CGSize(width: 96, height: 64)
         LCDView(display: session.secondary, secondary: true)
             .frame(minWidth: size.width, idealWidth: size.width * 3, minHeight: size.height, idealHeight: size.height * 3)
-            .navigationTitle(L("additional_display"))
-            .navigationSubtitle(session.secondaryStatus)
+            .navigationTitle(session.title)
             .focusedSceneValue(\.desktopScene, .emulator(model))
             .background(WindowAccessor { model.attachSecondary($0, presentation: presentation) }.frame(width: 0, height: 0).allowsHitTesting(false))
             .onChange(of: size) { _, _ in if let window = model.secondaryWindow { model.attachSecondary(window, presentation: presentation) } }
