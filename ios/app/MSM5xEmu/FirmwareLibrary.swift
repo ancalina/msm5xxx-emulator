@@ -61,6 +61,7 @@ final class FirmwareLibraryStore: ObservableObject {
     @Published private(set) var failedSources: [String] = []
     @Published var error: String?
     private var index = LibraryIndex()
+    private var indexReadable = true
     private let scanner = DispatchQueue(label: "firmware.library.scan")
     private var generation = 0
     private let generationLock = NSLock()
@@ -93,23 +94,41 @@ final class FirmwareLibraryStore: ObservableObject {
         indexURL = base.appendingPathComponent("firmware-library.json")
         cacheURL = base.appendingPathComponent("firmware-library-cache.json")
         importsURL = base.appendingPathComponent("FirmwareLibrary", isDirectory: true)
-        if let data = try? Data(contentsOf: indexURL),
-           let loaded = try? JSONDecoder().decode(LibraryIndex.self, from: data) {
+        _ = loadIndex(allowMissing: true)
+    }
+
+    @discardableResult private func loadIndex(allowMissing: Bool = false) -> Bool {
+        do {
+            let loaded = try JSONDecoder().decode(LibraryIndex.self, from: Data(contentsOf: indexURL))
             index = loaded
             entries = loaded.entries
+            indexReadable = true
+            return true
+        } catch {
+            let failure = error as NSError
+            if allowMissing && failure.domain == NSCocoaErrorDomain &&
+                (failure.code == CocoaError.Code.fileReadNoSuchFile.rawValue || failure.code == CocoaError.Code.fileNoSuchFile.rawValue) {
+                return true
+            }
+            indexReadable = false
+            self.error = "Library index unreadable"
+            return false
         }
     }
 
-    private func save() {
+    @discardableResult private func save() -> Bool {
+        guard indexReadable else { error = "Library index unreadable"; return false }
         do {
             try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
             try JSONEncoder().encode(index).write(to: indexURL, options: .atomic)
-        } catch { self.error = "Library error" }
+            return true
+        } catch { self.error = "Library error"; return false }
     }
 
     var folders: [LibraryFolder] { index.folders }
 
     func removeFolder(_ id: String, engine: QEMUEngine) {
+        guard indexReadable else { error = "Library index unreadable"; return }
         _ = nextGeneration()
         index.folders.removeAll { $0.id == id }
         index.entries.removeAll { !$0.imported && $0.folder == id }
@@ -118,6 +137,7 @@ final class FirmwareLibraryStore: ObservableObject {
     }
 
     func addFolder(_ url: URL, engine: QEMUEngine) {
+        guard indexReadable else { error = "Library index unreadable"; return }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -164,8 +184,9 @@ final class FirmwareLibraryStore: ObservableObject {
         return false
     }
 
-    func importFile(_ url: URL, engine: QEMUEngine) {
-        guard !importing else { return }
+    func importFile(_ url: URL, engine: QEMUEngine, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard indexReadable else { error = "Library index unreadable"; completion(false); return }
+        guard !importing else { error = "Library import in progress"; completion(false); return }
         _ = nextGeneration()
         scanning = false
         importing = true
@@ -209,9 +230,10 @@ final class FirmwareLibraryStore: ObservableObject {
                                 model: metadata["model"] as? String, display: metadata["name"] as? String,
                                 chipset: metadata["chipset"] as? String,
                                 sha256: sha, size: byteCount, lastBooted: nil, thumbnail: nil, available: true))
-                            self.save()
                         }
+                        let saved = self.save()
                         self.importing = false
+                        completion(saved)
                         self.refresh(engine: engine)
                     }
                 } catch {
@@ -222,6 +244,7 @@ final class FirmwareLibraryStore: ObservableObject {
                 DispatchQueue.main.async {
                     self.importing = false
                     self.error = "Library error"
+                    completion(false)
                     self.refresh(engine: engine)
                 }
             }
@@ -230,6 +253,10 @@ final class FirmwareLibraryStore: ObservableObject {
 
     func refresh(engine: QEMUEngine) {
         guard !importing else { return }
+        if !indexReadable {
+            guard loadIndex() else { return }
+            error = nil
+        }
         let token = nextGeneration()
         let original = index
         scanning = true
@@ -355,24 +382,47 @@ final class FirmwareLibraryStore: ObservableObject {
     }
 
     func remove(_ entry: LibraryEntry) {
+        guard indexReadable else { error = "Library index unreadable"; return }
         _ = nextGeneration()
         scanning = false
         let matches = index.entries.filter { candidate in
             candidate.id == entry.id || (entry.sha256 != nil && !entry.sha256!.isEmpty && candidate.sha256 == entry.sha256)
         }
         let root = importsURL.standardizedFileURL.resolvingSymlinksInPath().path + "/"
-        for item in matches where item.imported {
-            guard let path = item.path else { continue }
-            let target = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-            guard target.path.hasPrefix(root) else { return }
-            do { if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) } }
-            catch { self.error = "Library error"; return }
-        }
+        let previousIndex = index
+        let previousEntries = entries
         let removed = Set(matches.map { $0.id })
         index.entries.removeAll { removed.contains($0.id) }
         for id in removed where !index.excluded.contains(id) { index.excluded.append(id) }
         entries.removeAll { removed.contains($0.id) }
-        save()
+        // shortcut: no crash journal, add one when process-loss recovery is required.
+        guard save() else {
+            index = previousIndex
+            entries = previousEntries
+            return
+        }
+        var deletedCopies = Set<String>()
+        for item in matches where item.imported {
+            guard let path = item.path else { continue }
+            let target = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+            do {
+                guard target.path.hasPrefix(root) else { throw CocoaError(.fileWriteNoPermission) }
+                if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+                deletedCopies.insert(item.id)
+            } catch {
+                index = previousIndex
+                entries = previousEntries
+                for position in index.entries.indices where deletedCopies.contains(index.entries[position].id) {
+                    index.entries[position].available = false
+                }
+                for position in entries.indices where deletedCopies.contains(entries[position].id) {
+                    entries[position].available = false
+                }
+                save()
+                self.error = "Library removal incomplete"
+                return
+            }
+        }
     }
 
     func ensureEntry(_ entry: LibraryEntry) {
@@ -620,15 +670,28 @@ struct FirmwareLibraryView: View {
             .onAppear {
                 // Firmware opened before the library existed lives in Application Support/firmware.
                 let defaults = UserDefaults.standard
-                if !defaults.bool(forKey: "library_migrated"),
-                   let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
-                   let names = try? FileManager.default.contentsOfDirectory(atPath: support.appendingPathComponent("firmware").path),
-                   let name = names.sorted().first(where: { !$0.hasPrefix(".") }) {
-                    defaults.set(true, forKey: "library_migrated")
-                    store.importFile(support.appendingPathComponent("firmware").appendingPathComponent(name), engine: engine)
-                } else {
-                    defaults.set(true, forKey: "library_migrated")
+                if defaults.bool(forKey: "library_migrated") {
                     store.refresh(engine: engine)
+                } else if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+                    do {
+                        let directory = support.appendingPathComponent("firmware")
+                        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                        if let name = names.sorted().first(where: { !$0.hasPrefix(".") }) {
+                            store.importFile(directory.appendingPathComponent(name), engine: engine) { success in
+                                if success { defaults.set(true, forKey: "library_migrated") }
+                            }
+                        } else {
+                            defaults.set(true, forKey: "library_migrated")
+                            store.refresh(engine: engine)
+                        }
+                    } catch {
+                        let failure = error as NSError
+                        if failure.domain == NSCocoaErrorDomain &&
+                            (failure.code == CocoaError.Code.fileReadNoSuchFile.rawValue || failure.code == CocoaError.Code.fileNoSuchFile.rawValue) {
+                            defaults.set(true, forKey: "library_migrated")
+                        } else { store.error = "Library error" }
+                        store.refresh(engine: engine)
+                    }
                 }
             }
             .sheet(isPresented: $showingSettings) { librarySettings }

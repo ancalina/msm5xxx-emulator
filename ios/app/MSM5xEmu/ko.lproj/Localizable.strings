@@ -196,3 +196,7 @@
 "Could not change the app icon." = "앱 아이콘을 변경하지 못했습니다.";
 
 "Unable to share capture" = "캡처를 공유할 수 없어요";
+
+"Library index unreadable" = "저장된 라이브러리를 읽을 수 없어요. 기존 파일은 그대로 보존했어요. 라이브러리 파일을 복원한 다음 새로고침하세요.";
+"Library import in progress" = "파일을 가져오는 중이에요. 완료된 다음 다시 시도하세요.";
+"Library removal incomplete" = "일부 앱 사본을 제거하지 못했어요. 이미 제거한 파일은 사용할 수 없음으로 표시돼요. 접근 권한을 복구한 다음 다시 시도하세요. 외부 원본은 그대로 보존했어요.";
