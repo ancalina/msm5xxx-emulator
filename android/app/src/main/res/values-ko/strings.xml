@@ -247,4 +247,5 @@
     <string name="back_to_library">라이브러리로 돌아가기</string>
     <string name="time_keyboard_input">키보드 입력</string>
     <string name="time_dial_input">시계 다이얼</string>
+    <string name="mapping_context_changed">선택한 펌웨어가 바뀌었어요. 현재 펌웨어의 키 매핑을 다시 열어 주세요.</string>
 </resources>

@@ -47,8 +47,27 @@ internal class EmulatorContent private constructor(private val activity: MainAct
 
     fun restore(state: android.os.Bundle?) {
         settings = state?.getBoolean("settings_open", false) ?: false
+        if (state == null) return
+        when (state.getString("editor_kind")) {
+            "mapping" -> activity.restoreKeyMapping(state.getString("editor_identity"), state.getInt("editor_bit", -1))
+            "network-time" -> activity.restoreNetworkTime(state.getString("editor_initial", ""))
+        }
     }
-    fun save(state: android.os.Bundle) { state.putBoolean("settings_open", settings) }
+    fun save(state: android.os.Bundle) {
+        state.putBoolean("settings_open", settings)
+        when (val value = modal) {
+            is Modal.Input -> {
+                state.putString("editor_kind", "mapping")
+                state.putString("editor_identity", value.identity)
+                state.putInt("editor_bit", value.bit)
+            }
+            is Modal.NetworkTime -> {
+                state.putString("editor_kind", "network-time")
+                state.putString("editor_initial", value.initial)
+            }
+            else -> state.remove("editor_kind")
+        }
+    }
     fun update(model: String, state: String, ready: Boolean, active: Boolean, busy: Boolean, edit: Boolean) {
         virtualNetwork = activity.getSharedPreferences("launcher", android.content.Context.MODE_PRIVATE).getBoolean("virtual_network", false)
         title = model; status = state; canStart = ready; running = active; starting = busy; editing = edit
@@ -66,8 +85,9 @@ internal class EmulatorContent private constructor(private val activity: MainAct
     fun choose(title: String, labels: Array<String>, selected: Int, action: IntConsumer) {
         modal = Modal.Choice(title, labels.toList(), selected, action)
     }
-    fun input(title: String, label: String, initial: String, validate: java.util.function.Function<String, String?>, action: Consumer<String>) {
-        modal = Modal.Input(title, label, initial, validate, action)
+    fun input(identity: String, bit: Int, title: String, label: String, initial: String,
+              validate: java.util.function.Function<String, String?>, action: Consumer<String>) {
+        modal = Modal.Input(identity, bit, title, label, initial, validate, action)
     }
 
     @Composable
@@ -178,8 +198,8 @@ internal class EmulatorContent private constructor(private val activity: MainAct
 
     @Composable
     private fun InputDialog(value: Modal.Input) {
-        var text by rememberSaveable(value.title) { mutableStateOf(value.initial) }
-        var validation by rememberSaveable(value.title) { mutableStateOf<String?>(null) }
+        var text by rememberSaveable(value.identity, value.bit) { mutableStateOf(value.initial) }
+        var validation by rememberSaveable(value.identity, value.bit) { mutableStateOf<String?>(null) }
         AlertDialog(onDismissRequest = { modal = null }, title = { Text(value.title) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -201,7 +221,7 @@ internal class EmulatorContent private constructor(private val activity: MainAct
         data class Message(val title: String, val body: String) : Modal
         data class Confirm(val title: String, val body: String, val positive: String, val action: Runnable) : Modal
         data class Choice(val title: String, val labels: List<String>, val selected: Int, val action: IntConsumer) : Modal
-        data class Input(val title: String, val label: String, val initial: String,
+        data class Input(val identity: String, val bit: Int, val title: String, val label: String, val initial: String,
             val validate: java.util.function.Function<String, String?>, val action: Consumer<String>) : Modal
     }
 

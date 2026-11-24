@@ -1518,17 +1518,30 @@ public final class MainActivity extends ComponentActivity {
     private void showKeyMapping(int bit) {
         BackendBridge.Session current = session;
         if (current == null || heldKeyBit >= 0) return;
-        String identity = current.identity();
+        restoreKeyMapping(current.identity(), bit);
+    }
+
+    void restoreKeyMapping(String identity, int bit) {
+        if (identity == null || !identity.equals(settingsIdentity())
+                || bit < 0 || bit >= keyButtons.length || keyButtons[bit] == null) {
+            showError(getString(R.string.mapping_context_changed));
+            return;
+        }
         Integer saved = manualKeyEvent(identity, bit);
-        composeContent.input(getString(R.string.mapping_title, keyButtons[bit].getText()),
+        composeContent.input(identity, bit, getString(R.string.mapping_title, keyButtons[bit].getText()),
                 getString(R.string.mapping_prompt), saved == null ? "" : getString(R.string.mapping_value, saved),
                 requested -> {
                     if (requested.trim().isEmpty()) return null;
                     try { parseManualKeyEvent(requested); return null; }
                     catch (IllegalArgumentException error) { return getString(R.string.mapping_invalid); }
                 }, requested -> {
+                    if (!identity.equals(settingsIdentity())) {
+                        showError(getString(R.string.mapping_context_changed));
+                        return;
+                    }
                     saveManualKeyEvent(identity, bit, requested.trim().isEmpty() ? null : parseManualKeyEvent(requested));
-                    updateKeypad(current);
+                    BackendBridge.Session active = session;
+                    if (active != null && identity.equals(active.identity())) updateKeypad(active);
                 });
     }
 
@@ -1844,8 +1857,12 @@ public final class MainActivity extends ComponentActivity {
     }
 
     void showNetworkTimeDialog() {
+        restoreNetworkTime(preferences().getString(KEY_NETWORK_START_TIME, ""));
+    }
+
+    void restoreNetworkTime(String initial) {
         SharedPreferences prefs = preferences();
-        composeContent.networkTime(prefs.getString(KEY_NETWORK_START_TIME, ""), value -> {
+        composeContent.networkTime(initial == null ? "" : initial, value -> {
             String stored = value.trim();
             prefs.edit().putBoolean(KEY_NETWORK_HOST_TIME, stored.isEmpty()).putString(KEY_NETWORK_START_TIME, stored).apply();
             if (prefs.getBoolean(KEY_VIRTUAL_NETWORK, false)) restartIfRunning();

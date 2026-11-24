@@ -247,4 +247,5 @@
     <string name="back_to_library">Back to library</string>
     <string name="time_keyboard_input">Keyboard input</string>
     <string name="time_dial_input">Clock dial</string>
+    <string name="mapping_context_changed">The selected firmware changed. Open key mapping for the current firmware.</string>
 </resources>
