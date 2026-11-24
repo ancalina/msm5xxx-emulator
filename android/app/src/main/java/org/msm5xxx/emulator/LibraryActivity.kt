@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -93,14 +92,7 @@ class LibraryActivity : ComponentActivity() {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) { }
         if (folder) library.addFolder(uri)
-        else {
-            try {
-                val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                    if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null
-                }
-                library.importFile(uri, SelectionLabels.displayName(this, name))
-            } catch (_: RuntimeException) { library.showMessage(getString(R.string.error_unreadable_document)) }
-        }
+        else library.importFile(uri, null)
     }
 
 

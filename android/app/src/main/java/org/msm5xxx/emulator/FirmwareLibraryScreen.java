@@ -112,13 +112,21 @@ final class FirmwareLibraryScreen {
         refresh();
     }
 
-    void importFile(Uri source, String name) {
+    void importFile(Uri source, String suppliedName) {
         loading = true;
         publishRows();
         scanner.execute(() -> {
             File directory = new File(activity.getFilesDir(), "firmware-library");
             File target = new File(directory, java.util.UUID.randomUUID() + ".bin");
             try {
+                String name = suppliedName;
+                if (name == null) {
+                    try (Cursor cursor = activity.getContentResolver().query(source,
+                            new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                        if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) name = cursor.getString(0);
+                    }
+                }
+                name = SelectionLabels.displayName(activity, name);
                 if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("directory");
                 long limit = PythonRuntime.librarySizeLimit(activity, name);
                 try (InputStream input = activity.getContentResolver().openInputStream(source);
