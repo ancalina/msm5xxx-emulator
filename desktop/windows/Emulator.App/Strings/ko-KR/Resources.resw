@@ -513,4 +513,10 @@
   <data name="app_icon" xml:space="preserve"><value>앱 아이콘</value></data>
   <data name="icon_full" xml:space="preserve"><value>전체</value></data>
   <data name="icon_simple" xml:space="preserve"><value>간단히 (MSM5)</value></data>
+  <data name="settings_wait_timeout" xml:space="preserve">
+    <value>설정의 응답을 기다리고 있습니다. 창을 유지하고 다시 닫거나, 기다리지 않고 닫을 수 있습니다. 이미 보낸 변경 사항은 저장될 수도 있으며, 저장하지 않은 입력은 사라집니다.</value>
+  </data>
+  <data name="close_without_waiting" xml:space="preserve">
+    <value>기다리지 않고 닫기</value>
+  </data>
 </root>

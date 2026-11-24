@@ -23,6 +23,7 @@ internal sealed class SettingsWindow : DesktopWindow
     private string? savedLanguage;
     private string savedTime = "";
     private bool updating, timeSaving, hardwareApplying;
+    private bool closeWithoutWaiting;
 
     public SettingsWindow(BackendClient backend, Strings text, Func<Task>? restart)
     {
@@ -257,9 +258,24 @@ internal sealed class SettingsWindow : DesktopWindow
 
     protected override async Task<bool> CanCloseAsync()
     {
-        await initialize;
-        await pending;
-        await SaveTimeAsync();
+        if (closeWithoutWaiting) return true;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await initialize.WaitAsync(deadline.Token);
+            await pending.WaitAsync(deadline.Token);
+            await SaveTimeAsync().WaitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            ShowError(new TimeoutException(Text["settings_wait_timeout"]));
+            Error.ActionButton = Button(Text["close_without_waiting"], async () =>
+            {
+                closeWithoutWaiting = true;
+                await ShutdownAndCloseAsync();
+            });
+            return false;
+        }
         if (networkTime.Text == savedTime) return true;
         networkTime.StartBringIntoView();
         networkTime.Focus(FocusState.Programmatic);

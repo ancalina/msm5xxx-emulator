@@ -513,4 +513,10 @@
   <data name="app_icon" xml:space="preserve"><value>App icon</value></data>
   <data name="icon_full" xml:space="preserve"><value>Full</value></data>
   <data name="icon_simple" xml:space="preserve"><value>Simple (MSM5)</value></data>
+  <data name="settings_wait_timeout" xml:space="preserve">
+    <value>Settings are still waiting for a response. You can keep this window open and retry closing, or close without waiting. A submitted change may still be saved; unsaved input will be lost.</value>
+  </data>
+  <data name="close_without_waiting" xml:space="preserve">
+    <value>Close without waiting</value>
+  </data>
 </root>
