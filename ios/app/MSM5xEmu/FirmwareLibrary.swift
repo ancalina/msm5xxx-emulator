@@ -46,6 +46,7 @@ private struct LibraryIndex: Codable {
 final class FirmwareLibraryStore: ObservableObject {
     @Published private(set) var entries: [LibraryEntry] = []
     @Published private(set) var scanning = false
+    @Published private(set) var importing = false
     @Published var error: String?
     private var index = LibraryIndex()
     private let scanner = DispatchQueue(label: "firmware.library.scan")
@@ -154,8 +155,10 @@ final class FirmwareLibraryStore: ObservableObject {
     }
 
     func importFile(_ url: URL, engine: QEMUEngine) {
-        let token = nextGeneration()
-        scanning = true
+        guard !importing else { return }
+        _ = nextGeneration()
+        scanning = false
+        importing = true
         let scoped = url.startAccessingSecurityScopedResource()
         scanner.async {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -175,17 +178,14 @@ final class FirmwareLibraryStore: ObservableObject {
                     defer { try? output.close() }
                     var total: Int64 = 0
                     while let data = try input.read(upToCount: 65536), !data.isEmpty {
-                        guard self.isCurrent(token) else { throw NSError(domain: "FirmwareLibrary", code: 4) }
                         total += Int64(data.count)
                         guard total <= limit else { throw NSError(domain: "FirmwareLibrary", code: 3) }
                         try output.write(contentsOf: data)
                     }
-                    guard self.isCurrent(token) else { throw NSError(domain: "FirmwareLibrary", code: 4) }
                     let metadata = try engine.libraryRequest(["path": target.path, "cache": self.cacheURL.path, "name": url.lastPathComponent])
                     let sha = metadata["sha256"] as? String
                     let byteCount = total
                     DispatchQueue.main.async {
-                        guard self.isCurrent(token) else { try? FileManager.default.removeItem(at: directory); return }
                         if let sha = sha, self.index.entries.contains(where: { $0.available && $0.sha256 == sha }) {
                             try? FileManager.default.removeItem(at: directory)
                         } else {
@@ -196,7 +196,7 @@ final class FirmwareLibraryStore: ObservableObject {
                                 sha256: sha, size: byteCount, lastBooted: nil, thumbnail: nil, available: true))
                             self.save()
                         }
-                        self.scanning = false
+                        self.importing = false
                         self.refresh(engine: engine)
                     }
                 } catch {
@@ -205,13 +205,16 @@ final class FirmwareLibraryStore: ObservableObject {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    if self.isCurrent(token) { self.scanning = false; self.error = "Library error" }
+                    self.importing = false
+                    self.error = "Library error"
+                    self.refresh(engine: engine)
                 }
             }
         }
     }
 
     func refresh(engine: QEMUEngine) {
+        guard !importing else { return }
         let token = nextGeneration()
         let original = index
         scanning = true
