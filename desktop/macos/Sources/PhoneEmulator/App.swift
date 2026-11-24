@@ -46,10 +46,23 @@ import Darwin
     func applicationDidFinishLaunching(_ notification: Notification) {
         signal(SIGPIPE, SIG_IGN)
         AppPreferences.shared.applyIcon()
+        _ = NSDocumentController.shared
         #if DEBUG
         VerificationHarness.armStartupCheckIfRequested()
         InspectionHarness.startIfRequested(library: .shared)
         #endif
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        guard !hasVisibleWindows, let presentLibrary = LibraryModel.shared.presentLibrary else { return true }
+        presentLibrary()
+        return false
+    }
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        LibraryModel.shared.receiveFiles([URL(fileURLWithPath: filename)])
+        return true
+    }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        LibraryModel.shared.receiveFiles(urls)
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let library = LibraryModel.shared

@@ -34,7 +34,13 @@ struct LibraryScene: View {
             .fileImporter(isPresented: $library.importing, allowedContentTypes: library.importFolder ? [.folder] : [.data], allowsMultipleSelection: !library.importFolder) { result in
                 library.imported(result)
             }
+            .dropDestination(for: URL.self) { urls, _ in
+                guard !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return false }
+                library.receiveFiles(urls)
+                return true
+            }
             .task {
+                library.presentLibrary = { openWindow(id: "library") }
                 library.presentFirmware = { openWindow(id: "emulator", value: $0) }
                 library.presentSecondary = { openWindow(id: "secondary", value: $0) }
                 library.dismissSecondary = { dismissWindow(id: "secondary", value: $0) }

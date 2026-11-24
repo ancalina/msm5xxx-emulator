@@ -29,6 +29,7 @@ struct Firmware: Identifiable {
     #endif
     @Published var importing = false
     var importFolder = false
+    var presentLibrary: (() -> Void)?
     var presentFirmware: ((URL) -> Void)?
     var presentSecondary: ((URL) -> Void)?
     var dismissSecondary: ((URL) -> Void)?
@@ -67,8 +68,8 @@ struct Firmware: Identifiable {
         guard !importing else { return }
         importFolder = folder; importing = true
     }
-    func imported(_ result: Result<[URL], Error>) {
-        let folder = importFolder
+    func imported(_ result: Result<[URL], Error>, folder: Bool? = nil) {
+        let folder = folder ?? importFolder
         Task {
             do {
                 var failures: [String] = []
@@ -88,6 +89,11 @@ struct Firmware: Identifiable {
             } catch { if (error as? CocoaError)?.code != .userCancelled { self.error = error.localizedDescription } }
         }
     }
+    func receiveFiles(_ urls: [URL]) {
+        guard !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return }
+        presentLibrary?()
+        imported(.success(urls), folder: false)
+    }
     func model(for url: URL) -> EmulatorSceneModel {
         let key = url.resolvingSymlinksInPath().path
         if let model = windows[key], !model.session.closed { return model }
@@ -101,6 +107,7 @@ struct Firmware: Identifiable {
         guard firmware.available else { error = L("unavailable_note"); return }
         let url = URL(fileURLWithPath: firmware.id).resolvingSymlinksInPath()
         _ = model(for: url)
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
         presentFirmware?(url)
     }
     func didClose(_ model: EmulatorSceneModel) {
