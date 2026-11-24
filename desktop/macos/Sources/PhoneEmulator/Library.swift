@@ -66,8 +66,22 @@ struct Firmware: Identifiable {
     func imported(_ result: Result<[URL], Error>) {
         let folder = importFolder
         Task {
-            do { for url in try result.get() { await mutate(folder ? "library.add_folder" : "library.add_file", path: url.path) } }
-            catch { if (error as? CocoaError)?.code != .userCancelled { self.error = error.localizedDescription } }
+            do {
+                var failures: [String] = []
+                for url in try result.get() {
+                    let accessed = url.startAccessingSecurityScopedResource()
+                    defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                    do {
+                        _ = try await backend.call(folder ? "library.add_folder" : "library.add_file", ["path": .string(url.path)])
+                    } catch { failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+                }
+                await scan()
+                if !failures.isEmpty {
+                    let scanError = self.error
+                    self.error = ([L("import_partial_failure")] + failures
+                        + (scanError.isEmpty ? [] : [scanError])).joined(separator: "\n")
+                }
+            } catch { if (error as? CocoaError)?.code != .userCancelled { self.error = error.localizedDescription } }
         }
     }
     func model(for url: URL) -> EmulatorSceneModel {

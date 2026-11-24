@@ -191,3 +191,4 @@
 "power_off_action" = "전원 끄기";
 
 "backend_shutdown_timeout" = "에뮬레이터가 종료 요청에 응답하지 않았습니다.";
+"import_partial_failure" = "일부 파일을 가져오지 못했습니다.";
