@@ -6,7 +6,7 @@ use std::{
     os::unix::process::CommandExt,
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -76,13 +76,48 @@ enum Request {
 }
 pub struct Backend {
     sender: mpsc::Sender<Request>,
+    close_watch: Arc<Mutex<CloseWatch>>,
 }
+#[derive(Default)]
+struct CloseWatch {
+    pid: Option<i32>,
+    deadline: Option<Instant>,
+    forced: bool,
+}
+
+fn force_group(watch: &mut CloseWatch) {
+    if let Some(pid) = watch.pid {
+        watch.forced = true;
+        // The backend thread has not reaped this process group leader yet.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+}
+
+fn arm_close(watch: &Arc<Mutex<CloseWatch>>) {
+    let deadline = {
+        let mut state = watch.lock().unwrap();
+        if state.deadline.is_some() {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        state.deadline = Some(deadline);
+        deadline
+    };
+    let watch = Arc::clone(watch);
+    thread::spawn(move || {
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        force_group(&mut watch.lock().unwrap());
+    });
+}
+
 impl Backend {
     pub fn new(config: &Config) -> Self {
         let (sender, receiver) = mpsc::channel();
+        let close_watch = Arc::new(Mutex::new(CloseWatch::default()));
+        let worker_watch = Arc::clone(&close_watch);
         let config = config.clone();
-        thread::spawn(move || run(config, receiver));
-        Self { sender }
+        thread::spawn(move || run(config, receiver, worker_watch));
+        Self { sender, close_watch }
     }
     pub async fn call(&self, method: &str, params: Value) -> Reply {
         let (sender, receiver) = oneshot::channel();
@@ -94,6 +129,7 @@ impl Backend {
             .map_err(|_| "Backend connection closed".to_owned())?
     }
     pub async fn close(&self) -> Reply {
+        arm_close(&self.close_watch);
         let (sender, receiver) = oneshot::channel();
         if self.sender.send(Request::Close(sender)).is_err() {
             return Ok(Value::Null);
@@ -103,35 +139,35 @@ impl Backend {
             .map_err(|_| "Backend connection closed".to_owned())?
     }
 }
-fn finish(child: &mut Child) -> Result<(), String> {
-    let until = Instant::now() + Duration::from_secs(10);
+fn finish(child: &mut Child, watch: &Arc<Mutex<CloseWatch>>) -> Result<(), String> {
+    arm_close(watch);
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return if status.success() {
-                    Ok(())
-                } else {
-                    Err(format!("Backend exited: {status}"))
-                };
+        {
+            // Reaping and clearing the PID are atomic with respect to the watchdog.
+            let mut state = watch.lock().unwrap();
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    state.pid = None;
+                    return if state.forced {
+                        Err("Backend did not exit within 10 seconds".into())
+                    } else if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("Backend exited: {status}"))
+                    };
+                }
+                Err(error) => {
+                    state.pid = None;
+                    return Err(error.to_string());
+                }
+                Ok(None) => {}
             }
-            Err(error) => return Err(error.to_string()),
-            _ => {}
-        }
-        if Instant::now() >= until {
-            break;
         }
         thread::sleep(Duration::from_millis(50));
     }
-    // The backend and QEMU share a dedicated process group.
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    Err("Backend did not exit within 10 seconds".into())
 }
 
-fn run(config: Config, receiver: mpsc::Receiver<Request>) {
+fn run(config: Config, receiver: mpsc::Receiver<Request>, watch: Arc<Mutex<CloseWatch>>) {
     let mut child = match config.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -149,6 +185,13 @@ fn run(config: Config, receiver: mpsc::Receiver<Request>) {
             return;
         }
     };
+    {
+        let mut state = watch.lock().unwrap();
+        state.pid = Some(child.id() as i32);
+        if state.deadline.is_some_and(|at| Instant::now() >= at) {
+            force_group(&mut state);
+        }
+    }
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
     let mut id = 0u64;
@@ -234,15 +277,15 @@ fn run(config: Config, receiver: mpsc::Receiver<Request>) {
                 };
                 // EOF initiates graceful shutdown even if the stop reply is delayed.
                 drop(input);
-                let exited = finish(&mut child);
-                let result = sent.and(exited).map(|_| Value::Null);
+                let exited = finish(&mut child, &watch);
+                let result = exited.and(sent).map(|_| Value::Null);
                 let _ = reply.send(result);
                 return;
             }
         }
     }
     drop(input);
-    let _ = finish(&mut child);
+    let _ = finish(&mut child, &watch);
 }
 
 #[cfg(test)]

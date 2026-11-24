@@ -149,7 +149,8 @@ it for toolkit-owned system dialogs; app windows and Settings labels update live
   disables editing while applying, preserves edits on failure, then restarts after success.
   Hardware settings remain available after a QEMU launch failure.
 - Closing a phone sends `session.stop`, closes stdin and waits off the UI thread. The
-  backend process group is terminated if it has not exited ten seconds after EOF.
+  backend process group is terminated ten seconds after the close request if it has
+  not exited, including when an earlier request is still waiting for a reply.
 
 Keyboard shortcuts: Ctrl+O import; Ctrl+R/F5 refresh; Ctrl+, settings; Ctrl+S capture;
 Ctrl+W close current window; Ctrl+Q close all windows and sessions.

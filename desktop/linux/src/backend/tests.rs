@@ -27,6 +27,9 @@ for line in sys.stdin:
     request=json.loads(line)
     with (root/'requests').open('a') as log:
         log.write(request['method']+'\n')
+    if request['method'] == 'hang':
+        (root/'blocked').write_text(str(os.getpid()))
+        time.sleep(60)
     # Shutdown must close stdin without waiting for a stop reply.
     if request['method'] != 'session.stop':
         print(json.dumps({{'id':request['id'],'result':None}}),flush=True)
@@ -102,4 +105,29 @@ fn unresponsive_backend_is_reaped_ten_seconds_after_eof() {
         std::io::Error::last_os_error().raw_os_error(),
         Some(libc::ESRCH)
     );
+}
+
+#[test]
+fn close_deadline_interrupts_an_already_blocked_rpc() {
+    let fixture = TestBundle::new(false);
+    let backend = fixture.backend();
+    gtk::glib::MainContext::new().block_on(async {
+        backend.call("session.open", json!({})).await.unwrap();
+        let (sender, receiver) = oneshot::channel();
+        backend.sender.send(Request::Call("hang".into(), json!({}), sender)).unwrap();
+        let wait_until = Instant::now() + Duration::from_secs(5);
+        while !fixture.0.join("blocked").is_file() {
+            assert!(Instant::now() < wait_until, "Backend never entered the blocked RPC");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let start = Instant::now();
+        let error = backend.close().await.unwrap_err();
+        assert!(error.contains("10 seconds"), "{error}");
+        assert!(start.elapsed() >= Duration::from_millis(9900));
+        assert!(start.elapsed() < Duration::from_secs(20));
+        assert!(receiver.await.unwrap().is_err());
+    });
+    let pid: i32 = fs::read_to_string(fixture.0.join("blocked")).unwrap().parse().unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "Backend survived shutdown");
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
 }
