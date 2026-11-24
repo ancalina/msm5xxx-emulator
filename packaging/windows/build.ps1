@@ -49,6 +49,8 @@ try {
     }
     Run { & "$python/python.exe" -c 'import capstone, PIL, numpy, msm5xxx_emulator.backend' }
     Run { & "$payload/bin/qemu-system-arm.exe" --version }
-    Run { dotnet tool run vpk -- pack --packId MSM5xxx --packTitle 'MSM5xxx Emulator' --packAuthors Ancalina --packVersion $Version --packDir $payload --mainExe MSM5xxx.Desktop.exe --icon "$payload/Branding/full.ico" --shortcuts StartMenuRoot --noPortable --outputDir $output --channel win --skip-updates }
+    Run { dotnet tool run vpk -- pack --packId MSM5xxx.Desktop --packTitle 'MSM5xxx Emulator' --packAuthors Ancalina --packVersion $Version --packDir $payload --mainExe MSM5xxx.Desktop.exe --icon "$payload/Branding/full.ico" --shortcuts StartMenuRoot --noPortable --outputDir $output --channel win --skip-updates }
+    # The install directory must remain separate from LocalAppData/MSM5xxx user data.
+    Move-Item "$output/MSM5xxx.Desktop-win-Setup.exe" "$output/MSM5xxx-win-Setup.exe" -Force
 } finally { Pop-Location }
 Write-Output "WINDOWS PACKAGE OK $Version"

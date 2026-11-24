@@ -28,7 +28,7 @@ On GitHub, select **Actions → Build Windows installers → Run workflow** and 
 
 ## Install and update
 
-Run `MSM5xxx-win-Setup.exe`. Velopack installs per user, registers an uninstall entry and creates a Start menu shortcut. The first app launch offers **Create a desktop shortcut** (off) and **Check for updates on start** (on) in a stock WinUI dialog. Firmware and the optional sound-chip ROM are never included.
+Run `MSM5xxx-win-Setup.exe`. Velopack installs per user to `%LOCALAPPDATA%\MSM5xxx.Desktop`, separate from `%LOCALAPPDATA%\MSM5xxx` user data, registers an uninstall entry and creates a Start menu shortcut. The first app launch offers **Create a desktop shortcut** (off) and **Check for updates on start** (on) in a stock WinUI dialog. Firmware and the optional sound-chip ROM are never included.
 
 **Settings → Updates** provides the automatic-check toggle and **Check now**. Updates come from GitHub Releases, including delta packages when a previous full package is available. A stock InfoBar announces a verified, downloaded update. **Restart now** stops emulator sessions before applying it; closing and reopening the app also applies it. Library, settings and saved state live in `%LOCALAPPDATA%\MSM5xxx`, outside the installed version directory. Windows Settings → Apps uninstalls the app and asks whether to delete this data; the default answer preserves it.
 

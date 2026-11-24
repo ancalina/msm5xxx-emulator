@@ -3,12 +3,15 @@ param(
     [Parameter(Mandatory=$true)][string]$Feed,
     [Parameter(Mandatory=$true)][string]$WorkDirectory
 )
-# Run in an interactive desktop. This test installs only into its fresh work directory.
+# Run in an interactive desktop. Use the real default install location and isolated test data.
 $ErrorActionPreference='Stop'
 if (Test-Path $WorkDirectory) { throw 'Test work directory must not exist.' }
 New-Item -ItemType Directory $WorkDirectory | Out-Null
 $work=(Resolve-Path $WorkDirectory).Path
-$install="$work/installed"
+$install=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'MSM5xxx.Desktop'
+if (Test-Path $install) { throw 'Default test install location must not exist.' }
+$productionData=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'MSM5xxx'
+if ($productionData.StartsWith($install+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or $productionData -eq $install) { throw 'Production user data must be outside the install tree.' }
 New-Item -ItemType Directory "$work/tmp" | Out-Null
 $env:TEMP="$work/tmp"; $env:TMP=$env:TEMP; $env:TMPDIR=$env:TEMP
 $env:MSM5XXX_STATE_DIR="$work/state"
@@ -51,7 +54,7 @@ function WaitFor([scriptblock]$condition,[int]$seconds=180) {
  throw "Timed out: $condition"
 }
 function Elements {
- foreach ($process in @(Get-Process MSM5xxx.Desktop -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$work*"})) {
+ foreach ($process in @(Get-Process MSM5xxx.Desktop -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$install*"})) {
   $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$process.Id)
   try {
    $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$condition)
@@ -88,7 +91,7 @@ function Capture([string]$name,[string]$title='main') {
  $image.Save("$work/$name.png"); $graphics.Dispose(); $image.Dispose()
 }
 try {
- Start-Process (Resolve-Path $BaselineSetup).Path -ArgumentList @('--installto',"`"$install`"")
+ Start-Process (Resolve-Path $BaselineSetup).Path
  $desktop=WaitFor { ById 'install-desktop-shortcut' }
  Require ($desktop.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -eq 0) 'Desktop shortcut defaults off'
  $automatic=ById 'install-automatic'
@@ -106,6 +109,7 @@ try {
  [Runtime.InteropServices.Marshal]::FinalReleaseComObject($link) | Out-Null
  [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
  Require (@(Get-ChildItem HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall | Where-Object {(Get-ItemProperty $_.PSPath).DisplayName -eq 'MSM5xxx Emulator'}).Count -eq 1) 'Per-user uninstall entry exists'
+ Require (Test-Path "$install/current/MSM5xxx.Desktop.exe") 'Default per-user install path is used'
  Require (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'MSM5xxx Emulator.lnk')) 'Start menu shortcut exists'
  Set-Content "$env:MSM5XXX_STATE_DIR/retention-test.txt" 'preserve across update and uninstall'
  $settingsHash=(Get-FileHash "$env:MSM5XXX_STATE_DIR/updates.json").Hash
@@ -130,19 +134,19 @@ try {
  Capture 'updated'
  $window=WindowFor 'app-menu'
  $window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
- WaitFor { !(Get-Process MSM5xxx.Desktop -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$work*"}) } | Out-Null
+ WaitFor { !(Get-Process MSM5xxx.Desktop -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$install*"}) } | Out-Null
  $uninstall=Start-Process "$install/Update.exe" -ArgumentList 'uninstall' -PassThru
  # Confirm the updater's uninstall prompt, then choose No on the separate data prompt.
  function AnswerUninstall([bool]$deleteData) {
   $deadline=(Get-Date).AddSeconds(180)
   $confirmed=$false
   do {
-   foreach ($process in @(Get-Process MSM5xxx.Desktop,Update -ErrorAction SilentlyContinue)) {
+   foreach ($process in @(Get-Process MSM5xxx.Desktop,Update -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$install*"})) {
     $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$process.Id)
     $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$condition)
     foreach ($window in $windows) {
      $dataPrompt=@($window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition) | Where-Object {$_.Current.Name -like 'Delete your MSM5xxx library*'}).Count -gt 0
-     if (!$dataPrompt -and ($process.ProcessName -ne 'Update' -or $process.Path -notlike "$work*" -or $confirmed)) { continue }
+     if (!$dataPrompt -and ($process.ProcessName -ne 'Update' -or $process.Path -notlike "$install*" -or $confirmed)) { continue }
      $id=if ($dataPrompt -and !$deleteData) { '7' } else { '6' }
      $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$id)
      $button=$window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
@@ -171,12 +175,11 @@ try {
  WaitFor { !(Test-Path "$install/current/MSM5xxx.Desktop.exe") } | Out-Null
  Require (Test-Path "$env:MSM5XXX_STATE_DIR/retention-test.txt") 'Uninstall No preserves saved data'
  Require (!(Test-Path $shortcut)) 'Uninstall removes owned desktop shortcut'
- $install="$work/reinstalled"
- Start-Process "$releaseFeed/MSM5xxx-win-Setup.exe" -ArgumentList @('--installto',"`"$install`"")
+ Start-Process "$releaseFeed/MSM5xxx-win-Setup.exe"
  WaitFor { ById 'app-menu' } | Out-Null
  $window=WindowFor 'app-menu'
  $window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
- WaitFor { !(Get-Process MSM5xxx.Desktop -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$work*"}) } | Out-Null
+ WaitFor { !(Get-Process MSM5xxx.Desktop -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$install*"}) } | Out-Null
  $uninstall=Start-Process "$install/Update.exe" -ArgumentList 'uninstall' -PassThru
  AnswerUninstall $true
  FinishUninstall $uninstall
