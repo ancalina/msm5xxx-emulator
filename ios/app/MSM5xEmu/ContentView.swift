@@ -288,6 +288,10 @@ struct ContentView: View {
                     engine.powerOff { success in if success { showingLibrary = true } }
                 }.disabled(!engine.running)
                 Button(text("Reboot emulator")) { engine.reboot() }.disabled(!engine.running)
+                if engine.audioNeedsResume {
+                    Button(text("Resume audio")) { engine.resumeAudio() }
+                        .disabled(!engine.running || engine.starting || engine.paused)
+                }
                 Button(text("Choose firmware…")) { showingLibrary = true }
                 Button(text("Capture")) {
                     guard let frame = engine.frame else {

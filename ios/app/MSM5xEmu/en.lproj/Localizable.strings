@@ -208,3 +208,5 @@
 "Library importing" = "Importing firmware…";
 "Library partial scan" = "Could not read %ld files or folders";
 "Library scan retry" = "Available items can still be used. Restore access and refresh, or remove and add the folder again in Settings.";
+
+"Resume audio" = "Resume audio";

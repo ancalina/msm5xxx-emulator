@@ -208,3 +208,5 @@
 "Library importing" = "펌웨어를 가져오는 중…";
 "Library partial scan" = "파일 또는 폴더 %ld개를 읽지 못했어요";
 "Library scan retry" = "사용 가능한 항목은 계속 사용할 수 있어요. 접근 권한을 복구하고 새로고침하거나, 설정에서 폴더를 제거한 뒤 다시 추가하세요.";
+
+"Resume audio" = "오디오 재개";
