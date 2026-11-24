@@ -519,4 +519,7 @@
   <data name="close_without_waiting" xml:space="preserve">
     <value>Close without waiting</value>
   </data>
+  <data name="network_time_apply_error" xml:space="preserve">
+    <value>The time was saved, but could not be applied to the running device. Retry to apply it.</value>
+  </data>
 </root>

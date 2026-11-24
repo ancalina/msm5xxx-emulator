@@ -24,6 +24,7 @@ internal sealed class SettingsWindow : DesktopWindow
     private string savedTime = "";
     private bool updating, timeSaving, hardwareApplying;
     private bool closeWithoutWaiting;
+    private bool timeApplyPending;
 
     public SettingsWindow(BackendClient backend, Strings text, Func<Task>? restart)
     {
@@ -242,7 +243,7 @@ internal sealed class SettingsWindow : DesktopWindow
 
     private async Task SaveTimeAsync()
     {
-        if (timeSaving || networkTime.Text == savedTime) return;
+        if (timeSaving || (networkTime.Text == savedTime && !timeApplyPending)) return;
         var requested = networkTime.Text;
         if (!SettingsValidation.NetworkTime(requested)) { ShowError(new FormatException(Text["network_time_error"])); return; }
         timeSaving = true;
@@ -250,8 +251,27 @@ internal sealed class SettingsWindow : DesktopWindow
         {
             await ChangeAsync(networkTime, async () =>
             {
-                await backend.CallAsync("settings.set", new { key = "network_start_time", value = requested }); savedTime = requested;
+                if (requested != savedTime)
+                {
+                    await backend.CallAsync("settings.set", new { key = "network_start_time", value = requested });
+                    savedTime = requested;
+                    timeApplyPending = restart is not null;
+                }
+                if (timeApplyPending)
+                {
+                    try
+                    {
+                        var state = await backend.CallAsync("session.state");
+                        if (state.GetProperty("running").GetBoolean())
+                            await backend.CallAsync("session.network_time");
+                        timeApplyPending = false;
+                    }
+                    catch (Exception error)
+                    { throw new IOException(Text["network_time_apply_error"] + "\n" + error.Message, error); }
+                }
             });
+            if (timeApplyPending && !IsClosing)
+                Error.ActionButton = Button(Text["retry"], SaveTimeAsync);
         }
         finally { timeSaving = false; }
     }

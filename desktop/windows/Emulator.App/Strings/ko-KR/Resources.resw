@@ -519,4 +519,7 @@
   <data name="close_without_waiting" xml:space="preserve">
     <value>기다리지 않고 닫기</value>
   </data>
+  <data name="network_time_apply_error" xml:space="preserve">
+    <value>시간은 저장했지만 실행 중인 기기에 적용하지 못했습니다. 다시 시도하면 저장한 시간을 적용합니다.</value>
+  </data>
 </root>
