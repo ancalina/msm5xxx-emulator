@@ -230,6 +230,19 @@ public sealed class LauncherWindow : DesktopWindow
         await EnsureBackendAsync(); await backend!.CallAsync("library.add_file", new { path }); await RefreshAsync();
     }
 
+    internal Task ImportFromCommandLineAsync(string path) => Guard(async () =>
+    {
+        await initialize;
+        if (IsClosing) return;
+        path = Path.GetFullPath(path);
+        await EnsureBackendAsync();
+        await backend!.CallAsync("library.add_file", new { path });
+        await RefreshAsync();
+        var row = list.Items.OfType<ListViewItem>().FirstOrDefault(item => item.Tag is FirmwareEntry entry &&
+            string.Equals(entry.Path, path, StringComparison.OrdinalIgnoreCase));
+        if (row is not null) { list.SelectedItem = row; list.ScrollIntoView(row); }
+    });
+
     private async Task AddFolderAsync()
     {
         var path = await PickFolderAsync(); if (path is null || IsClosing) return;

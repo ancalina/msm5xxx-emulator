@@ -25,10 +25,12 @@ public partial class App : Application
         InitializeComponent();
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         launcher = new LauncherWindow();
         launcher.Activate();
+        foreach (var path in Environment.GetCommandLineArgs().Skip(1))
+            await launcher.ImportFromCommandLineAsync(path);
     }
 
     public void Open(FirmwareEntry firmware)
