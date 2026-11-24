@@ -672,6 +672,7 @@ impl Emulator {
                 .collect(),
         );
         self.started.replace(started);
+        let _ = gtk::RecentManager::default().add_item(&gio::File::for_path(&self.path).uri());
         self.banner.set_revealed(false);
         self.input_error.borrow_mut().take();
         self.update_controls();
