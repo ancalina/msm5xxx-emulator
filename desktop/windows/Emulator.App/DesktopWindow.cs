@@ -16,6 +16,8 @@ public abstract class DesktopWindow : Window
     protected readonly StackPanel TitleActions = new() { Orientation = Orientation.Horizontal, Spacing = 0, VerticalAlignment = VerticalAlignment.Center };
     protected readonly InfoBar Error = new() { Severity = InfoBarSeverity.Error, IsClosable = true };
     protected readonly Grid Body = new();
+    private readonly TaskbarProgress taskbar;
+    private int backgroundWork;
     private readonly SemaphoreSlim dialogs = new(1, 1);
     protected bool IsClosing { get; private set; }
     protected bool DialogOpen { get; private set; }
@@ -46,6 +48,7 @@ public abstract class DesktopWindow : Window
         Root.Children.Add(Commands); Grid.SetRow(Error, 1); Root.Children.Add(Error);
         Grid.SetRow(Body, 2); Root.Children.Add(Body);
         Content = Root;
+        taskbar = new(this);
         WindowIcons.Register(this, Commands);
         AutomationProperties.SetLiveSetting(Error, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
         AppWindow.Closing += (sender, args) =>
@@ -63,6 +66,13 @@ public abstract class DesktopWindow : Window
     }
 
     protected void RefreshTitleBar() => DispatcherQueue.TryEnqueue(() => Commands.RecomputeDragRegions());
+
+    protected async Task WithTaskbarProgressAsync(Func<Task> operation)
+    {
+        if (++backgroundWork == 1) taskbar.SetBusy(true);
+        try { await operation(); }
+        finally { if (--backgroundWork == 0) taskbar.SetBusy(false); }
+    }
 
     public async Task<bool> ShutdownAndCloseAsync()
     {

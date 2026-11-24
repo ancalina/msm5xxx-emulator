@@ -135,7 +135,9 @@ public sealed class EmulatorWindow : DesktopWindow
         Commands.IsEnabled = backend is not null && !busy;
     }
 
-    private async Task InitializeAsync()
+    private Task InitializeAsync() => WithTaskbarProgressAsync(InitializeCoreAsync);
+
+    private async Task InitializeCoreAsync()
     {
         backend = await BackendClient.StartAsync(App.Instance.Options, backendLifetime.Token);
         if (IsClosing) { await backend.DisposeAsync(); return; }
@@ -310,7 +312,9 @@ public sealed class EmulatorWindow : DesktopWindow
         await StopSessionAsync(); await ReloadLayoutAsync(); await StartSessionAsync();
     });
 
-    private async Task StartSessionAsync()
+    private Task StartSessionAsync() => WithTaskbarProgressAsync(StartSessionCoreAsync);
+
+    private async Task StartSessionCoreAsync()
     {
         if (backend is null || IsClosing) return;
         await StopPollingAsync();

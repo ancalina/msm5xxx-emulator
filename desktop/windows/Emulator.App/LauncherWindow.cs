@@ -76,7 +76,9 @@ public sealed class LauncherWindow : DesktopWindow
         AutomationProperties.SetName(progress, Text["library_loading"]);
     }
 
-    private async Task InitializeAsync()
+    private Task InitializeAsync() => WithTaskbarProgressAsync(InitializeCoreAsync);
+
+    private async Task InitializeCoreAsync()
     {
         Commands.IsEnabled = false;
         progress.Visibility = Visibility.Visible;
@@ -119,7 +121,9 @@ public sealed class LauncherWindow : DesktopWindow
         if (!IsClosing) _ = Guard(RefreshAsync);
     }
 
-    private async Task RefreshAsync()
+    private Task RefreshAsync() => WithTaskbarProgressAsync(RefreshCoreAsync);
+
+    private async Task RefreshCoreAsync()
     {
         if (IsClosing) return;
         if (scanning) { refreshPending = true; return; }
