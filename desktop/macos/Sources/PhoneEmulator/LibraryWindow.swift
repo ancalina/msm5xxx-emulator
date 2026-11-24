@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct LibraryScene: View {
     @ObservedObject var library: LibraryModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.dismissWindow) private var dismissWindow
     var body: some View {
         LibraryView(model: library)
@@ -22,7 +23,10 @@ struct LibraryScene: View {
                         }.disabled(library.folders.isEmpty)
                         Button(L("library_refresh")) { Task { await library.scan() } }.disabled(library.scanning)
                         Divider()
-                        SettingsLink { Text(L("settings") + "…") }
+                        Button(L("settings") + "…") {
+                            library.settingsEmulator = nil
+                            openSettings()
+                        }
                     } label: { Label(L("library_menu"), systemImage: "ellipsis.circle") }
                     .help(L("library_menu"))
                 }
