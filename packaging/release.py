@@ -30,7 +30,7 @@ def release_version(tag):
 
 
 def source(tag):
-    commit=output('git','rev-parse',tag+'^{commit}')
+    commit=output('git','rev-list','--max-count=1',tag)
     if commit!=output('git','rev-parse','HEAD'):
         raise ValueError('Check out the requested release tag before building')
     if output('git','status','--porcelain','--untracked-files=no'):
