@@ -20,6 +20,7 @@ internal sealed class SettingsWindow : DesktopWindow
     private readonly Task initialize;
     private Task pending = Task.CompletedTask;
     private readonly TextBox networkTime = new();
+    private readonly TextBlock timeError = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private string? savedLanguage;
     private string savedTime = "";
     private bool updating, timeSaving, hardwareApplying;
@@ -92,6 +93,12 @@ internal sealed class SettingsWindow : DesktopWindow
                 if (args.Key == VirtualKey.Enter) { args.Handled = true; await SaveTimeAsync(); }
             };
             form.Children.Add(networkTime);
+            form.Children.Add(timeError);
+            AutomationProperties.SetLiveSetting(timeError, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+            translate.Add(() =>
+            {
+                if (timeError.Visibility == Visibility.Visible) SetTimeError(Text["network_time_error"]);
+            });
             var languages = new[] { "auto", "ko", "en" };
             savedLanguage = current.GetProperty("ui_language").GetString();
             var language = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -241,11 +248,25 @@ internal sealed class SettingsWindow : DesktopWindow
         }
     }
 
+    private void SetTimeError(string? message)
+    {
+        var value = message ?? "";
+        if (timeError.Text == value) return;
+        timeError.Text = value;
+        timeError.Visibility = message is null ? Visibility.Collapsed : Visibility.Visible;
+        AutomationProperties.SetHelpText(networkTime, value);
+        var peer = Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(timeError)
+            ?? Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.CreatePeerForElement(timeError);
+        peer?.RaiseAutomationEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
+    }
+
     private async Task SaveTimeAsync()
     {
-        if (timeSaving || (networkTime.Text == savedTime && !timeApplyPending)) return;
+        if (timeSaving) return;
+        if (networkTime.Text == savedTime && !timeApplyPending) { SetTimeError(null); return; }
         var requested = networkTime.Text;
-        if (!SettingsValidation.NetworkTime(requested)) { ShowError(new FormatException(Text["network_time_error"])); return; }
+        if (!SettingsValidation.NetworkTime(requested)) { SetTimeError(Text["network_time_error"]); return; }
+        SetTimeError(null);
         timeSaving = true;
         try
         {
