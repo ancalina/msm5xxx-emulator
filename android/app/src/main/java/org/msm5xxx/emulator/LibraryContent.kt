@@ -45,6 +45,8 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,6 +66,7 @@ class LibraryContent private constructor(
     private val entries = mutableStateListOf<JSONObject>()
     private var loading by mutableStateOf(false)
     private var message by mutableStateOf<String?>(null)
+    private var scanIssueText by mutableStateOf<String?>(null)
     private var info by mutableStateOf<Pair<String, String>?>(null)
     private var choice by mutableStateOf<Choice?>(null)
     internal var confirmation by mutableStateOf<Confirmation?>(null)
@@ -87,6 +90,7 @@ class LibraryContent private constructor(
     }
 
     fun showMessage(value: String) { message = value }
+    fun setScanIssue(value: String?) { scanIssueText = value }
     fun showInfo(title: String, body: String) { info = title to body }
     fun choose(title: String, labels: Array<String>, callback: IntConsumer) {
         choice = Choice(title, labels.toList(), callback)
@@ -98,6 +102,7 @@ class LibraryContent private constructor(
     internal fun rows() = entries.toList()
     internal fun isLoading() = loading
     internal fun error() = message
+    internal fun scanError() = scanIssueText
     internal fun clearError() { message = null }
     internal fun infoDialog() = info
     internal fun closeInfo() { info = null }
@@ -175,10 +180,25 @@ private fun LibraryScreen(state: LibraryContent) {
                     trailingContent = { TextButton(onClick = state::clearError) { Text(stringResource(android.R.string.ok)) } },
                 )
             }
+            state.scanError()?.let { issue ->
+                ListItem(
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    headlineContent = { Text(issue) },
+                    trailingContent = {
+                        TextButton(onClick = state::refresh) { Text(stringResource(R.string.library_refresh)) }
+                    },
+                )
+            }
             if (rows.isEmpty() && state.isLoading()) {
                 Text(
                     stringResource(R.string.library_loading),
                     modifier = Modifier.align(Alignment.CenterHorizontally).padding(24.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            } else if (rows.isEmpty() && state.scanError() != null) {
+                Text(
+                    stringResource(R.string.library_scan_empty_error),
+                    modifier = Modifier.padding(24.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
             } else if (rows.isEmpty()) {
@@ -282,7 +302,8 @@ private fun FirmwareRow(group: List<JSONObject>, state: LibraryContent) {
                     else DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, context.resources.configuration.locales[0]).format(Date(it))
                 }
                 val availability = if (file.optBoolean("available", false)) "" else " · ${context.getString(R.string.library_unavailable)}"
-                "$fileName · $fileSize · $lastBoot$availability"
+                val inspection = if (file.optBoolean("inspection_failed", false)) " · ${context.getString(R.string.library_inspection_failed)}" else ""
+                "$fileName · $fileSize · $lastBoot$availability$inspection"
             }.toTypedArray(),
             java.util.function.IntConsumer { index -> chooseFile(action, index) },
         )
@@ -304,6 +325,9 @@ private fun FirmwareRow(group: List<JSONObject>, state: LibraryContent) {
         headlineContent = { Text(name, maxLines = 1) },
         supportingContent = {
             Column {
+                if (group.any { it.optBoolean("inspection_failed", false) }) {
+                    Text(stringResource(R.string.library_inspection_failed))
+                }
                 Text("$chipset · $size", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(entry.optString("name"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(

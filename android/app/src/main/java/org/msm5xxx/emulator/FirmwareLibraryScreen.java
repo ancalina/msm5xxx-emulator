@@ -468,7 +468,7 @@ final class FirmwareLibraryScreen {
                     }
                 } finally { Os.close(raw); }
             } catch (ErrnoException error) {
-                return null;
+                throw new IOException("Document inspection failed", error);
             }
         }
     }
@@ -565,6 +565,7 @@ final class FirmwareLibraryScreen {
                 }
             }
             HashSet<String> seenUris = new HashSet<>(), excludedUris = new HashSet<>(), oversizedUris = new HashSet<>();
+            HashSet<String> failedFolders = new HashSet<>(), failedFiles = new HashSet<>();
             for (int i = 0; i < excluded.length(); i++) excludedUris.add(excluded.optString(i));
             for (int i = 0; i < entries.length(); i++) {
                 JSONObject item = entries.optJSONObject(i);
@@ -579,7 +580,10 @@ final class FirmwareLibraryScreen {
                             DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_MIME_TYPE,
                             DocumentsContract.Document.COLUMN_LAST_MODIFIED};
                     try (Cursor cursor = queryChildren(children, columns)) {
-                        if (cursor == null) continue;
+                        if (cursor == null) {
+                            failedFolders.add(tree.toString());
+                            continue;
+                        }
                         while (cursor.moveToNext()) {
                             if (token != revision.get()) return;
                             if (DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(3))) continue;
@@ -610,7 +614,10 @@ final class FirmwareLibraryScreen {
                             }
                         }
                     }
-                } catch (IOException | RuntimeException | JSONException ignored) { }
+                } catch (IOException | RuntimeException | JSONException error) {
+                    if (token != revision.get()) return;
+                    failedFolders.add(tree.toString());
+                }
             }
             ArrayList<JSONObject> rows = new ArrayList<>();
             HashSet<String> hashes = new HashSet<>();
@@ -620,6 +627,7 @@ final class FirmwareLibraryScreen {
                 if (entry == null || oversizedUris.contains(entry.optString("uri"))) continue;
                 Uri uri = Uri.parse(entry.optString("uri"));
                 try {
+                    entry.remove("inspection_failed");
                     JSONObject metadata = null;
                     File file = entry.optBoolean("imported") ? new File(uri.getPath()) : null;
                     if (file != null) {
@@ -651,7 +659,12 @@ final class FirmwareLibraryScreen {
                     if (!sha.isEmpty() && !hashes.add(sha)) continue;
                     rows.add(entry);
                     if (!cacheHit) publishPartial(token, rows, entries, i + 1, hashes);
-                } catch (IOException | RuntimeException | JSONException ignored) { }
+                } catch (IOException | RuntimeException | JSONException error) {
+                    if (token != revision.get()) return;
+                    failedFiles.add(entry.optString("uri"));
+                    try { entry.put("inspection_failed", true); } catch (JSONException ignored) { }
+                    rows.add(entry);
+                }
             }
             HashSet<String> availableHashes = new HashSet<>();
             for (JSONObject row : rows) {
@@ -685,6 +698,8 @@ final class FirmwareLibraryScreen {
                     }
                 }
                 visible.clear(); visible.addAll(rows); loading = false; schedulePublish();
+                content.setScanIssue(failedFolders.isEmpty() && failedFiles.isEmpty() ? null
+                        : activity.getString(R.string.library_scan_partial, failedFolders.size(), failedFiles.size()));
             });
             } finally {
                 if (!migrationCommitted && migrationCopy != null) migrationCopy.delete();
