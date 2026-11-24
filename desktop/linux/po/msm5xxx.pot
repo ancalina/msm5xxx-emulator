@@ -317,3 +317,6 @@ msgstr ""
 
 msgid "Could not save display placement"
 msgstr ""
+
+msgid "Apply the network time or restore its saved value before restarting"
+msgstr ""

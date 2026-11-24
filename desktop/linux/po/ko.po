@@ -317,3 +317,6 @@ msgstr "화면"
 
 msgid "Could not save display placement"
 msgstr "화면 배치를 저장할 수 없습니다"
+
+msgid "Apply the network time or restore its saved value before restarting"
+msgstr "재시작하기 전에 네트워크 시간을 적용하거나 저장된 값으로 되돌리세요"

@@ -3,7 +3,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use serde_json::{Value, json};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     rc::{Rc, Weak},
 };
 
@@ -177,6 +177,67 @@ fn build(
         .show_apply_button(true)
         .build();
     time.set_tooltip_text(Some(&text.tr("YYYY-MM-DD HH:MM")));
+    let hardware_ready = session.as_ref().is_some_and(|(_, result)| result.is_ok());
+    let is_session = session.is_some();
+    let session_weak = session.as_ref().map(|(emulator, _)| Rc::downgrade(emulator));
+    let apply = gio::SimpleAction::new("apply", None);
+    let saved_time = Rc::new(RefCell::new(time.text().trim().to_owned()));
+    let time_pending = Rc::new(Cell::new(false));
+    let hardware_pending = Rc::new(Cell::new(false));
+    let time_notice = adw::ActionRow::builder()
+        .title(text.tr("Apply the network time or restore its saved value before restarting"))
+        .visible(false)
+        .build();
+    let hardware_time_notice = adw::ActionRow::builder()
+        .title(text.tr("Apply the network time or restore its saved value before restarting"))
+        .visible(false)
+        .build();
+    let sync_apply: Rc<dyn Fn()> = Rc::new(glib::clone!(
+        #[weak]
+        apply,
+        #[weak]
+        time,
+        #[weak]
+        time_notice,
+        #[weak]
+        hardware_time_notice,
+        #[strong]
+        saved_time,
+        #[strong]
+        time_pending,
+        #[strong]
+        hardware_pending,
+        move || {
+            let dirty = time.text().trim() != saved_time.borrow().as_str();
+            let idle = session_weak.as_ref().and_then(Weak::upgrade)
+                .is_some_and(|emulator| !emulator.busy.get() && !emulator.closing.get());
+            time_notice.set_visible(is_session && (dirty || time_pending.get()));
+            hardware_time_notice.set_visible(is_session && (dirty || time_pending.get()));
+            apply.set_enabled(hardware_ready && idle && !dirty
+                && !time_pending.get() && !hardware_pending.get());
+        }
+    ));
+    time.connect_changed(glib::clone!(
+        #[strong]
+        sync_apply,
+        move |_| sync_apply()
+    ));
+    sync_apply();
+    if let Some(owner_action) = parent.lookup_action("settings")
+        .and_downcast::<gio::SimpleAction>()
+    {
+        let handler = owner_action.connect_enabled_notify(glib::clone!(
+            #[strong]
+            sync_apply,
+            move |_| sync_apply()
+        ));
+        let handler = Cell::new(Some(handler));
+        dialog.connect_closed(move |_| {
+            if let Some(handler) = handler.take() {
+                owner_action.disconnect(handler);
+            }
+        });
+    }
     time.connect_apply(glib::clone!(
         #[strong]
         error_owner,
@@ -186,8 +247,18 @@ fn build(
         dialog,
         #[strong]
         text,
+        #[strong]
+        saved_time,
+        #[strong]
+        time_pending,
+        #[strong]
+        sync_apply,
         move |row| {
+            if time_pending.replace(true) {
+                return;
+            }
             row.set_sensitive(false);
+            sync_apply();
             let value = row.text().trim().to_owned();
             glib::spawn_future_local(glib::clone!(
                 #[strong]
@@ -200,11 +271,17 @@ fn build(
                 row,
                 #[strong]
                 text,
+                #[strong]
+                saved_time,
+                #[strong]
+                time_pending,
+                #[strong]
+                sync_apply,
                 async move {
                     if let Err(e) = backend
                         .call(
                             "settings.set",
-                            json!({"key":"network_start_time","value":value}),
+                            json!({"key":"network_start_time","value":value.clone()}),
                         )
                         .await
                     {
@@ -217,14 +294,18 @@ fn build(
                         );
                         row.add_css_class("error");
                     } else {
+                        *saved_time.borrow_mut() = value;
                         row.remove_css_class("error");
                     }
+                    time_pending.set(false);
                     row.set_sensitive(true);
+                    sync_apply();
                 }
             ));
         }
     ));
     boot.add(&time);
+    boot.add(&time_notice);
     page.add(&boot);
     let appearance = adw::PreferencesGroup::new();
     let languages = ["auto", "ko", "en"];
@@ -658,8 +739,10 @@ fn build(
             hardware_page.add(&group);
         }
         dialog.add(&hardware_page);
-        let apply = gio::SimpleAction::new("apply", None);
-        apply.set_enabled(hardware_ready);
+        let time_guidance = adw::PreferencesGroup::new();
+        time_guidance.add(&hardware_time_notice);
+        hardware_page.add(&time_guidance);
+        sync_apply();
         let action_group = gio::SimpleActionGroup::new();
         action_group.add_action(&apply);
         dialog.insert_action_group("settings", Some(&action_group));
@@ -690,10 +773,27 @@ fn build(
             backend,
             #[strong]
             text,
+            #[strong]
+            time,
+            #[strong]
+            saved_time,
+            #[strong]
+            time_pending,
+            #[strong]
+            hardware_pending,
+            #[strong]
+            sync_apply,
             move |action, _| {
-                if emulator.busy.get() || emulator.closing.get() {
+                if !hardware_ready || emulator.busy.get() || emulator.closing.get()
+                    || time_pending.get() || hardware_pending.get()
+                    || time.text().trim() != saved_time.borrow().as_str()
+                {
+                    sync_apply();
                     return;
                 }
+                hardware_pending.set(true);
+                time.set_sensitive(false);
+                sync_apply();
                 emulator.release_all();
                 emulator.busy.set(true);
                 emulator.update_controls();
@@ -721,7 +821,11 @@ fn build(
                     #[strong]
                     emulator,
                     #[strong]
-                    action,
+                    time,
+                    #[strong]
+                    hardware_pending,
+                    #[strong]
+                    sync_apply,
                     #[strong]
                     backend,
                     #[strong]
@@ -739,7 +843,9 @@ fn build(
                             Err(e) => {
                                 emulator.busy.set(false);
                                 emulator.update_controls();
-                                action.set_enabled(true);
+                                hardware_pending.set(false);
+                                time.set_sensitive(true);
+                                sync_apply();
                                 for (_, field) in fields.borrow().iter() {
                                     field.set_sensitive(true);
                                 }
