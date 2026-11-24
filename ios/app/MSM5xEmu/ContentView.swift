@@ -161,7 +161,11 @@ struct ContentView: View {
             guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
             if type == .began { engine.setAudioInterrupted(true) }
-            else if type == .ended { engine.setAudioInterrupted(false) }
+            else if type == .ended {
+                let options = AVAudioSession.InterruptionOptions(rawValue:
+                    notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+                engine.setAudioInterrupted(false, shouldResume: options.contains(.shouldResume))
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in
             engine.resetAudioServices()

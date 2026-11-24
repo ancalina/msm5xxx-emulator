@@ -20,6 +20,7 @@ final class QEMUEngine: ObservableObject {
     @Published private(set) var secondaryAvailable = false
     @Published private(set) var secondaryPreview = false
     @Published private(set) var virtualNetworkAvailable = false
+    @Published private(set) var audioNeedsResume = false
     @Published private(set) var foldSupported = false
     @Published private(set) var foldOpen = false
     @Published private(set) var metrics = "Run —  PC —\nLCD —  Frame —"
@@ -49,6 +50,8 @@ final class QEMUEngine: ObservableObject {
     private var sessionStarted = false
     private var sceneActive = true
     private var audioInterrupted = false
+    private var audioResumeAllowed = true
+    private var mayOutputAudio: Bool { sceneActive && !monitorPaused && !audioInterrupted && audioResumeAllowed }
     private var audioGeneration = 0
     private var monitorPaused = false
     private var parked = false
@@ -216,16 +219,20 @@ final class QEMUEngine: ObservableObject {
                 let bits = Set(started?["input_bits"] as? [Int] ?? [])
                 self.audioDiagnostics = FileManager.default.fileExists(atPath: support.appendingPathComponent("autorun").path)
                 if started?["audio_admitted"] as? Bool == true {
-                    let sink = MSM5xxxAudioSink()
-                    if sink.start() {
-                        self.audioSink = sink
-                    } else {
-                        NSLog("MSM5xEmu iOS audio unavailable; QEMU remains running")
+                    if self.mayOutputAudio {
+                        let sink = MSM5xxxAudioSink()
+                        if sink.start() {
+                            self.audioSink = sink
+                        } else {
+                            NSLog("MSM5xEmu iOS audio unavailable; QEMU remains running")
+                        }
                     }
                     // Keep draining the bounded native stream even if the host
                     // audio session cannot start, so playback failure cannot
                     // stall guest execution.
                     self.audioPolling = true
+                    let needsResume = !self.audioInterrupted && !self.audioResumeAllowed
+                    DispatchQueue.main.async { self.audioNeedsResume = needsResume }
                     self.pollAudio()
                 }
                 if !self.sceneActive { try self.applySceneActive(false) }
@@ -483,18 +490,30 @@ final class QEMUEngine: ObservableObject {
         monitorPaused = shouldPause
         NSLog("MSM5xEmu %@", shouldPause ? "paused" : "resumed")
         if !shouldPause {
-            audioSink?.resumeOutput()
+            if mayOutputAudio { audioSink?.resumeOutput() }
             audioGeneration += 1
             pollAudio(generation: audioGeneration)
         }
         DispatchQueue.main.async { self.paused = shouldPause }
     }
 
-    func setAudioInterrupted(_ interrupted: Bool) {
+    func setAudioInterrupted(_ interrupted: Bool, shouldResume: Bool = false) {
         queue.async {
             self.audioInterrupted = interrupted
-            if interrupted { self.audioSink?.pauseOutput() }
-            else if self.sceneActive && !self.monitorPaused { self.audioSink?.resumeOutput() }
+            self.audioResumeAllowed = !interrupted && shouldResume
+            if self.mayOutputAudio { self.audioSink?.resumeOutput() }
+            else { self.audioSink?.pauseOutput() }
+            let needsResume = self.audioPolling && !interrupted && !shouldResume
+            DispatchQueue.main.async { self.audioNeedsResume = needsResume }
+        }
+    }
+
+    func resumeAudio() {
+        queue.async {
+            guard self.audioPolling, self.sceneActive, !self.monitorPaused, !self.audioInterrupted else { return }
+            self.audioResumeAllowed = true
+            self.audioSink?.resumeOutput()
+            DispatchQueue.main.async { self.audioNeedsResume = false }
         }
     }
 
@@ -594,7 +613,7 @@ final class QEMUEngine: ObservableObject {
         let generation = generation ?? audioGeneration
         guard audioPolling, sceneActive, !monitorPaused, generation == audioGeneration else { return }
         var received = false
-        if Date().timeIntervalSince(lastAudioRecovery) >= 1 {
+        if mayOutputAudio && Date().timeIntervalSince(lastAudioRecovery) >= 1 {
             lastAudioRecovery = Date()
             if let sink = audioSink { sink.resumeOutput() }
             else {
@@ -612,7 +631,7 @@ final class QEMUEngine: ObservableObject {
                     audioPackets += 1
                     if packet.dropFirst(32).contains(where: { $0 != 0 }) { audioNonzeroPackets += 1 }
                 }
-                if let sink = audioSink, !sink.offer(packet) {
+                if mayOutputAudio, let sink = audioSink, !sink.offer(packet) {
                     audioMalformedPackets += 1
                 }
             }
@@ -630,6 +649,8 @@ final class QEMUEngine: ObservableObject {
         audioGeneration += 1
         audioSink?.close()
         audioSink = nil
+        audioResumeAllowed = true
+        DispatchQueue.main.async { self.audioNeedsResume = false }
     }
 
     private func report(_ error: Error) {
