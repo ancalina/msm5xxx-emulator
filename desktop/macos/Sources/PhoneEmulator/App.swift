@@ -57,6 +57,8 @@ import Darwin
         guard !terminating else { return .terminateLater }
         terminating = true
         let sessions = library.prepareForApplicationQuit(), backend = library.backend
+        for session in sessions { session.beginShutdownDeadline() }
+        backend.beginShutdownDeadline()
         Task.detached {
             for session in sessions { _ = try? await session.call("session.stop"); await session.close() }
             await backend.close()

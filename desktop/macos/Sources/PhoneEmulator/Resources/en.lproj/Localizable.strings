@@ -189,3 +189,5 @@
 "icon_simple" = "Simple (MSM5)";
 "power_on_action" = "Power on";
 "power_off_action" = "Power off";
+
+"backend_shutdown_timeout" = "The emulator did not respond while closing.";

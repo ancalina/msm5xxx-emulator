@@ -163,6 +163,7 @@ private struct KeyPressReceipt: Sendable { let acceptedAt: TimeInterval }
     func reboot() async { await stop(); if !closed { await start() } }
     func close() async {
         if let shutdownTask { await shutdownTask.value; return }
+        backend.beginShutdownDeadline()
         exporting = false
         closed = true
         frames?.cancel(); states?.cancel()

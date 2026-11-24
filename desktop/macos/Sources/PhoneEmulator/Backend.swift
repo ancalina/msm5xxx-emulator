@@ -52,6 +52,9 @@ final class Backend: @unchecked Sendable {
     private var buffered = Data()
     private var nextID = 0
     private var closed = false
+    private let lifecycleLock = NSLock()
+    private var watchedProcess: Process?
+    private var shutdownDeadline: TimeInterval?
     private var closeFinished = false
     private var closeWaiters: [CheckedContinuation<Void, Never>] = []
     #if DEBUG
@@ -83,8 +86,86 @@ final class Backend: @unchecked Sendable {
             if data.isEmpty { handle.readabilityHandler = nil }
             else { try? FileHandle.standardError.write(contentsOf: data) }
         }
+        for handle in [stdinPipe.fileHandleForWriting, stdoutPipe.fileHandleForReading] {
+            let flags = fcntl(handle.fileDescriptor, F_GETFL)
+            guard flags >= 0, fcntl(handle.fileDescriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        guard shutdownDeadline == nil else { throw BackendError(message: L("backend_closed")) }
         try p.run()
+        watchedProcess = p
         process = p; input = stdinPipe.fileHandleForWriting; output = stdoutPipe.fileHandleForReading
+    }
+
+    func beginShutdownDeadline() {
+        lifecycleLock.lock()
+        guard shutdownDeadline == nil else { lifecycleLock.unlock(); return }
+        shutdownDeadline = ProcessInfo.processInfo.systemUptime + 10
+        let snapshot = watchedProcess
+        lifecycleLock.unlock()
+        guard let snapshot else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
+            if snapshot.isRunning { snapshot.terminate() }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
+                if snapshot.isRunning { kill(snapshot.processIdentifier, SIGKILL) }
+            }
+        }
+    }
+
+    private func checkShutdownDeadline() throws {
+        lifecycleLock.lock()
+        let deadline = shutdownDeadline
+        lifecycleLock.unlock()
+        if let deadline, ProcessInfo.processInfo.systemUptime >= deadline {
+            throw BackendError(message: L("backend_shutdown_timeout"))
+        }
+    }
+
+    private func waitForIO(_ descriptor: Int32, events: Int16) throws {
+        while true {
+            try checkShutdownDeadline()
+            var item = pollfd(fd: descriptor, events: events, revents: 0)
+            let ready = poll(&item, 1, 250)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            if ready == 0 { continue }
+            if item.revents & Int16(POLLNVAL | POLLERR) != 0 {
+                throw BackendError(message: L("backend_closed"))
+            }
+            if item.revents & (events | Int16(POLLHUP)) != 0 { return }
+        }
+    }
+
+    private func writeRequest(_ data: Data) throws {
+        let descriptor = input!.fileDescriptor
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                try waitForIO(descriptor, events: Int16(POLLOUT))
+                let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if count > 0 { offset += count; continue }
+                if count < 0, errno == EINTR || errno == EAGAIN { continue }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+    }
+
+    private func readResponsePart() throws -> Data {
+        let descriptor = output!.fileDescriptor
+        var bytes = [UInt8](repeating: 0, count: 65536)
+        while true {
+            try waitForIO(descriptor, events: Int16(POLLIN))
+            let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress!, $0.count) }
+            if count > 0 { return Data(bytes.prefix(count)) }
+            if count < 0, errno == EINTR || errno == EAGAIN { continue }
+            if count == 0 { throw BackendError(message: L("backend_closed")) }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     func call(_ method: String, _ params: [String: JSON] = [:]) async throws -> JSON {
@@ -93,17 +174,17 @@ final class Backend: @unchecked Sendable {
                 do {
                     guard !self.closed else { throw BackendError(message: L("backend_closed")) }
                     try self.launch()
+                    try self.checkShutdownDeadline()
                     self.nextID += 1
                     let id = self.nextID
                     let request = JSON.object(["id": .integer(id), "method": .string(method), "params": .object(params)])
                     var data = try JSONEncoder().encode(request); data.append(10)
-                    try self.input!.write(contentsOf: data)
+                    try self.writeRequest(data)
                     #if DEBUG
                     self.trace.append(method, params)
                     #endif
                     while self.buffered.firstIndex(of: 10) == nil {
-                        let part = self.output!.availableData
-                        guard !part.isEmpty else { throw BackendError(message: L("backend_closed")) }
+                        let part = try self.readResponsePart()
                         self.buffered.append(part)
                         guard self.buffered.count <= 32 * 1024 * 1024 else { throw BackendError(message: L("invalid_reply")) }
                     }
@@ -120,6 +201,7 @@ final class Backend: @unchecked Sendable {
     }
 
     func close() async {
+        beginShutdownDeadline()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             queue.async {
                 if self.closeFinished { continuation.resume(); return }
@@ -128,16 +210,10 @@ final class Backend: @unchecked Sendable {
                 self.closed = true
                 try? self.input?.close(); self.input = nil
                 let process = self.process
-                DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-                    if process?.isRunning == true { process?.terminate()
-                        DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-                            if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
-                        }
-                    }
-                }
                 DispatchQueue.global().async {
                     process?.waitUntilExit()
                     self.queue.async {
+                        try? self.output?.close(); self.output = nil
                         self.closeFinished = true
                         let waiters = self.closeWaiters; self.closeWaiters.removeAll()
                         for waiter in waiters { waiter.resume() }
