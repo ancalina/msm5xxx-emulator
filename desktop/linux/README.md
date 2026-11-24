@@ -141,7 +141,8 @@ it for toolkit-owned system dialogs; app windows and Settings labels update live
   (or app configuration directory). X11 positioning accounts for native frame/shadow extents.
   Wayland sessions have no docking controls, side pane or positioning controller; the
   secondary display remains a separate resizable window, with no transient parent on Wayland.
-  Its native window title displays Secondary Display and the power · W×H · note subtitle.
+  Its native window title displays only the model name, without a subtitle or app icon.
+  Power, dimensions and display notes remain available in the LCD tooltip and Info.
   Native close-only utility controls follow the desktop's button placement.
   Power off hides it.
 - General settings save when changed; apply a time entry with its Apply button. Hardware

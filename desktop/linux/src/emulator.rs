@@ -138,10 +138,10 @@ impl Emulator {
             .application(&app.application)
             .hide_on_close(true)
             .resizable(true)
-            .title(text.tr("Secondary Display"))
+            .title(stem.as_ref())
             .build();
         secondary.set_size_request(-1, -1);
-        let secondary_heading = adw::WindowTitle::new(&text.tr("Secondary Display"), "");
+        let secondary_heading = adw::WindowTitle::new(&stem, "");
         let secondary_header = adw::HeaderBar::builder()
             .title_widget(&secondary_heading)
             .build();
@@ -713,11 +713,10 @@ impl Emulator {
         });
         let (w, h) = self.secondary_screen.geometry();
         let status = format!("{power} · {w}×{h} · {note}");
-        self.secondary_heading
-            .set_title(&text.tr("Secondary Display"));
-        self.secondary_heading.set_subtitle(&status);
-        self.secondary
-            .set_title(Some(&text.tr("Secondary Display")));
+        let model = self.title.title();
+        self.secondary_heading.set_title(&model);
+        self.secondary_heading.set_subtitle("");
+        self.secondary.set_title(Some(&model));
         self.secondary_screen.set_tooltip_text(Some(&status));
     }
     pub fn reload_language(self: &Rc<Self>, text: &Text, layout: &Value) -> Result<(), String> {
