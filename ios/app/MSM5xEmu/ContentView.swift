@@ -20,6 +20,8 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var showingSettingsNotice = false
     @State private var settingsNotice = ""
+    @State private var settingsApplying = false
+    @State private var settingsPresentation = UUID()
     @State private var showingCapture = false
     @State private var captureImage: UIImage?
     @State private var captureFailure: String?
@@ -320,7 +322,7 @@ struct ContentView: View {
                         else { Text(text("Set time…")) }
                     }
                 }
-                Button(text("Settings…")) { showingSettings = true }
+                Button(text("Settings…")) { settingsPresentation = UUID(); showingSettings = true }
             } label: {
                 Image(systemName: "ellipsis").font(.title2).foregroundColor(.white)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -447,25 +449,43 @@ struct ContentView: View {
                         Section {
                             if engine.running {
                                 Button(text("Apply and restart session")) {
-                                    engine.applySettings(detailedValues, persistentState: persistentState,
-                                                         experimentalRex: experimentalRex) { result in
+                                    let submittedValues = detailedValues
+                                    let submittedPersistentState = persistentState
+                                    let submittedExperimentalRex = experimentalRex
+                                    let presentation = settingsPresentation
+                                    settingsApplying = true
+                                    settingsNotice = ""
+                                    engine.applySettings(submittedValues, persistentState: submittedPersistentState,
+                                                         experimentalRex: submittedExperimentalRex) { result in
+                                        settingsApplying = false
                                         switch result {
-                                        case .success(true): showingSettings = false
+                                        case .success(true):
+                                            settingsNotice = "Settings applied"
+                                            if showingSettings && settingsPresentation == presentation { showingSettings = false }
+                                            else if showingSettings { showingSettingsNotice = true }
                                         case .success(false):
                                             settingsNotice = "Settings require reopening"
-                                            showingSettingsNotice = true
+                                            if showingSettings { showingSettingsNotice = true }
                                         case .failure(let error):
                                             settingsNotice = error.localizedDescription
-                                            showingSettingsNotice = true
+                                            if showingSettings { showingSettingsNotice = true }
                                         }
                                     }
-                                }.disabled(!settingsNeedApply)
+                                }.disabled(!settingsNeedApply || settingsApplying)
                             }
                             Text(text(!engine.usesFreshSessions && engine.used
                                       ? "Older iOS settings notice"
                                       : engine.running ? "Settings saved for next start" : "Settings saved while stopped"))
                                 .font(.footnote).foregroundColor(.secondary)
                         }
+                    }
+                    if settingsApplying {
+                        Section {
+                            ProgressView(text("Applying settings"))
+                            Text(text("Settings may close while applying")).font(.footnote)
+                        }
+                    } else if !settingsNotice.isEmpty {
+                        Text(text(settingsNotice)).font(.footnote).foregroundColor(.secondary)
                     }
                     ForEach(0..<7, id: \.self) { section in
                         Section(text("section." + String(section))) {
@@ -481,9 +501,9 @@ struct ContentView: View {
                         }.disabled(!hasProfile)
                     }
                 }
-                .disabled(engine.starting)
+                .disabled(engine.starting || settingsApplying)
                 .navigationTitle(text("Settings"))
-                .toolbar { Button(text("Done")) { showingSettings = false }.disabled(engine.starting) }
+                .toolbar { Button(text("Done")) { showingSettings = false } }
                 .alert(text("Settings"), isPresented: $showingSettingsNotice) {
                     Button(text("OK"), role: .cancel) { }
                 } message: { Text(text(settingsNotice)) }

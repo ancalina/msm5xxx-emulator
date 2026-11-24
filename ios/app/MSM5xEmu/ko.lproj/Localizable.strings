@@ -210,3 +210,8 @@
 "Library scan retry" = "사용 가능한 항목은 계속 사용할 수 있어요. 접근 권한을 복구하고 새로고침하거나, 설정에서 폴더를 제거한 뒤 다시 추가하세요.";
 
 "Resume audio" = "오디오 재개";
+
+
+"Applying settings" = "설정을 적용하는 중…";
+"Settings may close while applying" = "이 창을 닫아도 돼요. 설정을 다시 열면 결과를 확인할 수 있어요.";
+"Settings applied" = "설정을 적용했어요.";
