@@ -452,6 +452,33 @@ class ExternalDeviceDetectionTests(unittest.TestCase):
         self.assertEqual(reason, "accepted")
         self.assertEqual(
             plan["machine_properties"]["external-ram-size"], 0x00200000)
+
+    def test_reset_command_preamble_and_sixteen_mib_bank(self) -> None:
+        image = bytearray(_ram_readback_image(independent_terminal_helper=False))
+        body, table, entry = 0x1000, 0xF98, 0xFC4
+        put32(image, table, 0x14000000, 0x7FFFFF, 0x10, 0x55AA0F,
+              0xAA0F, 0x55, 0x147FFFFE, 0xB2B2B2B2, 0xD0D0D0D0,
+              0xFFFFFFFF, 0x030006D0)
+        put32(image, 0x200, entry)
+        put32(image, entry, 0, 0xE5900000, *([0xE1D010B0] * 4),
+              0, 0xE5911000, 0xE1C010B0, 0, 0xE5911000, 0xE1C010B0,
+              0, 0xE5911000, 0xE1C010B0)
+        for offset, field, register in ((0, 24, 0), (24, 28, 1), (36, 32, 1), (48, 36, 1)):
+            literal = body + 0x200 + offset
+            put32(image, entry + offset, _arm_ldr_literal(register, entry + offset, literal))
+            put32(image, literal, table + field)
+        for offset, field in ((0, 0), (0x10, 8), (0x40, 40), (0x6C, 4),
+                              (0x80, 4), (0xF4, 12), (0x108, 16), (0x11C, 20)):
+            instruction = struct.unpack_from('<I', image, body + offset)[0]
+            literal = body + offset + 8 + (instruction & 0xFFF)
+            put32(image, literal, table + field)
+        self.assertEqual(detect_external_ram(bytes(image))[0]['ram_test']['size'], 0x800000)
+        put32(image, table + 24, 0x147FFFFC)
+        self.assertIsNone(detect_external_ram(bytes(image))[0])
+        put32(image, 0x200, body)
+        self.assertIsNone(detect_external_ram(bytes(image))[0])
+        image = _ram_readback_image(independent_terminal_helper=False, extent=0xFFFFFF)
+        self.assertEqual(detect_external_ram(image)[0]['ram_test']['size'], 0x1000000)
     def test_two_mib_extent_rejects_unclosed_body_table_link_or_extent(self) -> None:
         image = bytearray(_ram_readback_image(
             independent_terminal_helper=False, extent=0x001FFFFF))

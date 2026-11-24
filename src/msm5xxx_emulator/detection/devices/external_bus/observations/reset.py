@@ -2,7 +2,7 @@ from __future__ import annotations
 
 PAGE = 0x1000
 _HIGH_RAM_TEST_PREFIX = bytes.fromhex("54019fe5000090e50110a0e30020a0e3")
-_EXTENTS = (0x1FFFFF, 0x3FFDFF, 0x3FFFFF, 0x7FFDFF, 0x7FFFFF)
+_EXTENTS = (0x1FFFFF, 0x3FFDFF, 0x3FFFFF, 0x7FFDFF, 0x7FFFFF, 0xFFFFFF)
 _RAM_PATTERN = (0x10, 0x55AA0F, 0xAA0F, 0x55, 0x030006D0)
 _UART_BASE = 0x03000B10
 _DOG = 0x030006D0
@@ -106,7 +106,7 @@ def _reset_called(image: bytes) -> set[int] | None:
 
 _BODY_FIELD_PTRS = ((0, 0), (0x10, 8), (0x40, 24), (0x6C, 4), (0x80, 4), (0xF4, 12), (0x108, 16), (0x11C, 20),)
 
-def _table_from_body(image: bytes, position: int) -> int | None:
+def _table_from_body(image: bytes, position: int, watchdog_field: int = 24) -> int | None:
     """Descriptor address from the body's own field-pointer literals.
 
     Firmware layouts may place data between the descriptor and body, so
@@ -116,6 +116,8 @@ def _table_from_body(image: bytes, position: int) -> int | None:
     from . import _BODY_FIELD_PTRS, _u32
     table = None
     for offset, field in _BODY_FIELD_PTRS:
+        if offset == 0x40:
+            field = watchdog_field
         if position + offset + 4 > len(image):
             return None
         instruction = _u32(image, position + offset)
@@ -177,6 +179,29 @@ def _ram_test_body_shape(image: bytes, position: int) -> bool:
         return False
     bound_target = position + 14 * 4 + 8 + _arm_branch_delta(bound_branch)
     return bound_target == position + 0x1C
+
+def _ram_command_entry(image: bytes, position: int, table: int, called: set[int]) -> int | None:
+    """Check the reset-called halfword command sequence preceding a RAM test."""
+    entry = position - 60
+    if entry not in called or entry < 0 or table + 44 > len(image):
+        return None
+    from . import _u32
+    fixed = {4: 0xE5900000, 8: 0xE1D010B0, 12: 0xE1D010B0,
+             16: 0xE1D010B0, 20: 0xE1D010B0, 28: 0xE5911000,
+             32: 0xE1C010B0, 40: 0xE5911000, 44: 0xE1C010B0,
+             52: 0xE5911000, 56: 0xE1C010B0}
+    if any(_u32(image, entry + offset) != word for offset, word in fixed.items()):
+        return None
+    for offset, field, register in ((0, 24, 0), (24, 28, 1), (36, 32, 1), (48, 36, 1)):
+        word = _u32(image, entry + offset)
+        if word & 0xFFFFF000 != 0xE59F0000 | register << 12:
+            return None
+        literal = entry + offset + 8 + (word & 0xFFF)
+        if literal + 4 > len(image) or _u32(image, literal) != table + field:
+            return None
+    if _u32(image, table + 24) != _u32(image, table) + _u32(image, table + 4) - 1:
+        return None
+    return entry
 
 def _high_ram_layout(image: bytes, position: int) -> tuple[int, int] | None:
     from . import _u32
@@ -318,13 +343,16 @@ def detect_external_ram(image: bytes) -> tuple[dict | None, str]:
     result proves a RAM extent. Chip-select programming is detected
     separately and never implies that this RAM bank exists.
     """
-    from . import PAGE, _EXTENTS, _HIGH_RAM_TEST_PREFIX, _RAM_PATTERN, _find_all, _high_ram_layout, _ram_test_body_shape, _reset_called, _reset_copy_covers_upper_half, _table_from_body, _u32, source_prefix, struct
+    from . import PAGE, _EXTENTS, _RAM_PATTERN, _find_all, _high_ram_layout, _ram_test_body_shape, _reset_called, _reset_copy_covers_upper_half, _table_from_body, _u32, source_prefix, struct
     if not isinstance(image, (bytes, bytearray)):
         return None, "external-ram-image-not-bytes"
     ram_hits = []
     called = _reset_called(image)
-    for position in _find_all(source_prefix(image, 0x10000), _HIGH_RAM_TEST_PREFIX):
-        if position + 0x178 > len(image) or position & 3:
+    for match in _find_all(source_prefix(image, 0x10000), bytes.fromhex('000090e50110a0e30020a0e3')):
+        position = match - 4
+        if position < 0 or position + 0x178 > len(image) or position & 3:
+            continue
+        if _u32(image, position) & 0xFFFFF000 != 0xE59F0000:
             continue
         if not _ram_test_body_shape(image, position):
             continue
@@ -335,19 +363,27 @@ def detect_external_ram(image: bytes) -> tuple[dict | None, str]:
             # 20 bytes before it, or the reset copy that lands in the
             # upper half (entry stays the body for that last case).
             table = _table_from_body(image, position)
-            if table is None or called is None:
+            if table is None and called is not None:
+                table = _table_from_body(image, position, 40)
+                entry = None if table is None else _ram_command_entry(image, position, table, called)
+                if entry is None:
+                    continue
+                layout = (table, entry)
+            if layout is not None:
+                table, entry = layout
+            elif table is None or called is None:
                 continue
-            if position in called or (position - 20) in called:
-                entry = position if position in called else position - 20
             else:
-                entry = position
+                entry = position if position in called else position - 20 if position - 20 in called else position
             layout = (table, entry)
         table, entry = layout
-        base, extent, stride, word, half, byte, watchdog = struct.unpack_from("<7I", image, table)
+        base, extent, stride, word, half, byte = struct.unpack_from("<6I", image, table)
+        watchdog_field = 40 if entry == position - 60 else 24
+        watchdog = _u32(image, table + watchdog_field)
         if (base != 0x14000000 or extent not in _EXTENTS or (stride, word, half, byte, watchdog) != _RAM_PATTERN):
             continue
         valid = True
-        for offset, field in ((0, 0), (0x10, 8), (0x40, 24), (0x6C, 4), (0x80, 4), (0xF4, 12), (0x108, 16), (0x11C, 20)):
+        for offset, field in ((0, 0), (0x10, 8), (0x40, watchdog_field), (0x6C, 4), (0x80, 4), (0xF4, 12), (0x108, 16), (0x11C, 20)):
             instruction = _u32(image, position + offset)
             literal = position + offset + 8 + (instruction & 0xFFF)
             if (literal > len(image) - 4 or _u32(image, literal) != table + field):
