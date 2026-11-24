@@ -631,9 +631,9 @@ struct FirmwareLibraryView: View {
     var body: some View {
         Group {
             if #available(iOS 16.0, *) {
-                NavigationStack { libraryContent }.accentColor(.white)
+                NavigationStack { libraryContent }
             } else {
-                NavigationView { libraryContent }.accentColor(.white)
+                NavigationView { libraryContent }
             }
         }
     }
@@ -671,9 +671,9 @@ struct FirmwareLibraryView: View {
                                         .scaledToFit().frame(width: 60, height: 60)
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.displayName).font(.headline).foregroundColor(.white).lineLimit(1)
+                                    Text(entry.displayName).font(.headline).foregroundColor(.primary).lineLimit(1)
                                     Text("\(entry.chipset ?? "—") · \(group.sizes) · \(lastBoot(entry))")
-                                        .font(.footnote).foregroundColor(Color(white: 0.63))
+                                        .font(.footnote).foregroundColor(.secondary)
                                     if !group.files.contains(where: { $0.available }) {
                                         Text(text("Library unavailable")).font(.caption)
                                     }
@@ -699,17 +699,12 @@ struct FirmwareLibraryView: View {
                         .accessibilityLabel(String(format: text("Library file actions"), entry.displayName))
                     }
                     .padding(.vertical, 6)
-                    .listRowBackground(Color(white: 0.07))
-                    .listRowSeparatorTint(Color(white: 0.25))
                 }
                 .listStyle(.plain)
-                .modifier(LibraryListBackground())
             }
-            .background(Color(white: 0.07).ignoresSafeArea())
+            .background(Color(uiColor: .systemBackground))
             .navigationTitle(text("Library title"))
             .navigationBarTitleDisplayMode(.large)
-            .tint(.white)
-            .preferredColorScheme(.dark)
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
@@ -778,16 +773,5 @@ struct FirmwareLibraryView: View {
                     dismissButton: .default(Text(text("Done"))))
             }
 
-    }
-}
-
-
-private struct LibraryListBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.scrollContentBackground(.hidden)
-        } else {
-            content.onAppear { UITableView.appearance().backgroundColor = .clear }
-        }
     }
 }
