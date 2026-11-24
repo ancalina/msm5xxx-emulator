@@ -212,9 +212,10 @@ public sealed class LauncherWindow : DesktopWindow
         await ShowSettingsAsync(backend!);
     }
 
+    protected override Task<bool> CanCloseAsync() => App.Instance.CloseSessionsAsync();
+
     protected override async Task ShutdownAsync()
     {
-        await App.Instance.CloseSessionsAsync();
         await initialize;
         if (backend is not null) await backend.DisposeAsync();
     }

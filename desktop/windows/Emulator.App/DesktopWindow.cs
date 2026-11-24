@@ -20,7 +20,7 @@ public abstract class DesktopWindow : Window
     protected bool IsClosing { get; private set; }
     protected bool DialogOpen { get; private set; }
     private bool allowClose;
-    private Task? shutdown;
+    private Task<bool>? shutdown;
     private SettingsWindow? settings;
     protected double MinimumClientWidth = 320, MinimumClientHeight = 180;
 
@@ -64,16 +64,29 @@ public abstract class DesktopWindow : Window
 
     protected void RefreshTitleBar() => DispatcherQueue.TryEnqueue(() => Commands.RecomputeDragRegions());
 
-    public Task ShutdownAndCloseAsync() => shutdown ??= ShutdownCoreAsync();
-
-    private async Task ShutdownCoreAsync()
+    public async Task<bool> ShutdownAndCloseAsync()
     {
+        var attempt = shutdown ??= ShutdownCoreAsync();
+        var closed = await attempt;
+        if (!closed && ReferenceEquals(shutdown, attempt)) shutdown = null;
+        return closed;
+    }
+
+    private async Task<bool> ShutdownCoreAsync()
+    {
+        try
+        {
+            if (settings is not null && !await settings.ShutdownAndCloseAsync()) return false;
+            if (!await CanCloseAsync()) return false;
+        }
+        catch (Exception error) { ShowError(error); return false; }
         IsClosing = true;
         Commands.IsEnabled = false;
         Body.IsHitTestVisible = false;
-        try { if (settings is not null) await settings.ShutdownAndCloseAsync(); await ShutdownAsync(); }
+        try { await ShutdownAsync(); }
         catch (Exception error) { System.Diagnostics.Debug.WriteLine(error); }
         finally { allowClose = true; Close(); }
+        return true;
     }
 
     protected Task ShowSettingsAsync(Msm5xxx.Desktop.Core.BackendClient backend, Func<Task>? restart = null)
@@ -90,6 +103,7 @@ public abstract class DesktopWindow : Window
 
     internal Task RefreshSettingsLanguageAsync() => settings?.RefreshLanguageAsync() ?? Task.CompletedTask;
 
+    protected virtual Task<bool> CanCloseAsync() => Task.FromResult(true);
     protected virtual Task ShutdownAsync() => Task.CompletedTask;
     protected virtual Task BeforeDialogAsync() => Task.CompletedTask;
     protected virtual Task RetryAsync() => Task.CompletedTask;

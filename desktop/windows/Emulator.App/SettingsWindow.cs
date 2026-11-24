@@ -255,10 +255,14 @@ internal sealed class SettingsWindow : DesktopWindow
         finally { timeSaving = false; }
     }
 
-    protected override async Task ShutdownAsync()
+    protected override async Task<bool> CanCloseAsync()
     {
         await initialize;
-        await SaveTimeAsync();
         await pending;
+        await SaveTimeAsync();
+        if (networkTime.Text == savedTime) return true;
+        networkTime.StartBringIntoView();
+        networkTime.Focus(FocusState.Programmatic);
+        return false;
     }
 }

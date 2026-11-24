@@ -41,9 +41,11 @@ public partial class App : Application
         window.Activate();
     }
 
-    public async Task CloseSessionsAsync()
+    public async Task<bool> CloseSessionsAsync()
     {
-        foreach (var window in sessions.Values.ToArray()) await window.ShutdownAndCloseAsync();
+        foreach (var window in sessions.Values.ToArray())
+            if (!await window.ShutdownAndCloseAsync()) return false;
+        return true;
     }
 
     internal async Task RefreshLanguagesAsync()
