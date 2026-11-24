@@ -18,20 +18,33 @@ public final class CaptureProvider extends ContentProvider {
         return new File(context.getCacheDir(), NAME);
     }
 
+    static File captureFile(android.content.Context context, String name) throws FileNotFoundException {
+        if (name == null || !(NAME.equals(name)
+                || name.matches("capture-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.png")))
+            throw new FileNotFoundException();
+        return new File(context.getCacheDir(), name);
+    }
+
+    private File fileForUri(Uri uri) throws FileNotFoundException {
+        if (uri.getPathSegments().size() != 1) throw new FileNotFoundException();
+        return captureFile(getContext(), uri.getLastPathSegment());
+    }
+
     @Override public boolean onCreate() { return true; }
     @Override public String getType(Uri uri) { return "image/png"; }
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-        if (!"/capture.png".equals(uri.getPath()) || !"r".equals(mode)) throw new FileNotFoundException();
-        return ParcelFileDescriptor.open(captureFile(getContext()), ParcelFileDescriptor.MODE_READ_ONLY);
+        if (!"r".equals(mode)) throw new FileNotFoundException();
+        return ParcelFileDescriptor.open(fileForUri(uri), ParcelFileDescriptor.MODE_READ_ONLY);
     }
     @Override public Cursor query(Uri uri, String[] projection, String selection, String[] args, String sort) {
-        if (!"/capture.png".equals(uri.getPath())) return null;
+        final File file;
+        try { file = fileForUri(uri); } catch (FileNotFoundException error) { return null; }
         String[] columns = projection == null ? new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE} : projection;
         MatrixCursor cursor = new MatrixCursor(columns);
         Object[] values = new Object[columns.length];
         for (int i = 0; i < columns.length; i++) {
             if (OpenableColumns.DISPLAY_NAME.equals(columns[i])) values[i] = NAME;
-            else if (OpenableColumns.SIZE.equals(columns[i])) values[i] = captureFile(getContext()).length();
+            else if (OpenableColumns.SIZE.equals(columns[i])) values[i] = file.length();
         }
         cursor.addRow(values);
         return cursor;

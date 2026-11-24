@@ -153,6 +153,7 @@ public final class MainActivity extends ComponentActivity {
     private long lastMetricsLog;
     private long lastMetricLabels;
     private EmulatorContent composeContent;
+    private CaptureJob captures;
     private String modelTitle = "";
     private TextView profileView;
     private TextView sessionView;
@@ -251,6 +252,7 @@ public final class MainActivity extends ComponentActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        captures = new androidx.lifecycle.ViewModelProvider(this).get(CaptureJob.class);
         displayManager = getSystemService(DisplayManager.class);
         modelTitle = SelectionLabels.displayName(this, getIntent().getStringExtra("name"));
         View handset = buildContent();
@@ -1789,7 +1791,8 @@ public final class MainActivity extends ComponentActivity {
         else composeContent.showActions();
     }
 
-    boolean hasFrame() { return frameView.bitmap != null; }
+    CaptureJob captureJob() { return captures; }
+    boolean hasFrame() { return frameView.bitmap != null && captures != null && captures.canCapture(); }
     boolean secondaryVisible() { return !secondaryHidden; }
     boolean secondaryAvailable() { return latestStatus != null && latestStatus.secondaryAvailable; }
     void setSecondaryVisible(boolean visible) { secondaryHidden = !visible; updateSecondaryPresentation(); }
@@ -1889,51 +1892,52 @@ public final class MainActivity extends ComponentActivity {
     private static final int SAVE_CAPTURE = 73;
 
     private void saveCapture() {
-        Bitmap bitmap = frameView.bitmap;
-        if (bitmap == null) return;
-        File file = CaptureProvider.captureFile(this);
-        try (FileOutputStream output = new FileOutputStream(file)) {
-            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new IOException("PNG encoding failed");
-        } catch (IOException error) {
+        if (!hasFrame()) return;
+        try {
+            Bitmap snapshot = frameView.bitmap.copy(Bitmap.Config.ARGB_8888, false);
+            if (snapshot == null) throw new IllegalStateException("Capture unavailable");
+            captures.prepare(getApplicationContext(), snapshot);
+        } catch (RuntimeException error) {
             showError(getString(R.string.error_capture));
-            return;
         }
+    }
+
+    void showCaptureChoice(String name) {
+        if (name == null || !captures.isChoice(name)) return;
         composeContent.choose(getString(R.string.capture),
                 new String[]{getString(R.string.capture_share), getString(R.string.capture_save_as)}, -1, choice -> {
+            if (!captures.isChoice(name)) return;
             try {
                 if (choice == 0) {
                     Uri uri = new Uri.Builder().scheme("content")
-                            .authority(getPackageName() + ".capture").appendPath(CaptureProvider.NAME).build();
+                            .authority(getPackageName() + ".capture").appendPath(name).build();
                     Intent share = new Intent(Intent.ACTION_SEND).setType("image/png")
                             .putExtra(Intent.EXTRA_STREAM, uri)
                             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     share.setClipData(android.content.ClipData.newRawUri("", uri));
                     startActivity(Intent.createChooser(share, getString(R.string.capture_share)));
+                    captures.clear();
                 } else {
+                    captures.beginPicker(name);
                     Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                             .setType("image/png").putExtra(Intent.EXTRA_TITLE, "capture.png");
                     startActivityForResult(save, SAVE_CAPTURE);
                 }
             } catch (ActivityNotFoundException error) {
+                captures.clear();
                 showError(getString(R.string.error_no_picker));
+            } catch (SecurityException error) {
+                captures.clear();
+                showError(getString(R.string.error_capture));
             }
-        });
+        }, () -> captures.clear());
     }
 
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != SAVE_CAPTURE || result != RESULT_OK || data == null || data.getData() == null) return;
-        try (InputStream input = new FileInputStream(CaptureProvider.captureFile(this));
-             OutputStream output = getContentResolver().openOutputStream(data.getData())) {
-            if (output == null) throw new IOException("Destination unavailable");
-            byte[] bytes = new byte[8192];
-            int count;
-            while ((count = input.read(bytes)) != -1) output.write(bytes, 0, count);
-            composeContent.notify(getString(R.string.capture_saved, data.getData().toString()));
-        } catch (IOException | SecurityException error) {
-            showError(getString(R.string.error_capture));
-        }
+        if (request != SAVE_CAPTURE) return;
+        captures.destination(getApplicationContext(), result == RESULT_OK && data != null ? data.getData() : null);
     }
 
     private void toggleFold() {

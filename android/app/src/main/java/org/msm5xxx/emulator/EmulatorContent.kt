@@ -82,8 +82,9 @@ internal class EmulatorContent private constructor(private val activity: MainAct
     fun confirm(title: String, body: String, positive: String, action: Runnable) {
         modal = Modal.Confirm(title, body, positive, action)
     }
-    fun choose(title: String, labels: Array<String>, selected: Int, action: IntConsumer) {
-        modal = Modal.Choice(title, labels.toList(), selected, action)
+    @JvmOverloads
+    fun choose(title: String, labels: Array<String>, selected: Int, action: IntConsumer, onDismiss: Runnable = Runnable {}) {
+        modal = Modal.Choice(title, labels.toList(), selected, action, onDismiss)
     }
     fun input(identity: String, bit: Int, title: String, label: String, initial: String,
               validate: java.util.function.Function<String, String?>, action: Consumer<String>) {
@@ -92,6 +93,21 @@ internal class EmulatorContent private constructor(private val activity: MainAct
 
     @Composable
     private fun Screen() {
+        val captureJob = activity.captureJob()
+        val capture = captureJob.state
+        LaunchedEffect(capture, hasModal) {
+            when (capture.getString("phase", "idle")) {
+                "choice" -> if (!hasModal) activity.showCaptureChoice(capture.getString("name"))
+                "saved" -> {
+                    captureJob.clear()
+                    notify(activity.getString(R.string.capture_saved, capture.getString("uri")))
+                }
+                "failed" -> {
+                    captureJob.clear()
+                    showError(activity.getString(if (capture.getBoolean("interrupted")) R.string.capture_interrupted else R.string.error_capture))
+                }
+            }
+        }
         notice?.let { text -> LaunchedEffect(text) { snackbar.showSnackbar(text); notice = null } }
         Scaffold(containerColor = androidx.compose.ui.graphics.Color.Black, snackbarHost = { SnackbarHost(snackbar) }) { insets ->
             Box(Modifier.fillMaxSize().padding(insets)) {
@@ -177,7 +193,7 @@ internal class EmulatorContent private constructor(private val activity: MainAct
                 is Modal.Confirm -> AlertDialog(onDismissRequest = { modal = null }, title = { Text(value.title) }, text = { Text(value.body) },
                     confirmButton = { TextButton(onClick = { modal = null; value.action.run() }) { Text(value.positive) } },
                     dismissButton = { TextButton(onClick = { modal = null }) { Text(stringResource(R.string.cancel)) } })
-                is Modal.Choice -> AlertDialog(onDismissRequest = { modal = null }, title = { Text(value.title) },
+                is Modal.Choice -> AlertDialog(onDismissRequest = { modal = null; value.onDismiss.run() }, title = { Text(value.title) },
                     text = {
                         Column(Modifier.verticalScroll(rememberScrollState())) {
                             value.labels.forEachIndexed { index, label ->
@@ -186,7 +202,7 @@ internal class EmulatorContent private constructor(private val activity: MainAct
                                     modifier = Modifier.fillMaxWidth().then(Modifier.choiceClick { modal = null; value.action.accept(index) }))
                             }
                         }
-                    }, confirmButton = {}, dismissButton = { TextButton(onClick = { modal = null }) { Text(stringResource(R.string.cancel)) } })
+                    }, confirmButton = {}, dismissButton = { TextButton(onClick = { modal = null; value.onDismiss.run() }) { Text(stringResource(R.string.cancel)) } })
                 is Modal.Input -> InputDialog(value)
                 is Modal.NetworkTime -> NetworkTimeDialog(value.initial, onDismiss = { modal = null }) {
                     modal = null
@@ -220,7 +236,7 @@ internal class EmulatorContent private constructor(private val activity: MainAct
         data class NetworkTime(val initial: String, val action: Consumer<String>) : Modal
         data class Message(val title: String, val body: String) : Modal
         data class Confirm(val title: String, val body: String, val positive: String, val action: Runnable) : Modal
-        data class Choice(val title: String, val labels: List<String>, val selected: Int, val action: IntConsumer) : Modal
+        data class Choice(val title: String, val labels: List<String>, val selected: Int, val action: IntConsumer, val onDismiss: Runnable) : Modal
         data class Input(val identity: String, val bit: Int, val title: String, val label: String, val initial: String,
             val validate: java.util.function.Function<String, String?>, val action: Consumer<String>) : Modal
     }
