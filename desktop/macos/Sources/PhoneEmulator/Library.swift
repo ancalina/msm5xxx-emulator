@@ -20,6 +20,10 @@ struct Firmware: Identifiable {
     @Published var languageRevision = 0
     var windows: [String: EmulatorSceneModel] = [:]
     @Published var settingsEmulator: EmulatorSceneModel?
+    @Published var hardwareDrafts: [String: [String: String]] = [:]
+    @Published var hardwareSections: [String: [JSON]] = [:]
+    @Published var hardwareErrors: [String: String] = [:]
+    @Published var applyingHardware: Set<String> = []
     #if DEBUG
     weak var settingsWindow: NSWindow?
     #endif

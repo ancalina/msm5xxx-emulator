@@ -84,12 +84,18 @@ struct GeneralSettings: View {
 struct DeviceSettings: View {
     @ObservedObject var session: SessionModel
     @ObservedObject var library: LibraryModel
-    @State private var sections: [JSON] = []
-    @State private var values: [String: String] = [:]
-    @State private var error = ""
     @State private var loading = true
-    @State private var applying = false
     @State private var selectedTab = 1
+    private var firmwareID: String { session.firmware.id }
+    private var applying: Bool { library.applyingHardware.contains(firmwareID) }
+    private var sections: [JSON] { library.hardwareSections[firmwareID] ?? [] }
+    private var values: [String: String] {
+        var values: [String: String] = [:]
+        for section in sections {
+            for field in section["fields"].array { values[field["name"].string] = field["value"].text }
+        }
+        return values.merging(library.hardwareDrafts[firmwareID] ?? [:]) { _, draft in draft }
+    }
     var body: some View {
         VStack(spacing: 0) {
             Text(session.title).font(.headline).padding()
@@ -97,13 +103,16 @@ struct DeviceSettings: View {
                 GeneralSettings(library: library).tag(0).tabItem { Text(L("general")) }
                 VStack(spacing: 0) {
                     if loading { ProgressView(L("detecting")).padding() }
-                    ErrorBanner(message: error)
+                    ErrorBanner(message: library.hardwareErrors[firmwareID] ?? "")
                     Form {
                         ForEach(sections, id: \.selfID) { section in
                             Section(section["title"].string) {
                                 ForEach(section["fields"].array, id: \.selfID) { field in
                                     let name = field["name"].string
-                                    let binding = Binding(get: { values[name] ?? field["value"].text }, set: { values[name] = $0 })
+                                    let binding = Binding(get: { values[name] ?? field["value"].text }, set: {
+                                        guard !applying else { return }
+                                        library.hardwareDrafts[firmwareID, default: [:]][name] = $0
+                                    })
                                     if field["choices"].isNull {
                                         TextField(field["label"].string, text: binding)
                                             .accessibilityLabel(Text(field["label"].string))
@@ -125,22 +134,31 @@ struct DeviceSettings: View {
 
         }.frame(width: 600, height: 640)
         .task {
-            do {
-                sections = try await session.backend.call("session.settings")["sections"].array
-                for section in sections { for field in section["fields"].array { values[field["name"].string] = field["value"].text } }
-            } catch { self.error = error.localizedDescription }
+            if !applying {
+                do {
+                    library.hardwareSections[firmwareID] = try await session.backend.call("session.settings")["sections"].array
+                } catch { library.hardwareErrors[firmwareID] = error.localizedDescription }
+            }
             loading = false
         }
     }
     private func apply() {
-        applying = true; error = ""
+        guard !loading, !applying, !session.busy else { return }
+        let id = firmwareID, submittedValues = values
+        library.applyingHardware.insert(id)
+        library.hardwareErrors[id] = ""
         Task {
+            defer { library.applyingHardware.remove(id) }
             do {
-                _ = try await session.backend.call("session.apply_settings", ["values": .object(values.mapValues(JSON.string))])
+                _ = try await session.backend.call("session.apply_settings", ["values": .object(submittedValues.mapValues(JSON.string))])
                 await session.reboot()
-                if !session.error.isEmpty { error = session.error }
-            } catch { self.error = error.localizedDescription }
-            applying = false
+                guard session.error.isEmpty else { library.hardwareErrors[id] = session.error; return }
+                library.hardwareSections[id] = try await session.backend.call("session.settings")["sections"].array
+                library.hardwareDrafts.removeValue(forKey: id)
+            } catch {
+                library.hardwareErrors[id] = error.localizedDescription
+                session.error = error.localizedDescription
+            }
         }
     }
 }
