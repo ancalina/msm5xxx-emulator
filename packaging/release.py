@@ -141,7 +141,7 @@ def build_all(args):
     destination=args.output.resolve();destination.mkdir(parents=True,exist_ok=True)
     transfer=destination/'.work';transfer.mkdir(exist_ok=True)
     bundle=transfer/'release.bundle'
-    run('git','bundle','create',bundle,'refs/tags/'+args.tag,cwd=ROOT)
+    run('git','bundle','create',bundle,'refs/tags/'+args.tag,'HEAD',cwd=ROOT)
     suffix=['--dry-run'] if args.dry_run else []
     for target in ['linux','android']:
         command=[sys.executable,Path(__file__).resolve(),'--tag',args.tag,'--platform',target,
