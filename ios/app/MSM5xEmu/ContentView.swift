@@ -18,6 +18,8 @@ struct ContentView: View {
     @State private var lastMaintenance = Date.distantPast
     @State private var jit = QEMUEngine.jitAvailable
     @State private var showingSettings = false
+    @State private var availableVersion = ""
+    @State private var showingUpdateNotice = false
     @State private var showingSettingsNotice = false
     @State private var settingsNotice = ""
     @State private var settingsApplying = false
@@ -156,6 +158,10 @@ struct ContentView: View {
             if !engine.running && !engine.starting && !preparingFirmware { showingLibrary = true }
         }
         .onAppear(perform: pickStoredFirmware)
+        .task { await checkForRelease() }
+        .alert(text("New version available"), isPresented: $showingUpdateNotice) {
+            Button(text("OK"), role: .cancel) { }
+        } message: { Text(availableVersion) }
         .onAppear { engine.setSceneActive(scenePhase == .active); updateRefreshTimer() }
         .onDisappear { engine.releaseAllKeys(); refreshTimer?.invalidate(); refreshTimer = nil }
         .onChange(of: engine.running) { running in
@@ -516,6 +522,22 @@ struct ContentView: View {
     private var localizedMetrics: String {
         engine.metrics.replacingOccurrences(of: "Run ", with: text("Run") + " ")
             .replacingOccurrences(of: "Frame ", with: text("Frame") + " ")
+    }
+
+    private func checkForRelease() async {
+        guard let url = URL(string: "https://api.github.com/repos/ancalina/msm5xxx-emulator/releases/latest"),
+              let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String else { return }
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 10
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let release = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = release["tag_name"] as? String,
+                  let version = newerRelease(tag, than: current) else { return }
+            await MainActor.run { availableVersion = version; showingUpdateNotice = true }
+        } catch { return }
     }
 
     private static func parseEventCode(_ source: String) -> Int? {
