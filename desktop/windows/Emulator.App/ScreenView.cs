@@ -91,7 +91,27 @@ public sealed class ScreenView : Grid
         await encoder.FlushAsync();
         stream.Seek(0);
         using var source = stream.AsStreamForRead();
-        await using var destination = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-        await source.CopyToAsync(destination);
+        var destinationPath = Path.GetFullPath(path);
+        var temporaryPath = Path.Combine(Path.GetDirectoryName(destinationPath)!,
+            ".msm5xxx-" + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            await using (var destination = new FileStream(temporaryPath, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, 81920, useAsync: true))
+            {
+                await source.CopyToAsync(destination);
+                await destination.FlushAsync();
+            }
+            if (File.Exists(destinationPath))
+                File.Replace(temporaryPath, destinationPath, destinationBackupFileName: null);
+            else
+                File.Move(temporaryPath, destinationPath);
+        }
+        finally
+        {
+            try { File.Delete(temporaryPath); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }
