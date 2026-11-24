@@ -277,7 +277,7 @@
     <value>Remove this entry from the library? The firmware file will be kept.</value>
   </data>
   <data name="restart_notice" xml:space="preserve">
-    <value>App settings are saved automatically. Apply hardware changes to restart the device.</value>
+    <value>Device behavior options save automatically and restart this device when it is running. Hardware changes take effect when you choose Apply.</value>
   </data>
   <data name="restarting" xml:space="preserve">
     <value>Restarting</value>
@@ -521,5 +521,14 @@
   </data>
   <data name="network_time_apply_error" xml:space="preserve">
     <value>The time was saved, but could not be applied to the running device. Retry to apply it.</value>
+  </data>
+  <data name="defaults_notice" xml:space="preserve">
+    <value>Device behavior options save automatically and take effect the next time a device starts.</value>
+  </data>
+  <data name="network_time_source_notice" xml:space="preserve">
+    <value>Manual time is used when Use computer clock is off. Saving a manual time updates the running device without restarting it.</value>
+  </data>
+  <data name="appearance_notice" xml:space="preserve">
+    <value>Language and app icon changes apply immediately without restarting the device.</value>
   </data>
 </root>

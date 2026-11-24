@@ -277,7 +277,7 @@
     <value>라이브러리에서 이 항목을 제거할까요? 펌웨어 파일은 유지됩니다.</value>
   </data>
   <data name="restart_notice" xml:space="preserve">
-    <value>앱 설정은 자동으로 저장됩니다. 하드웨어 변경을 적용하면 기기가 다시 시작됩니다.</value>
+    <value>기기 동작 옵션은 자동으로 저장되며, 실행 중이면 기기를 다시 시작합니다. 하드웨어 변경은 적용 버튼으로 반영합니다.</value>
   </data>
   <data name="restarting" xml:space="preserve">
     <value>재부팅 중</value>
@@ -521,5 +521,14 @@
   </data>
   <data name="network_time_apply_error" xml:space="preserve">
     <value>시간은 저장했지만 실행 중인 기기에 적용하지 못했습니다. 다시 시도하면 저장한 시간을 적용합니다.</value>
+  </data>
+  <data name="defaults_notice" xml:space="preserve">
+    <value>기기 동작 옵션은 자동으로 저장되며 다음 기기 시작 시 적용됩니다.</value>
+  </data>
+  <data name="network_time_source_notice" xml:space="preserve">
+    <value>수동 시간은 컴퓨터 시계 사용을 껐을 때 사용합니다. 수동 시간을 저장하면 기기를 다시 시작하지 않고 실행 중인 기기에 반영합니다.</value>
+  </data>
+  <data name="appearance_notice" xml:space="preserve">
+    <value>언어와 앱 아이콘은 기기를 다시 시작하지 않고 바로 변경됩니다.</value>
   </data>
 </root>

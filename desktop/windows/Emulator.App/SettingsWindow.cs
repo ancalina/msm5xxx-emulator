@@ -53,7 +53,7 @@ internal sealed class SettingsWindow : DesktopWindow
         {
             var current = await backend.CallAsync("settings.get");
             if (IsClosing) return;
-            form.Children.Add(Heading("restart_notice", 14));
+            form.Children.Add(Heading(restart is null ? "defaults_notice" : "restart_notice", 14));
             form.Children.Add(Heading("app_settings"));
             foreach (var key in new[] { "persistent_state", "virtual_network", "network_host_time", "experimental_rex" })
             {
@@ -94,12 +94,14 @@ internal sealed class SettingsWindow : DesktopWindow
             };
             form.Children.Add(networkTime);
             form.Children.Add(timeError);
+            form.Children.Add(Heading("network_time_source_notice", 14));
             AutomationProperties.SetLiveSetting(timeError, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
             translate.Add(() =>
             {
                 if (timeError.Visibility == Visibility.Visible) SetTimeError(Text["network_time_error"]);
             });
             var languages = new[] { "auto", "ko", "en" };
+            form.Children.Add(Heading("appearance_notice", 14));
             savedLanguage = current.GetProperty("ui_language").GetString();
             var language = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
             foreach (var _ in languages) language.Items.Add(new ComboBoxItem());
