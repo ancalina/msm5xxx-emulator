@@ -13,6 +13,7 @@ pub struct Library {
     pub backend: Rc<Backend>,
     pub text: RefCell<Text>,
     pub(crate) app: Weak<App>,
+    initial_settings_error: RefCell<Option<String>>,
     banner: adw::Banner,
     stack: gtk::Stack,
     model: gio::ListStore,
@@ -34,6 +35,7 @@ impl Library {
             backend: Rc::new(Backend::new(&app.config)),
             text: RefCell::new(app.text.borrow().clone()),
             app: Rc::downgrade(app),
+            initial_settings_error: RefCell::new(None),
             banner: adw::Banner::new(""),
             stack: gtk::Stack::new(),
             model: gio::ListStore::new::<glib::BoxedAnyObject>(),
@@ -78,7 +80,10 @@ impl Library {
                                     )
                                         .to_variant(),
                                 ),
-                                Err(error) => this.error(&error),
+                                Err(error) => {
+                                    this.error(&error);
+                                    this.initial_settings_error.replace(Some(error));
+                                }
                             }
                             app.text.replace(text);
                         }
@@ -355,9 +360,14 @@ impl Library {
                         action.set_enabled(true);
                     }
                 }
+                let initial_error = this.initial_settings_error.borrow_mut().take();
                 match result {
                     Ok(value) => {
-                        this.banner.set_revealed(false);
+                        if let Some(error) = initial_error {
+                            this.error(&error);
+                        } else {
+                            this.banner.set_revealed(false);
+                        }
                         this.folders.replace(
                             value["folders"]
                                 .as_array()
@@ -380,7 +390,13 @@ impl Library {
                         this.entries.replace(entries);
                     }
                     Err(e) => {
-                        this.error(&e);
+                        let error = if let Some(initial) = initial_error {
+                            let text = this.text.borrow();
+                            format!("{}\n{}", text.tr(&initial), text.tr(&e))
+                        } else {
+                            e
+                        };
+                        this.error(&error);
                         this.stack
                             .set_visible_child_name(if this.model.n_items() == 0 {
                                 "empty"
