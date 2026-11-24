@@ -252,4 +252,5 @@
     <string name="library_scan_partial">Could not check folders: %1$d; files: %2$d. Check access and refresh.</string>
     <string name="library_scan_empty_error">No files could be checked.</string>
     <string name="library_inspection_failed">Could not check this file.</string>
+    <string name="library_remove_failed">Some files could not be removed. Check storage and try again.</string>
 </resources>

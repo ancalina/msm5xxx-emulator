@@ -324,6 +324,7 @@ final class FirmwareLibraryScreen {
     }
 
     private void remove(JSONObject entry) {
+        boolean failed = false;
         synchronized (INDEX_LOCK) {
         revision.incrementAndGet();
         String uri = entry.optString("uri");
@@ -341,14 +342,23 @@ final class FirmwareLibraryScreen {
                 try {
                     File root = new File(activity.getFilesDir(), "firmware-library").getCanonicalFile();
                     File file = new File(Uri.parse(candidate).getPath()).getCanonicalFile();
-                    if (LibraryPolicy.canDelete(root, file, true) && file.exists() && !file.delete()) return;
-                } catch (IOException | NullPointerException error) { return; }
+                    if (LibraryPolicy.canDelete(root, file, true) && file.exists() && !file.delete()) {
+                        kept.put(item);
+                        failed = true;
+                        continue;
+                    }
+                } catch (IOException | RuntimeException error) {
+                    kept.put(item);
+                    failed = true;
+                    continue;
+                }
             }
             excluded.put(candidate);
         }
         applyMutation(preferences, preferences.edit().putString("entries", kept.toString())
                 .putString("excluded", excluded.toString()));
         }
+        if (failed) showMessage(activity.getString(R.string.library_remove_failed));
         refresh();
     }
 

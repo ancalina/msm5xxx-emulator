@@ -219,7 +219,7 @@
     <string name="library_preview_after_boot">부팅 후 세부 정보를 볼 수 있습니다</string>
     <string name="library_folders">펌웨어 폴더</string>
     <string name="library_no_folders">등록된 폴더가 없습니다</string>
-    <string name="library_remove_folder">삭제</string>
+    <string name="library_remove_folder">등록 해제</string>
     <string name="library_session_settings">실행 설정</string>
     <string name="back">뒤로</string>
     <string name="time_off">사용 안 함</string>
@@ -252,4 +252,5 @@
     <string name="library_scan_partial">폴더 %1$d개와 파일 %2$d개를 확인하지 못했습니다. 접근 상태를 확인한 뒤 새로고침하세요.</string>
     <string name="library_scan_empty_error">확인한 파일이 없습니다.</string>
     <string name="library_inspection_failed">파일을 확인하지 못했습니다.</string>
+    <string name="library_remove_failed">일부 파일을 제거하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도하세요.</string>
 </resources>
