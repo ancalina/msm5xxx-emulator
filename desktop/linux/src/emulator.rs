@@ -1304,7 +1304,7 @@ impl Emulator {
         self.update_controls();
     }
     pub fn edit_key(self: &Rc<Self>, bit: i64) {
-        if !self.ready.get() {
+        if !self.ready.get() || self.closing.get() {
             return;
         }
         self.release_all();
@@ -1323,6 +1323,9 @@ impl Emulator {
                         return;
                     }
                 };
+                if this.closing.get() {
+                    return;
+                }
                 let text = this.text.borrow().clone();
                 let title = this
                     .buttons
@@ -1363,25 +1366,36 @@ impl Emulator {
                 dialog.set_response_appearance("apply", adw::ResponseAppearance::Suggested);
                 dialog.set_default_response(Some("apply"));
                 loop {
-                    dialog.set_focus(Some(&entry));
-                    if dialog.clone().choose_future(Some(&this.window)).await != "apply" {
+                    if this.closing.get() {
                         break;
                     }
-                    match this
+                    dialog.set_focus(Some(&entry));
+                    let response = dialog.clone().choose_future(Some(&this.window)).await;
+                    if this.closing.get() || response != "apply" {
+                        break;
+                    }
+                    let result = this
                         .backend
                         .call(
                             "session.set_key_mapping",
                             json!({"bit":bit,"value":entry.text().trim()}),
                         )
-                        .await
-                    {
+                        .await;
+                    if this.closing.get() {
+                        break;
+                    }
+                    match result {
                         Ok(value) => {
                             if value.is_null() {
                                 this.mapped.borrow_mut().remove(&bit);
                             } else {
                                 this.mapped.borrow_mut().insert(bit);
                             }
-                            match this.backend.call("session.keys", json!({})).await {
+                            let keys = this.backend.call("session.keys", json!({})).await;
+                            if this.closing.get() {
+                                break;
+                            }
+                            match keys {
                                 Ok(keys) => {
                                     this.available.replace(
                                         keys.as_array()
@@ -1551,6 +1565,9 @@ impl Emulator {
         ));
     }
     fn network_time(self: &Rc<Self>, host: bool) {
+        if self.closing.get() {
+            return;
+        }
         if host {
             self.apply_time(true, String::new());
             return;
@@ -1590,8 +1607,12 @@ impl Emulator {
             self,
             async move {
                 loop {
+                    if this.closing.get() {
+                        break;
+                    }
                     dialog.set_focus(Some(&entry));
-                    if dialog.clone().choose_future(Some(&this.window)).await != "apply" {
+                    let response = dialog.clone().choose_future(Some(&this.window)).await;
+                    if this.closing.get() || response != "apply" {
                         break;
                     }
                     let value = entry.text().trim().to_owned();
@@ -1600,14 +1621,17 @@ impl Emulator {
                         error.set_visible(true);
                         continue;
                     }
-                    match this
+                    let result = this
                         .backend
                         .call(
                             "settings.set",
                             json!({"key":"network_start_time","value":value}),
                         )
-                        .await
-                    {
+                        .await;
+                    if this.closing.get() {
+                        break;
+                    }
+                    match result {
                         Ok(_) => {
                             this.settings.borrow_mut()["network_start_time"] = json!(value);
                             this.apply_time(false, value);
