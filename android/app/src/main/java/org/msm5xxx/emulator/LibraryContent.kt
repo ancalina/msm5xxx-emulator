@@ -32,10 +32,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -265,9 +265,14 @@ private fun FirmwareRow(group: List<JSONObject>, state: LibraryContent) {
         ?: return
     var moreExpanded by remember(entry.optString("uri")) { mutableStateOf(false) }
     val path = entry.optString("thumbnail").takeIf(String::isNotEmpty)
-    val thumbnailVersion = remember(entry, path) { path?.let { java.io.File(it).lastModified() } }
-    val thumbnail by produceState<android.graphics.Bitmap?>(null, path, thumbnailVersion) {
-        value = if (path == null) null else withContext(Dispatchers.IO) { BitmapFactory.decodeFile(path) }
+    // Every publish copies the rows, so keep the bitmap across publishes and stat the file off the main thread.
+    val thumbnail = remember(path) { mutableStateOf<Pair<Long, android.graphics.Bitmap?>>(-1L to null) }
+    LaunchedEffect(path, entry) {
+        if (path == null) { thumbnail.value = -1L to null; return@LaunchedEffect }
+        withContext(Dispatchers.IO) {
+            val version = java.io.File(path).lastModified()
+            if (version != thumbnail.value.first) thumbnail.value = version to BitmapFactory.decodeFile(path)
+        }
     }
     val name = entry.optString("model").ifEmpty { entry.optString("display", entry.optString("name")) }
     val chipset = entry.optString("chipset", "—")
@@ -312,8 +317,9 @@ private fun FirmwareRow(group: List<JSONObject>, state: LibraryContent) {
         modifier = Modifier.clickable(enabled = group.any { it.optBoolean("available", false) }) { onAction(0) }
             .semantics { contentDescription = context.getString(R.string.library_row, name, chipset, booted) },
         leadingContent = {
-            if (thumbnail != null) {
-                Image(thumbnail!!.asImageBitmap(), null, Modifier.size(64.dp))
+            val bitmap = thumbnail.value.second
+            if (bitmap != null) {
+                Image(bitmap.asImageBitmap(), null, Modifier.size(64.dp))
             } else {
                 Icon(
                     painterResource(R.drawable.ic_phone),
@@ -329,7 +335,6 @@ private fun FirmwareRow(group: List<JSONObject>, state: LibraryContent) {
                     Text(stringResource(R.string.library_inspection_failed))
                 }
                 Text("$chipset · $size", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(entry.optString("name"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     "$booted${if (available) "" else " · ${context.getString(R.string.library_unavailable)}"}",
                     maxLines = 1,
