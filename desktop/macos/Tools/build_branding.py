@@ -44,7 +44,7 @@ def main():
     generator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generator)
     generator.HERSHEY = HERE / "Branding/HersheySans1.svg"
-    for name, svg in generator.layers(re.match(r"\d+\.\d+\.\d+", info["version"]).group(0), datetime.date.fromisoformat(info["date"]), info["commit"], info["platform"]).items():
+    for name, svg in generator.layers(info["version"], datetime.date.fromisoformat(info["date"]), info["commit"], info["platform"]).items():
         (args.out / (name + ".svg")).write_text(svg)
     (args.out / "metadata.json").write_text(json.dumps(info, indent=2) + "\n")
 

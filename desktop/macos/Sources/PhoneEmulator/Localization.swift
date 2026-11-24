@@ -10,9 +10,15 @@ private final class LocalizationChoice: @unchecked Sendable {
 
 func setInterfaceLanguage(_ language: String) { LocalizationChoice.shared.set(language) }
 
+let applicationResources: Bundle = {
+    if let url = Bundle.main.url(forResource: "MSM5xxx Emulator_MSM5xxxEmulator", withExtension: "bundle"),
+       let bundle = Bundle(url: url) { return bundle }
+    return Bundle.module
+}()
+
 func L(_ key: String) -> String {
     let choice = LocalizationChoice.shared.get()
     let language = choice == "auto" ? (Locale.preferredLanguages.first?.hasPrefix("ko") == true ? "ko" : "en") : choice
-    let bundle = Bundle.module.path(forResource: language, ofType: "lproj").flatMap(Bundle.init(path:)) ?? Bundle.module
+    let bundle = applicationResources.path(forResource: language, ofType: "lproj").flatMap(Bundle.init(path:)) ?? applicationResources
     return NSLocalizedString(key, bundle: bundle, comment: "")
 }

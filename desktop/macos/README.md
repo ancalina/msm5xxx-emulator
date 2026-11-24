@@ -1,6 +1,6 @@
 # MSM5xxx Emulator for macOS
 
-Native SwiftUI desktop application for macOS 15 or later. No third-party Swift dependencies. Requires Xcode 26 or newer for Icon Composer asset compilation (Swift package uses Swift 5.10 or newer), Python 3 with the repository's backend dependencies, and the macOS MSM5xxx QEMU executable. The application, bundle, product and executable are named **MSM5xxx Emulator**.
+Native SwiftUI desktop application for macOS 15 or later. Sparkle 2 provides the standard update UI. Requires Xcode 26 or newer for Icon Composer asset compilation (Swift package uses Swift 5.10 or newer), Python 3 with the repository's backend dependencies, and the macOS MSM5xxx QEMU executable. The application, bundle, product and executable are named **MSM5xxx Emulator**.
 
 Build from a clean checkout on a Mac:
 
@@ -8,17 +8,17 @@ Build from a clean checkout on a Mac:
 cd desktop/macos
 swift build --jobs 2
 swift build -c release --jobs 2
-./build-app.sh release
+SPARKLE_PUBLIC_KEY="$YOUR_SPARKLE_PUBLIC_KEY" ./build-app.sh release
 ```
 
 The last command creates an ad-hoc signed `.build/application/MSM5xxx Emulator.app`, including the `MSM5xxx Emulator` executable, localization resources, 16–1024 pixel `.icns` icons, and a layered Icon Composer document compiled for macOS 26. Quote the app path because it contains a space. Set `MSM5XXX_APP_OUTPUT` to an absolute `.app` path to package another configuration separately. No firmware or QEMU binaries are included.
 
 SwiftUI owns the library `Window`, URL-valued emulator and secondary `WindowGroup` scenes, Settings scene, toolbars, menus and window sizing. Shared emulator commands use `FocusedValue`. Emulator content declares its minimum with `.frame(minWidth:minHeight:)` and `.windowResizability(.contentMinSize)`. Keypad controls are SwiftUI `Button`s with a `ButtonStyle` that tracks `configuration.isPressed`; guest keyboard input uses `.onKeyPress`. The LCD pixel canvas and a small secondary-click-only key event accessor are `NSViewRepresentable` bridges; the accessor passes primary clicks and keyboard focus through to SwiftUI and opens mapping directly on secondary click, including for disabled keys. AppKit also provides Dock icon switching, secondary-window aspect ratio and child-window docking, and a small scene-owned window accessor for refitting after actual LCD geometry arrives and maintaining the main window’s screen-to-keypad sizing while it is resized. SwiftUI 15 has no API for that dynamic refit/height-for-width behavior. The app uses the system appearance, standard menus and controls, SwiftUI file importer/exporter panels, and native accessibility. The LCD remains a pixel image; VoiceOver can navigate its named display and the surrounding keypad, metrics, menus and forms.
 
-Development run on the owner's Mac, with copies under the dedicated working directory:
+Development run with an external runtime bundle:
 
 ```sh
-cd ~/desktop-ui-macos
+cd /path/to/runtime-bundle
 mkdir -p tmp/state
 export MSM5XXX_BUNDLE="$PWD"
 export TMPDIR="$PWD/tmp"
@@ -46,7 +46,7 @@ The toolbar contains exactly two primary-action items: Power and the ellipsis me
 Debug verification, using a fresh directory so saved settings are isolated:
 
 ```sh
-cd ~/desktop-ui-macos
+cd /path/to/runtime-bundle
 export MSM5XXX_BUNDLE="$PWD"
 export TMPDIR="$PWD/tmp"
 export MSM5XXX_PYTHON="$HOME/desktop-ui-macos/python/bin/python3"
@@ -71,6 +71,15 @@ mac push repo-macos/src desktop-ui-macos/
 mac push repo-macos/desktop/macos desktop-ui-macos/desktop/
 mac push samples/x350.bin desktop-ui-macos/samples/
 mac push samples/a640.bin desktop-ui-macos/samples/
-mac run 'cd ~/desktop-ui-macos/desktop/macos && swift build --jobs 2'
+mac run 'cd /path/to/runtime-bundle/desktop/macos && swift build --jobs 2'
 mac pull desktop-ui-macos/tmp/verification tmp/macos-verification
 ```
+
+## Installer builds
+
+[DMG, complete runtime, Sparkle updates and signing setup](../../packaging/macos/README.md).
+The installed app carries its runtime in `Contents/Resources/runtime`, including
+`bin/qemu-system-arm`, `src`, and `python`. It does not depend on a sibling runtime
+folder or a system Python installation. `MSM5XXX_BUNDLE` remains a development
+runtime override. State uses the per-user Application Support/MSM5xxx folder and
+survives app replacement and Finder uninstall.

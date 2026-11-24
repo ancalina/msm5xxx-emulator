@@ -194,3 +194,8 @@
 "import_partial_failure" = "Some files could not be imported.";
 "runtime_executable_missing" = "The emulator runtime executable is missing. Check the runtime installation, then use Power on to try again.";
 "close_keeps_applying" = "Applying continues after this window closes.";
+"updates" = "Updates";
+
+"check_updates" = "Check for Updates…";
+
+"automatic_updates" = "Automatically check for updates";

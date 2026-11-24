@@ -59,6 +59,7 @@ struct GeneralSettings: View {
                     Text(L("icon_simple")).tag(AppIconStyle.simple)
                 }
             }
+            UpdatePreferences()
             if library.generalSettingsSaving { ProgressView(L("saving")) }
             if !library.generalSettingsStatus.isEmpty {
                 Text(library.generalSettingsStatus).foregroundStyle(.secondary).accessibilityLabel(library.generalSettingsStatus)

@@ -84,3 +84,5 @@ TODO: Check the final iOS Python support archive's bundled native dependency
 licenses and ensure their complete notices and corresponding source accompany
 the iOS release. Verify the final platform artifacts against their actual
 bundled dependency manifests and include all applicable license texts.
+
+- **macOS:** Sparkle 2.10.1 uses the permissive licenses collected in the embedded `Sparkle-LICENSE`. Its standard updater verifies EdDSA-signed archives and appcasts. The embedded CPython distribution is Python Build Standalone 20261123 (Python 3.12.16); its bundled license files are retained.

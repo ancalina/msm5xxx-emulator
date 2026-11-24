@@ -67,7 +67,7 @@ final class Backend: @unchecked Sendable {
         let env = ProcessInfo.processInfo.environment
         let binary = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
         let defaultRoot = Bundle.main.bundleURL.pathExtension == "app"
-            ? Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent()
+            ? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/runtime")
             : binary.deletingLastPathComponent().deletingLastPathComponent()
         let root = URL(fileURLWithPath: env["MSM5XXX_BUNDLE"] ?? defaultRoot.path)
         let bundled = root.appendingPathComponent("python/bin/python3").path
@@ -81,6 +81,16 @@ final class Backend: @unchecked Sendable {
         var environment = env
         environment["PYTHONPATH"] = root.appendingPathComponent("src").path
         environment["PYTHONUNBUFFERED"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["PYTHONNOUSERSITE"] = "1"
+        if environment["MSM5XXX_STATE_DIR"] == nil {
+            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            var testState: String? = nil
+            #if DEBUG
+            testState = Bundle.main.object(forInfoDictionaryKey: "MSM5xxxUpdateTestStateDirectory") as? String
+            #endif
+            environment["MSM5XXX_STATE_DIR"] = testState ?? support.appendingPathComponent("MSM5xxx").path
+        }
         environment["LC_MESSAGES"] = Locale.preferredLanguages.first?.hasPrefix("ko") == true ? "ko_KR.UTF-8" : "en_US.UTF-8"
         p.environment = environment
         p.standardInput = stdinPipe; p.standardOutput = stdoutPipe; p.standardError = stderrPipe

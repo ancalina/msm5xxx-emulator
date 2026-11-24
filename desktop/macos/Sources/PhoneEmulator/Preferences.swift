@@ -25,7 +25,7 @@ enum DockSide: String, Codable { case left, right }
     func applyIcon() {
         if iconStyle == .full { NSApp.applicationIconImage = nil; return }
         let name = "AppIconSimple"
-        let url = Bundle.main.url(forResource: name, withExtension: "icns") ?? Bundle.module.url(forResource: name, withExtension: "icns")
+        let url = Bundle.main.url(forResource: name, withExtension: "icns") ?? applicationResources.url(forResource: name, withExtension: "icns")
         if let url, let image = NSImage(contentsOf: url) { NSApp.applicationIconImage = image }
     }
     func setIcon(_ style: AppIconStyle) async throws {

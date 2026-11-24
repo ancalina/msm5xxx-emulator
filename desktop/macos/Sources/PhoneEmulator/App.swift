@@ -5,6 +5,7 @@ import Darwin
 @main struct EmulatorApp: App {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var delegate
     @StateObject private var library = LibraryModel.shared
+    private let updates = DesktopUpdates.shared
     var body: some Scene {
         Window("MSM5xxx", id: "library") {
             LibraryScene(library: library).focusedSceneValue(\.desktopScene, .library)
@@ -14,7 +15,10 @@ import Darwin
         .defaultSize(width: 640, height: 520)
         .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)
-        .commands { EmulatorCommands(library: library) }
+        .commands {
+            EmulatorCommands(library: library)
+            CommandGroup(after: .appInfo) { UpdateCheckButton() }
+        }
 
         WindowGroup(id: "emulator", for: URL.self) { $url in
             if let url { EmulatorScene(url: url, library: library) }
@@ -49,6 +53,7 @@ import Darwin
         _ = NSDocumentController.shared
         #if DEBUG
         VerificationHarness.armStartupCheckIfRequested()
+        UpdateVerification.startIfRequested()
         InspectionHarness.startIfRequested(library: .shared)
         #endif
     }
