@@ -237,7 +237,7 @@ private fun LanguageChoice(selected: String, onSelected: (String) -> Unit) {
 
 @Composable
 private fun IconChoiceDialog(initial: Boolean, onDismiss: () -> Unit, onChoose: (Boolean) -> Unit) {
-    var selected by remember(initial) { mutableStateOf(initial) }
+    var selected by rememberSaveable(initial) { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.app_icon)) },
