@@ -192,3 +192,4 @@
 
 "backend_shutdown_timeout" = "에뮬레이터가 종료 요청에 응답하지 않았습니다.";
 "import_partial_failure" = "일부 파일을 가져오지 못했습니다.";
+"runtime_executable_missing" = "에뮬레이터 실행 파일이 없어 시작하지 못했습니다. 실행 파일 설치 위치를 확인한 뒤 전원 켜기로 다시 시도하세요.";

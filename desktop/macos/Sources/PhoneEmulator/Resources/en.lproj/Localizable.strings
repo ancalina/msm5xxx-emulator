@@ -192,3 +192,4 @@
 
 "backend_shutdown_timeout" = "The emulator did not respond while closing.";
 "import_partial_failure" = "Some files could not be imported.";
+"runtime_executable_missing" = "The emulator runtime executable is missing. Check the runtime installation, then use Power on to try again.";

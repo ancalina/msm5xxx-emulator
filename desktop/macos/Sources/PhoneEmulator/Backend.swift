@@ -51,6 +51,7 @@ final class Backend: @unchecked Sendable {
     private var output: FileHandle?
     private var buffered = Data()
     private var nextID = 0
+    private var qemuLaunchPath: String?
     private var closed = false
     private let lifecycleLock = NSLock()
     private var watchedProcess: Process?
@@ -74,7 +75,9 @@ final class Backend: @unchecked Sendable {
         let python = env["MSM5XXX_PYTHON"] ?? ([bundled, alternative].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "python3")
         let p = Process(), stdinPipe = Pipe(), stdoutPipe = Pipe(), stderrPipe = Pipe()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = [python, "-m", "msm5xxx_emulator.backend", "--qemu", env["MSM5XXX_QEMU"] ?? root.appendingPathComponent("bin/qemu-system-arm").path]
+        let qemu = env["MSM5XXX_QEMU"] ?? root.appendingPathComponent("bin/qemu-system-arm").path
+        qemuLaunchPath = qemu
+        p.arguments = [python, "-m", "msm5xxx_emulator.backend", "--qemu", qemu]
         var environment = env
         environment["PYTHONPATH"] = root.appendingPathComponent("src").path
         environment["PYTHONUNBUFFERED"] = "1"
@@ -175,6 +178,10 @@ final class Backend: @unchecked Sendable {
                     guard !self.closed else { throw BackendError(message: L("backend_closed")) }
                     try self.launch()
                     try self.checkShutdownDeadline()
+                    if method == "session.start", let path = self.qemuLaunchPath,
+                       path.hasPrefix("/"), !FileManager.default.fileExists(atPath: path) {
+                        throw BackendError(message: L("runtime_executable_missing"))
+                    }
                     self.nextID += 1
                     let id = self.nextID
                     let request = JSON.object(["id": .integer(id), "method": .string(method), "params": .object(params)])
