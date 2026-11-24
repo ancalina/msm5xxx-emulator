@@ -1,7 +1,12 @@
-name: Build Windows desktop
+name: Build Windows installers
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        required: true
+        default: v0.2.0-rc
 
 permissions:
   contents: read
@@ -9,75 +14,46 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Restore portable tests
-        run: dotnet restore desktop/windows/Emulator.Core.Tests/Emulator.Core.Tests.csproj
-
-      - name: Run portable tests
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            bison curl diffutils flex git make patch tar
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-python
+      - name: Build the project QEMU runtime
+        shell: msys2 {0}
+        run: packaging/windows/build-qemu.sh "$PWD/.ci-native"
+      - name: Build complete installers and update metadata from the tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: >-
-          dotnet test desktop/windows/Emulator.Core.Tests/Emulator.Core.Tests.csproj
-          --configuration Release --no-restore
-          --logger "trx;LogFileName=windows-core.trx"
-          --results-directory artifacts/test-results
-
-      - name: Restore Windows application
-        run: >-
-          dotnet restore desktop/windows/Emulator.App/Emulator.App.csproj
-          --runtime win-x64 -p:Platform=x64
-
-      - name: Build Windows application
-        run: >-
-          dotnet build desktop/windows/Emulator.App/Emulator.App.csproj
-          --configuration Release --runtime win-x64 --no-restore
-          -p:Platform=x64 -bl:artifacts/windows-build.binlog
-
-      - name: Publish self-contained x64 application
-        run: >-
-          dotnet publish desktop/windows/Emulator.App/Emulator.App.csproj
-          --configuration Release --runtime win-x64 --self-contained true
-          --no-build --no-restore -p:Platform=x64
-          --output artifacts/MSM5xxx-Desktop-windows-x64/bin
-
-      - name: Include native C++ runtime and verify publish layout
-        run: |
-          $destination = Join-Path $PWD 'artifacts/MSM5xxx-Desktop-windows-x64/bin'
-          $redistRoot = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC'
-          $crt = Get-ChildItem "$redistRoot\*\x64\Microsoft.VC143.CRT" -Directory |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (!$crt) { throw 'The Visual Studio x64 C++ runtime was not found.' }
-          Copy-Item "$($crt.FullName)\*.dll" $destination -Force
-          foreach ($name in @('MSM5xxx.Desktop.exe', 'MSM5xxx.Desktop.dll', 'resources.pri', 'App.xbf',
-              'Microsoft.UI.Xaml.dll', 'coreclr.dll', 'hostfxr.dll', 'vcruntime140.dll', 'Branding/full.ico', 'Branding/simple.ico', 'Branding/HersheySans1.svg')) {
-            if (!(Test-Path (Join-Path $destination $name))) { throw "Missing publish file: $name" }
-          }
-          Copy-Item desktop/windows/README.md artifacts/MSM5xxx-Desktop-windows-x64/README.md
-
-      - name: Upload desktop application
+          python packaging/release.py --tag "$env:RELEASE_TAG" --platform windows
+          --runtime .ci-native/runtime --output artifacts/windows
+      - name: Upload installers, update feed and checksums
         uses: actions/upload-artifact@v4
         with:
-          name: MSM5xxx-Desktop-windows-x64
-          path: artifacts/MSM5xxx-Desktop-windows-x64/
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload test results and build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-desktop-build-results
+          name: MSM5xxx-windows-installers
           path: |
-            artifacts/test-results/
-            artifacts/windows-build.binlog
-          if-no-files-found: warn
+            artifacts/windows/*.exe
+            artifacts/windows/*.nupkg
+            artifacts/windows/releases.win.json
+            artifacts/windows/release.json
+            artifacts/windows/SHA256SUMS
+            artifacts/windows/test-results/
+          if-no-files-found: error
           retention-days: 30

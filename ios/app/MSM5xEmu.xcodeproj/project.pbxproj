@@ -277,7 +277,7 @@
                 "ARCHS[sdk=iphoneos*]" = arm64;
                 "ARCHS[sdk=iphonesimulator*]" = x86_64;
                 ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 20001;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MSM5xEmu;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -286,7 +286,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = me.ancal.msm5xemu;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -307,7 +307,7 @@
                 "ARCHS[sdk=iphoneos*]" = arm64;
                 "ARCHS[sdk=iphonesimulator*]" = x86_64;
                 ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 20001;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MSM5xEmu;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -316,7 +316,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = me.ancal.msm5xemu;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -362,8 +362,8 @@
         B10000000000000000000014 = {isa = PBXTargetDependency; target = B10000000000000000000015; targetProxy = B10000000000000000000013; };
         B10000000000000000000015 = {isa = PBXNativeTarget; buildConfigurationList = B10000000000000000000016; buildPhases = (B10000000000000000000009, B10000000000000000000010, B10000000000000000000019, ); buildRules = (); dependencies = (); name = QEMUSession; productName = QEMUSession; productReference = B10000000000000000000007; productType = "com.apple.product-type.extensionkit-extension"; };
         B10000000000000000000016 = {isa = XCConfigurationList; buildConfigurations = (B10000000000000000000017, B10000000000000000000018, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-        B10000000000000000000017 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; EX_ENABLE_EXTENSION_POINT_GENERATION = YES; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = me.ancal.msm5xemu.QEMUSession; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_OBJC_BRIDGING_HEADER = "QEMUSession/QEMUSession-Bridging-Header.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; ENABLE_USER_SCRIPT_SANDBOXING = NO; "ARCHS[sdk=iphoneos*]" = arm64; "ARCHS[sdk=iphonesimulator*]" = x86_64;}; name = Debug; };
-        B10000000000000000000018 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; EX_ENABLE_EXTENSION_POINT_GENERATION = YES; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = me.ancal.msm5xemu.QEMUSession; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_OBJC_BRIDGING_HEADER = "QEMUSession/QEMUSession-Bridging-Header.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; ENABLE_USER_SCRIPT_SANDBOXING = NO; "ARCHS[sdk=iphoneos*]" = arm64; "ARCHS[sdk=iphonesimulator*]" = x86_64;}; name = Release; };
+        B10000000000000000000017 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 20001; EX_ENABLE_EXTENSION_POINT_GENERATION = YES; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); MARKETING_VERSION = 0.2.0; PRODUCT_BUNDLE_IDENTIFIER = me.ancal.msm5xemu.QEMUSession; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_OBJC_BRIDGING_HEADER = "QEMUSession/QEMUSession-Bridging-Header.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; ENABLE_USER_SCRIPT_SANDBOXING = NO; "ARCHS[sdk=iphoneos*]" = arm64; "ARCHS[sdk=iphonesimulator*]" = x86_64;}; name = Debug; };
+        B10000000000000000000018 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 20001; EX_ENABLE_EXTENSION_POINT_GENERATION = YES; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); MARKETING_VERSION = 0.2.0; PRODUCT_BUNDLE_IDENTIFIER = me.ancal.msm5xemu.QEMUSession; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_OBJC_BRIDGING_HEADER = "QEMUSession/QEMUSession-Bridging-Header.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; ENABLE_USER_SCRIPT_SANDBOXING = NO; "ARCHS[sdk=iphoneos*]" = arm64; "ARCHS[sdk=iphonesimulator*]" = x86_64;}; name = Release; };
         B10000000000000000000019 = {isa = PBXShellScriptBuildPhase; alwaysOutOfDate = 1; buildActionMask = 2147483647; files = (); inputPaths = (); outputPaths = (); name = "Embed session QEMU"; runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "set -eu\nsrc=\"$SRCROOT/Frameworks/$PLATFORM_NAME/QEMUTCI.framework\"\ndst=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\n[ -d \"$src\" ] || { echo \"missing session framework: $src\" >&2; exit 1; }\nmkdir -p \"$dst\"\nrm -rf \"$dst/QEMUTCI.framework\"\ncp -R \"$src\" \"$dst/\"\nif [ \"${CODE_SIGNING_ALLOWED:-YES}\" != NO ]; then\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$dst/QEMUTCI.framework\"\nfi\n"; };
 
 	};

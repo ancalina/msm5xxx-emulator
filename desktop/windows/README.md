@@ -22,9 +22,9 @@ dotnet build desktop/windows/Emulator.App/Emulator.App.csproj -c Release -r win-
 dotnet publish desktop/windows/Emulator.App/Emulator.App.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true --no-build --no-restore -o desktop/windows/artifacts/bin
 ```
 
-For deployment from a local build, also copy the x64 `Microsoft.VC143.CRT` DLLs from your Visual Studio `VC/Redist/MSVC/<version>/x64/` directory to the publish directory, as the workflow does. Observe Microsoft's redistribution license. The unpackaged publish remains available for development; release distribution uses Velopack.
+For deployment from a local build, also copy the x64 `Microsoft.VC143.CRT` DLLs from your Visual Studio `VC/Redist/MSVC/<version>/x64/` directory to the publish directory, for a development-only publish. Observe Microsoft's redistribution license. The unpackaged publish remains available for development; release distribution uses Velopack.
 
-On GitHub, select **Actions → Build Windows desktop → Run workflow**, choosing the branch containing this app. Download `MSM5xxx-Desktop-windows-x64`. The workflow restores, tests, builds and publishes; `windows-desktop-build-results` contains TRX results and the MSBuild binary log. The real-firmware integration test is explicitly skipped when no test firmware is configured; no firmware is uploaded or downloaded by CI.
+On GitHub, select **Actions → Build Windows installers → Run workflow** and enter the release tag. Download `MSM5xxx-windows-installers`; it contains Setup, packages, the update feed, checksums and test results. The workflow builds QEMU and assembles the complete native/Python runtime automatically.
 
 ## Install and update
 
