@@ -225,9 +225,6 @@ struct ContentView: View {
                     ? "\n\n" + text("Older iOS failure notice") : ""))
             }
         }
-        .onChange(of: message) { value in
-            if !value.isEmpty { UIAccessibility.post(notification: .announcement, argument: value) }
-        }
     }
 
     private func updateRefreshTimer() {
