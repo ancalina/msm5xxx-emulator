@@ -56,3 +56,15 @@ one for the library window.
 Changes to `settings.*` that affect a running machine (`persistent_state`, `virtual_network`,
 `network_host_time`, `network_start_time`, `experimental_rex`) take effect on restart
 (`session.stop` + `session.start`), except network time, which `session.network_time` applies live.
+
+### Native Linux updates
+
+`updates.check` takes `{"current":"0.2.0-rc"}` and returns null or a release object
+with `version`, a GitHub release `page`, and its AppImage `asset`. `updates.prepare`
+takes that object as `release`, validates the download's size and SHA-256, and
+stores it in user state. `updates.apply` atomically replaces the user-owned
+`APPIMAGE`, retains `<image>.old`, and schedules a restart after the native UI
+stops its sessions and exits. It rejects a .deb/source installation. The Linux
+client uses a separate backend connection for updates, keeping session requests
+responsive. `check_updates_on_start` is a boolean app setting, defaulting to true.
+Windows uses Velopack and macOS uses Sparkle; source-archive replacement is retired.

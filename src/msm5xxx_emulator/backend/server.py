@@ -92,6 +92,19 @@ class Backend:
             raise Failure("invalid_setting", key)
         save_setting(key, value)
 
+    # updates.* (native Linux release updates; Windows/macOS use their native SDKs)
+    def updates_check(self, current: str) -> dict | None:
+        from ..update import check_for_update
+        return check_for_update(current)
+
+    def updates_prepare(self, release: dict) -> None:
+        from ..update import prepare_update
+        prepare_update(release, STATE_ROOT)
+
+    def updates_apply(self) -> str:
+        from ..update import apply_prepared_update
+        return apply_prepared_update(STATE_ROOT)
+
     # ui.* (shared data the native apps render with their own widgets)
     def ui_layout(self) -> dict:
         language = _language()

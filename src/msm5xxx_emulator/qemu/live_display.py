@@ -357,10 +357,6 @@ class LiveWindow(Window):
         if not transport.set_fold(not opened):
             self.status.set(transport.decoder.input_error)
 
-    def _check_for_update(self) -> None:
-        # QEMU binaries and their Python transport must update as one bundle.
-        pass
-
     def _restart(self) -> None:
         requested_firmware = self.firmware
         requested_overrides = dict(self.overrides)

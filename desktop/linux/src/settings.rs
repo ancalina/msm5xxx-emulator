@@ -105,6 +105,7 @@ fn build(
         .name("general")
         .icon_name("preferences-system-symbolic")
         .build();
+    crate::updates::add_settings(&page, &dialog, backend.clone(), app.clone(), &text, values["check_updates_on_start"].as_bool().unwrap_or(true));
     let boot = adw::PreferencesGroup::builder()
         .title(text.tr("Boot Settings"))
         .description(text.tr("Changes take effect the next time a phone boots."))

@@ -9,7 +9,6 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from ..update import UpdateError, UpdateInfo
 
 from .controls import METRIC_TEXT
 from .locale import display_model_name, runtime_notice_text, runtime_status_text
@@ -122,22 +121,6 @@ class DisplayViewMixin:
 
     def _refresh(self) -> None:
         self._show_save_errors()
-        while True:
-            try:
-                kind, value = self.update_results.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "available" and isinstance(value, UpdateInfo):
-                self._offer_update(value)
-            elif (kind == "ready" and isinstance(value, tuple)
-                  and len(value) == 3 and isinstance(value[0], Path)
-                  and isinstance(value[1], UpdateInfo)):
-                self._launch_update(value[0], value[1], bool(value[2]))
-                return
-            elif kind == "error" and isinstance(value, (OSError, UpdateError)):
-                logging.getLogger("gui").warning("update failed: %s", value)
-                self.status.set(self._text('update_failed'))
-                self.update_download_active = False
         latest: dict[str, object] = {}
         while True:
             try:

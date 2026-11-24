@@ -21,7 +21,7 @@ from msm5xxx_emulator.detection.registry import device_domain
 STATE_ROOT = device_domain('storage.configuration').DEFAULT_STATE_ROOT
 LAST_CONFIG = STATE_ROOT / "last_config.json"
 DEFAULTS = {"persistent_state": True, "virtual_network": False, "network_host_time": True,
-            "network_start_time": "", "experimental_rex": False, "ui_language": "auto"}
+            "network_start_time": "", "experimental_rex": False, "ui_language": "auto", "check_updates_on_start": True}
 
 
 def saved_settings() -> dict:

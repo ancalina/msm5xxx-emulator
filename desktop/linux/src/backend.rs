@@ -59,6 +59,9 @@ impl Config {
             .args(["-m", "msm5xxx_emulator.backend", "--qemu"])
             .arg(&self.qemu)
             .env("PYTHONPATH", self.bundle.join("src"))
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .env("MSM5XXX_STATE_DIR", std::env::var_os("MSM5XXX_STATE_DIR")
+                .map(PathBuf::from).unwrap_or_else(|| gtk::glib::user_data_dir().join("msm5xxx")))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());

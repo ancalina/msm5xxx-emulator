@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
+bundle="$root/usr"
+# libadwaita follows the system color preference; GTK_THEME overrides are unsupported.
+unset GTK_THEME
+export MSM5XXX_BUNDLE="$bundle"
+export MSM5XXX_VERSION="$(cat "$bundle/VERSION")"
+export PYTHONHOME="$bundle/python"
+export PYTHONPATH="$bundle/src"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+export LD_LIBRARY_PATH="$bundle/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$bundle/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GSETTINGS_SCHEMA_DIR="$bundle/share/glib-2.0/schemas"
+export GIO_MODULE_DIR="$bundle/lib/gio/modules"
+export GIO_EXTRA_MODULES="$GIO_MODULE_DIR"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/msm5xxx"
+mkdir -p "$cache"
+export GDK_PIXBUF_MODULE_FILE="$(mktemp "$cache/loaders.XXXXXXXX")"
+trap 'unlink "$GDK_PIXBUF_MODULE_FILE"' EXIT
+"$bundle/bin/gdk-pixbuf-query-loaders" "$bundle/lib/gdk-pixbuf/"*.so > "$GDK_PIXBUF_MODULE_FILE"
+export MSM5XXX_RUNTIME_CACHE="$cache"
+GLYCIN_DATA_DIR="$("$bundle/python/bin/python3" "$bundle/libexec/msm5xxx/runtime.py")"
+export GLYCIN_DATA_DIR
+cleanup() {
+    unlink "$GDK_PIXBUF_MODULE_FILE"
+    "$bundle/python/bin/python3" -c 'import os,shutil; shutil.rmtree(os.environ["GLYCIN_DATA_DIR"])'
+}
+trap cleanup EXIT
+"$bundle/bin/msm5xxx-desktop" "$@"

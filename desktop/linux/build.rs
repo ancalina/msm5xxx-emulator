@@ -11,6 +11,7 @@ fn main() {
         Command::new("python3")
             .args(["branding/chip_icon.py", "--platform", platform, "--out"])
             .arg(&icons)
+            .args(env::var("MSM5XXX_RELEASE_VERSION").map(|version| vec!["--version".to_owned(), version]).unwrap_or_default())
             .status()
             .expect("Install Python 3")
             .success()
@@ -64,6 +65,7 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    println!("cargo:rerun-if-env-changed=MSM5XXX_RELEASE_VERSION");
     let locale = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("locale");
     let dir = locale.join("ko/LC_MESSAGES");
     std::fs::create_dir_all(&dir).unwrap();

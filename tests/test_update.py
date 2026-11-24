@@ -1,163 +1,65 @@
-"""Update archive and prompt-state regressions without network access."""
-from __future__ import annotations
-
-import io
+"""Native release metadata, integrity and atomic AppImage replacement."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
-from zipfile import ZipFile
 
-from src.msm5xxx_emulator import update
-
-
-SHA = "a" * 40
+from msm5xxx_emulator import update
 
 
 class UpdateTests(unittest.TestCase):
-    @staticmethod
-    def _write_manifest(root: Path, files: tuple[str, ...]) -> None:
-        payload = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-                   for name in files}
-        (root / update.MANIFEST_FILE).write_text(
-            json.dumps({"files": payload}), encoding="utf-8"
-        )
+    def test_versions_and_invalid_metadata(self):
+        versions = ['0.1.99', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.0', '0.10.0']
+        self.assertEqual(versions, sorted(versions, key=update.version_key))
+        for value in ('../0.2.0', '0.02.0', '0.2.0-rc..1', '0.2.0-01', 'x', None):
+            with self.subTest(value=value), self.assertRaises(update.UpdateError):
+                update.version_key(value)
+        self.assertEqual(update.version_key('v0.2.0+build.1'), update.version_key('0.2.0'))
 
-    def test_update_relaunch_preserves_qemu_options(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        launch_args = ("--qemu", "/custom/qemu-system-arm", "--state-dir",
-                       "/custom/state", "--experimental-c80-controller")
-        command = update.inplace_update_command(
-            Path("prepared"), root, Path("state"), Path("guest image.bin"),
-            update.UpdateInfo(SHA), False, launch_args=launch_args,
-        )
-        with mock.patch("msm5xxx_emulator.update.apply_prepared_update") as apply, \
-             mock.patch("subprocess.Popen") as launch, \
-             mock.patch("sys.argv", command[2:]):
-            # Exercise the helper without replacing files or starting a guest.
-            exec(command[2], {})
-        apply.assert_called_once()
-        self.assertEqual(launch.call_args.args[0][1:], [
-            "-m", "msm5xxx_emulator.qemu.live_display", "guest image.bin",
-            *launch_args,
-        ])
-
-    def test_seen_commit_does_not_prompt_twice(self) -> None:
+    def test_local_feed_verified_apply_and_corruption_preserve_install_and_data(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "app"
-            state = Path(directory) / "state"
-            root.mkdir()
-            def response(*_args: object, **_kwargs: object) -> io.BytesIO:
-                stream = io.BytesIO(json.dumps({"sha": SHA}).encode())
-                stream.headers = {}  # type: ignore[attr-defined]
-                return stream
-
-            with mock.patch.object(update, "urlopen", side_effect=response):
-                found = update.check_for_update(root, state)
-            self.assertEqual(found, update.UpdateInfo(SHA))
-            update.remember_update(state, SHA)
-            with mock.patch.object(update, "urlopen", side_effect=response):
-                self.assertIsNone(update.check_for_update(root, state))
-
-    def test_archive_extracts_to_private_revision_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            state = Path(directory) / "state"
-            archive = Path(directory) / "update.zip"
-            with ZipFile(archive, "w") as bundle:
-                files = {
-                    "gui.py": b"# gui\n", "_compat.py": b"# compat\n",
-                    "src/msm5xxx_emulator/gui/app.py": b"# app\n",
-                }
-                manifest = {name: hashlib.sha256(data).hexdigest()
-                            for name, data in files.items()}
-                for name, data in files.items():
-                    bundle.writestr(f"msm5xxx-emulator-{SHA}/{name}", data)
-                bundle.writestr(
-                    f"msm5xxx-emulator-{SHA}/{update.MANIFEST_FILE}",
-                    json.dumps({"files": manifest}),
-                )
-
-            def download(_revision: str, destination: Path) -> None:
-                destination.write_bytes(archive.read_bytes())
-
-            with mock.patch.object(update, "_download_archive", side_effect=download):
-                root = update.prepare_update(update.UpdateInfo(SHA), state)
-            self.assertEqual(update.local_revision(root), SHA)
-            self.assertTrue((root / "gui.py").is_file())
-
-    def test_apply_replaces_only_manifest_files_and_preserves_user_data(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            target, prepared, state = base / "app", base / "new", base / "state"
-            for root, content in ((target, "old"), (prepared, "new")):
-                (root / "src").mkdir(parents=True)
-                (root / "gui.py").write_text(content, encoding="utf-8")
-                (root / "src" / "core.py").write_text(content, encoding="utf-8")
-                self._write_manifest(root, ("gui.py", "src/core.py"))
-            (prepared / update.REVISION_FILE).write_text(SHA + "\n", encoding="ascii")
-            (target / "logs").mkdir()
-            (target / "logs" / "user.log").write_text("keep", encoding="utf-8")
-
-            update.apply_prepared_update(prepared, target, state, SHA, False)
-
-            self.assertEqual((target / "gui.py").read_text(), "new")
-            self.assertEqual((target / "logs" / "user.log").read_text(), "keep")
-            self.assertEqual(update.local_revision(target), SHA)
-
-    def test_apply_adds_file_owned_only_by_new_manifest(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            target, prepared, state = base / "app", base / "new", base / "state"
-            target.mkdir()
-            (target / "gui.py").write_text("old", encoding="utf-8")
-            self._write_manifest(target, ("gui.py",))
-            (prepared / "src").mkdir(parents=True)
-            (prepared / "gui.py").write_text("new", encoding="utf-8")
-            (prepared / "src" / "input_matrix.py").write_text(
-                "new module", encoding="utf-8"
-            )
-            self._write_manifest(
-                prepared, ("gui.py", "src/input_matrix.py")
-            )
-            (prepared / update.REVISION_FILE).write_text(
-                SHA + "\n", encoding="ascii"
-            )
-
-            update.apply_prepared_update(prepared, target, state, SHA, False)
-
-            self.assertEqual(
-                (target / "src" / "input_matrix.py").read_text(),
-                "new module",
-            )
-
-    def test_modified_install_requires_explicit_discard(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            target, prepared, state = base / "app", base / "new", base / "state"
-            target.mkdir()
-            prepared.mkdir()
-            (target / "gui.py").write_text("original", encoding="utf-8")
-            (prepared / "gui.py").write_text("new", encoding="utf-8")
-            self._write_manifest(target, ("gui.py",))
-            self._write_manifest(prepared, ("gui.py",))
-            (prepared / update.REVISION_FILE).write_text(SHA + "\n", encoding="ascii")
-            (target / "gui.py").write_text("edited", encoding="utf-8")
-
-            with self.assertRaisesRegex(update.UpdateError, "local source files changed"):
-                update.apply_prepared_update(prepared, target, state, SHA, False)
-            update.apply_prepared_update(prepared, target, state, SHA, True)
-            self.assertEqual((target / "gui.py").read_text(), "new")
-
-    def test_archive_rejects_parent_path(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            archive = Path(directory) / "unsafe.zip"
-            with ZipFile(archive, "w") as bundle:
-                bundle.writestr("../escape", "no")
-            with self.assertRaises(update.UpdateError):
-                update._extract_update_archive(archive, Path(directory), SHA)
+            root = Path(directory)
+            old = b'\x7fELF\x00\x00\x00\x00AI\x02old'
+            new = b'\x7fELF\x00\x00\x00\x00AI\x02new'
+            image = root / 'app.AppImage'; image.write_bytes(old); image.chmod(0o755)
+            asset = root / 'release.AppImage'; asset.write_bytes(new)
+            state = root / 'state'; state.mkdir()
+            saved = state / 'saved-state'; saved.write_bytes(b'keep')
+            feed = root / 'release.json'
+            metadata = {'tag_name':'v0.2.0-rc', 'prerelease':True,
+                        'html_url':f'https://github.com/{update.REPOSITORY}/releases/tag/v0.2.0-rc',
+                        'assets':[{'name':'MSM5xxx-0.2.0-rc-linux-x86_64.AppImage',
+                                   'browser_download_url':asset.as_uri(), 'size':len(new),
+                                   'digest':'sha256:'+hashlib.sha256(new).hexdigest()}]}
+            feed.write_text(json.dumps(metadata))
+            with mock.patch.dict(os.environ, {'MSM5XXX_UPDATE_FEED':str(feed), 'APPIMAGE':str(image)}):
+                release = update.check_for_update('0.1.99')
+                self.assertEqual(release['version'], '0.2.0-rc')
+                self.assertIsNone(update.check_for_update('0.2.0'))
+                update.prepare_update(release, state)
+                (state/'updates/pending.AppImage').write_bytes(b'bad')
+                with self.assertRaises(update.UpdateError): update.apply_prepared_update(state)
+                self.assertEqual(image.read_bytes(), old)
+                update.prepare_update(release, state)
+                with mock.patch.object(update.subprocess, 'Popen') as restart:
+                    update.apply_prepared_update(state)
+                    self.assertTrue(restart.call_args.kwargs['start_new_session'])
+                self.assertEqual(image.read_bytes(), new)
+                self.assertEqual((root/'app.AppImage.old').read_bytes(), old)
+                self.assertEqual(image.stat().st_mode & 0o777, 0o755)
+                self.assertEqual(saved.read_bytes(), b'keep')
+                metadata['assets'][0]['digest']='sha256:'+'0'*64
+                feed.write_text(json.dumps(metadata))
+                with self.assertRaises(update.UpdateError):
+                    update.prepare_update(update.check_for_update('0.1.99'), state)
+                self.assertEqual(image.read_bytes(), new)
+                metadata['html_url']='https://example.com/redirect'
+                feed.write_text(json.dumps(metadata))
+                with self.assertRaises(update.UpdateError): update.check_for_update('0.1.99')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

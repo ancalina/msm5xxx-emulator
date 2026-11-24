@@ -15,6 +15,8 @@ pub struct Library {
     pub(crate) app: Weak<App>,
     initial_settings_error: RefCell<Option<String>>,
     banner: adw::Banner,
+    update_banner: adw::Banner,
+    update: RefCell<Value>,
     stack: gtk::Stack,
     model: gio::ListStore,
     folders: RefCell<Vec<String>>,
@@ -39,6 +41,8 @@ impl Library {
             app: Rc::downgrade(app),
             initial_settings_error: RefCell::new(None),
             banner: adw::Banner::new(""),
+            update_banner: adw::Banner::new(""),
+            update: RefCell::new(Value::Null),
             stack: gtk::Stack::new(),
             model: gio::ListStore::new::<glib::BoxedAnyObject>(),
             folders: RefCell::new(vec![]),
@@ -49,6 +53,9 @@ impl Library {
             entries: RefCell::new(vec![]),
         });
         this.build();
+        this.update_banner.connect_button_clicked(glib::clone!(#[weak] this, move |_| {
+            crate::updates::review(&this.window, this.update.borrow().clone(), this.app.clone(), this.text.borrow().clone());
+        }));
         let weak = Rc::downgrade(&this);
         this.window.connect_close_request(move |_| {
             let Some(this) = weak.upgrade() else {
@@ -79,13 +86,16 @@ impl Library {
                         if let Some(app) = this.app.upgrade() {
                             let values = this.backend.call("settings.get", json!({})).await;
                             match values {
-                                Ok(values) => app.language.set_state(
+                                Ok(values) => {
+                                    if values["check_updates_on_start"].as_bool().unwrap_or(true) { this.check_updates(); }
+                                    app.language.set_state(
                                     &(
                                         values["ui_language"].as_str().unwrap_or("auto"),
                                         text.language(),
                                     )
                                         .to_variant(),
-                                ),
+                                    );
+                                },
                                 Err(error) => {
                                     this.error(&error);
                                     this.initial_settings_error.replace(Some(error));
@@ -110,6 +120,20 @@ impl Library {
             }
         ));
         this
+    }
+    fn check_updates(self: &Rc<Self>) {
+        let Some(app) = self.app.upgrade() else { return };
+        let this = self.clone();
+        glib::spawn_future_local(glib::clone!(#[weak] this, #[strong] app, async move {
+            match crate::updates::check(&app.updates).await {
+                Ok(release) if !release.is_null() => {
+                    this.update.replace(release);
+                    this.update_banner.set_revealed(true);
+                }
+                Ok(_) => {},
+                Err(error) => eprintln!("Update check: {error}"),
+            }
+        }));
     }
     pub fn close(self: &Rc<Self>) {
         let this = self;
@@ -320,6 +344,10 @@ impl Library {
             parent.remove(&self.banner);
         }
         box_.append(&self.banner);
+        if let Some(parent) = self.update_banner.parent().and_downcast::<gtk::Box>() { parent.remove(&self.update_banner); }
+        self.update_banner.set_title(&text.tr("Update available"));
+        self.update_banner.set_button_label(Some(&text.tr("Review")));
+        box_.append(&self.update_banner);
         if let Some(parent) = self.stack.parent().and_downcast::<gtk::Box>() {
             parent.remove(&self.stack);
         }

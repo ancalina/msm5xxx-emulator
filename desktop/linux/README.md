@@ -4,6 +4,26 @@ A native GNOME-style firmware library and phone emulator, written in Rust with G
 and libadwaita. Also runs on KDE Wayland. Each phone window owns an independent Python
 backend and QEMU session; opening the same firmware again focuses its existing window.
 
+## Install and update
+
+Release packages contain the native GTK app, QEMU and its library closure, an embedded Python runtime with Capstone/Pillow/NumPy, GTK 4 and libadwaita. Firmware and the optional sound-chip ROM remain user-supplied. The x86-64 packages require glibc 2.43 or newer (Ubuntu 26.04 or newer); graphics drivers, system fonts and locales come from the OS.
+
+Install the `.deb` with your normal package manager. It registers an application-menu entry and icon; `apt remove msm5xxx-emulator` removes the program and its menu entry while retaining per-user data. A new-version notice links to GitHub Releases; install the new `.deb` with the package manager.
+
+Make the AppImage executable and open it. Its first launch registers a per-user application-menu entry and icon. **Settings → Updates** provides **Check for Updates** and the startup-check switch. A persistent stock banner offers **Review** when a newer version is available. **Install and Restart** verifies the release asset's SHA-256 and byte count, keeps the previous image as `<image>.old`, replaces the AppImage atomically and stops running phones before restarting. The image must be owned by the current user in a writable directory. Update information and `.zsync` metadata also support standard AppImage update tools; the in-app updater downloads the full image.
+
+To uninstall an AppImage, delete the AppImage, its `.old` backup, and its per-user `~/.local/share/applications/io.github.ancalina.MSM5xxx.desktop` and `~/.local/share/icons/hicolor/256x256/apps/io.github.ancalina.MSM5xxx.png`. User data is retained. Data lives in `$XDG_DATA_HOME/msm5xxx` (default `~/.local/share/msm5xxx`), with appearance preferences in `$XDG_CONFIG_HOME/msm5xxx-emulator`; `MSM5XXX_STATE_DIR` overrides both for tests. No package removal deletes these folders.
+
+Build packages after building the native QEMU runtime:
+
+```sh
+python3 packaging/linux/build.py 0.2.0-rc /path/to/qemu-system-arm /path/to/artifacts
+```
+
+Set `TMPDIR`, `CARGO_HOME` and `CARGO_TARGET_DIR` to workspace directories. The build pins the AppImage tooling by SHA-256, bundles GTK resources and runtime license notices, and creates an AppImage, `.zsync`, and `.deb`. For local update tests, `MSM5XXX_UPDATE_FEED` names a local JSON file with GitHub release fields and a matching SHA-256/size; local `file:` and loopback download URLs are accepted only with this explicit override. Source-archive replacement is retired.
+
+References: [GNOME banners](https://developer.gnome.org/hig/patterns/feedback/banners.html), [GNOME dialogs](https://developer.gnome.org/hig/patterns/feedback/dialogs.html), and [AppImage update information](https://docs.appimage.org/packaging-guide/optional/updates.html).
+
 ## Build
 
 Requirements: Rust/Cargo **1.93+**, GTK **4.22.4+**, libadwaita **1.9.1+**, their development

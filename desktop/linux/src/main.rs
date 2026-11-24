@@ -10,6 +10,7 @@ mod settings;
 #[cfg(debug_assertions)]
 mod verify;
 mod widgets;
+mod updates;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -24,6 +25,8 @@ pub const APP_ID: &str = "io.github.ancalina.MSM5xxx";
 pub struct App {
     pub application: adw::Application,
     pub config: backend::Config,
+    pub updates: Rc<backend::Backend>,
+    pub update_installing: Cell<bool>,
     pub library: RefCell<Option<Rc<library::Library>>>,
     pub emulators: RefCell<HashMap<PathBuf, Rc<emulator::Emulator>>>,
     pub text: RefCell<i18n::Text>,
@@ -146,6 +149,8 @@ fn main() -> glib::ExitCode {
     icons::init(&application);
     let app = Rc::new(App {
         application: application.clone(),
+        updates: Rc::new(backend::Backend::new(&config)),
+        update_installing: Cell::new(false),
         config,
         library: RefCell::new(None),
         emulators: RefCell::new(HashMap::new()),

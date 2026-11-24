@@ -15,9 +15,6 @@ from PIL import ImageTk
 from ..core.constants import BUILD_CODENAME
 from msm5xxx_emulator.detection.registry import device_domain
 DEFAULT_STATE_ROOT = device_domain('storage.configuration').DEFAULT_STATE_ROOT
-from ..update import (UpdateError, UpdateInfo, application_root, check_for_update,
-                      inplace_update_command, installation_status, prepare_update,
-                      remember_update)
 from .controls import ControlsMixin, LAYOUT, METRIC_TEXT
 from .display_view import DisplayViewMixin
 from .locale import UI_TEXT, resolve_ui_language, system_ui_language
@@ -63,8 +60,6 @@ class Window(ControlsMixin, DisplayViewMixin):
         self.commands: queue.SimpleQueue[tuple[object, ...]] = queue.SimpleQueue()
         self.states: queue.SimpleQueue[tuple[int, dict[str, object]]] = queue.SimpleQueue()
         self.save_errors: queue.SimpleQueue[str] = queue.SimpleQueue()
-        self.update_results: queue.SimpleQueue[tuple[str, object]] = queue.SimpleQueue()
-        self.update_download_active = False
         self.held: dict[int, set[str]] = {}
         self.keyboard_bits: dict[str, int] = {}
         self.keyboard_sources: set[str] = set()
@@ -90,7 +85,6 @@ class Window(ControlsMixin, DisplayViewMixin):
         self._restart()
         self.root.after(50, self._refresh)
         self.root.after(50, self._refresh_display)
-        self.root.after(750, self._check_for_update)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _configure_style(self) -> None:
@@ -196,73 +190,6 @@ class Window(ControlsMixin, DisplayViewMixin):
                 self.status_label.pack(fill="x")
         else:
             self.status_label.pack_forget()
-
-    def _check_for_update(self) -> None:
-        """Check GitHub outside Tk; ``_refresh`` owns all UI actions."""
-        def check() -> None:
-            try:
-                update = check_for_update(application_root(), STATE_ROOT)
-            except UpdateError as error:
-                LOGGER.info("update check skipped error=%s", error)
-                return
-            if update is not None:
-                self.update_results.put(("available", update))
-
-        threading.Thread(target=check, daemon=True).start()
-
-    def _offer_update(self, update: UpdateInfo) -> None:
-        if self.closing or self.update_download_active:
-            return
-        try:
-            remember_update(STATE_ROOT, update.revision)
-        except (OSError, UpdateError) as error:
-            LOGGER.info("update prompt state not saved error=%s", error)
-        try:
-            modified = not installation_status(application_root()).clean
-        except UpdateError:
-            modified = True
-        prompt = self._text("update_modified" if modified else "update_clean").format(
-            revision=update.revision[:12])
-        if not messagebox.askyesno(self._text("update_title"), prompt, parent=self.root):
-            return
-        self.update_download_active = True
-        self.status.set(self._text("update_downloading"))
-
-        def download() -> None:
-            try:
-                prepared = prepare_update(update, STATE_ROOT)
-                self.update_results.put(("ready", (prepared, update, modified)))
-            except (OSError, UpdateError) as error:
-                self.update_results.put(("error", error))
-
-        threading.Thread(target=download, daemon=True).start()
-
-    def _update_launch_args(self) -> tuple[str, ...]:
-        args = ["--qemu", str(self.qemu)]
-        if self.state_dir is not None:
-            args.extend(("--state-dir", str(self.state_dir)))
-        if self.experimental_c80:
-            args.append("--experimental-c80-controller")
-        return tuple(args)
-
-    def _launch_update(self, prepared: Path, update: UpdateInfo,
-                       discard_modified: bool) -> None:
-        try:
-            root = application_root()
-            command = inplace_update_command(
-                prepared, root, STATE_ROOT, self.firmware, update, discard_modified,
-                launch_args=self._update_launch_args(),
-            )
-        except UpdateError as error:
-            LOGGER.warning("update preparation failed: %s", error)
-            self.status.set(self._text('update_prepare_failed'))
-            self.update_download_active = False
-            return
-        self._close()
-        try:
-            subprocess.Popen(command, cwd=root)
-        except OSError as error:
-            LOGGER.error("updated GUI launch failed error=%s", error)
 
     def _close(self) -> None:
         if self.closing:

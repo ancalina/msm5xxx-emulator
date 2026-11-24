@@ -329,3 +329,57 @@ msgstr ""
 
 msgid "Check that the app is installed completely, then reopen it."
 msgstr ""
+
+msgid "Updates"
+msgstr ""
+
+msgid "Check for Updates on Start"
+msgstr ""
+
+msgid "Check for Updates"
+msgstr ""
+
+msgid "Checking for Updates…"
+msgstr ""
+
+msgid "You’re Up to Date"
+msgstr ""
+
+msgid "Update Available"
+msgstr ""
+
+msgid "Update available"
+msgstr ""
+
+msgid "Update Failed"
+msgstr ""
+
+msgid "Installing Update"
+msgstr ""
+
+msgid "Install and Restart"
+msgstr ""
+
+msgid "Open Release Page"
+msgstr ""
+
+msgid "Hide"
+msgstr ""
+
+msgid "Review"
+msgstr ""
+
+msgid "Version"
+msgstr ""
+
+msgid "The app will stop running phones and restart after installing the update. Your library, settings and saved state are kept."
+msgstr ""
+
+msgid "Install the new .deb with your package manager. Your library, settings and saved state are kept."
+msgstr ""
+
+msgid "The download continues in the background. The app will restart when it is ready."
+msgstr ""
+
+msgid "An Update Is Already Being Installed"
+msgstr ""

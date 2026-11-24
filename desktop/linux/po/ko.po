@@ -329,3 +329,57 @@ msgstr "서로 호환되는 앱 구성 요소를 설치한 뒤 앱을 다시 여
 
 msgid "Check that the app is installed completely, then reopen it."
 msgstr "앱이 완전히 설치되어 있는지 확인한 뒤 다시 여세요."
+
+msgid "Updates"
+msgstr "업데이트"
+
+msgid "Check for Updates on Start"
+msgstr "시작할 때 업데이트 확인"
+
+msgid "Check for Updates"
+msgstr "업데이트 확인"
+
+msgid "Checking for Updates…"
+msgstr "업데이트 확인 중…"
+
+msgid "You’re Up to Date"
+msgstr "최신 버전입니다"
+
+msgid "Update Available"
+msgstr "업데이트 사용 가능"
+
+msgid "Update available"
+msgstr "업데이트 사용 가능"
+
+msgid "Update Failed"
+msgstr "업데이트 실패"
+
+msgid "Installing Update"
+msgstr "업데이트 설치 중"
+
+msgid "Install and Restart"
+msgstr "설치 후 다시 시작"
+
+msgid "Open Release Page"
+msgstr "릴리스 페이지 열기"
+
+msgid "Hide"
+msgstr "숨기기"
+
+msgid "Review"
+msgstr "확인"
+
+msgid "Version"
+msgstr "버전"
+
+msgid "The app will stop running phones and restart after installing the update. Your library, settings and saved state are kept."
+msgstr "실행 중인 기기를 중지하고 업데이트를 설치한 후 앱을 다시 시작합니다. 라이브러리, 설정 및 저장 상태는 유지됩니다."
+
+msgid "Install the new .deb with your package manager. Your library, settings and saved state are kept."
+msgstr "패키지 관리자로 새 .deb를 설치하세요. 라이브러리, 설정 및 저장 상태는 유지됩니다."
+
+msgid "The download continues in the background. The app will restart when it is ready."
+msgstr "백그라운드에서 다운로드를 계속합니다. 준비되면 앱을 다시 시작합니다."
+
+msgid "An Update Is Already Being Installed"
+msgstr "이미 업데이트를 설치하고 있습니다"

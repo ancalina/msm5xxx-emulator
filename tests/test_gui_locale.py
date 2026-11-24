@@ -472,7 +472,6 @@ class GuiLocaleTests(unittest.TestCase):
             with self.subTest(model=model, language=language):
                 window = Window.__new__(Window)
                 window._show_save_errors = mock.Mock()
-                window.update_results = queue.SimpleQueue()
                 window.states = queue.SimpleQueue()
                 window.generation = 1
                 window.states.put((1, {"model": model, "verified_model": verified}))

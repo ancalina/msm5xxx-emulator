@@ -1779,11 +1779,6 @@ class QEMUInputTransportTests(unittest.TestCase):
         )
         make_window.return_value._close.assert_called_once_with()
 
-    def test_qemu_gui_disables_partial_source_updates(self) -> None:
-        with mock.patch.object(MODULE.threading, "Thread") as thread:
-            MODULE.LiveWindow._check_for_update(object())
-        thread.assert_not_called()
-
     def test_secondary_display_refresh_follows_primary_not_metrics(self) -> None:
         window = MODULE.LiveWindow.__new__(MODULE.LiveWindow)
         window.emulator = object()
