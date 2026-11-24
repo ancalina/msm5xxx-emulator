@@ -176,32 +176,48 @@ struct MappingView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(L("edit_input") + " · " + title).font(.title2)
             TextField(L("key_value"), text: $value).focused($focused)
+                .disabled(busy || session.settingsWritePending)
                 .accessibilityLabel(Text(L("key_value")))
                 .accessibilityHint(Text(L("key_help")))
             Text(L("key_help")).font(.callout).foregroundStyle(.secondary)
-            ErrorBanner(message: error)
+            ErrorBanner(message: error.isEmpty ? session.settingsWriteError : error)
+            if session.settingsWritePending {
+                ProgressView(L("saving"))
+                Text(L("close_keeps_applying")).font(.callout)
+            } else if !session.settingsStatus.isEmpty {
+                Text(session.settingsStatus).foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
-                Button(L("cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(L("apply")) { save() }.keyboardShortcut(.defaultAction).disabled(busy)
+                Button(L(session.settingsWritePending ? "close" : "cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L("apply")) { save() }.keyboardShortcut(.defaultAction).disabled(busy || session.settingsWritePending)
             }
         }.padding(24).frame(width: 420)
             .task {
-                do { let existing = try await session.backend.call("session.key_mapping", ["bit": .integer(bit)])
+                do {
+                    let existing = try await session.backend.call("session.key_mapping", ["bit": .integer(bit)])
                     value = existing.isNull ? "" : String(format: "0x%02X", existing.int)
                 } catch { self.error = error.localizedDescription }
                 busy = false; focused = true
             }
     }
     private func save() {
+        guard !busy, !session.settingsWritePending else { return }
+        let submittedValue = value, presentation = session.sheetGeneration
         busy = true; error = ""
+        session.settingsWritePending = true
+        session.settingsWriteError = ""; session.settingsStatus = ""
         Task {
+            defer { busy = false; session.settingsWritePending = false }
             do {
-                let result = try await session.backend.call("session.set_key_mapping", ["bit": .integer(bit), "value": .string(value)])
+                let result = try await session.backend.call("session.set_key_mapping", ["bit": .integer(bit), "value": .string(submittedValue)])
                 if result.isNull { session.mapped.remove(bit) } else { session.mapped.insert(bit) }
-                dismiss()
-            } catch { self.error = error.localizedDescription }
-            busy = false
+                session.settingsStatus = L("edit_input") + " · " + title + ": " + L("saved")
+                if session.sheetGeneration == presentation { session.sheet = nil }
+            } catch {
+                session.settingsWriteError = error.localizedDescription
+                session.error = error.localizedDescription
+            }
         }
     }
 }
@@ -211,33 +227,47 @@ struct NetworkTimeView: View {
     @ObservedObject var library: LibraryModel
     @Environment(\.dismiss) var dismiss
     @State private var value = ""
-    @State private var error = ""
     @State private var busy = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(L("network_time_title")).font(.title2)
             TextField(L("network_start_time"), text: $value)
+                .disabled(busy || session.settingsWritePending)
                 .accessibilityLabel(Text(L("network_start_time")))
                 .accessibilityHint(Text(L("time_format")))
             Text(L("time_format")).foregroundStyle(.secondary)
-            ErrorBanner(message: error)
+            ErrorBanner(message: session.settingsWriteError)
+            if session.settingsWritePending {
+                ProgressView(L("saving"))
+                Text(L("close_keeps_applying")).font(.callout)
+            } else if !session.settingsStatus.isEmpty {
+                Text(session.settingsStatus).foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
-                Button(L("cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(L("apply")) { apply() }.keyboardShortcut(.defaultAction).disabled(busy)
+                Button(L(session.settingsWritePending ? "close" : "cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L("apply")) { apply() }.keyboardShortcut(.defaultAction).disabled(busy || session.settingsWritePending)
             }
         }.padding(24).frame(width: 440)
         .onAppear { value = library.settings["network_start_time"]?.string ?? "" }
     }
     private func apply() {
-        busy = true; error = ""
+        guard !busy, !session.settingsWritePending else { return }
+        let submittedValue = value, presentation = session.sheetGeneration
+        busy = true
+        session.settingsWritePending = true
+        session.settingsWriteError = ""; session.settingsStatus = ""
         Task {
+            defer { busy = false; session.settingsWritePending = false }
             do {
-                try await library.setNetworkTime(value)
+                try await library.setNetworkTime(submittedValue)
                 _ = try await session.backend.call("session.network_time")
-                dismiss()
-            } catch { self.error = error.localizedDescription }
-            busy = false
+                session.settingsStatus = L("network_time_title") + ": " + L("saved")
+                if session.sheetGeneration == presentation { session.sheet = nil }
+            } catch {
+                session.settingsWriteError = error.localizedDescription
+                session.error = error.localizedDescription
+            }
         }
     }
 }

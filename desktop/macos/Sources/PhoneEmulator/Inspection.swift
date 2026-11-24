@@ -118,7 +118,7 @@ import AppKit
                 editor.unmarkText()
             } else { editor.insertText(request["text"].string, replacementRange: NSRange(location: NSNotFound, length: 0)) }
         case "return":
-            if let window = NSApp.keyWindow, let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) { NSApp.postEvent(event, atStart: false) }
+            if let window = controller?.window?.sheets.first ?? NSApp.keyWindow, let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) { _ = window.performKeyEquivalent(with: event) }
         case "setting": try await library.set(request["key"].string, value: request["value"])
         case "language": try await library.set("ui_language", value: request["value"])
         case "theme": NSApp.appearance = NSAppearance(named: request["value"].string == "dark" ? .darkAqua : .aqua)

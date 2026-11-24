@@ -26,7 +26,13 @@ private struct KeyPressReceipt: Sendable { let acceptedAt: TimeInterval }
     @Published var editing = false
     @Published var mapped: Set<Int> = []
     @Published var available: Set<Int> = []
-    @Published var sheet: SessionSheet?
+    @Published var sheet: SessionSheet? {
+        didSet { if sheet != oldValue { sheetGeneration = UUID() } }
+    }
+    private(set) var sheetGeneration = UUID()
+    @Published var settingsWritePending = false
+    @Published var settingsStatus = ""
+    @Published var settingsWriteError = ""
     @Published var secondaryStatus = ""
     var onGeometry: (() -> Void)?
     var onSecondary: (() -> Void)?
