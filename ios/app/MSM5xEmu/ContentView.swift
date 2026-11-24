@@ -269,7 +269,7 @@ struct ContentView: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(localizedMetrics)
         }
-        .font(.system(size: 10)).foregroundColor(.gray).lineLimit(3)
+        .font(.system(size: 10)).foregroundColor(.gray).lineLimit(4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 

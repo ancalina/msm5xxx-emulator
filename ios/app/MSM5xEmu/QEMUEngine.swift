@@ -23,7 +23,8 @@ final class QEMUEngine: ObservableObject {
     @Published private(set) var audioNeedsResume = false
     @Published private(set) var foldSupported = false
     @Published private(set) var foldOpen = false
-    @Published private(set) var metrics = "Run —  PC —\nLCD —  Frame —"
+    private var metricModel = "—"
+    @Published private(set) var metrics = "—\nRun —  PC —\nLCD —  Frame —"
     @Published private(set) var inputBits = Set<Int>()
     @Published private(set) var activeSettings: [String: String] = [:]
     @Published private(set) var activePersistentState = true
@@ -166,6 +167,8 @@ final class QEMUEngine: ObservableObject {
             sessionFailed = true
             return
         }
+        metricModel = "—"
+        metrics = "—\nRun —  PC —\nLCD —  Frame —"
         used = !reusable
         restartRequest = { [weak self] in
             self?.start(firmware,
@@ -195,7 +198,13 @@ final class QEMUEngine: ObservableObject {
                 }
                 let firmwareInfo = (profile as? [String: Any])?["firmware"] as? [String: Any]
                 let identity = firmwareInfo?["sha256"] as? String ?? ""
-                DispatchQueue.main.async { self.identity = identity }
+                let detectedModel = (profile as? [String: Any])?["verified_model"] as? String
+                    ?? (profile as? [String: Any])?["model"] as? String ?? ""
+                DispatchQueue.main.async {
+                    self.identity = identity
+                    self.metricModel = detectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "—" : detectedModel
+                    self.metrics = "\(self.metricModel)\nRun —  PC —\nLCD —  Frame —"
+                }
                 let support = try FileManager.default.url(for: .applicationSupportDirectory,
                     in: .userDomainMask, appropriateFor: nil, create: true)
                 // iOS drops stderr; keep QEMU/Python diagnostics next to the state for inspection.
@@ -590,7 +599,7 @@ final class QEMUEngine: ObservableObject {
                     self.secondaryPreview = value?["secondary_preview"] as? Bool ?? false
                     self.foldSupported = supported
                     self.foldOpen = open
-                    self.metrics = "Run \(run)  PC 0x\(String(format: "%08X", pc))\nLCD \(lcd)  Frame \(frame)"
+                    self.metrics = "\(self.metricModel)\nRun \(run)  PC 0x\(String(format: "%08X", pc))\nLCD \(lcd)  Frame \(frame)"
                 }
                 if self.audioDiagnostics && self.audioPolling && Date().timeIntervalSince(self.lastAudioLog) >= 10 {
                     self.lastAudioLog = Date()
@@ -663,7 +672,7 @@ final class QEMUEngine: ObservableObject {
         frame = nil; secondaryFrame = nil; secondaryAvailable = false
         virtualNetworkAvailable = false
         secondaryPreview = false; foldSupported = false; foldOpen = false
-        inputBits = []; metrics = "Run —  PC —\nLCD —  Frame —"; paused = false
+        inputBits = []; metrics = "\(metricModel)\nRun —  PC —\nLCD —  Frame —"; paused = false
     }
 
     private func failSession(_ error: Error, message: String) {

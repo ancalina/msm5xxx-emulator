@@ -158,6 +158,7 @@ public final class MainActivity extends ComponentActivity {
     private TextView profileView;
     private TextView sessionView;
     private LinearLayout metricsGroup;
+    private TextView modelMetricView;
     private TextView pcView;
     private TextView runView;
     private TextView lcdView;
@@ -446,6 +447,7 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout telemetry = new LinearLayout(this);
         telemetry.setOrientation(LinearLayout.VERTICAL);
         profileView = statusLine("");
+        modelMetricView = metricCell(R.string.metric_model_empty);
         pcView = metricCell(R.string.metric_pc_empty);
         runView = metricCell(R.string.metric_run_empty);
         lcdView = metricCell(R.string.metric_lcd_empty);
@@ -460,7 +462,7 @@ public final class MainActivity extends ComponentActivity {
         metricsGroup.setOrientation(LinearLayout.VERTICAL);
         metricsGroup.setFocusable(true);
         metricsGroup.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
-        for (TextView line : new TextView[]{runView, pcView, lcdView, frameMetricView}) {
+        for (TextView line : new TextView[]{modelMetricView, runView, pcView, lcdView, frameMetricView}) {
             line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             metricsGroup.addView(line, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
@@ -862,6 +864,8 @@ public final class MainActivity extends ComponentActivity {
         SharedPreferences preferences = preferences();
         String state = preferences.getString(KEY_STATE, STATE_NONE);
         profileView.setText("");
+        modelMetricView.setText(R.string.metric_model_empty);
+        updateMetricsDescription();
         if (STATE_COPYING.equals(state)) {
             setIdleStatus(R.string.copying_firmware);
         } else if (STATE_READY.equals(state)) {
@@ -1767,6 +1771,10 @@ public final class MainActivity extends ComponentActivity {
                 model = getString(R.string.model_unknown,
                         SelectionLabels.displayName(this, stem));
             }
+            String metricModel = profile.isNull("verified_model")
+                    ? profile.optString("model", "") : profile.optString("verified_model", "");
+            modelMetricView.setText(metricModel.trim().isEmpty() ? "—" : metricModel);
+            updateMetricsDescription();
             modelTitle = model;
             syncCompose();
             String chipset = SelectionLabels.displayName(this,
@@ -2123,7 +2131,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void updateMetricsDescription() {
-        metricsGroup.setContentDescription(runView.getText() + ". " + pcView.getText() + ". "
+        metricsGroup.setContentDescription(modelMetricView.getText() + ". " + runView.getText() + ". " + pcView.getText() + ". "
                 + lcdView.getText() + ". " + frameMetricView.getText());
     }
 
