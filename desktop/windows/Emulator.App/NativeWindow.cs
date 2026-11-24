@@ -103,7 +103,7 @@ internal static partial class NativeWindow
             var caption = window.AppWindow.TitleBar;
             var foreground = brush.Color;
             caption.ButtonForegroundColor = caption.ButtonHoverForegroundColor = caption.ButtonPressedForegroundColor = foreground;
-            foreground.A = 128; caption.ButtonInactiveForegroundColor = foreground;
+            caption.ButtonInactiveForegroundColor = null;
             caption.ButtonBackgroundColor = caption.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
             foreground = brush.Color; foreground.A = bar.ActualTheme == ElementTheme.Dark ? (byte)24 : (byte)16;
             caption.ButtonHoverBackgroundColor = foreground;
