@@ -150,10 +150,22 @@ final class FirmwareLibraryStore: ObservableObject {
         } catch { self.error = "Library error" }
     }
 
+    private func resolveFolder(_ folder: LibraryFolder) throws -> (folder: LibraryFolder, url: URL) {
+        var stale = false
+        let url = try URL(resolvingBookmarkData: folder.bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+        var updated = folder
+        if stale {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            updated.bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        }
+        updated.path = url.path
+        return (updated, url)
+    }
+
     private func folderURL(_ id: String, index: LibraryIndex) -> URL? {
         guard let folder = index.folders.first(where: { $0.id == id }) else { return nil }
-        var stale = false
-        return try? URL(resolvingBookmarkData: folder.bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+        return try? resolveFolder(folder).url
     }
 
     func sourceDescription(_ entry: LibraryEntry) -> String {
@@ -175,7 +187,13 @@ final class FirmwareLibraryStore: ObservableObject {
             action(URL(fileURLWithPath: path), {})
             return true
         }
-        if let id = entry.folder, let folder = folderURL(id, index: index) {
+        if let id = entry.folder, let position = index.folders.firstIndex(where: { $0.id == id }),
+           let resolved = try? resolveFolder(index.folders[position]) {
+            if resolved.folder.bookmark != index.folders[position].bookmark || resolved.folder.path != index.folders[position].path {
+                index.folders[position] = resolved.folder
+                save()
+            }
+            let folder = resolved.url
             let scoped = folder.startAccessingSecurityScopedResource()
             let file = folder.appendingPathComponent(entry.name)
             action(file, { if scoped { folder.stopAccessingSecurityScopedResource() } })
@@ -266,9 +284,15 @@ final class FirmwareLibraryStore: ObservableObject {
             var unreadable = Set<String>()
             for i in updated.entries.indices { updated.entries[i].available = false }
             var failures = Set<String>()
-            for folder in updated.folders {
+            for folderPosition in updated.folders.indices {
                 if !self.isCurrent(token) { return }
-                guard let url = self.folderURL(folder.id, index: updated) else {
+                let folder = updated.folders[folderPosition]
+                let url: URL
+                do {
+                    let resolved = try self.resolveFolder(folder)
+                    updated.folders[folderPosition] = resolved.folder
+                    url = resolved.url
+                } catch {
                     failures.insert((folder.path as NSString?)?.lastPathComponent ?? folder.id)
                     continue
                 }

@@ -148,6 +148,11 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             engine.releaseAllKeys()
         }
+        .onOpenURL { url in
+            guard url.isFileURL else { return }
+            library.importFile(url, engine: engine)
+            if !engine.running && !engine.starting && !preparingFirmware { showingLibrary = true }
+        }
         .onAppear(perform: pickStoredFirmware)
         .onAppear { engine.setSceneActive(scenePhase == .active); updateRefreshTimer() }
         .onDisappear { engine.releaseAllKeys(); refreshTimer?.invalidate(); refreshTimer = nil }
