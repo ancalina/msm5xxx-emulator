@@ -131,6 +131,32 @@ def collect(wrapper,remote,destination):
     run(wrapper,'pull',remote+'/SHA256SUMS',destination/'SHA256SUMS')
 
 
+def prepare_qemu_source(source,destination):
+    source=source.resolve();destination=destination.resolve()
+    if source==destination or source.is_relative_to(destination) or destination.is_relative_to(source):
+        raise ValueError('Keep original QEMU source and release staging directories separate')
+    if not (source/'COPYING').is_file():raise ValueError('Expected the staged QEMU source tree')
+    if destination.exists():shutil.rmtree(destination)
+    omitted={'.git','__pycache__','packagecache','roms','test','tests','testdata'}
+    suffixes=('.bin','.rom','.img','.fd','.fd.bz2','.elf','.pyc','.o','.a','.so','.exe')
+    def ignore(directory,names):
+        return [name for name in names if name.lower() in omitted or name.lower().endswith(suffixes)]
+    shutil.copytree(source,destination,ignore=ignore)
+    # Match the firmware-free source distribution used for the previous release.
+    meson=destination/'pc-bios/meson.build';contents=meson.read_text()
+    blobs=contents.split('blobs = [',1)[1].split(']',1)[0]
+    for name in re.findall(r"'([^']+)'",blobs):
+        if Path(name).name!=name or '/' in name or '\\' in name:raise ValueError('Unexpected QEMU blob path')
+        if name!='edk2-licenses.txt':(destination/'pc-bios'/name).unlink(missing_ok=True)
+    meson.write_text(contents.replace('if unpack_edk2_blobs','if false',1))
+    meson=destination/'meson.build';contents=meson.read_text()
+    for path in ['tests','tests/qtest/libqos','tests/qtest/fuzz']:
+        contents=contents.replace("subdir('"+path+"')",'# Test hooks omitted from this source distribution.')
+    meson.write_text(contents)
+    (destination/'RELEASE-SOURCE-NOTES.txt').write_text(
+        'Project QEMU source and pinned DTC. Prebuilt firmware, optional ROM sources, tests and build caches are omitted. Configure with --disable-install-blobs.\n')
+
+
 def build_all(args):
     version=release_version(args.tag);commit=source(args.tag)
     if platform.system()!='Linux':raise ValueError('Run the all-platform coordinator on Linux with the win and mac tools installed')
@@ -175,10 +201,9 @@ cd release-source; python3 packaging/release.py --tag {m(args.tag)} --platform m
     source_archive=destination/f'MSM5xxx-{version}-source.tar.gz'
     run('git','archive','--format=tar.gz','--prefix=msm5xxx-'+version+'/',
         '--output='+str(source_archive),args.tag,cwd=ROOT)
-    qemu_source=args.qemu_source.resolve()
-    if not (qemu_source/'COPYING').is_file():raise ValueError('--qemu-source must identify the staged QEMU source tree')
-    run('tar','--exclude=*/.git','--exclude=*.bin','--exclude=*.rom','--exclude=*.img','--exclude=*.fd',
-        '--exclude=*.pyc','--exclude=*/__pycache__','-cJf',destination/'MSM5xxx-QEMU-corresponding-source.tar.xz',
+    qemu_source=transfer/'qemu-source'/args.qemu_source.name
+    prepare_qemu_source(args.qemu_source,qemu_source)
+    run('tar','-cJf',destination/'MSM5xxx-QEMU-corresponding-source.tar.xz',
         '-C',qemu_source.parent,qemu_source.name)
     records={target:json.loads((destination/target/'release.json').read_text()) for target in ['windows','linux','android','macos']}
     if any(item['version']!=version or item['commit']!=commit for item in records.values()):

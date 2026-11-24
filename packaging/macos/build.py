@@ -72,8 +72,9 @@ def main():
                 if (prefix/directory).exists():shutil.copytree(prefix/directory,target/directory,dirs_exist_ok=True)
     (licenses/'HOMEBREW_PACKAGES.txt').write_text(''.join(name+'\n' for name in sorted(packages)))
     run(ROOT/'packaging/macos/sign.sh',application,env=env)
-    run(python,'-c','import ctypes,capstone,PIL,numpy; callback=ctypes.CFUNCTYPE(ctypes.c_int)(lambda:7); assert callback()==7; print("Signed embedded dependencies and ctypes callback OK")',env=env)
+    run(python,'-B','-s','-c','import ctypes,capstone,PIL,numpy; callback=ctypes.CFUNCTYPE(ctypes.c_int)(lambda:7); assert callback()==7; print("Signed embedded dependencies and ctypes callback OK")',env=env)
     run(runtime/'bin/qemu-system-arm','-M','none','-cpu','arm926','-accel','tcg','-display','none','-S','-monitor','stdio',input='quit\n',text=True,env=env)
+    run('codesign','--verify','--deep','--strict',application)
     if not a.adhoc:
         # Notarize the complete app before making its update archive and DMG.
         notarize=work/'notarize.zip';notarize.unlink(missing_ok=True)

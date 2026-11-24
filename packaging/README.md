@@ -6,7 +6,9 @@ the existing `win` and `mac` build-host tools. It never publishes a release.
 Every output records the tag commit, exact installer size and SHA-256 digest.
 The coordinator transfers a Git bundle of the tag to isolated remote checkouts,
 verifies transferred artifact checksums, and collects all four platforms plus a
-project source archive. Work directories and private test keys are excluded.
+project source archive. The QEMU source companion omits prebuilt firmware, optional
+ROM sources, tests and caches; configure it with `--disable-install-blobs`.
+Original build inputs stay unchanged. Work directories and private test keys are excluded.
 
 Prerequisites are the native SDKs/toolchains described in each platform README,
 project QEMU builds and libraries from the same native inputs, and the pinned
