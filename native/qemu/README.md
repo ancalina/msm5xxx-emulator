@@ -15,10 +15,10 @@ Set `MSM5XXX_DTC_SOURCE` to a checkout at the revision recorded in
 Set `MSM5XXX_TCG_INTERPRETER=1` to build QEMU with its TCG interpreter
 instead of native code generation. Interpreter builds use `-O3`.
 
-The same checked staging script is used by the Windows build. It verifies the
-upstream archive, icount patch, machine source, and transport source
-(`src/msm5xxx_emulator/qemu/transport.py`) before
-changing the QEMU tree.
+The same staging script is used by the Windows build. It verifies the pinned
+upstream archive and patches, derives hashes for local sources, and verifies
+the staged copies against those hashes. The generated manifest records the
+hashes used for the build.
 
 Run:
 

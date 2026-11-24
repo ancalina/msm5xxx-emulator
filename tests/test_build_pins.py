@@ -1,4 +1,4 @@
-"""Every source hash pinned for the QEMU staging script matches the tree."""
+"""QEMU staging pins external patches and hashes local sources at staging time."""
 import hashlib
 import re
 import unittest
@@ -19,8 +19,12 @@ class BuildPinTests(unittest.TestCase):
         self.assertGreater(len(checked), 10)
         for pin, var in checked:
             with self.subTest(pin=pin):
-                actual = hashlib.sha256(paths[var].read_bytes()).hexdigest()
-                self.assertEqual(pins[pin], actual, f"refresh {pin} in qemu_build_inputs.env")
+                if var.endswith("PATCH"):
+                    actual = hashlib.sha256(paths[var].read_bytes()).hexdigest()
+                    self.assertEqual(pins[pin], actual, f"refresh {pin} in qemu_build_inputs.env")
+                else:
+                    self.assertNotIn(pin, pins)
+                    self.assertIn(f'{pin}=$(sha256 "${var}")', stage)
 
     def test_ios_patch_pin(self) -> None:
         pins = (NATIVE / "qemu_build_inputs.env").read_text()
