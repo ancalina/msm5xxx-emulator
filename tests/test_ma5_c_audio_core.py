@@ -462,11 +462,15 @@ class TestMA5CAudioCore(unittest.TestCase):
         #include <string.h>
         #include "msm5xxx-ma2-audio.c"
         #include "msm5xxx-ma5-wt-engine.h"
-        static uint64_t emitted;
+        static uint64_t emitted, nonzero, hash, pcm_hash;
         static bool emit(void *opaque, uint64_t first, const int16_t *pcm,
                          size_t frames) {
-            (void)opaque; (void)pcm;
+            (void)opaque;
             assert(first == emitted);
+            for (size_t i=0;i<frames*2;i++) {
+                nonzero += pcm[i]!=0;
+                hash = (hash ^ (uint16_t)pcm[i]) * UINT64_C(1099511628211);
+            }
             emitted += frames;
             return true;
         }
@@ -475,24 +479,30 @@ class TestMA5CAudioCore(unittest.TestCase):
             MSM5xxxMA5Commit c = {kind, address, value, value, 0};
             ma5_wt_engine_commit(engine, &c);
         }
-        static void render(unsigned loop, bool held, uint32_t phase, bool use_rom) {
+        static void render(unsigned loop, bool held, uint32_t phase, bool use_rom,
+                           unsigned format) {
             MA5WTEngine *engine = ma5_wt_engine_new(0, emit, 0);
             uint8_t desc[13] = {0x78,0,0,0xf0,0xf0,0,0,0x41,0,
                                 (uint8_t)(loop >> 8),(uint8_t)loop,0,8};
-            const uint8_t sample[4] = {0x17,0x29,0x3b,0x4d};
+            uint8_t sample[16];
+            for (unsigned i=0;i<sizeof(sample);i++)
+                sample[i] = format == 1 ? (i & 1 ? 0x30 : 0) :
+                            format == 2 ? 0xb0 : format == 3 ? 0x30 : 0x17;
+            unsigned bytes = format == 0 ? 4 : format == 1 ? 16 : 8;
+            desc[1] = format;
             assert(engine);
             if (use_rom) {
                 uint8_t rom[0x4000] = {0};
                 desc[7] = 2;
                 memcpy(rom + 0x100, desc, sizeof(desc));
-                memcpy(rom + 0x200, sample, sizeof(sample));
+                memcpy(rom + 0x200, sample, bytes);
                 assert(ma5_wt_engine_set_rom(engine, rom, sizeof(rom)));
                 ma5_wt_engine_reset(engine, 0);
             }
-            emitted = 0;
+            emitted = nonzero = 0; hash = 0;
             commit(engine, MSM5XXX_MA5_COMMIT_B,39,0xf8);
             commit(engine, MSM5XXX_MA5_COMMIT_B,40,0xf8);
-            commit(engine, MSM5XXX_MA5_COMMIT_B,42,0);
+            commit(engine, MSM5XXX_MA5_COMMIT_B,42,0xf8);
             commit(engine, MSM5XXX_MA5_COMMIT_B,55,0);
             commit(engine, MSM5XXX_MA5_COMMIT_B,56,0);
             commit(engine, MSM5XXX_MA5_COMMIT_CONTROL,192,0x60);
@@ -503,7 +513,7 @@ class TestMA5CAudioCore(unittest.TestCase):
             if (!use_rom) {
                 for (unsigned i=0;i<13;i++)
                     commit(engine,MSM5XXX_MA5_COMMIT_SRAM,0x4000+i,desc[i]);
-                for (unsigned i=0;i<sizeof(sample);i++)
+                for (unsigned i=0;i<bytes;i++)
                     commit(engine,MSM5XXX_MA5_COMMIT_SRAM,0x4100+i,sample[i]);
             }
             commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,102,use_rom ? 1 : 0x40);
@@ -520,14 +530,18 @@ class TestMA5CAudioCore(unittest.TestCase):
             status=ma5_wt_engine_status(engine);
             voice=ma5_wt_engine_voice(engine,1);
             assert(status.frame==1024 && emitted==1024);
+            assert(nonzero);
+            if (format == 1) pcm_hash = hash;
+            else if (format > 1) assert(hash == pcm_hash);
             assert(voice.held==held);
             if (!held) assert(voice.phase==phase);
             ma5_wt_engine_free(engine);
         }
         int main(void) {
-            render(4,false,4u<<16, false); /* loop starts at LP */
-            render(8,true,0, false);       /* LP=EP remains one-shot */
-            render(4,false,4u<<16, true);  /* ROM descriptor and samples */
+            render(4,false,4u<<16, false, 0); /* loop starts at LP */
+            render(8,true,0, false, 0);       /* LP=EP remains one-shot */
+            for (unsigned format=0;format<4;format++)
+                render(4,false,4u<<16, true, format);
             MA5WTEngine *engine = ma5_wt_engine_new(0, emit, 0);
             commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,102,1);
             commit(engine,MSM5XXX_MA5_COMMIT_CONTROL,103,0);

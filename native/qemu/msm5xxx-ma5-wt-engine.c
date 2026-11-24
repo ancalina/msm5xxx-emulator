@@ -11,7 +11,7 @@
 
 typedef struct Voice {
     MA5WTVoiceInfo info;
-    uint8_t descriptor[13], payload[8192], b[64];
+    uint8_t descriptor[13], payload[32768], b[64];
     int16_t decoded[16384];
     uint32_t descriptor_address, sample_address, bytes, loop;
     uint32_t side[2], level, dr, sr, rr, sustain, silence;
@@ -615,6 +615,7 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
 {
     uint8_t *d = v->descriptor;
     unsigned ch = e->c[base+5] & 15;
+    unsigned format = d[1] & 3u;
     if (!v->descriptor_ok) {
         skip(e,v,e->ck[base] && e->ck[base+1] &&
                  v->descriptor_address < 0x4000u && !e->rom ?
@@ -623,11 +624,11 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
     }
     uint32_t ep = be16(d+11), lp = be16(d+9), sa = be16(d+7);
     /* shortcut: AR15, no PE/PANOFF/EAM and channel vibrato disabled; active modulation stays closed. */
-    if (d[0] != 0x78 || (d[1] & 0x3f) || (d[2] & 5) || (d[4] >> 4) != 15 ||
+    if (d[0] != 0x78 || (d[1] & 0x3c) || (d[2] & 5) || (d[4] >> 4) != 15 ||
         (d[5] & 3) || (d[6] & 0x10) || !ep || ep > 16384 || lp > ep) {
         skip(e,v,MA5_WT_SKIP_DESCRIPTOR); return;
     }
-    uint32_t bytes = (ep+1)/2;
+    uint32_t bytes = format == 0u ? (ep+1)/2 : format == 1u ? ep*2u : ep;
     if (!known_span(e,sa,bytes)) {
         skip(e,v,sa < 0x4000u && !e->rom ? MA5_WT_SKIP_ROM : MA5_WT_SKIP_UPLOAD);
         return;
@@ -664,13 +665,24 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
     v->silence=(uint32_t)floor((double)(UINT32_C(1)<<31)*pow(10.0,-96.0/20.0)+0.5);
     memcpy(v->payload,sa < 0x4000u ? e->rom+sa : e->sram+sa-0x4000u,bytes);
     memcpy(v->b,e->b,sizeof(v->b));
-    MSM5xxxMA2AdpcmDecoder decoder;
-    msm5xxx_ma2_adpcm_decoder_reset(&decoder);
-    for (uint32_t i=0;i<bytes;i++) {
-        int16_t pair[2];
-        (void)msm5xxx_ma2_adpcm_decode_byte(&decoder,v->payload[i],pair);
-        v->decoded[2*i]=pair[0];
-        if (2*i+1<ep) v->decoded[2*i+1]=pair[1];
+    if (format == 0u) {
+        MSM5xxxMA2AdpcmDecoder decoder;
+        msm5xxx_ma2_adpcm_decoder_reset(&decoder);
+        for (uint32_t i=0;i<bytes;i++) {
+            int16_t pair[2];
+            (void)msm5xxx_ma2_adpcm_decode_byte(&decoder,v->payload[i],pair);
+            v->decoded[2*i]=pair[0];
+            if (2*i+1<ep) v->decoded[2*i+1]=pair[1];
+        }
+    } else for (uint32_t i=0;i<ep;i++) {
+        if (format == 1u) {
+            uint16_t sample = v->payload[2*i] | ((uint16_t)v->payload[2*i+1] << 8);
+            v->decoded[i] = (int16_t)sample;
+        } else if (format == 2u) {
+            v->decoded[i] = (int16_t)(((int)v->payload[i] - 128) * 256);
+        } else {
+            v->decoded[i] = (int16_t)((int)(int8_t)v->payload[i] * 256);
+        }
     }
     /* Immutable predecode reuses the verified loop-point decoder state. */
     side_gain(e,v,base);
