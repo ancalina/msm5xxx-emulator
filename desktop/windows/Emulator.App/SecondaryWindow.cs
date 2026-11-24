@@ -85,11 +85,11 @@ public sealed class SecondaryWindow : Window
             screen.ShowFrame(frame);
         }
         var power = text[enabled is true ? "power_on" : enabled is false ? "power_off" : "power_unknown"];
-        titleBar.Title = text["additional_display"];
-        titleBar.Subtitle = $"{power} · {size.Width}×{size.Height} · {text[preview ? "secondary_preview" : "secondary_unknown"]}";
-        AutomationProperties.SetName(titleBar, titleBar.Title + " · " + titleBar.Subtitle);
-        ToolTipService.SetToolTip(titleBar, titleBar.Subtitle);
-        Title = $"{text["additional_display"]} · {power} · {size.Width}×{size.Height} · {text[preview ? "secondary_preview" : "secondary_unknown"]}";
+        Title = titleBar.Title = owner.Title;
+        titleBar.Subtitle = "";
+        AutomationProperties.SetName(titleBar, owner.Title + " · " + text["additional_display"]);
+        ToolTipService.SetToolTip(titleBar,
+            $"{power} · {size.Width}×{size.Height} · {text[preview ? "secondary_preview" : "secondary_unknown"]}");
     }
 
     public new void Activate()
