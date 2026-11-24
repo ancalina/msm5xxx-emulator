@@ -4,6 +4,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
+func coordinatedFileRead<T>(at url: URL, _ operation: (URL) throws -> T) throws -> T {
+    var coordinationError: NSError?
+    var result: Result<T, Error>?
+    NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { source in
+        result = Result { try operation(source) }
+    }
+    if let error = coordinationError { throw error }
+    guard let result = result else { throw CocoaError(.fileReadUnknown) }
+    return try result.get()
+}
+
 struct LibraryFolder: Codable, Identifiable {
     var id: String
     var bookmark: Data
@@ -47,6 +58,7 @@ final class FirmwareLibraryStore: ObservableObject {
     @Published private(set) var entries: [LibraryEntry] = []
     @Published private(set) var scanning = false
     @Published private(set) var importing = false
+    @Published private(set) var failedSources: [String] = []
     @Published var error: String?
     private var index = LibraryIndex()
     private let scanner = DispatchQueue(label: "firmware.library.scan")
@@ -137,18 +149,16 @@ final class FirmwareLibraryStore: ObservableObject {
         return entry.name
     }
 
-    @discardableResult func withSource(_ entry: LibraryEntry, _ action: (URL) -> Void) -> Bool {
+    @discardableResult func withSource(_ entry: LibraryEntry, _ action: (URL, @escaping () -> Void) -> Void) -> Bool {
         if let path = entry.path {
             guard FileManager.default.isReadableFile(atPath: path) else { return false }
-            action(URL(fileURLWithPath: path))
+            action(URL(fileURLWithPath: path), {})
             return true
         }
         if let id = entry.folder, let folder = folderURL(id, index: index) {
             let scoped = folder.startAccessingSecurityScopedResource()
-            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
             let file = folder.appendingPathComponent(entry.name)
-            guard FileManager.default.isReadableFile(atPath: file.path) else { return false }
-            action(file)
+            action(file, { if scoped { folder.stopAccessingSecurityScopedResource() } })
             return true
         }
         return false
@@ -171,20 +181,25 @@ final class FirmwareLibraryStore: ObservableObject {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let target = directory.appendingPathComponent(url.lastPathComponent)
                 do {
-                    let input = try FileHandle(forReadingFrom: url)
-                    defer { try? input.close() }
-                    FileManager.default.createFile(atPath: target.path, contents: nil)
-                    let output = try FileHandle(forWritingTo: target)
-                    defer { try? output.close() }
-                    var total: Int64 = 0
-                    while let data = try input.read(upToCount: 65536), !data.isEmpty {
-                        total += Int64(data.count)
-                        guard total <= limit else { throw NSError(domain: "FirmwareLibrary", code: 3) }
-                        try output.write(contentsOf: data)
+                    let byteCount = try coordinatedFileRead(at: url) { source -> Int64 in
+                        let input = try FileHandle(forReadingFrom: source)
+                        defer { try? input.close() }
+                        guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
+                            throw CocoaError(.fileWriteUnknown)
+                        }
+                        let output = try FileHandle(forWritingTo: target)
+                        defer { try? output.close() }
+                        var total: Int64 = 0
+                        while let data = try input.read(upToCount: 65536), !data.isEmpty {
+                            total += Int64(data.count)
+                            guard total <= limit else { throw NSError(domain: "FirmwareLibrary", code: 3) }
+                            try output.write(contentsOf: data)
+                        }
+                        try output.close()
+                        return total
                     }
                     let metadata = try engine.libraryRequest(["path": target.path, "cache": self.cacheURL.path, "name": url.lastPathComponent])
                     let sha = metadata["sha256"] as? String
-                    let byteCount = total
                     DispatchQueue.main.async {
                         if let sha = sha, self.index.entries.contains(where: { $0.available && $0.sha256 == sha }) {
                             try? FileManager.default.removeItem(at: directory)
@@ -223,77 +238,94 @@ final class FirmwareLibraryStore: ObservableObject {
             var oversized = Set<String>()
             var unreadable = Set<String>()
             for i in updated.entries.indices { updated.entries[i].available = false }
+            var failures = Set<String>()
             for folder in updated.folders {
                 if !self.isCurrent(token) { return }
-                guard let url = self.folderURL(folder.id, index: updated) else { continue }
+                guard let url = self.folderURL(folder.id, index: updated) else {
+                    failures.insert((folder.path as NSString?)?.lastPathComponent ?? folder.id)
+                    continue
+                }
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                guard let files = try? FileManager.default.contentsOfDirectory(at: url,
-                        includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: []) else { continue }
+                let files: [URL]
+                do {
+                    files = try coordinatedFileRead(at: url) { source in
+                        try FileManager.default.contentsOfDirectory(at: source,
+                            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: [])
+                    }
+                } catch {
+                    failures.insert(url.lastPathComponent)
+                    continue
+                }
                 for file in files {
                     if !self.isCurrent(token) { return }
-                    guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-                          values.isRegularFile == true else { continue }
                     let name = file.lastPathComponent
                     let id = folder.id + ":" + name
-                    if !FileManager.default.isReadableFile(atPath: file.path) {
-                        unreadable.insert(id)
-                        continue
-                    }
-                    guard let sizeLimit = try? engine.libraryRequest(["limit_name": name]),
-                          let limit = (sizeLimit["limit"] as? NSNumber)?.int64Value else { continue }
-                    if Int64(values.fileSize ?? 0) > limit { oversized.insert(id); continue }
                     if updated.excluded.contains(id) { continue }
-                    if !updated.entries.contains(where: { $0.id == id }) {
-                        updated.entries.append(LibraryEntry(id: id, name: name, path: nil, folder: folder.id,
-                            imported: false, model: nil, display: nil, chipset: nil, sha256: nil,
-                            size: Int64(values.fileSize ?? 0), lastBooted: nil, thumbnail: nil, available: true))
-                    }
-                    guard let position = updated.entries.firstIndex(where: { $0.id == id }) else { continue }
-                    updated.entries[position].available = true
-                    let pending = updated.entries
-                    DispatchQueue.main.async {
-                        if self.isCurrent(token) { self.entries = pending }
-                    }
                     do {
-                        if !self.isCurrent(token) { return }
-                        let metadata = try engine.libraryRequest(["path": file.path, "cache": self.cacheURL.path, "name": name])
+                        let metadata: [String: Any]? = try coordinatedFileRead(at: file) { source in
+                            let values = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                            guard values.isRegularFile == true else { return nil }
+                            let sizeLimit = try engine.libraryRequest(["limit_name": name])
+                            guard let limit = (sizeLimit["limit"] as? NSNumber)?.int64Value else {
+                                throw CocoaError(.fileReadUnknown)
+                            }
+                            if Int64(values.fileSize ?? 0) > limit { oversized.insert(id); return nil }
+                            return try engine.libraryRequest(["path": source.path, "cache": self.cacheURL.path, "name": name])
+                        }
+                        guard let metadata = metadata else { continue }
+                        if !updated.entries.contains(where: { $0.id == id }) {
+                            updated.entries.append(LibraryEntry(id: id, name: name, path: nil, folder: folder.id,
+                                imported: false, model: nil, display: nil, chipset: nil, sha256: nil,
+                                size: 0, lastBooted: nil, thumbnail: nil, available: true))
+                        }
+                        guard let position = updated.entries.firstIndex(where: { $0.id == id }) else { continue }
                         updated.entries[position].model = metadata["model"] as? String
                         updated.entries[position].display = metadata["name"] as? String
                         updated.entries[position].chipset = metadata["chipset"] as? String
                         updated.entries[position].sha256 = metadata["sha256"] as? String
-                        updated.entries[position].size = (metadata["size"] as? NSNumber)?.int64Value ?? Int64(values.fileSize ?? 0)
+                        updated.entries[position].size = (metadata["size"] as? NSNumber)?.int64Value ?? 0
                         updated.entries[position].available = true
-                    } catch { }
+                        let pending = updated.entries
+                        DispatchQueue.main.async {
+                            if self.isCurrent(token) { self.entries = pending }
+                        }
+                    } catch {
+                        unreadable.insert(id)
+                        failures.insert(name)
+                    }
                 }
             }
             for position in updated.entries.indices where updated.entries[position].imported {
                 if !self.isCurrent(token) { return }
-                guard let path = updated.entries[position].path else { continue }
-                let file = URL(fileURLWithPath: path)
-                if FileManager.default.fileExists(atPath: path) && !FileManager.default.isReadableFile(atPath: path) {
-                    unreadable.insert(updated.entries[position].id)
-                    continue
-                }
-                updated.entries[position].available = FileManager.default.isReadableFile(atPath: path)
+                let entry = updated.entries[position]
+                guard let path = entry.path else { failures.insert(entry.name); continue }
                 do {
-                    let limits = try engine.libraryRequest(["limit_name": updated.entries[position].name])
-                    if let limit = (limits["limit"] as? NSNumber)?.int64Value,
-                       let attributes = try? FileManager.default.attributesOfItem(atPath: path),
-                       let size = (attributes[.size] as? NSNumber)?.int64Value, size > limit {
-                        oversized.insert(updated.entries[position].id)
-                        continue
+                    let metadata: [String: Any]? = try coordinatedFileRead(at: URL(fileURLWithPath: path)) { source in
+                        let limits = try engine.libraryRequest(["limit_name": entry.name])
+                        guard let limit = (limits["limit"] as? NSNumber)?.int64Value else {
+                            throw CocoaError(.fileReadUnknown)
+                        }
+                        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+                        if let size = (attributes[.size] as? NSNumber)?.int64Value, size > limit {
+                            oversized.insert(entry.id)
+                            return nil
+                        }
+                        return try engine.libraryRequest(["path": source.path, "cache": self.cacheURL.path, "name": entry.name])
                     }
-                    let metadata = try engine.libraryRequest(["path": path, "cache": self.cacheURL.path,
-                                                               "name": updated.entries[position].name])
+                    guard let metadata = metadata else { continue }
                     updated.entries[position].model = metadata["model"] as? String
                     updated.entries[position].display = metadata["name"] as? String
                     updated.entries[position].chipset = metadata["chipset"] as? String
                     updated.entries[position].sha256 = metadata["sha256"] as? String
                     updated.entries[position].size = (metadata["size"] as? NSNumber)?.int64Value ?? 0
-                    updated.entries[position].available = FileManager.default.isReadableFile(atPath: file.path)
-                } catch { }
+                    updated.entries[position].available = true
+                } catch {
+                    failures.insert(entry.name)
+                    if FileManager.default.fileExists(atPath: path) { unreadable.insert(entry.id) }
+                }
             }
+            let failedNames = failures.sorted()
             let scanned = updated
             let oversizedIDs = oversized
             let unreadableIDs = unreadable
@@ -316,6 +348,7 @@ final class FirmwareLibraryStore: ObservableObject {
                     return hashes.insert(sha).inserted
                 }
                 self.scanning = false
+                self.failedSources = failedNames
                 self.save()
             }
         }

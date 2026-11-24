@@ -105,8 +105,8 @@ struct ContentView: View {
                         let select = {
                             library.ensureEntry(entry)
                             library.pauseScanning()
-                            let found = library.withSource(entry) { url in
-                                importFirmware(url) { success in
+                            let found = library.withSource(entry) { url, releaseSource in
+                                importFirmware(url, sourceFinished: releaseSource) { success in
                                     if success {
                                         activeLibraryID = entry.id
                                         if engine.used { showingSwitchAlert = true }
@@ -572,15 +572,20 @@ struct ContentView: View {
     }
 
     /// Copy the picked image into the app container; the original is never modified.
-    private func importFirmware(_ url: URL, completion: @escaping (Bool) -> Void) {
-        guard !preparingFirmware else { completion(false); return }
+    private func importFirmware(_ url: URL, sourceFinished: @escaping () -> Void = {}, completion: @escaping (Bool) -> Void) {
+        guard !preparingFirmware else { sourceFinished(); completion(false); return }
         preparingFirmware = true
         let scoped = url.startAccessingSecurityScopedResource()
         let staged = supportStagingURL()
         DispatchQueue.global(qos: .userInitiated).async {
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                sourceFinished()
+            }
             do {
-                try FileManager.default.copyItem(at: url, to: staged)
+                try coordinatedFileRead(at: url) { source in
+                    try FileManager.default.copyItem(at: source, to: staged)
+                }
                 let identity = try Self.fingerprint(staged)
                 DispatchQueue.main.async {
                     let commit = {
