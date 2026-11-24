@@ -46,6 +46,7 @@ struct MA5WTEngine {
     uint64_t origin, last_time;
     MA5WTStatus stats;
     uint8_t c[564], sram[8192], b[64];
+    uint8_t *rom;
     bool ck[564], sk[8192], bk[64], bend_ok[16];
     MSM5xxxMA5GainTables gain;
     MSM5xxxMA5ChannelGain volume[16];
@@ -147,6 +148,7 @@ static void skip(MA5WTEngine *e, Voice *v, MA5WTSkip reason)
     v->info.active = false;
     v->info.skip = reason;
     e->stats.skipped++;
+    if (reason == MA5_WT_SKIP_ROM) e->stats.wt_skip_rom++;
 }
 
 static void skip_all(MA5WTEngine *e, MA5WTSkip reason)
@@ -182,6 +184,7 @@ static void fm_skip_all(MA5WTEngine *e, MA5WTSkip reason)
 
 static bool known_span(const MA5WTEngine *e, uint32_t address, uint32_t count)
 {
+    if (address < 0x4000u) return e->rom && count <= 0x4000u-address;
     if (address < 0x4000u || address >= 0x6000u || count > 0x6000u-address)
         return false;
     for (uint32_t i = 0; i < count; i++) {
@@ -211,12 +214,13 @@ static void fm_descriptor(MA5WTEngine *e, FMVoice *v, unsigned base)
     uint32_t address = ((uint32_t)e->c[base] << 8) |
                        ((uint32_t)e->c[base + 1] << 1);
     v->descriptor_address = address;
-    if (address < 0x4000u) {
+    if (address < 0x4000u && !e->rom) {
         v->descriptor_skip = MA5_WT_SKIP_ROM;
         return;
     }
     if (address >= 0x6000u || !known_span(e, address, 2)) return;
-    const uint8_t *source = e->sram + address - 0x4000u;
+    const uint8_t *source = address < 0x4000u ? e->rom + address :
+                            e->sram + address - 0x4000u;
     unsigned algorithm = source[1] & 7u;
     unsigned size = algorithm < 2u ? 16u : 30u;
     if (!known_span(e, address, size)) return;
@@ -577,7 +581,9 @@ static void descriptor(MA5WTEngine *e, Voice *v, unsigned base)
     if (!e->ck[base]) return;
     v->descriptor_address = ((uint32_t)e->c[base] << 8) | (e->c[base+1] << 1);
     if (!known_span(e, v->descriptor_address, 13)) return;
-    memcpy(v->descriptor, e->sram + v->descriptor_address-0x4000u, 13);
+    memcpy(v->descriptor, v->descriptor_address < 0x4000u ?
+           e->rom + v->descriptor_address :
+           e->sram + v->descriptor_address - 0x4000u, 13);
     v->descriptor_ok = true;
 }
 
@@ -611,7 +617,11 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
 {
     uint8_t *d = v->descriptor;
     unsigned ch = e->c[base+5] & 15;
-    if (!v->descriptor_ok) { skip(e,v,MA5_WT_SKIP_UPLOAD); return; }
+    if (!v->descriptor_ok) {
+        skip(e,v,v->descriptor_address < 0x4000u && !e->rom ?
+                 MA5_WT_SKIP_ROM : MA5_WT_SKIP_UPLOAD);
+        return;
+    }
     uint32_t ep = be16(d+11), lp = be16(d+9), sa = be16(d+7);
     /* shortcut: AR15, no PE/PANOFF/EAM and channel vibrato disabled; active modulation stays closed. */
     if (d[0] != 0x78 || (d[1] & 0x3f) || (d[2] & 5) || (d[4] >> 4) != 15 ||
@@ -619,7 +629,10 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
         skip(e,v,MA5_WT_SKIP_DESCRIPTOR); return;
     }
     uint32_t bytes = (ep+1)/2;
-    if (!known_span(e,sa,bytes)) { skip(e,v,MA5_WT_SKIP_UPLOAD); return; }
+    if (!known_span(e,sa,bytes)) {
+        skip(e,v,sa < 0x4000u && !e->rom ? MA5_WT_SKIP_ROM : MA5_WT_SKIP_UPLOAD);
+        return;
+    }
     if (!mode_ok(e)) { skip(e,v,MA5_WT_SKIP_MODE); return; }
     if ((base==422 || base==428) && (e->b[56]&2)) {
         skip(e,v,MA5_WT_SKIP_MODE); return;
@@ -650,7 +663,7 @@ static void start(MA5WTEngine *e, Voice *v, unsigned base)
     v->rr=eg_rate_q30(d[3]>>4,rof);
     v->sustain=e->gain.sl[d[4]&15];
     v->silence=(uint32_t)floor((double)(UINT32_C(1)<<31)*pow(10.0,-96.0/20.0)+0.5);
-    memcpy(v->payload,e->sram+sa-0x4000u,bytes);
+    memcpy(v->payload,sa < 0x4000u ? e->rom+sa : e->sram+sa-0x4000u,bytes);
     memcpy(v->b,e->b,sizeof(v->b));
     MSM5xxxMA2AdpcmDecoder decoder;
     msm5xxx_ma2_adpcm_decoder_reset(&decoder);
@@ -775,14 +788,25 @@ MA5WTEngine *ma5_wt_engine_new(uint64_t origin, MA5WTEmit emit, void *opaque)
     return e;
 }
 
-void ma5_wt_engine_free(MA5WTEngine *e) { free(e); }
+bool ma5_wt_engine_set_rom(MA5WTEngine *e, const uint8_t *data, size_t size)
+{
+    if (!e || !data || size != 0x4000u || e->stats.commits) return false;
+    uint8_t *rom = malloc(size);
+    if (!rom) return false;
+    memcpy(rom, data, size);
+    free(e->rom);
+    e->rom = rom;
+    return true;
+}
+
+void ma5_wt_engine_free(MA5WTEngine *e) { if (e) free(e->rom); free(e); }
 
 void ma5_wt_engine_reset(MA5WTEngine *e, uint64_t origin)
 {
     if (!e) return;
-    MA5WTEmit emit=e->emit; void *opaque=e->opaque;
+    MA5WTEmit emit=e->emit; void *opaque=e->opaque; uint8_t *rom=e->rom;
     memset(e,0,sizeof(*e));
-    e->emit=emit; e->opaque=opaque; e->origin=e->last_time=origin;
+    e->emit=emit; e->opaque=opaque; e->rom=rom; e->origin=e->last_time=origin;
     (void)msm5xxx_ma5_gain_init(&e->gain);
     for (unsigned waveform = 0; waveform < 32; waveform++) {
         e->fm_wave_ready[waveform] = msm5xxx_ma5_waveform_build(
@@ -941,7 +965,9 @@ void ma5_wt_engine_commit(MA5WTEngine *e, const MSM5xxxMA5Commit *c)
     ma5_wt_engine_advance(e,c->time_ns);
     if ((c->kind==MSM5XXX_MA5_COMMIT_CONTROL && (c->address>=564 || c->value!=(c->raw&127))) ||
         (c->kind==MSM5XXX_MA5_COMMIT_SRAM && (c->address<0x4000 || c->address>=0x6000 || c->value!=c->raw)) ||
-        (c->kind==MSM5XXX_MA5_COMMIT_B && (c->address>=64 || c->value!=c->raw)) ||
+        (c->kind==MSM5XXX_MA5_COMMIT_B && (c->address>=64 ||
+         (c->address==38 ? ((c->raw ^ c->value) != (c->raw & 2u)) :
+                            (c->value != c->raw)))) ||
         c->kind>MSM5XXX_MA5_COMMIT_B || c->kind<MSM5XXX_MA5_COMMIT_CONTROL) {
         e->stats.invalid++;
         skip_all(e,MA5_WT_SKIP_CONTROL);
@@ -975,7 +1001,7 @@ void ma5_wt_engine_commit(MA5WTEngine *e, const MSM5xxxMA5Commit *c)
             for (unsigned i=0;i<MA5_WT_SLOTS;i++) e->voice[i].descriptor_ok=false;
             for (unsigned i=0;i<32;i++) e->fm[i].descriptor_ok=false;
         }
-        if (!e->bk[a] || e->b[a]!=c->raw) {
+        if (!e->bk[a] || e->b[a]!=c->value) {
             const unsigned relevant[]={4,30,31,35,36,38,39,40,42,55,56};
             for (unsigned i=0;i<sizeof(relevant)/sizeof(relevant[0]);i++)
                 if (a==relevant[i]) {
@@ -983,7 +1009,7 @@ void ma5_wt_engine_commit(MA5WTEngine *e, const MSM5xxxMA5Commit *c)
                     fm_skip_all(e,MA5_WT_SKIP_MUTATION);
                 }
         }
-        e->b[a]=c->raw; e->bk[a]=true;
+        e->b[a]=c->value; e->bk[a]=true;
     }
 }
 

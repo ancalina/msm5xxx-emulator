@@ -19863,6 +19863,23 @@ static void msm5xxx_poc_init(MachineState *machine)
                                     "MA5 device remains enabled");
                         s->ma5_pcm_output_enabled = false;
                         s->ma5_pcm_initialized = false;
+                    } else {
+                        const char *path = getenv("MSM5XXX_MA5_ROM");
+                        if (path && *path) {
+                            gchar *contents = NULL;
+                            gsize length = 0;
+                            GError *error = NULL;
+                            if (!g_file_get_contents(path, &contents, &length, &error) ||
+                                !ma5_wt_engine_set_rom(s->ma5_wt_engine,
+                                    (const uint8_t *)contents, length)) {
+                                error_report("MA5 ROM load failed: %s", error ?
+                                             error->message : "expected 16384 bytes");
+                                g_clear_error(&error);
+                                g_free(contents);
+                                exit(1);
+                            }
+                            g_free(contents);
+                        }
                     }
                 }
             }

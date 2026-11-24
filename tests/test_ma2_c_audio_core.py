@@ -679,12 +679,13 @@ int main(void) {
                 assert(msm5xxx_ma2_fifo_occupancy(
                     &audio, MSM5XXX_MA2_FIFO_ADPCM_WAVE) == 0u);
 
-                /* GEND is the only writable status bit and is W1C. */
-                audio.gend_status = 0x20u;
+                /* End flags can be acknowledged independently. */
+                audio.gend_status = 0x30u;
                 assert(msm5xxx_ma2_index_write(&audio,
                                                MSM5XXX_MA2_STATUS2));
                 assert(msm5xxx_ma2_data_write(&audio, 0x20u));
-                assert(audio.gend_status == 0u);
+                assert(audio.gend_status == 0x10u);
+                assert(msm5xxx_ma2_data_write(&audio, 0x10u));
                 assert(msm5xxx_ma2_data_read(&audio, &value) && value == 0u);
 
                 /* Unsupported IRQ point encodings fail closed. */

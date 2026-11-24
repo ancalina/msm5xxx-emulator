@@ -75,6 +75,14 @@ int main(void) {
         0x00,0x70,0x08,0x13,0x22,0xf0,0x00,0x01,0x17,0x00};
     MA5WTEngine *e=ma5_wt_engine_new(0,emit,NULL);
     assert(e);
+    uint8_t rom[0x4000] = {0};
+    memcpy(rom, voice, sizeof(voice));
+    assert(!ma5_wt_engine_set_rom(e, rom, sizeof(rom) - 1));
+    assert(ma5_wt_engine_set_rom(e, rom, sizeof(rom)));
+    MSM5xxxMA5Commit reset = {MSM5XXX_MA5_COMMIT_B, 38, 0, 2, 0};
+    ma5_wt_engine_commit(e, &reset);
+    assert(ma5_wt_engine_status(e).invalid == 0);
+    assert(!ma5_wt_engine_set_rom(e, rom, sizeof(rom)));
     commit(e,MSM5XXX_MA5_COMMIT_B,39,0xf8,0);
     commit(e,MSM5XXX_MA5_COMMIT_B,40,0xf8,0);
     commit(e,MSM5XXX_MA5_COMMIT_B,41,0xf8,0);
@@ -102,6 +110,10 @@ int main(void) {
     commit(e,MSM5XXX_MA5_COMMIT_CONTROL,5,0x80,101000000); /* Release. */
     ma5_wt_engine_advance(e,300000000);
     assert(ma5_wt_engine_status(e).frame==14400);
+    commit(e,MSM5XXX_MA5_COMMIT_CONTROL,0,0,300000000);
+    commit(e,MSM5XXX_MA5_COMMIT_CONTROL,1,0,300000000);
+    commit(e,MSM5XXX_MA5_COMMIT_CONTROL,5,0xc0,300000000);
+    assert(ma5_wt_engine_status(e).fm_admitted == 2);
     ma5_wt_engine_free(e);
 
     emitted=nonzero=0;

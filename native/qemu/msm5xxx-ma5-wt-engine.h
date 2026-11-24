@@ -16,7 +16,7 @@ typedef enum MA5WTSkip {
     MA5_WT_SKIP_TIMELINE, MA5_WT_SKIP_ROM
 } MA5WTSkip;
 typedef struct MA5WTStatus {
-    uint64_t frame, commits, admitted, skipped, fm_admitted, fm_skipped;
+    uint64_t frame, commits, admitted, skipped, wt_skip_rom, fm_admitted, fm_skipped;
     uint64_t fm_skip_upload, fm_skip_rom, fm_skip_descriptor;
     uint64_t fm_skip_control, fm_skip_mutation, fm_skip_mode, fm_skip_timeline;
     uint64_t fm_wave_uploads, fm_wave_upload_rejects;
@@ -41,6 +41,7 @@ typedef struct MA5WTVoiceInfo {
  * One advance is bounded to 48000 frames; larger gaps skip local voices.
  */
 MA5WTEngine *ma5_wt_engine_new(uint64_t origin_ns, MA5WTEmit emit, void *opaque);
+bool ma5_wt_engine_set_rom(MA5WTEngine *engine, const uint8_t *data, size_t size);
 void ma5_wt_engine_free(MA5WTEngine *engine);
 void ma5_wt_engine_reset(MA5WTEngine *engine, uint64_t origin_ns);
 void ma5_wt_engine_commit(MA5WTEngine *engine, const MSM5xxxMA5Commit *commit);

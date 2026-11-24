@@ -64,7 +64,8 @@ static void run_format(unsigned format, uint16_t pitch,
     device.reg[100] = (uint8_t)(pitch & 0x7f);
     device.reg[144] = 0x60;
     for (i = 0; i < 992; i++) {
-        device.memory[0x4020 + i] = format == 3 ? 0x40 : 0xff;
+        device.memory[0x4020 + i] = format == 1 ? (i % 2 ? 0x92 : 0x34) :
+                                    format == 3 ? 0x40 : 0xff;
     }
     msm5xxx_ma3_stream_init(&engine, capture, &captured);
     assert(msm5xxx_ma3_stream_operation(&engine, &device, &op));
@@ -72,6 +73,7 @@ static void run_format(unsigned format, uint16_t pitch,
     assert(msm5xxx_ma3_stream_advance(&engine, &device, duration_ns));
     assert(captured.frames == expected_frames);
     assert(captured.nonzero);
+    if (format == 1) assert(engine.voice[0].current_sample == (int16_t)0x9234);
     assert(device.reg[330] == expected_page);
 }
 
@@ -89,6 +91,7 @@ int main(void)
     run_format(2, 0x08d5, 2, 20000000, 882); /* 4 kHz offset-binary PCM */
     run_format(3, 0x08d5, 2, 20000000, 882); /* 4 kHz signed PCM */
     run_format(0, 0x0955, 4, 20000000, 882); /* 8 kHz nibble ADPCM */
+    run_format(1, 0x08d5, 4, 20000000, 882); /* 4 kHz PCM16 */
     run_format(2, 0x0280, 14, 30000000, 1323); /* wraps a full PCM ring */
 
     memset(&device, 0, sizeof(device));
@@ -104,17 +107,6 @@ int main(void)
     assert(msm5xxx_ma3_stream_operation(&engine, &device, &op));
     assert(engine.voice[0].active && engine.voice[0].pan == 64);
 
-    memset(&device, 0, sizeof(device));
-    device.memory[0x4000] = 0x83;
-    device.memory[0x4001] = 1; /* format 1 is not modeled */
-    device.memory[0x4007] = 0x40;
-    device.memory[0x4008] = 0x20;
-    device.reg[96] = 0x40;
-    device.reg[99] = 0x11;
-    device.reg[100] = 0x55;
-    msm5xxx_ma3_stream_init(&engine, capture, &captured);
-    assert(!msm5xxx_ma3_stream_operation(&engine, &device, &op));
-    assert(engine.unsupported_format_count == 1);
     return 0;
 }
 """

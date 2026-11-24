@@ -296,13 +296,11 @@ ma2_write_page0(MSM5xxxMA2Audio *audio, uint8_t index, uint8_t value)
         audio->register_shadow[0][index] = value;
         return true;
     case MSM5XXX_MA2_STATUS2:
-        if ((value & (uint8_t)~0x20u) != 0u) {
+        if ((value & (uint8_t)~0x30u) != 0u) {
             ma2_reject(audio, MSM5XXX_MA2_REJECT_INVALID_ENCODING);
             return false;
         }
-        if ((value & 0x20u) != 0u) {
-            audio->gend_status &= (uint8_t)~0x20u;
-        }
+        audio->gend_status &= (uint8_t)~value;
         audio->register_shadow[0][index] = audio->gend_status;
         return true;
     case MSM5XXX_MA2_STATUS1:
@@ -397,6 +395,13 @@ ma2_write_page1(MSM5xxxMA2Audio *audio, uint8_t index, uint8_t value)
         audio->soft_reset_mask = (uint8_t)(value & 0xe0u);
         audio->repeat_flags = (uint8_t)(value & 0x18u);
         audio->register_shadow[1][index] = value;
+        if ((value & MSM5XXX_MA2_FM_SOFT_RESET) != 0u) {
+            memset(audio->fm_gate, 0, sizeof(audio->fm_gate));
+            for (size_t channel = 0; channel < MSM5XXX_MA2_FM_CHANNEL_COUNT;
+                 channel++) {
+                audio->fm_channel[channel].key_on = false;
+            }
+        }
         if ((value & MSM5XXX_MA2_SEQUENCE_SOFT_RESET) != 0u) {
             /* A new sequence must not inherit END or a partially decoded event. */
             memset(audio->sequence, 0, sizeof(audio->sequence));
@@ -501,7 +506,7 @@ ma2_read_page0(const MSM5xxxMA2Audio *audio, uint8_t index, bool *ok)
     case MSM5XXX_MA2_ADPCM_IRQ_CTRL:
         return audio->adpcm_irq_ctrl;
     case MSM5XXX_MA2_STATUS2:
-        return (uint8_t)(audio->gend_status & 0x20u);
+        return (uint8_t)(audio->gend_status & 0x30u);
     case MSM5XXX_MA2_FULL_STATUS:
         return ma2_full_status(audio);
     case MSM5XXX_MA2_EMPTY_STATUS:
@@ -1460,6 +1465,7 @@ msm5xxx_ma2_scheduler_step(MSM5xxxMA2Audio *audio,
         } else {
             output->stream = MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE;
             audio->adpcm_gate.active = false;
+            audio->gend_status |= 0x20u;
         }
         return true;
     }
@@ -1473,6 +1479,9 @@ msm5xxx_ma2_scheduler_step(MSM5xxxMA2Audio *audio,
     if (sequence->end_pending) {
         sequence->end_pending = false;
         sequence->ended = true;
+        if (due_stream == MSM5XXX_MA2_FIFO_ADPCM_SEQUENCE) {
+            audio->gend_status |= 0x10u;
+        }
         output->kind = MSM5XXX_MA2_OUTPUT_END;
         return true;
     }

@@ -103,11 +103,6 @@ static bool ma3_stream_start(MSM5xxxMA3StreamEngine *engine,
         return false;
     }
     mode = descriptor[1] & 3u;
-    if (mode != 0u && mode != 2u && mode != 3u) {
-        engine->reject_reason = MSM5XXX_MA3_STREAM_UNSUPPORTED_FORMAT;
-        engine->unsupported_format_count++;
-        return false;
-    }
     start_address = ma3_be16(descriptor + 7u);
     if (start_address < 0x4000u ||
         (uint32_t)start_address + MA3_STREAM_SAMPLE_BYTES >
@@ -187,6 +182,18 @@ static bool ma3_next_sample(MSM5xxxMA3StreamVoice *voice,
     }
     for (;;) {
         uint8_t byte;
+        if (voice->format == 1u) {
+            uint16_t word;
+            address = (size_t)voice->sample_start + voice->byte_position;
+            if (address + 1u >= MSM5XXX_MA3_ADDRESS_SPACE) {
+                return false;
+            }
+            word = (uint16_t)(device->memory[address] |
+                              ((uint16_t)device->memory[address + 1u] << 8));
+            *sample = (int16_t)word;
+            voice->byte_position += 2u;
+            return true;
+        }
         if (voice->format == 2u || voice->format == 3u) {
             address = (size_t)voice->sample_start + voice->byte_position;
             if (address >= MSM5XXX_MA3_ADDRESS_SPACE) {
