@@ -292,6 +292,10 @@ int main(void) {
     msm5xxx_poc_external_lcd_write(&s.external_lcd_context[1], 0xfff, 0xffff, 2);
     assert(lcd_writes == 5);
     assert(msm5xxx_poc_external_lcd_read(&s.external_lcd_context[1], 0x1000, 1) == 0);
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[1], 2, 0x18, 1);
+    assert(lcd_writes == 6 && lcd_address == 0x02000002 && lcd_value == 0x18 && lcd_size == 1);
+    msm5xxx_poc_external_lcd_write(&s.external_lcd_context[1], 2, 0x1234, 2);
+    assert(lcd_writes == 7 && lcd_address == 0x02000002 && lcd_value == 0x1234 && lcd_size == 2);
     s.experimental_contract_lcd_1c_selector = true;
     s.external_lcd_context[1].machine = &s;
     s.external_lcd_context[1].index = 1;
