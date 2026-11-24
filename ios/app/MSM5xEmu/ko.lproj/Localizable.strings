@@ -194,3 +194,5 @@
 "Full chip marking" = "전체 칩 마킹";
 "Simple (MSM5)" = "간단히 (MSM5)";
 "Could not change the app icon." = "앱 아이콘을 변경하지 못했습니다.";
+
+"Unable to share capture" = "캡처를 공유할 수 없어요";

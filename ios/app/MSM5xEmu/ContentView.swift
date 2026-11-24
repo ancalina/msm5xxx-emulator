@@ -21,7 +21,10 @@ struct ContentView: View {
     @State private var showingSettingsNotice = false
     @State private var settingsNotice = ""
     @State private var showingCapture = false
-    @State private var captureData: Data?
+    @State private var captureImage: UIImage?
+    @State private var captureFailure: String?
+    @State private var captureDidDismiss = true
+    @State private var capturePresentation = UUID()
     @State private var showingTime = false
     @State private var timeDraft = Date()
     @AppStorage("show_secondary") private var showingSecondary = false
@@ -80,6 +83,18 @@ struct ContentView: View {
     private var keyboardEnabled: Bool {
         engine.running && !engine.starting && !engine.paused && scenePhase == .active && !showingLibrary
             && !editingMapping && !showingSettings && !showingMapping && !showingTime && !showingCapture
+    }
+
+    private var canPresentCaptureFailure: Bool {
+        scenePhase == .active && captureDidDismiss && !showingCapture && !showingSettings && !showingTime &&
+        !showingMapping && !showingSettingsNotice && !showingSwitchAlert &&
+        pendingFirmwareSwitch == nil && message.isEmpty
+    }
+
+    private func presentCaptureFailureIfReady() {
+        guard canPresentCaptureFailure, let failure = captureFailure else { return }
+        captureFailure = nil
+        message = failure
     }
 
     var body: some View {
@@ -173,6 +188,25 @@ struct ContentView: View {
         .onChange(of: engine.errorDetail) { detail in
             if !detail.isEmpty { message = detail }
         }
+        .sheet(isPresented: $showingCapture, onDismiss: {
+            captureDidDismiss = true
+            captureImage = nil
+            presentCaptureFailureIfReady()
+        }) {
+            if let image = captureImage {
+                let presentation = capturePresentation
+                CaptureShare(image: image) { error in
+                    if let error = error {
+                        captureFailure = text("Unable to share capture") + "\n" + error.localizedDescription
+                    }
+                    if capturePresentation == presentation { showingCapture = false }
+                }
+            }
+        }
+        .onChange(of: canPresentCaptureFailure) { ready in
+            if ready { presentCaptureFailureIfReady() }
+        }
+        .onChange(of: captureFailure) { _ in presentCaptureFailureIfReady() }
         .alert(text(showingSwitchAlert ? "Reopen the app to switch firmware"
                     : pendingFirmwareSwitch != nil ? "Choose firmware" : "Error"),
                isPresented: Binding(
@@ -254,10 +288,15 @@ struct ContentView: View {
                 Button(text("Reboot emulator")) { engine.reboot() }.disabled(!engine.running)
                 Button(text("Choose firmware…")) { showingLibrary = true }
                 Button(text("Capture")) {
-                    captureData = engine.frame.flatMap { UIImage(cgImage: $0).pngData() }
-                    if captureData != nil { showingCapture = true }
-                    else { message = text("Unable to capture display") }
-                }.disabled(engine.frame == nil)
+                    guard let frame = engine.frame else {
+                        message = text("Unable to capture display")
+                        return
+                    }
+                    captureImage = UIImage(cgImage: frame)
+                    capturePresentation = UUID()
+                    captureDidDismiss = false
+                    showingCapture = true
+                }.disabled(engine.frame == nil || showingCapture || !captureDidDismiss)
                 Button(text("Edit key input")) { editingMapping = true }.disabled(!engine.running)
                 Menu(text("Time")) {
                     Button {
@@ -376,11 +415,6 @@ struct ContentView: View {
                     }
                 }.navigationTitle(text("Input mapping"))
                     .toolbar { Button(text("Cancel")) { showingMapping = false } }
-            }
-        }
-        .sheet(isPresented: $showingCapture) {
-            if let data = captureData {
-                CaptureShare(data: data, savedMessage: text("Screenshot saved"))
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -703,14 +737,12 @@ private struct PhoneKey: View {
 }
 
 private struct CaptureShare: UIViewControllerRepresentable {
-    let data: Data
-    let savedMessage: String
+    let image: UIImage
+    let finished: (Error?) -> Void
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("MSM5xEmu.png")
-        try? data.write(to: url, options: .atomic)
-        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        controller.completionWithItemsHandler = { _, completed, _, _ in
-            if completed { UIAccessibility.post(notification: .announcement, argument: savedMessage) }
+        let controller = UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, error in
+            DispatchQueue.main.async { finished(error) }
         }
         return controller
     }
