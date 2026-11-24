@@ -19,6 +19,8 @@ pub struct Library {
     model: gio::ListStore,
     folders: RefCell<Vec<String>>,
     scanning: Cell<bool>,
+    backend_ready: Cell<bool>,
+    startup_error: RefCell<Option<(String, &'static str)>>,
     closing: Cell<bool>,
     pub entries: RefCell<Vec<Value>>,
 }
@@ -41,6 +43,8 @@ impl Library {
             model: gio::ListStore::new::<glib::BoxedAnyObject>(),
             folders: RefCell::new(vec![]),
             scanning: Cell::new(false),
+            backend_ready: Cell::new(false),
+            startup_error: RefCell::new(None),
             closing: Cell::new(false),
             entries: RefCell::new(vec![]),
         });
@@ -63,8 +67,10 @@ impl Library {
                             return;
                         }
                         if hello["protocol"] != 1 {
-                            this.error("Unsupported backend protocol");
-                            this.stack.set_visible_child_name("empty");
+                            this.startup_failed(
+                                "Unsupported backend protocol",
+                                "Install matching app components, then reopen the app.",
+                            );
                             return;
                         }
                         let text = Text::new(hello["language"].as_str().unwrap_or("en"));
@@ -87,12 +93,18 @@ impl Library {
                             }
                             app.text.replace(text);
                         }
+                        if this.closing.get() {
+                            return;
+                        }
+                        this.backend_ready.set(true);
                         this.build();
                         this.refresh();
                     }
                     Err(e) => {
-                        this.error(&e);
-                        this.stack.set_visible_child_name("empty");
+                        this.startup_failed(
+                            &e,
+                            "Check that the app is installed completely, then reopen it.",
+                        );
                     }
                 }
             }
@@ -140,7 +152,7 @@ impl Library {
             ("close", 5),
         ] {
             let weak = Rc::downgrade(self);
-            widgets::action(&self.window, key, move || {
+            let action = widgets::action(&self.window, key, move || {
                 if let Some(this) = weak.upgrade() {
                     match op {
                         0 => this.pick(false),
@@ -154,6 +166,8 @@ impl Library {
                     }
                 }
             });
+            action.set_enabled(key == "close" || (self.backend_ready.get()
+                && (!self.scanning.get() || key == "settings")));
         }
         let factory = gtk::SignalListItemFactory::new();
         let weak = Rc::downgrade(self);
@@ -314,6 +328,10 @@ impl Library {
         view.add_top_bar(&header);
         view.set_content(Some(&box_));
         self.window.set_content(Some(&view));
+        let startup_error = self.startup_error.borrow().clone();
+        if let Some((detail, guidance)) = startup_error {
+            self.startup_failed(&detail, guidance);
+        }
     }
     pub fn set_language(self: &Rc<Self>, text: Text) {
         if self.closing.get() {
@@ -325,11 +343,40 @@ impl Library {
         self.refresh();
     }
     pub fn error(&self, message: &str) {
+        if self.closing.get() {
+            return;
+        }
         self.banner.set_title(&self.text.borrow().tr(message));
         self.banner.set_revealed(true);
     }
+    fn startup_failed(&self, detail: &str, guidance: &'static str) {
+        if self.closing.get() {
+            return;
+        }
+        self.backend_ready.set(false);
+        self.startup_error.replace(Some((detail.to_owned(), guidance)));
+        self.error(detail);
+        let text = self.text.borrow();
+        let page = adw::StatusPage::builder()
+            .icon_name("dialog-error-symbolic")
+            .title(text.tr("Firmware Library Unavailable"))
+            .description(text.tr(guidance))
+            .build();
+        if let Some(old) = self.stack.child_by_name("startup-error") {
+            self.stack.remove(&old);
+        }
+        self.stack.add_named(&page, Some("startup-error"));
+        self.stack.set_visible_child_name("startup-error");
+        for key in ["add-file", "add-folder", "remove-folder", "refresh", "settings"] {
+            if let Some(action) = self.window.lookup_action(key)
+                .and_downcast::<gio::SimpleAction>()
+            {
+                action.set_enabled(false);
+            }
+        }
+    }
     pub fn refresh(self: &Rc<Self>) {
-        if self.closing.get() || self.scanning.replace(true) {
+        if !self.backend_ready.get() || self.closing.get() || self.scanning.replace(true) {
             return;
         }
         self.stack.set_visible_child_name("loading");
@@ -409,6 +456,9 @@ impl Library {
         ));
     }
     pub fn mutate(self: &Rc<Self>, method: &'static str, path: String) {
+        if !self.backend_ready.get() || self.closing.get() {
+            return;
+        }
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to=this)]
             self,

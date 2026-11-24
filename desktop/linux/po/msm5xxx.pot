@@ -320,3 +320,12 @@ msgstr ""
 
 msgid "Apply the network time or restore its saved value before restarting"
 msgstr ""
+
+msgid "Firmware Library Unavailable"
+msgstr ""
+
+msgid "Install matching app components, then reopen the app."
+msgstr ""
+
+msgid "Check that the app is installed completely, then reopen it."
+msgstr ""
