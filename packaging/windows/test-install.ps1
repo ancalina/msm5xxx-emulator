@@ -38,6 +38,7 @@ public static class InstallerTestWindow {
  [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr h);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr h,System.Text.StringBuilder text,int size);
  [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr h,uint message,IntPtr w,IntPtr l);
+ public static bool ClickButton(IntPtr h) { return PostMessage(h,0x00F5,IntPtr.Zero,IntPtr.Zero); }
  public static void DismissCompletion(int process) {
   EnumWindows((h,p)=> { uint id; GetWindowThreadProcessId(h,out id); if(id==process) {
    EnumChildWindows(h,(button,arg)=> { var cls=new System.Text.StringBuilder(64); GetClassName(button,cls,64); var control=GetDlgCtrlID(button);
@@ -63,7 +64,15 @@ function Elements {
  }
 }
 function ById([string]$id) { Elements | Where-Object {$_.Current.AutomationId -eq $id -and !$_.Current.IsOffscreen -and $_.Current.IsEnabled} | Select-Object -First 1 }
-function Invoke($element) { $element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+function Invoke($element) {
+ $pattern=$null
+ if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) { $pattern.Invoke(); return }
+ if ($element.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern,[ref]$pattern)) { $pattern.DoDefaultAction(); return }
+ if ($element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $element.Current.NativeWindowHandle) {
+  if (![InstallerTestWindow]::ClickButton([IntPtr]$element.Current.NativeWindowHandle)) { throw 'Native button invocation failed' }; return
+ }
+ throw 'Control has no supported invocation pattern'
+}
 function Toggle($element) { $element.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() }
 function WindowFor([string]$id) {
  $element=Elements | Where-Object {$_.Current.AutomationId -eq $id} | Select-Object -First 1
@@ -148,7 +157,9 @@ try {
      $dataPrompt=@($window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition) | Where-Object {$_.Current.Name -like 'Delete your MSM5xxx library*'}).Count -gt 0
      if (!$dataPrompt -and ($process.ProcessName -ne 'Update' -or $process.Path -notlike "$install*" -or $confirmed)) { continue }
      $id=if ($dataPrompt -and !$deleteData) { '7' } else { '6' }
-     $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$id)
+     $byId=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$id)
+     $byType=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)
+     $condition=New-Object System.Windows.Automation.AndCondition($byId,$byType)
      $button=$window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
      if ($button) {
       Invoke $button
