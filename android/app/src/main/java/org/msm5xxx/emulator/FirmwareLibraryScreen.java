@@ -44,10 +44,12 @@ final class FirmwareLibraryScreen {
         void openSettings();
     }
     private static final String PREFS = "firmware-library";
+    private static final Object INDEX_LOCK = new Object();
+    private static final String DATA_REVISION = "data_revision";
     private final Activity activity;
     private final Listener listener;
     private final SharedPreferences preferences;
-    private final Object stateLock = new Object();
+    private final SharedPreferences.OnSharedPreferenceChangeListener dataListener;
     private static ExecutorService backgroundExecutor(String name) {
         return Executors.newSingleThreadExecutor(task -> new Thread(() -> {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
@@ -66,6 +68,10 @@ final class FirmwareLibraryScreen {
     private final AtomicLong revision = new AtomicLong();
     private String previousCopy;
     private String previousName;
+    private boolean closed;
+    private final Runnable refreshIndex = () -> {
+        if (!closed && showing) refresh();
+    };
 
     void setPreviousCopy(String path, String name) {
         previousCopy = path;
@@ -76,6 +82,18 @@ final class FirmwareLibraryScreen {
         this.activity = activity;
         this.listener = listener;
         preferences = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        dataListener = (changed, key) -> {
+            if (DATA_REVISION.equals(key)) {
+                ui.removeCallbacks(refreshIndex);
+                ui.post(refreshIndex);
+            }
+        };
+        preferences.registerOnSharedPreferenceChangeListener(dataListener);
+    }
+
+    // Called while holding INDEX_LOCK for the complete read-modify-write operation.
+    private static void applyMutation(SharedPreferences preferences, SharedPreferences.Editor editor) {
+        editor.putLong(DATA_REVISION, preferences.getLong(DATA_REVISION, 0L) + 1L).apply();
     }
 
     private JSONArray read(String key) {
@@ -84,12 +102,12 @@ final class FirmwareLibraryScreen {
     }
 
     void addFolder(Uri uri) {
-        synchronized (stateLock) {
+        synchronized (INDEX_LOCK) {
             JSONArray folders = read("folders");
             for (int i = 0; i < folders.length(); i++) if (uri.toString().equals(folders.optString(i))) return;
             folders.put(uri.toString());
             revision.incrementAndGet();
-            preferences.edit().putString("folders", folders.toString()).apply();
+            applyMutation(preferences, preferences.edit().putString("folders", folders.toString()));
         }
         refresh();
     }
@@ -117,7 +135,7 @@ final class FirmwareLibraryScreen {
                 }
                 JSONObject metadata = new JSONObject(PythonRuntime.describeLibrary(activity, target, name));
                 String sha = metadata.optString("sha256", "");
-                synchronized (stateLock) {
+                synchronized (INDEX_LOCK) {
                     JSONArray entries = read("entries");
                     for (int i = 0; i < entries.length(); i++) {
                         JSONObject existing = entries.optJSONObject(i);
@@ -136,7 +154,7 @@ final class FirmwareLibraryScreen {
                             .put("chipset", metadata.isNull("chipset") ? "—" : metadata.optString("chipset", "—"));
                     entries.put(entry);
                     revision.incrementAndGet();
-                    preferences.edit().putString("entries", entries.toString()).apply();
+                    applyMutation(preferences, preferences.edit().putString("entries", entries.toString()));
                 }
                 activity.runOnUiThread(this::refresh);
             } catch (IOException | JSONException | RuntimeException error) {
@@ -151,6 +169,7 @@ final class FirmwareLibraryScreen {
     }
 
     void show() {
+        if (closed) return;
         if (showing) { refresh(); return; }
         showing = true;
         if (content == null) content = LibraryContent.install(activity, this);
@@ -191,6 +210,7 @@ final class FirmwareLibraryScreen {
 
     static void removeFolder(Context context, String folder) {
         android.content.SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        synchronized (INDEX_LOCK) {
         JSONArray folders, entries;
         try {
             folders = new JSONArray(preferences.getString("folders", "[]"));
@@ -204,7 +224,9 @@ final class FirmwareLibraryScreen {
             if (entry != null && !entry.optBoolean("imported") && entry.optString("uri").startsWith(prefix)) continue;
             remaining.put(entry);
         }
-        preferences.edit().putString("folders", kept.toString()).putString("entries", remaining.toString()).apply();
+        applyMutation(preferences, preferences.edit().putString("folders", kept.toString())
+                .putString("entries", remaining.toString()));
+        }
         try {
             context.getContentResolver().releasePersistableUriPermission(Uri.parse(folder),
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -230,7 +252,15 @@ final class FirmwareLibraryScreen {
         }
     }
 
-    void close() { dismiss(); scanner.shutdown(); }
+    void close() {
+        if (closed) return;
+        closed = true;
+        preferences.unregisterOnSharedPreferenceChangeListener(dataListener);
+        dismiss();
+        ui.removeCallbacks(refreshIndex);
+        if (listUpdate != null) ui.removeCallbacks(listUpdate);
+        scanner.shutdown();
+    }
 
     void select(JSONObject entry) {
         if (!entry.optBoolean("available", false)) return;
@@ -286,7 +316,7 @@ final class FirmwareLibraryScreen {
     }
 
     private void remove(JSONObject entry) {
-        synchronized (stateLock) {
+        synchronized (INDEX_LOCK) {
         revision.incrementAndGet();
         String uri = entry.optString("uri");
         String hash = entry.optString("sha256", "");
@@ -308,13 +338,14 @@ final class FirmwareLibraryScreen {
             }
             excluded.put(candidate);
         }
-        preferences.edit().putString("entries", kept.toString()).putString("excluded", excluded.toString()).apply();
+        applyMutation(preferences, preferences.edit().putString("entries", kept.toString())
+                .putString("excluded", excluded.toString()));
         }
         refresh();
     }
 
     void ensureEntry(Uri uri, String name, long size) {
-        synchronized (stateLock) {
+        synchronized (INDEX_LOCK) {
         JSONArray entries = read("entries");
         for (int i = 0; i < entries.length(); i++) {
             JSONObject item = entries.optJSONObject(i);
@@ -324,14 +355,14 @@ final class FirmwareLibraryScreen {
             entries.put(new JSONObject().put("uri", uri.toString()).put("name", name)
                     .put("size", size).put("imported", false));
             revision.incrementAndGet();
-            preferences.edit().putString("entries", entries.toString()).apply();
+            applyMutation(preferences, preferences.edit().putString("entries", entries.toString()));
         } catch (JSONException ignored) { }
         }
     }
 
     void recordBoot(String uri, String sha, String sessionPath, String name) {
         boolean needsMetadata = true;
-        synchronized (stateLock) {
+        synchronized (INDEX_LOCK) {
             JSONArray entries = read("entries");
             for (int i = 0; i < entries.length(); i++) {
                 JSONObject item = entries.optJSONObject(i);
@@ -381,7 +412,7 @@ final class FirmwareLibraryScreen {
     }
 
     private void updateEntry(String uri, String key, Object value) {
-        synchronized (stateLock) {
+        synchronized (INDEX_LOCK) {
         revision.incrementAndGet();
         JSONArray entries = read("entries");
         try {
@@ -389,7 +420,7 @@ final class FirmwareLibraryScreen {
                 JSONObject item = entries.optJSONObject(i);
                 if (item != null && uri != null && uri.equals(item.optString("uri"))) item.put(key, value);
             }
-            preferences.edit().putString("entries", entries.toString()).apply();
+            applyMutation(preferences, preferences.edit().putString("entries", entries.toString()));
         } catch (JSONException ignored) { }
         }
     }
@@ -462,13 +493,22 @@ final class FirmwareLibraryScreen {
     }
 
     void refresh() {
-        if (!showing) return;
+        if (closed || !showing) return;
         final long token = revision.incrementAndGet();
         loading = true;
         publishRows();
         scanner.execute(() -> {
-            JSONArray entries = read("entries"), folders = read("folders"), excluded = read("excluded");
-            if (!preferences.getBoolean("private_migrated", false)) {
+            final long dataVersion;
+            final JSONArray entries, folders, excluded;
+            final boolean migrated;
+            synchronized (INDEX_LOCK) {
+                dataVersion = preferences.getLong(DATA_REVISION, 0L);
+                entries = read("entries");
+                folders = read("folders");
+                excluded = read("excluded");
+                migrated = preferences.getBoolean("private_migrated", false);
+            }
+            if (!migrated) {
                 if (previousCopy != null && previousName != null) {
                     File old = new File(previousCopy);
                     File sessions = new File(activity.getNoBackupFilesDir(), "session");
@@ -602,12 +642,28 @@ final class FirmwareLibraryScreen {
             }
             rows.removeIf(row -> !row.optBoolean("available", false)
                     && availableHashes.contains(row.optString("sha256", "")));
-            synchronized (stateLock) {
+            boolean stale;
+            synchronized (INDEX_LOCK) {
                 if (token != revision.get()) return;
-                preferences.edit().putString("entries", entries.toString()).putBoolean("private_migrated", true).apply();
+                stale = dataVersion != preferences.getLong(DATA_REVISION, 0L);
+                if (!stale) {
+                    preferences.edit().putString("entries", entries.toString()).putBoolean("private_migrated", true).apply();
+                }
+            }
+            if (stale) {
+                ui.post(() -> {
+                    if (!closed && showing && token == revision.get()) refresh();
+                });
+                return;
             }
             activity.runOnUiThread(() -> {
                 if (token != revision.get() || !showing) return;
+                synchronized (INDEX_LOCK) {
+                    if (dataVersion != preferences.getLong(DATA_REVISION, 0L)) {
+                        refresh();
+                        return;
+                    }
+                }
                 visible.clear(); visible.addAll(rows); loading = false; schedulePublish();
             });
         });
