@@ -10,7 +10,7 @@ import Darwin
             LibraryScene(library: library).focusedSceneValue(\.desktopScene, .library)
         }
         .defaultLaunchBehavior(.presented)
-        .restorationBehavior(.disabled)
+        .restorationBehavior(.automatic)
         .defaultSize(width: 640, height: 520)
         .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)

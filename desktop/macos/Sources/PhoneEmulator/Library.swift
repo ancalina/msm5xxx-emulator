@@ -168,7 +168,7 @@ struct ErrorBanner: View {
 struct LibraryView: View {
     @ObservedObject var model: LibraryModel
     @State private var info: Firmware?
-    @State private var selection: String?
+    @SceneStorage("library.selection") private var selection: String?
     var body: some View {
         VStack(spacing: 0) {
             ErrorBanner(message: model.error)
