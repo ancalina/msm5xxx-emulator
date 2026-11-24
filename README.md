@@ -67,3 +67,9 @@ voice records and wave data; it is not a firmware image or an archive. An
 invalid or unreadable file stops startup. When the variable is unset, ROM
 voices remain unavailable and are counted as skips.
 
+FM records have a two-byte header followed by two or four seven-byte operator
+records. WT records are 13 bytes and contain a big-endian sample address and
+loop sample indices; PCM16 sample data is little-endian. Sample addresses may
+point to the ROM or to guest-uploaded memory. The renderer validates each referenced
+record and sample span before playback.
+
