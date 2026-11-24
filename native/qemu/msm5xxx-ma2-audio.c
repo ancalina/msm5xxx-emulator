@@ -1257,6 +1257,15 @@ ma2_apply_fm_sysex(MSM5xxxMA2Audio *audio,
     size_t slot;
     size_t operation;
 
+    if (event->sysex_length == 6u && bytes[0] == 0x43u &&
+        (bytes[1] == 0x02u || bytes[1] == 0x03u) && bytes[2] == 0x90u &&
+        bytes[5] == 0xf7u) {
+        MSM5xxxMA2FMChannel *channel = &audio->fm_channel[bytes[3] & 15u];
+        if ((bytes[3] & 0xf0u) == 0xb0u) channel->bank = bytes[4];
+        else if ((bytes[3] & 0xf0u) == 0xc0u) channel->program = bytes[4];
+        else return false;
+        return true;
+    }
     if (event->sysex_length == 19u && bytes[0] == 0x43u &&
         bytes[1] == 0x02u && bytes[2] < 8u && bytes[18] == 0xf7u) {
         uint8_t payload[19];

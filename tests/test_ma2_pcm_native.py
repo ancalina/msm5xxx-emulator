@@ -64,6 +64,12 @@ int main(void) {
     assert(audio.fm_voice[1].valid && audio.fm_voice[1].legacy);
     assert(audio.fm_voice[1].decoded[6 + 18 + 4] == 9);
     assert(audio.fm_voice[1].decoded[6 + 18 + 2] == 1);
+    audio.page = 0; audio.index = 0;
+    const uint8_t program[] = {0, 0xff, 0xf0, 6, 0x43, 2, 0x90, 0xc0, 42, 0xf7};
+    for (unsigned i = 0; i < sizeof(program); i++) assert(msm5xxx_ma2_data_write(&audio, program[i]));
+    assert(msm5xxx_ma2_scheduler_step(&audio, 0, &output));
+    assert(output.unhandled_reason == MSM5XXX_MA2_UNHANDLED_NONE);
+    assert(audio.fm_channel[0].program == 42);
     return 0;
 }
 '''
