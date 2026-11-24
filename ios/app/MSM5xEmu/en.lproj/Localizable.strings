@@ -194,24 +194,17 @@
 "Full chip marking" = "Full chip marking";
 "Simple (MSM5)" = "Simple (MSM5)";
 "Could not change the app icon." = "Could not change the app icon.";
-
 "Unable to share capture" = "Unable to share capture";
-
 "Library index unreadable" = "The saved library could not be read. Its file was kept unchanged. Restore the library file, then refresh.";
 "Library import in progress" = "A file is already being imported. Wait for it to finish, then try again.";
 "Library removal incomplete" = "Some app copies could not be removed. Files already removed are marked unavailable. Restore access and retry. External originals were kept.";
-
 "Library delete copies" = "Delete matching app copies";
 "Library file actions" = "Actions for %@";
 "Library delete copies detail" = "Removing %@ excludes matching entries from the library and deletes any imported app copies with the same contents. External original files are kept. Deleting app copies cannot be undone.";
-
 "Library importing" = "Importing firmware…";
 "Library partial scan" = "Could not read %ld files or folders";
 "Library scan retry" = "Available items can still be used. Restore access and refresh, or remove and add the folder again in Settings.";
-
 "Resume audio" = "Resume audio";
-
-
 "Applying settings" = "Applying settings…";
 "Settings may close while applying" = "You can close this window. The result will remain here when you reopen Settings.";
 "Settings applied" = "Settings applied.";

@@ -533,6 +533,7 @@ struct FirmwareLibraryView: View {
     @State private var selectedGroup: LibraryGroup?
     @State private var choosingFiles = false
     @State private var showingSettings = false
+    @AppStorage("ui_language") private var uiLanguage = "auto"
     @AppStorage("persistent_state") private var persistentState = true
     @AppStorage("virtual_network") private var virtualNetwork = false
     @AppStorage("network_host_time") private var networkHostTime = true
@@ -557,6 +558,11 @@ struct FirmwareLibraryView: View {
                 }
                 Section {
                     AppIconPicker(text: text)
+                    Picker(text("UI language"), selection: $uiLanguage) {
+                        Text(text("Auto (System)")).tag("auto")
+                        Text(text("Korean")).tag("ko")
+                        Text(text("English")).tag("en")
+                    }
                 }
                 Section(header: Text(text("Library session settings"))) {
                     Toggle(text("Virtual network"), isOn: $virtualNetwork)
@@ -625,7 +631,11 @@ struct FirmwareLibraryView: View {
 
     private func lastBoot(_ entry: LibraryEntry) -> String {
         guard let date = entry.lastBooted else { return text("Library never") }
-        return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: uiLanguage == "auto" ? Locale.current.identifier : uiLanguage)
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     var body: some View {
@@ -636,6 +646,7 @@ struct FirmwareLibraryView: View {
                 NavigationView { libraryContent }
             }
         }
+        .environment(\.locale, Locale(identifier: uiLanguage == "auto" ? Locale.current.identifier : uiLanguage))
     }
 
     private var libraryContent: some View {
@@ -709,14 +720,18 @@ struct FirmwareLibraryView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button(text("Library add folder")) { folderPicker = true }
-                        Button(text("Library import")) { filePicker = true }.disabled(store.importing)
+                        Button(text("Library import")) { filePicker = true }
+                            .disabled(store.importing)
+                            .keyboardShortcut("o", modifiers: .command)
                     } label: { Image(systemName: "plus") }
                     .accessibilityLabel(text("Library add"))
                     Button { store.refresh(engine: engine) } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel(text("Library refresh"))
                         .disabled(store.importing)
+                        .keyboardShortcut("r", modifiers: .command)
                     Button { showingSettings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel(text("Settings"))
+                        .keyboardShortcut(",", modifiers: .command)
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     if canClose { Button(text("Done")) { close() } }
