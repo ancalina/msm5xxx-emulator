@@ -62,10 +62,15 @@ public sealed class LauncherWindow : DesktopWindow
         Title = "MSM5xxx"; Commands.Subtitle = Text["library_title"];
         TitleActions.Children.Clear();
         var add = Command(Text["library_import"], Symbol.Add, ImportAsync);
+        add.AccessKey = "O";
+        AutomationProperties.SetAcceleratorKey(add, "Ctrl+O");
+        ToolTipService.SetToolTip(add, Text["library_import"] + " (Ctrl+O)");
         var menu = AddMenu();
         menu.Items.Add(MenuItem(Text["library_add_folder"], AddFolderAsync));
         menu.Items.Add(MenuItem(Text["library_remove_folder"], RemoveFolderAsync));
         var refresh = MenuItem(Text["library_refresh"], RefreshAsync);
+        refresh.KeyboardAcceleratorTextOverride = "Ctrl+R";
+        refresh.AccessKey = "R";
         menu.Items.Add(refresh);
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(MenuItem(Text["settings"], SettingsAsync));
