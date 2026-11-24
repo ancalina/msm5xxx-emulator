@@ -37,8 +37,12 @@ struct Firmware: Identifiable {
 
     func initialize() async {
         guard !initialized else { return }; initialized = true
-        do { try await loadSettings() } catch { self.error = error.localizedDescription }
+        var settingsFailure = ""
+        do { try await loadSettings() } catch { settingsFailure = error.localizedDescription }
         await scan()
+        if !settingsFailure.isEmpty {
+            error = ([settingsFailure] + (error.isEmpty ? [] : [error])).joined(separator: "\n")
+        }
     }
     func loadSettings() async throws {
         settings = try await backend.call("settings.get").object
