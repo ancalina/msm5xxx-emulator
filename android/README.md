@@ -115,3 +115,21 @@ Implementation references: [Material 3](https://developer.android.com/develop/ui
 [date pickers](https://developer.android.com/develop/ui/compose/components/datepickers),
 [time pickers](https://developer.android.com/develop/ui/compose/components/time-pickers),
 and [predictive back](https://developer.android.com/develop/ui/compose/system/predictive-back-setup).
+
+## Updates
+
+The library checks GitHub Releases latest on start. **Settings → Updates** provides
+an automatic-check toggle and a manual check. A Material 3 dialog offers the arm64 APK;
+the download is checked against GitHub's SHA-256 digest and declared size. Package ID,
+version and signing certificate are checked before Android's system installer requests
+confirmation. Downloads can be canceled before submission to the system installer.
+If Android has not allowed installs from this app, enable the permission
+on the system screen, return, and choose **Download and install** again. Canceling keeps
+the current app and its data. Updating preserves private library/settings/saved state.
+Android uninstall uses the system's standard app-data removal behavior.
+
+Production APKs must retain the release signing identity and increment version code.
+Pass `-PreleaseVersion=0.2.0 -PreleaseVersionCode=20001` to Gradle for the stable release;
+the default candidate is `0.2.0-rc` / `20000`. Publish exactly one APK whose name contains
+`arm64`; GitHub supplies the asset digest. APKs signed with a different key cannot update
+the installed app. [Local test feed](tests/update/README.md).

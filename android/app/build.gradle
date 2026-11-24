@@ -13,8 +13,8 @@ android {
         applicationId "org.msm5xxx.emulator"
         minSdk 28
         targetSdk 35
-        versionCode 22
-        versionName "0.1.0-dev4"
+        versionCode providers.gradleProperty("releaseVersionCode").orElse("20000").get().toInteger()
+        versionName providers.gradleProperty("releaseVersion").orElse("0.2.0-rc").get()
         ndk {
             abiFilters "arm64-v8a"
         }
@@ -23,6 +23,31 @@ android {
                 arguments "-DPYTHON_PREFIX_DIR=$rootDir/build/vendor-src/python-3.14.4-android/prefix"
             }
         }
+    }
+
+    def signingNames = ["MSM5XXX_ANDROID_KEYSTORE", "MSM5XXX_ANDROID_KEY_ALIAS",
+                        "MSM5XXX_ANDROID_STORE_PASSWORD", "MSM5XXX_ANDROID_KEY_PASSWORD"]
+    def signingValues = signingNames.collect { System.getenv(it) }
+    if (signingValues.any { it } && !signingValues.every { it }) {
+        throw new GradleException("Set all Android release signing environment variables")
+    }
+    signingConfigs {
+        release {
+            if (signingValues.every { it }) {
+                storeFile file(signingValues[0])
+                keyAlias signingValues[1]
+                storePassword signingValues[2]
+                keyPassword signingValues[3]
+                enableV3Signing = true
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (signingValues.every { it }) { signingConfig signingConfigs.release }
+        }
+        // Keep test installs separate from the owner's signed app and private data.
+        debug { applicationIdSuffix ".debug" }
     }
 
     sourceSets {

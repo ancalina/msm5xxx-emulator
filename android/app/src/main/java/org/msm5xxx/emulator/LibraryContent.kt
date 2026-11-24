@@ -77,6 +77,7 @@ class LibraryContent private constructor(
             setContent {
                 AppTheme {
                     LibraryScreen(this@LibraryContent)
+                    UpdatesUi(activity, settings = false)
                 }
             }
         }

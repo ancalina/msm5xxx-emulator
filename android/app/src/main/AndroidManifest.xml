@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="false"
         android:extractNativeLibs="true"
@@ -23,6 +25,7 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:theme="@android:style/Theme.Material.NoActionBar"
             android:screenOrientation="portrait" />
+        <activity android:name=".UpdateInstallActivity" android:exported="false" />
         <activity
             android:name=".SettingsActivity"
             android:exported="false" />

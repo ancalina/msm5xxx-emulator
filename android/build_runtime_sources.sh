@@ -32,6 +32,6 @@ for d in sorted(p.rglob('*'),key=lambda x:len(x.parts),reverse=True):
         shutil.rmtree(d)
 for f in p.rglob('*'):
     if f.is_file() and (f.suffix.lower() in ('.bin','.rom','.img','.fd','.pyc','.so','.a','.exe') or f.name.startswith('test_')): f.unlink()
-(p/'README.md').write_text('Android runtime sources for the 0.1.0 package. Firmware, test suites, and compiled binaries are omitted. QEMU and project sources are provided separately.\n')
+(p/'README.md').write_text('Pinned Android runtime dependency sources. Firmware, test suites, and compiled binaries are omitted. QEMU and project sources are provided separately.\n')
 PY
 taskset -c 0-3 nice -n 19 tar -C "$work" -cJf "$out/MSM5xxx-QEMU-android-runtime-sources.tar.xz" source-companion

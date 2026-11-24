@@ -138,6 +138,8 @@ class SettingsActivity : ComponentActivity() {
                 PreferenceSwitch(preferences, "experimental_rex", false, R.string.experimental_rex)
                 PreferenceSwitch(preferences, "keep_running_background", false, R.string.keep_running_background)
 
+                UpdatesUi(this@SettingsActivity, settings = true)
+
                 SectionTitle(R.string.ui_language)
                 LanguageChoice(language) { selected ->
                     language = selected
