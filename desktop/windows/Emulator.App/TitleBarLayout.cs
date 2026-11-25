@@ -17,7 +17,16 @@ internal sealed class TitleBarLayout
     private Thickness? titleMargin;
     private (Rect Left, Rect Right, double Width, double Height, double Scale)? hitBounds;
 
-    public static void Attach(TitleBar bar) => new TitleBarLayout().Watch(bar);
+    private Microsoft.UI.Windowing.AppWindowTitleBar nativeTitleBar = null!;
+    public double MinimumWidth { get; private set; }
+    public event Action? MinimumWidthChanged;
+
+    public static TitleBarLayout Attach(TitleBar bar, Microsoft.UI.Windowing.AppWindowTitleBar nativeTitleBar)
+    {
+        var result = new TitleBarLayout { nativeTitleBar = nativeTitleBar };
+        result.Watch(bar);
+        return result;
+    }
 
     private void Watch(TitleBar bar)
     {
@@ -55,9 +64,27 @@ internal sealed class TitleBarLayout
         headerPadding ??= layout.ColumnDefinitions[4].Width;
         dragWidth ??= layout.ColumnDefinitions[10].Width;
         titleMargin ??= title.Margin;
+        if (measuredTitle != bar.Title || measuredFontSize != title.FontSize || measuredHeight != title.DesiredSize.Height)
+        {
+            var measure = new TextBlock { Text = bar.Title, FontFamily = title.FontFamily, FontSize = title.FontSize, FontWeight = title.FontWeight };
+            measure.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            naturalTitleWidth = measure.DesiredSize.Width;
+            measuredTitle = bar.Title; measuredFontSize = title.FontSize; measuredHeight = title.DesiredSize.Height;
+        }
+        var scale = bar.XamlRoot.RasterizationScale;
+        // Native caption insets are physical pixels; template column widths are DIPs.
+        var captionPadding = new GridLength(nativeTitleBar.RightInset / scale);
+        if (!layout.ColumnDefinitions[11].Width.Equals(captionPadding)) layout.ColumnDefinitions[11].Width = captionPadding;
         var viewport = Math.Min(bar.ActualWidth, bar.XamlRoot.Size.Width);
         var fullFixedWidth = layout.ColumnDefinitions.Select((column, index) => index is 6 or 7 or 8 ? 0 :
-            index == 4 ? headerPadding.Value.Value : index == 10 ? dragWidth.Value.Value : column.ActualWidth).Sum();
+            index == 4 ? headerPadding.Value.Value : index == 10 ? dragWidth.Value.Value : index == 11 ? captionPadding.Value : column.ActualWidth).Sum();
+        var minimum = fullFixedWidth + titleMargin.Value.Left + titleMargin.Value.Right + naturalTitleWidth
+            + Math.Max(0, nativeTitleBar.LeftInset / scale - layout.ColumnDefinitions[0].ActualWidth);
+        if (Math.Abs(MinimumWidth - minimum) > 0.1)
+        {
+            MinimumWidth = minimum;
+            MinimumWidthChanged?.Invoke();
+        }
         var narrow = viewport < fullFixedWidth + titleMargin.Value.Left + titleMargin.Value.Right + naturalTitleWidth;
         var padding = narrow ? new GridLength(0) : headerPadding.Value;
         var drag = narrow ? new GridLength(0) : dragWidth.Value;
@@ -66,16 +93,9 @@ internal sealed class TitleBarLayout
         if (!layout.ColumnDefinitions[10].Width.Equals(drag)) layout.ColumnDefinitions[10].Width = drag;
         if (!title.Margin.Equals(margin)) title.Margin = margin;
         var fixedWidth = layout.ColumnDefinitions.Select((column, index) => index is 6 or 7 or 8 ? 0 :
-            index is 4 or 10 ? column.Width.Value : column.ActualWidth).Sum();
+            index is 4 or 10 or 11 ? column.Width.Value : column.ActualWidth).Sum();
         var budget = Math.Max(0, viewport - fixedWidth - title.Margin.Left - title.Margin.Right -
             (subtitle is null || string.IsNullOrEmpty(bar.Subtitle) ? 0 : subtitle.Margin.Left + subtitle.Margin.Right));
-        if (measuredTitle != bar.Title || measuredFontSize != title.FontSize || measuredHeight != title.DesiredSize.Height)
-        {
-            var measure = new TextBlock { Text = bar.Title, FontFamily = title.FontFamily, FontSize = title.FontSize, FontWeight = title.FontWeight };
-            measure.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            naturalTitleWidth = measure.DesiredSize.Width;
-            measuredTitle = bar.Title; measuredFontSize = title.FontSize; measuredHeight = title.DesiredSize.Height;
-        }
         var titleWidth = Math.Min(budget, naturalTitleWidth);
         if (Math.Abs(title.MaxWidth - titleWidth) > 0.1) title.MaxWidth = titleWidth;
         if (subtitle is not null)

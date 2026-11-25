@@ -16,6 +16,9 @@ public abstract class DesktopWindow : Window
     protected readonly StackPanel TitleActions = new() { Orientation = Orientation.Horizontal, Spacing = 0, VerticalAlignment = VerticalAlignment.Center };
     protected readonly InfoBar Error = new() { Severity = InfoBarSeverity.Error, IsClosable = true };
     protected readonly Grid Body = new();
+    private readonly TitleBarLayout titleBarLayout;
+    protected double MinimumTitleBarWidth => titleBarLayout.MinimumWidth;
+    protected event Action? MinimumTitleBarWidthChanged;
     private readonly TaskbarProgress taskbar;
     private int backgroundWork;
     private readonly SemaphoreSlim dialogs = new(1, 1);
@@ -33,7 +36,8 @@ public abstract class DesktopWindow : Window
         Root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         Commands.RightHeader = TitleActions;
         TitleBar.SetIsDragRegion(TitleActions, false);
-        TitleBarLayout.Attach(Commands);
+        titleBarLayout = TitleBarLayout.Attach(Commands, AppWindow.TitleBar);
+        titleBarLayout.MinimumWidthChanged += () => MinimumTitleBarWidthChanged?.Invoke();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(Commands);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;

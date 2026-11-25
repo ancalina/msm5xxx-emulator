@@ -31,7 +31,7 @@ public sealed class SecondaryWindow : Window
         this.text = text; this.owner = owner; this.firmware = firmware; this.contentTop = contentTop;
         side = DisplayPreferences.Get(firmware);
         WindowIcons.Register(this, titleBar);
-        TitleBarLayout.Attach(titleBar);
+        TitleBarLayout.Attach(titleBar, AppWindow.TitleBar);
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         SystemBackdrop = new MicaBackdrop();

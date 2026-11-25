@@ -44,9 +44,16 @@ public class KeypadSizingTests
     [Fact]
     public void AllocateColumnsSharesPhysicalPixelsAndLeavesRemainderInFirstColumn()
     {
-        Assert.Equal(new[] { 59d, 99d, 99d, 99d }, KeypadSizing.AllocateColumns([59, 65, 42, 51], 356));
-        Assert.Equal(new[] { 61d, 157d, 157d, 157d }, KeypadSizing.AllocateColumns([59, 65, 42, 51], 532));
-        Assert.Equal(new[] { 62d, 98d, 98d, 98d }, KeypadSizing.AllocateColumns([62, 44, 52, 38], 356));
+        Assert.Equal(new[] { 86d, 90d, 90d, 90d }, KeypadSizing.AllocateColumns([59, 65, 42, 51], 356));
+        Assert.Equal(new[] { 130d, 134d, 134d, 134d }, KeypadSizing.AllocateColumns([59, 65, 42, 51], 532));
+        Assert.Equal(new[] { 98d, 86d, 86d, 86d }, KeypadSizing.AllocateColumns([62, 44, 52, 38], 356));
+    }
+
+    [Fact]
+    public void AllocateColumnsSharesExtraTitleBarSpaceWithTheCounters()
+    {
+        var widths = KeypadSizing.AllocateColumns([59, 65, 42, 51], 356);
+        Assert.Equal(11, KeypadSizing.FitCounterFont(80, widths[0]));
     }
 
     [Fact]

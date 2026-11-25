@@ -44,8 +44,8 @@ public static class KeypadSizing
         var commonMinimum = (int)Math.Ceiling(normalized[1] * scale);
         var physicalWidth = Math.Max((int)Math.Floor(availableWidth * scale),
             firstMinimum + commonMinimum * (normalized.Length - 1));
-        var sharedWidth = Math.Max(commonMinimum,
-            (int)Math.Floor((physicalWidth - firstMinimum) / (double)(normalized.Length - 1)));
+        var surplus = physicalWidth - firstMinimum - commonMinimum * (normalized.Length - 1);
+        var sharedWidth = commonMinimum + surplus / normalized.Length;
         var firstWidth = physicalWidth - sharedWidth * (normalized.Length - 1);
 
         var result = new double[normalized.Length];

@@ -20,7 +20,8 @@ public sealed class EmulatorWindow : DesktopWindow
     private KeypadLayout? layout;
     private KeypadInput? input;
     private readonly ScreenView screen;
-    private readonly Grid keypad = new() { ColumnSpacing = 4, RowSpacing = 4, Padding = new(8, 4, 8, 4) };
+    private readonly Grid keypad = (Grid)Microsoft.UI.Xaml.Markup.XamlReader.Load(
+        "<Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' ColumnSpacing='4' RowSpacing='4' Padding='8,4,8,4' Background='{ThemeResource SolidBackgroundFillColorBaseBrush}' />");
     private readonly Dictionary<int, Button> buttons = [];
     private readonly Dictionary<string, CounterValue> metrics = [];
     private double[] naturalKeypadColumns = [];
@@ -57,6 +58,10 @@ public sealed class EmulatorWindow : DesktopWindow
 
     public EmulatorWindow(FirmwareEntry firmware)
     {
+        MinimumTitleBarWidthChanged += () =>
+        {
+            if (hasFrameGeometry) DispatcherQueue.TryEnqueue(() => Fit(false));
+        };
         this.firmware = firmware;
         Title = firmware.Name;
         screen = new(Text["firmware_screen"]);
@@ -500,7 +505,7 @@ public sealed class EmulatorWindow : DesktopWindow
         fittedWorkArea = NativeWindow.WorkArea(this);
         fittedScale = NativeWindow.Scale(this);
         fittedAvailable = NativeWindow.AvailableClientSize(this);
-        var size = DisplayGeometry.Initial(lcd.Width, lcd.Height, naturalKeypadWidth,
+        var size = DisplayGeometry.Initial(lcd.Width, lcd.Height, Math.Max(naturalKeypadWidth, MinimumTitleBarWidth),
             keypad.DesiredSize.Height, Commands.ActualHeight + (Error.IsOpen ? Error.ActualHeight : 0), fittedAvailable);
         MinimumClientWidth = size.Width; MinimumClientHeight = size.Height;
         Root.MinWidth = size.Width; Root.MinHeight = size.Height;
