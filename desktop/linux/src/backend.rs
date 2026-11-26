@@ -114,9 +114,9 @@ impl Backend {
     pub fn new(config: &Config) -> Self {
         let (sender, receiver) = mpsc::channel();
         let close_watch = Arc::new(Mutex::new(CloseWatch::default()));
-        let worker_watch = Arc::clone(&close_watch);
+        let thread_watch = Arc::clone(&close_watch);
         let config = config.clone();
-        thread::spawn(move || run(config, receiver, worker_watch));
+        thread::spawn(move || run(config, receiver, thread_watch));
         Self { sender, close_watch }
     }
     pub async fn call(&self, method: &str, params: Value) -> Reply {
