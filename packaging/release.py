@@ -80,7 +80,10 @@ def build(args):
     if args.platform=='windows':
         if platform.system()!='Windows':raise ValueError('Build Windows installers on Windows')
         if not args.runtime:raise ValueError('--runtime must identify the QEMU runtime made by packaging/windows/build-qemu.sh')
+        cache=args.runtime.resolve().parent/'source-cache'
+        if not env.get('SOURCE_CACHE_DIR') and cache.is_dir():env['SOURCE_CACHE_DIR']=str(cache)
         if args.previous:
+            if not list(args.previous.glob('*.nupkg')):raise ValueError('--previous must contain a complete Velopack package')
             # Velopack computes deltas against a previous complete package; never invent a baseline.
             for file in args.previous.glob('*.nupkg'):shutil.copy2(file,destination/file.name)
             feed=args.previous/'releases.win.json'

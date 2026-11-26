@@ -79,3 +79,9 @@ Before building, set the project’s `MARKETING_VERSION` to `0.2.0` and `CURRENT
 and Android completion does not complete the iOS release checklist.
 
 Previous Windows packages are delta build inputs. Release manifests and update feeds contain only the requested version; the previous archives remain in the native build output for reuse.
+
+Retain the checksum-pinned MSYS2 source archives when preparing the Windows QEMU
+runtime. Store the `.src.tar.zst` files in `source-cache` beside `runtime`, or set
+`SOURCE_CACHE_DIR` on the Windows build host. Mirrors can retire older package
+versions; cached files still undergo the source packager’s size, archive hash
+and recipe hash checks. `--previous` requires a full Velopack package directory.

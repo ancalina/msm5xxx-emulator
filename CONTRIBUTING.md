@@ -23,5 +23,8 @@
 Run the tests from the repository root:
 
 ```sh
+python3 -m pip install -e ".[test]"
 PYTHONPATH=src:tests python3 -m unittest discover -s tests
 ```
+
+Tk tests require the interpreter’s Tk bindings and a display; Xvfb works on Linux.

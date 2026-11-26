@@ -3,6 +3,7 @@ import AppKit
 
 /// Optional file-driven UI inspection, excluded from release builds.
 @MainActor enum InspectionHarness {
+    private static var requests: DispatchSourceTimer?
     static func startIfRequested(library: LibraryModel) {
         let args = desktopDebugArguments
         guard let i = args.firstIndex(of: "--inspect"), args.count > i + 1 else { return }
@@ -10,7 +11,9 @@ import AppKit
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let requestURL = folder.appendingPathComponent("request.json")
         var last = -1
-        let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(100))
+        timer.setEventHandler {
             MainActor.assumeIsolated {
                 guard let data = try? Data(contentsOf: requestURL), let request = try? JSONDecoder().decode(JSON.self, from: data), request["id"].int != last else { return }
                 last = request["id"].int
@@ -51,7 +54,8 @@ import AppKit
                 }
             }
         }
-        addModalTimer(timer)
+        requests = timer
+        timer.resume()
     }
     private static func addModalTimer(_ timer: Timer) {
         RunLoop.main.add(timer, forMode: .common)
