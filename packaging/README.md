@@ -75,5 +75,7 @@ notifies and never downloads or installs an update.
 The iOS `.ipa` and `.tipa` remain a required separate release step on macOS.
 Build the device QEMU and QEMUTCI frameworks using `ios/build_qemu_framework.sh`
 as described in `ios/README.md`, then run `ios/package_ios.sh "$OUTPUT/ios"`.
-Verify both archives and include their checksums in the GitHub release. Desktop
+Before building, set the project’s `MARKETING_VERSION` to `0.2.0` and `CURRENT_PROJECT_VERSION` to `20000` for the candidate (`20001` for the stable release); iOS version strings are numeric. Verify both archives and include their checksums in the GitHub release. Desktop
 and Android completion does not complete the iOS release checklist.
+
+Previous Windows packages are delta build inputs. Release manifests and update feeds contain only the requested version; the previous archives remain in the native build output for reuse.

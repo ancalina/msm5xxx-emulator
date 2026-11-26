@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$BaselineSetup,
     [Parameter(Mandatory=$true)][string]$Feed,
-    [Parameter(Mandatory=$true)][string]$WorkDirectory
+    [Parameter(Mandatory=$true)][string]$WorkDirectory,
+    [string]$Firmware
 )
 # Run in an interactive desktop. Use the real default install location and isolated test data.
 $ErrorActionPreference='Stop'
@@ -15,6 +16,11 @@ if ($productionData.StartsWith($install+[IO.Path]::DirectorySeparatorChar,[Strin
 New-Item -ItemType Directory "$work/tmp" | Out-Null
 $env:TEMP="$work/tmp"; $env:TMP=$env:TEMP; $env:TMPDIR=$env:TEMP
 $env:MSM5XXX_STATE_DIR="$work/state"
+if ($Firmware) {
+ $Firmware=(Resolve-Path $Firmware).Path
+ New-Item -ItemType Directory -Force $env:MSM5XXX_STATE_DIR | Out-Null
+ '{"ui_language":"en","persistent_state":false}' | Set-Content "$env:MSM5XXX_STATE_DIR/last_config.json"
+}
 $env:MSM5XXX_BUNDLE=$null; $env:MSM5XXX_PYTHON=$null; $env:MSM5XXX_QEMU=$null
 $releaseFeed=(Resolve-Path $Feed).Path
 $env:MSM5XXX_UPDATE_FEED="$work/feed"
@@ -27,6 +33,8 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class InstallerTestWindow {
+ [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
@@ -99,6 +107,34 @@ function Capture([string]$name,[string]$title='main') {
  finally { $graphics.ReleaseHdc($dc) }
  $image.Save("$work/$name.png"); $graphics.Dispose(); $image.Dispose()
 }
+
+function VerifyFirmware([string]$phase) {
+ if (!$Firmware) { return }
+ $payload=Join-Path $install 'current'
+ $request=@{id=1;method='library.add_file';params=@{path=$Firmware}} | ConvertTo-Json -Compress
+ $request | & "$payload/python/python.exe" -m msm5xxx_emulator.backend --qemu "$payload/bin/qemu-system-arm.exe" > "$work/$phase-import.jsonl"
+ if ($LASTEXITCODE -ne 0) { throw 'Packaged library import failed' }
+ Invoke (ById 'app-menu')
+ Invoke (WaitFor { Elements | Where-Object {$_.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem -and $_.Current.Name -like 'Refresh*'} | Select-Object -First 1 })
+ $item=WaitFor { Elements | Where-Object {$_.Current.ControlType -eq [System.Windows.Automation.ControlType]::ListItem} | Select-Object -First 1 } 300
+ $window=WindowFor 'app-menu'
+ [InstallerTestWindow]::keybd_event(0x12,0,0,[UIntPtr]::Zero)
+ [InstallerTestWindow]::SetForegroundWindow([IntPtr]$window.Current.NativeWindowHandle) | Out-Null
+ [InstallerTestWindow]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
+ $rect=$item.Current.BoundingRectangle
+ [InstallerTestWindow]::SetCursorPos([int]($rect.Left+$rect.Width/2),[int]($rect.Top+$rect.Height/2)) | Out-Null
+ [InstallerTestWindow]::mouse_event(2,0,0,0,[UIntPtr]::Zero);[InstallerTestWindow]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+ WaitFor { Elements | Where-Object {$_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -eq 'Power off' -and $_.Current.IsEnabled} | Select-Object -First 1 } 300 | Out-Null
+ Start-Sleep 30
+ Capture "$phase-firmware"
+ & "$payload/python/python.exe" "$PSScriptRoot/../tests/backend-smoke.py" --firmware $Firmware --qemu "$payload/bin/qemu-system-arm.exe" --output "$work/$phase-backend" --press 0 --press 14 --press 12 --press 9 > "$work/$phase-backend.log" 2>&1
+ if ($LASTEXITCODE -ne 0) { throw 'Packaged firmware/audio/settings/capture/update check failed' }
+ Require ((Get-Content "$work/$phase-backend/result.json" -Raw | ConvertFrom-Json).result -eq 'PASS') "$phase packaged firmware and nonzero audio pass"
+ Get-Process MSM5xxx.Desktop,python,qemu-system-arm -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$payload*"} | ForEach-Object {$proc=$_;$proc.Modules | ForEach-Object {"$($proc.Id) $($_.FileName)"}} | Set-Content "$work/$phase-dlls.txt"
+ (WindowFor 'app-menu').GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+ WaitFor { !(Elements | Where-Object {$_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -eq 'Power off'}) } | Out-Null
+}
+
 try {
  Start-Process (Resolve-Path $BaselineSetup).Path
  $desktop=WaitFor { ById 'install-desktop-shortcut' }
@@ -123,6 +159,7 @@ try {
  Set-Content "$env:MSM5XXX_STATE_DIR/retention-test.txt" 'preserve across update and uninstall'
  $settingsHash=(Get-FileHash "$env:MSM5XXX_STATE_DIR/updates.json").Hash
  Capture 'installed'
+ VerifyFirmware 'baseline'
  Invoke (ById 'app-menu'); Invoke (WaitFor { ById 'settings-open' })
  $automatic=WaitFor { ById 'updates-automatic' }
  Toggle $automatic
@@ -141,6 +178,7 @@ try {
  Require ((Get-FileHash "$env:MSM5XXX_STATE_DIR/updates.json").Hash -eq $settingsHash) 'Update preserves preferences'
  Require ((Get-Content "$env:MSM5XXX_STATE_DIR/retention-test.txt") -eq 'preserve across update and uninstall') 'Update preserves saved data'
  Capture 'updated'
+ VerifyFirmware 'updated'
  $window=WindowFor 'app-menu'
  $window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
  WaitFor { !(Get-Process MSM5xxx.Desktop -ErrorAction SilentlyContinue | Where-Object {$_.Path -like "$install*"}) } | Out-Null

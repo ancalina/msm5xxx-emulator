@@ -50,8 +50,20 @@ def manifest(directory,version,commit,target,dry_run):
               'macos':('.dmg','.zip'),'android':('.apk',)}[target]
     metadata={'windows':{'releases.win.json','MSM5xxx-QEMU-windows-runtime-sources.tar.xz'},'macos':{'appcast.xml','MSM5xxx-QEMU-macos-runtime-sources.tar.xz'},'linux':{'MSM5xxx-QEMU-linux-runtime-sources.tar.xz'},
               'android':{'MSM5xxx-QEMU-android-runtime-sources.tar.xz'}}[target]
+    current_packages=None
+    if target=='windows':
+        feed_path=directory/'releases.win.json'
+        feed=json.loads(feed_path.read_text())
+        assets=[asset for asset in feed['Assets'] if asset['Version']==version]
+        if not assets:raise RuntimeError('No Windows packages match the release version')
+        current_packages={asset['FileName'] for asset in assets}
+        if any(Path(name).name!=name or '/' in name or '\\' in name for name in current_packages):
+            raise ValueError('Unsafe Windows package name')
+        feed['Assets']=assets
+        feed_path.write_text(json.dumps(feed,indent=2)+'\n')
     files=[{'name':p.name,'size':p.stat().st_size,'sha256':digest(p)}
-           for p in sorted(directory.iterdir()) if p.is_file() and (p.name.endswith(suffixes) or p.name in metadata)]
+           for p in sorted(directory.iterdir()) if p.is_file() and (p.name.endswith(suffixes) or p.name in metadata)
+           and (not p.name.endswith('.nupkg') or current_packages is None or p.name in current_packages)]
     if not files:raise RuntimeError('No release artifacts were produced')
     (directory/'release.json').write_text(json.dumps({'version':version,'commit':commit,'platform':target,
         'dry_run':dry_run,'files':files},indent=2)+'\n')

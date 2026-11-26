@@ -32,6 +32,22 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(data['commit'],'commit')
             self.assertTrue(data['dry_run'])
 
+    def test_windows_previous_packages_are_inputs_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary)
+            for name in ['previous-full.nupkg','current-full.nupkg','current-delta.nupkg','Setup.exe']:
+                (folder/name).write_bytes(name.encode())
+            (folder/'releases.win.json').write_text(json.dumps({'Assets':[
+                {'Version':'0.1.99','FileName':'previous-full.nupkg'},
+                {'Version':'0.2.0-rc','FileName':'current-full.nupkg'},
+                {'Version':'0.2.0-rc','FileName':'current-delta.nupkg'}]}))
+            release.manifest(folder,'0.2.0-rc','commit','windows',True)
+            files={f['name'] for f in json.loads((folder/'release.json').read_text())['files']}
+            self.assertNotIn('previous-full.nupkg',files)
+            self.assertTrue((folder/'previous-full.nupkg').exists())
+            self.assertIn('current-delta.nupkg',files)
+            self.assertEqual(len(json.loads((folder/'releases.win.json').read_text())['Assets']),2)
+
     def test_source_companion_removes_named_and_compressed_firmware_without_changing_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);source=root/'original';source.mkdir()
