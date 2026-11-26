@@ -604,9 +604,8 @@ public sealed class EmulatorWindow : DesktopWindow
     {
         var frame = screen.Frame; if (frame is null) return;
         await ReleaseAllAsync();
-        var picker = new FileSavePicker { SuggestedFileName = Path.GetFileNameWithoutExtension(firmware.Path) + ".png" };
+        var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(AppWindow.Id) { SuggestedFileName = Path.GetFileNameWithoutExtension(firmware.Path) + ".png" };
         picker.FileTypeChoices.Add("PNG", new List<string> { ".png" });
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
         var file = await picker.PickSaveFileAsync();
         if (file is not null) await ScreenView.SavePngAsync(frame, file.Path);
     }
