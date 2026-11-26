@@ -25,6 +25,7 @@ def formula_inputs(recipe):
 
 def macos(runtime, stage):
     cellar = Path(subprocess.check_output(['brew', '--cellar'], text=True).strip())
+    shutil.copy2(runtime/'licenses/HOMEBREW_PACKAGES.txt',stage/'HOMEBREW_PACKAGES.txt')
     for row in (runtime/'licenses/HOMEBREW_PACKAGES.txt').read_text().splitlines():
         name, version = row.split()
         prefix = cellar/name/version
@@ -70,12 +71,19 @@ def linux(runtime, stage, work):
         run('apt-get',*options,'source','--download-only','--only-source',source+'='+revision,cwd=stage)
 
 
-def cached_linux_sources(runtime, stage):
-    packages=stage/'PACKAGES.json';checksums=stage/'SHA256SUMS'
-    if not packages.is_file() or not checksums.is_file():return False
-    expected=dict(row.split() for row in (runtime/'PACKAGES.txt').read_text().splitlines())
-    cached=json.loads(packages.read_text())
-    if expected!={name:record['version'] for name,record in cached.items()}:return False
+def cached_sources(runtime, stage, target):
+    checksums=stage/'SHA256SUMS'
+    if not checksums.is_file():return False
+    if target=='linux':
+        packages=stage/'PACKAGES.json'
+        if not packages.is_file():return False
+        expected=dict(row.split() for row in (runtime/'PACKAGES.txt').read_text().splitlines())
+        cached=json.loads(packages.read_text())
+        if expected!={name:record['version'] for name,record in cached.items()}:return False
+    elif target=='macos':
+        packages=stage/'HOMEBREW_PACKAGES.txt'
+        if not packages.is_file() or packages.read_bytes()!=(runtime/'licenses/HOMEBREW_PACKAGES.txt').read_bytes():return False
+    else:return False
     recorded=set()
     for row in checksums.read_text().splitlines():
         checksum,name=row.split(maxsplit=1)
@@ -92,7 +100,7 @@ def cached_linux_sources(runtime, stage):
 
 def collect(target, runtime, output):
     stage=output/'.work/runtime-sources'
-    cached=target=='linux' and cached_linux_sources(runtime,stage)
+    cached=cached_sources(runtime,stage,target)
     if not cached:
         if stage.exists(): shutil.rmtree(stage)
         stage.mkdir(parents=True)

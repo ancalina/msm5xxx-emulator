@@ -86,4 +86,4 @@ runtime. Store the `.src.tar.zst` files in `source-cache` beside `runtime`, or s
 versions; cached files still undergo the source packager’s size, archive hash
 and recipe hash checks. `--previous` requires a full Velopack package directory.
 
-Linux source staging is reused only when the bundled package versions match and every cached source file passes its recorded SHA-256 check. APT indexes and package caches stay in the release work directory.
+Linux and macOS source staging is reused only when the bundled package versions match and every cached source file passes its recorded SHA-256 check. APT indexes and package caches stay in the release work directory.
