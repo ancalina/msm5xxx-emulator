@@ -134,7 +134,7 @@ def main():
 ''')
     closure(bundle)
     runtime_env=dict(os.environ, PYTHONHOME=str(python), PYTHONPATH=str(bundle/'src'), PYTHONNOUSERSITE='1', LD_LIBRARY_PATH=str(bundle/'lib'))
-    run(python/'bin/python3','-c','import capstone, PIL, numpy, msm5xxx_emulator.backend',env=runtime_env)
+    run(python/'bin/python3','-c','import capstone, PIL, msm5xxx_emulator.backend',env=runtime_env)
     run(bundle/'bin/qemu-system-arm','--version',env=runtime_env)
     for name,(url,digest) in TOOLS.items():
         tool = work/name

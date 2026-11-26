@@ -47,7 +47,7 @@ try {
     foreach ($name in @('MSM5xxx.Desktop.exe','Microsoft.UI.Xaml.dll','coreclr.dll','resources.pri','App.xbf','vcruntime140.dll','msvcp140.dll','bin/qemu-system-arm.exe','python/python.exe','src/msm5xxx_emulator/backend/__main__.py')) {
         if (!(Test-Path (Join-Path $payload $name))) { throw "Missing payload file: $name" }
     }
-    Run { & "$python/python.exe" -c 'import capstone, PIL, numpy, msm5xxx_emulator.backend' }
+    Run { & "$python/python.exe" -c 'import capstone, PIL, msm5xxx_emulator.backend' }
     Run { & "$payload/bin/qemu-system-arm.exe" --version }
     Run { dotnet tool run vpk -- pack --packId MSM5xxx.Desktop --packTitle 'MSM5xxx Emulator' --packAuthors Ancalina --packVersion $Version --packDir $payload --mainExe MSM5xxx.Desktop.exe --icon "$payload/Branding/full.ico" --shortcuts StartMenuRoot --noPortable --outputDir $output --channel win --skip-updates }
     # The install directory must remain separate from LocalAppData/MSM5xxx user data.
