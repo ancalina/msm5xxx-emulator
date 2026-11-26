@@ -53,7 +53,18 @@ def main():
     archive=work/'python.tar.gz';download(PYTHON_URL,PYTHON_SHA,archive)
     with tarfile.open(archive) as tar:tar.extractall(runtime,filter='data')
     python=runtime/'python/bin/python3'
-    run(python,'-m','pip','install','--disable-pip-version-check','--no-compile','--no-cache-dir','capstone==5.0.9','Pillow==12.3.0','numpy==2.5.5',env=env)
+    run(python,'-m','pip','install','--disable-pip-version-check','--no-compile','--no-cache-dir','capstone==5.0.9','Pillow==12.3.0',env=env)
+    # Runtime traces cover library, firmware/audio, settings, capture and updates.
+    # The executable is statically linked; no shipped Mach-O depends on libpython.
+    for relative in ['include','lib/libpython3.12.dylib','lib/python3.12/ensurepip',
+                     'lib/python3.12/idlelib','lib/python3.12/pydoc_data',
+                     'lib/python3.12/site-packages/pip']:
+        path=runtime/'python'/relative
+        if path.is_dir():shutil.rmtree(path)
+        else:path.unlink(missing_ok=True)
+    for path in list((runtime/'python/bin').glob('pip*'))+list((runtime/'python/lib/python3.12/site-packages').glob('pip-*.dist-info')):
+        if path.is_dir():shutil.rmtree(path)
+        else:path.unlink()
     shutil.copytree(ROOT/'src',runtime/'src',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
     licenses=runtime/'licenses';licenses.mkdir()
     for name in ['LICENSE','THIRD_PARTY_NOTICES.md']:shutil.copy2(ROOT/name,licenses/name)
@@ -72,7 +83,7 @@ def main():
                 if (prefix/directory).exists():shutil.copytree(prefix/directory,target/directory,dirs_exist_ok=True)
     (licenses/'HOMEBREW_PACKAGES.txt').write_text(''.join(name+'\n' for name in sorted(packages)))
     run(ROOT/'packaging/macos/sign.sh',application,env=env)
-    run(python,'-B','-s','-c','import ctypes,capstone,PIL,numpy; callback=ctypes.CFUNCTYPE(ctypes.c_int)(lambda:7); assert callback()==7; print("Signed embedded dependencies and ctypes callback OK")',env=env)
+    run(python,'-B','-s','-c','import ctypes,capstone,PIL; callback=ctypes.CFUNCTYPE(ctypes.c_int)(lambda:7); assert callback()==7; print("Signed embedded dependencies and ctypes callback OK")',env=env)
     run(runtime/'bin/qemu-system-arm','-M','none','-cpu','arm926','-accel','tcg','-display','none','-S','-monitor','stdio',input='quit\n',text=True,env=env)
     run('codesign','--verify','--deep','--strict',application)
     if not a.adhoc:
@@ -85,7 +96,7 @@ def main():
     stage=work/'dmg';shutil.rmtree(stage,ignore_errors=True);stage.mkdir()
     run('ditto',application,stage/application.name);(stage/'Applications').symlink_to('/Applications')
     dmg=output/f'MSM5xxx-{a.version}-macos-x86_64.dmg';dmg.unlink(missing_ok=True)
-    run('hdiutil','create','-volname','MSM5xxx Emulator','-srcfolder',stage,'-format','UDZO',dmg)
+    run('hdiutil','create','-volname','MSM5xxx Emulator','-srcfolder',stage,'-format','ULFO',dmg)
     if not a.adhoc:
         run('codesign','--sign',env['MSM5XXX_SIGN_IDENTITY'],'--timestamp',dmg)
         run('xcrun','notarytool','submit',dmg,'--keychain-profile',env['MSM5XXX_NOTARY_PROFILE'],'--wait')

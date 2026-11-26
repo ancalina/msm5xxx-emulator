@@ -6,7 +6,7 @@ backend and QEMU session; opening the same firmware again focuses its existing w
 
 ## Install and update
 
-Release packages contain the native GTK app, QEMU and its library closure, an embedded Python runtime with Capstone/Pillow/NumPy, GTK 4 and libadwaita. Firmware and the optional sound-chip ROM remain user-supplied. The x86-64 packages require glibc 2.43 or newer (Ubuntu 26.04 or newer); graphics drivers, system fonts and locales come from the OS.
+Release packages contain the native GTK app, QEMU and its library closure, an embedded Python runtime with Capstone/Pillow, GTK 4 and libadwaita. Firmware and the optional sound-chip ROM remain user-supplied. The x86-64 packages require glibc 2.43 or newer (Ubuntu 26.04 or newer); graphics drivers, system fonts and locales come from the OS.
 
 Install the `.deb` with your normal package manager. It registers an application-menu entry and icon; `apt remove msm5xxx-emulator` removes the program and its menu entry while retaining per-user data. A new-version notice links to GitHub Releases; install the new `.deb` with the package manager.
 

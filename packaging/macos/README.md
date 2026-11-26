@@ -97,3 +97,8 @@ recording access or an unlocked desktop. The driver confirms that the local feed
 is serving before launching the app. Its direct test launch uses the command-line
 child-process context described in [Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
 No privacy permissions or OS security settings are changed. No firmware is needed or included.
+
+DMGs use hdiutil ULFO (LZFSE compression). The same disk image is signed, submitted
+to notarytool and stapled in production. The embedded Python executable is
+statically linked; unused libpython, installation tools, documentation data and
+headers are omitted after packaged runtime import and Mach-O dependency checks.

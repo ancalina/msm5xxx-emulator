@@ -37,12 +37,12 @@ try {
     Expand-Archive "$work/python.zip" $python -Force
     Set-Content "$python/python312._pth" "python312.zip`n.`nLib/site-packages`n../src`nimport site" -Encoding ASCII
     Run { python -m pip install --disable-pip-version-check --no-compile --only-binary=:all: --target "$python/Lib/site-packages" -r requirements.txt }
-    # Microsoft's Desktop VC redistributable package supplies the app-local CRT.
+    # Microsoft's Desktop VC redistributable supplies the app-local CRT; this app does not use MFC.
     if (!(Test-Path "$work/vclibs.zip")) {
         Invoke-WebRequest https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx -OutFile "$work/vclibs.zip"
     }
     Expand-Archive "$work/vclibs.zip" "$work/vclibs" -Force
-    Get-ChildItem "$work/vclibs" -Filter '*.dll' -Recurse | Copy-Item -Destination $payload -Force
+    Get-ChildItem "$work/vclibs" -Filter '*.dll' -Recurse | Where-Object { $_.Name -notlike 'mfc140*.dll' } | Copy-Item -Destination $payload -Force
     Copy-Item "$work/vclibs/AppxManifest.xml" "$payload/VC_RUNTIME_MANIFEST.xml"
     foreach ($name in @('MSM5xxx.Desktop.exe','Microsoft.UI.Xaml.dll','coreclr.dll','resources.pri','App.xbf','vcruntime140.dll','msvcp140.dll','bin/qemu-system-arm.exe','python/python.exe','src/msm5xxx_emulator/backend/__main__.py')) {
         if (!(Test-Path (Join-Path $payload $name))) { throw "Missing payload file: $name" }

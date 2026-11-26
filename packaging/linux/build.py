@@ -88,7 +88,7 @@ def main():
     copy(sys.executable, python/'bin/python3')
     stdlib = Path(sysconfig.get_path('stdlib'))
     shutil.copytree(stdlib, python/'lib'/stdlib.name,
-        ignore=shutil.ignore_patterns('__pycache__','*.pyc','test','tests','idlelib','tkinter','_tkinter*','site-packages','dist-packages'))
+        ignore=shutil.ignore_patterns('__pycache__','*.pyc','test','tests','idlelib','ensurepip','pydoc_data','tkinter','_tkinter*','site-packages','dist-packages'))
     packages = Path(site.getsitepackages([str(python)])[0])
     run(sys.executable,'-m','pip','install','--disable-pip-version-check','--no-compile','--only-binary=:all:','--target',packages,'-r',ROOT/'requirements.txt')
     pixbuf = subprocess.check_output(['pkg-config','--variable=gdk_pixbuf_query_loaders','gdk-pixbuf-2.0'],text=True).strip()

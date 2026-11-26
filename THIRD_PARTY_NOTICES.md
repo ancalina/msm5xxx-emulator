@@ -38,7 +38,7 @@ archives for license texts, notices, modifications and build recipes.
   [iOS Python instructions](ios/PYTHON.md). Windows installers embed CPython 3.12.10 from python.org with its license; other desktop runtime versions are recorded by their packaging scripts.
 - **NumPy** is BSD-3-Clause, with additional notices for bundled components.
   Android includes 2.5.1, built from the source archive identified by
-  `android/build_numpy_android.sh`; desktop installs `numpy>=1.26,<3`.
+  `android/build_numpy_android.sh`; desktop runtime bundles do not include NumPy; desktop tests use the `test` extra.
   iOS does not bundle NumPy.
 - **Capstone** is BSD-3-Clause. Android and iOS bundle Capstone 5.0.7, built
   from the source archive identified by `android/build_capstone_android.sh` and

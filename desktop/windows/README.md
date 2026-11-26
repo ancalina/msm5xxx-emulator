@@ -6,7 +6,7 @@ Native C# / WinUI 3 frontend for the MSM5xxx QEMU feature-phone emulator. The ap
 
 - Windows x64, Windows 10 version 1809 (build 17763) or later; Windows 11 recommended. OS servicing depends on the Windows edition.
 - To build: .NET 10 SDK, Python 3 and Git on PATH, and a Windows 10/11 SDK. NuGet restores pinned Windows App SDK 2.6.5 and Windows SDK build tools. The Visual Studio IDE is optional. The GitHub `windows-2022` image supplies the SDK and native redistributable files.
-- To run: a matching Windows QEMU runtime bundle containing `bin/qemu-system-arm.exe`, `src/msm5xxx_emulator/`, and Python with the backend's dependencies (Capstone, Pillow and NumPy). The installer build assembles this runtime bundle.
+- To run: a matching Windows QEMU runtime bundle containing `bin/qemu-system-arm.exe`, `src/msm5xxx_emulator/`, and Python with the backend's dependencies (Capstone and Pillow). The installer build assembles this runtime bundle.
 
 The published frontend is unpackaged and self-contained for both .NET and Windows App SDK. It needs no MSIX registration or separate .NET/Windows App Runtime installation. Publish the entire directory; copying only the executable will not work. The workflow also copies Visual Studio's redistributable x64 C++ runtime DLLs beside the executable.
 
@@ -45,7 +45,7 @@ $env:BUILD_COMMIT = git rev-parse HEAD
 ./packaging/windows/build.ps1 -Version 0.2.0-rc -RuntimeDirectory runtime-work/runtime -OutputDirectory artifacts/windows
 ```
 
-The pack directory contains the self-contained WinUI app at its root, `bin/qemu-system-arm.exe` and its DLL closure, `python/python.exe` with Capstone/Pillow/NumPy, and `src/msm5xxx_emulator`. The app-local Microsoft VC runtime is extracted from Microsoft's redistributable Desktop VCLibs package. The pinned `vpk` tool is restored from `.config/dotnet-tools.json`. Keep the previous full package in the output directory when packing the next version to generate a delta.
+The pack directory contains the self-contained WinUI app at its root, `bin/qemu-system-arm.exe` and its DLL closure, `python/python.exe` with Capstone/Pillow, and `src/msm5xxx_emulator`. The app-local Microsoft VC runtime is extracted from Microsoft's redistributable Desktop VCLibs package. The pinned `vpk` tool is restored from `.config/dotnet-tools.json`. Keep the previous full package in the output directory when packing the next version to generate a delta.
 
 For local update testing, set `MSM5XXX_UPDATE_FEED` to a directory containing Velopack's `releases.win.json` and packages before launching the installed app. Use an isolated `MSM5XXX_STATE_DIR`; install 0.1.99 first, then put the 0.2.0-rc packages in that feed. Production uses the public GitHub Releases source.
 
@@ -127,3 +127,9 @@ In an interactive Windows desktop, build 0.1.99 first and keep its Setup separat
 ```
 
 The work directory must not exist. The test uses an isolated state directory and installs under that directory. It checks first-run defaults and saved choices, shortcuts and uninstall registration, Settings controls, a delta-only local-feed update, restarted version and retained data, uninstall with No, and a fresh install/uninstall with Yes. Screenshots, automation snapshots and `result.txt` are written there. The fake 0.1.99 feed is test evidence and must not be published as a production release.
+
+The self-contained publish references the supported `Microsoft.WindowsAppSDK.WinUI`
+component package rather than the all-components Windows App SDK package. WinUI
+retains its Base, Foundation and Interactive Experiences dependencies; AI/ML,
+Search and Widgets are not runtime requirements. The app-local Desktop VCLibs
+selection retains the C/C++ runtime and omits the unused MFC libraries.
