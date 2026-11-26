@@ -142,7 +142,7 @@ def main() -> int:
             "This companion supplies the exact corresponding source-only MSYS2 packages for the six DLLs in the pinned Windows runtime. "
             "`PACKAGE-SOURCE-MAP.json` records official source URLs, exact package versions, archive and recipe hashes, bundled DLL hashes, and runtime license paths. "
             "Each complete source archive includes its PKGBUILD, .SRCINFO, and declared upstream inputs. Runtime license texts are included under `licenses/`.\n\n"
-            "The QEMU and project source is supplied separately by `MSM5xxx-QEMU-10.2.1-corresponding-source.tar.xz`. "
+            "The QEMU and project sources are supplied separately in the release corresponding-source archives. "
             "In Actions, the same corresponding-source download includes `qemu-10.2.1-msm5xxx.tar.xz` and `msm5xxx-project-source.tar.gz` instead. "
             "No firmware, credentials, build logs, or local machine paths are included. The archives provide corresponding source and package recipes; bit-identical binary reproduction is not claimed.\n\n"
             "Verify included files with `sha256sum -c SHA256SUMS`.\n", encoding="utf-8")
