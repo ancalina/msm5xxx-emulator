@@ -48,7 +48,7 @@ def digest(path):
 def manifest(directory,version,commit,target,dry_run):
     suffixes={'windows':('.exe','.nupkg'),'linux':('.AppImage','.zsync','.deb'),
               'macos':('.dmg','.zip'),'android':('.apk',)}[target]
-    metadata={'windows':{'releases.win.json'},'macos':{'appcast.xml'},'linux':set(),
+    metadata={'windows':{'releases.win.json','MSM5xxx-QEMU-windows-runtime-sources.tar.xz'},'macos':{'appcast.xml','MSM5xxx-QEMU-macos-runtime-sources.tar.xz'},'linux':{'MSM5xxx-QEMU-linux-runtime-sources.tar.xz'},
               'android':{'MSM5xxx-QEMU-android-runtime-sources.tar.xz'}}[target]
     files=[{'name':p.name,'size':p.stat().st_size,'sha256':digest(p)}
            for p in sorted(directory.iterdir()) if p.is_file() and (p.name.endswith(suffixes) or p.name in metadata)]
@@ -110,6 +110,16 @@ def build(args):
         if not apk.is_file():raise RuntimeError('Signed APK missing; configure the release signing environment')
         shutil.copy2(apk,destination/f'MSM5xxx-{version}-android-arm64.apk')
         run('bash',ROOT/'android/build_runtime_sources.sh',destination,env=env,cwd=ROOT)
+    if args.platform=='windows':
+        stage=work/'windows-runtime-sources'
+        shutil.rmtree(stage,ignore_errors=True)
+        (work/'MSM5xxx-QEMU-windows-runtime-sources.tar.xz').unlink(missing_ok=True)
+        run(sys.executable,ROOT/'native/qemu/package_windows_sources.py',args.runtime.resolve(),stage,env=env)
+        shutil.move(work/'MSM5xxx-QEMU-windows-runtime-sources.tar.xz',destination/'MSM5xxx-QEMU-windows-runtime-sources.tar.xz')
+    elif args.platform in ('linux','macos'):
+        from runtime_sources import collect as collect_sources
+        runtime=(work/'MSM5xxx.AppDir/usr' if args.platform=='linux' else work/'MSM5xxx Emulator.app/Contents/Resources/runtime')
+        collect_sources(args.platform,runtime,destination)
     manifest(destination,version,commit,args.platform,args.dry_run)
     print(f'RELEASE OK {args.platform} {version} {commit}')
 

@@ -8,7 +8,7 @@ The coordinator transfers a Git bundle of the tag to isolated remote checkouts,
 verifies transferred artifact checksums, and collects all four platforms plus a
 project source archive. The QEMU source companion omits prebuilt firmware, optional
 ROM sources, tests and caches; configure it with `--disable-install-blobs`.
-Original build inputs stay unchanged. Work directories and private test keys are excluded.
+Each desktop target also generates a runtime-library source companion with checksums: pinned MSYS2 source packages on Windows, installed Homebrew formula sources and patches on macOS, and exact APT source packages on Linux. The Linux build needs access to its distribution source repositories. Original build inputs stay unchanged. Work directories and private test keys are excluded.
 
 Prerequisites are the native SDKs/toolchains described in each platform README,
 project QEMU builds and libraries from the same native inputs, and the pinned
@@ -71,3 +71,9 @@ the Mac archive plus signed `appcast.xml`. The `.deb` and Android notices link t
 that release. Preserve checksum/source companions alongside the binaries. On
 Android publish exactly one APK asset containing `arm64` in its name. iOS only
 notifies and never downloads or installs an update.
+
+The iOS `.ipa` and `.tipa` remain a required separate release step on macOS.
+Build the device QEMU and QEMUTCI frameworks using `ios/build_qemu_framework.sh`
+as described in `ios/README.md`, then run `ios/package_ios.sh "$OUTPUT/ios"`.
+Verify both archives and include their checksums in the GitHub release. Desktop
+and Android completion does not complete the iOS release checklist.

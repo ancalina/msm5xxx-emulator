@@ -21,12 +21,14 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder=Path(temporary);(folder/'installer.dmg').write_bytes(b'installer')
             (folder/'owner.keystore').write_text('not an artifact')
+            (folder/'MSM5xxx-QEMU-macos-runtime-sources.tar.xz').write_bytes(b'corresponding sources')
+            (folder/'private.tar.xz').write_bytes(b'not a release asset')
             (folder/'.work').mkdir();(folder/'.work/test-private-key').write_text('not an artifact')
             release.manifest(folder,'0.2.0-rc','commit','macos',True)
             release.manifest(folder,'0.2.0-rc','commit','macos',True)
             data=json.loads((folder/'release.json').read_text())
-            self.assertEqual([f['name'] for f in data['files']],['installer.dmg'])
-            self.assertEqual(data['files'][0]['sha256'],release.digest(folder/'installer.dmg'))
+            self.assertEqual([f['name'] for f in data['files']],['MSM5xxx-QEMU-macos-runtime-sources.tar.xz','installer.dmg'])
+            self.assertEqual(data['files'][1]['sha256'],release.digest(folder/'installer.dmg'))
             self.assertEqual(data['commit'],'commit')
             self.assertTrue(data['dry_run'])
 
