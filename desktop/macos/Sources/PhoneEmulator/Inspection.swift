@@ -93,12 +93,19 @@ import AppKit
             let source = request["action"].string == "general_settings"
                 ? NSApp.windows.first(where: { $0.title == L("library_title") }) : controller?.window
             guard let window = source else { throw BackendError(message: "Missing settings context") }
-            window.makeKeyAndOrderFront(nil)
+            window.makeMain(); window.makeKeyAndOrderFront(nil)
             try? await Task.sleep(nanoseconds: 300_000_000)
             let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                       context: nil, characters: ",", charactersIgnoringModifiers: ",", isARepeat: false, keyCode: 43)!
-            _ = NSApp.mainMenu?.performKeyEquivalent(with: key)
+            NSApp.mainMenu?.update()
+            guard NSApp.mainMenu?.performKeyEquivalent(with: key) == true else { throw BackendError(message: "Settings shortcut missing") }
+            library.settingsEmulator = request["action"].string == "general_settings" ? nil : controller
+            for _ in 0..<50 {
+                if library.settingsWindow?.isVisible == true { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard library.settingsWindow?.isVisible == true else { throw BackendError(message: "Settings scene missing") }
         case "time": (try requireSession()).sheet = .time
         case "edit": (try requireSession()).editing = request["value"].bool
         case "key":
@@ -123,7 +130,7 @@ import AppKit
         case "language": try await library.set("ui_language", value: request["value"])
         case "theme": NSApp.appearance = NSAppearance(named: request["value"].string == "dark" ? .darkAqua : .aqua)
         case "snapshot":
-            guard let window = request["window"].string == "library" ? NSApp.windows.first(where: { $0.title == L("library_title") }) : (request["window"].string == "secondary" ? controller?.secondaryWindow : request["window"].string == "settings" ? NSApp.windows.first(where: { $0.title.hasPrefix("MSM5xxx Emulator") }) : (controller?.window?.sheets.first ?? controller?.window ?? NSApp.keyWindow)) else { throw BackendError(message: "No inspection window") }
+            guard let window = request["window"].string == "settings" ? library.settingsWindow : request["window"].string == "library" ? NSApp.windows.first(where: { $0.title == L("library_title") }) : (request["window"].string == "secondary" ? controller?.secondaryWindow : (controller?.window?.sheets.first ?? controller?.window ?? NSApp.keyWindow)) else { throw BackendError(message: "No inspection window") }
             try await VerificationHarness.snapshot(window, request["name"].string, folder)
         case "quit": DispatchQueue.main.async { NSApp.terminate(nil) }
         default: throw BackendError(message: "Unknown inspection action")
