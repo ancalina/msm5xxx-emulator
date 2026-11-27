@@ -270,7 +270,9 @@ static bool fm_mode_ok(const MA5WTEngine *e)
 {
     return e->bk[39] && e->bk[40] && e->bk[41] && e->bk[55] && e->bk[56] &&
         (e->b[55] == 0 || e->b[55] == 0xbc) &&
-        e->b[56] <= 2u;
+        /* B56 bit 0 selects 32 two-operator FM slots and bit 1 enables a
+         * separate renderer; the bits are independent, so 3 is valid FM. */
+        e->b[56] <= 3u;
 }
 
 static void fm_side_gain(MA5WTEngine *e, FMVoice *v, unsigned base)

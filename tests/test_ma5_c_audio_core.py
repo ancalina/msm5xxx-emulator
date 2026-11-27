@@ -1316,7 +1316,6 @@ class TestMA5CAudioCore(unittest.TestCase):
             subprocess.run([str(binary_path)], check=True,
                            capture_output=True, text=True)
 
-
     def test_counter_reset_retains_pending_fifo(self):
         core = Path(__file__).resolve().parents[1] / "native/qemu"
         harness = r"""
@@ -1354,6 +1353,40 @@ class TestMA5CAudioCore(unittest.TestCase):
                             f"-I{core}", str(source), str(core / "msm5xxx-ma5-audio.c"),
                             "-o", str(binary)], check=True, capture_output=True)
             subprocess.run([str(binary)], check=True, capture_output=True)
+
+    def test_fm_combined_slot_mode(self):
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
+        harness = r"""
+        #include <assert.h>
+        #include "msm5xxx-ma2-audio.c"
+        #include "msm5xxx-ma5-wt-engine.c"
+        int main(void) {
+            MA5WTEngine e={0};
+            const unsigned regs[]={39,40,41,55,56};
+            for (unsigned i=0;i<5;i++) e.bk[regs[i]]=true;
+            e.b[55]=0xbc;
+            for (unsigned mode=0;mode<256;mode++) {
+                e.b[56]=mode;
+                assert(fm_mode_ok(&e)==(mode<=3));
+            }
+            e.b[56]=3; e.bk[41]=false;
+            assert(!fm_mode_ok(&e));
+            e.bk[41]=true; e.b[55]=1;
+            assert(!fm_mode_ok(&e));
+        }
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "fm-mode.c"
+            binary = Path(temporary) / "fm-mode"
+            source.write_text(textwrap.dedent(harness))
+            sources = [core / ("msm5xxx-ma5-" + name + ".c") for name in
+                       ("gain", "fm-voice", "operator", "waveform")]
+            compile_result = subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            f"-I{core}", str(source), *map(str, sources), "-lm",
+                            "-o", str(binary)], capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            subprocess.run([str(binary)], check=True, capture_output=True)
+
 
 if __name__ == "__main__":
     unittest.main()

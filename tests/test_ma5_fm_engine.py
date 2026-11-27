@@ -486,7 +486,7 @@ int main(int argc, char **argv) {
     commit(e,MSM5XXX_MA5_COMMIT_CONTROL,base+5,0);
     commit(e,MSM5XXX_MA5_COMMIT_CONTROL,base+5,0xc0);
     MA5WTStatus status=ma5_wt_engine_status(e);
-    bool enabled=mode<=2 && (slot<16 || (mode&1)) &&
+    bool enabled=mode<=3 && (slot<16 || (mode&1)) &&
                  (!(mode&1) || algorithm<2);
     if (enabled) assert(status.fm_admitted==1 && status.fm_skipped==0);
     else assert(status.fm_admitted==0 && status.fm_skip_mode==1 && status.active==0);
@@ -663,7 +663,14 @@ class MA5FMEngineTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 self.assertEqual(len(result.stdout), 2400 * 4)
                 self.assertEqual(hashlib.sha256(result.stdout).hexdigest(), digest)
-            rejected = [(1, 31, 0), (1, 31, 2), (1, 31, 3), (1, 0, 3), (1, 31, 0x12)]
+            for slot in (0, 31):
+                with self.subTest(algorithm=1, slot=slot, mode=3):
+                    result = subprocess.run(
+                        [str(binary), "1", str(slot), "3"], capture_output=True
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    self.assertEqual(hashlib.sha256(result.stdout).hexdigest(), expected[(1, slot)])
+            rejected = [(1, 31, 0), (1, 31, 2), (1, 31, 4), (1, 0, 4), (1, 31, 0x12)]
             rejected += [(algorithm, slot, 1) for algorithm in range(2, 8) for slot in (0, 31)]
             for algorithm, slot, mode in rejected:
                 with self.subTest(algorithm=algorithm, slot=slot, mode=mode):
