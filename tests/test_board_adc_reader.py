@@ -40,6 +40,7 @@ class BoardADCReaderTests(unittest.TestCase):
         "X4209.bin": 0x1005C,
         "x4000.bin": 0x605C,
         "X700_Kor_Eng.bin": 0x10050,
+        "LG-SD1020.bin": 0x34B4,
     }
 
     def test_dc0_battery_policy_is_complete_and_fail_closed(self) -> None:
@@ -135,7 +136,7 @@ class BoardADCReaderTests(unittest.TestCase):
         for name, expected in self.readers.items():
             image = (FIRMWARE_ROOT / name).read_bytes()
             self.assertEqual(find_board_adc_reader(image), expected, name)
-            expected_offset = (0x88 if name == "X700_Kor_Eng.bin" else 0x7E if name in {
+            expected_offset = (0x88 if name == "X700_Kor_Eng.bin" else 0x76 if name == "LG-SD1020.bin" else 0x7E if name in {
                 "schx150.bin", "x350_VC22.bin", "SCH-X350_UJ08_JTAG.bin",
                 "SCH-X250.bin", "SCH-x127.bin", "SPH-X4500.bin",
             } else 0x7C)
