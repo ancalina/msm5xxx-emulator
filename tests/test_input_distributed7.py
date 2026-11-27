@@ -30,3 +30,15 @@ class SevenRowTests(unittest.TestCase):
         self.assertIn('matrix-gpio=3000694:', qemu_seven_row_matrix_property(self.image, config, p))
         with self.assertRaises(ValueError):
             qemu_seven_row_matrix_property(self.image, config, dict(p, rows=6))
+
+
+class CompactSevenRowTests(unittest.TestCase):
+    def test_compact_profile_and_instruction_mutation(self):
+        image = firmware_path('incoming-20260814', 'SPH-X2700.bin').read_bytes()
+        profile, reason = find_seven_row_input_profile(image)
+        self.assertEqual(reason, 'accepted')
+        self.assertEqual((profile['rows'], profile['columns'], profile['period_ms']), (7, 4, 25))
+        self.assertEqual(profile['function'], 0x7bdfc)
+        changed = bytearray(image)
+        changed[profile['function'] + 0xe2] ^= 1
+        self.assertIsNone(find_seven_row_input_profile(bytes(changed))[0])

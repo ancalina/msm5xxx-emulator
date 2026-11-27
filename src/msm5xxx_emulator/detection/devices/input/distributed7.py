@@ -131,4 +131,6 @@ def find_seven_row_input_profile(image: bytes, load_address: int = 0):
             read_site=start+0x3c, press_event=0x51), provisional_mappings={bit:dict(event=event, label=labels[bit], rule='same-image-table-and-functional-controls',
             semantic_status= 'source-verified-functional-control') for bit,event in mapping.items() if events.count(event)==1}, unmapped_events= [],
             extra_host_keys={23: 'Internet/service connect'},))
+    from .distributed7_compact import find_compact_seven_row_profiles
+    profiles.extend(find_compact_seven_row_profiles(image))
     return (profiles[0], 'accepted') if len(profiles) == 1 else (None, 'ambiguous' if profiles else 'not-found')
