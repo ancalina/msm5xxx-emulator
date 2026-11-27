@@ -793,19 +793,18 @@ bool msm5xxx_ma5_device_write(MSM5xxxMA5Device *device, bool index,
                 device->reject = MSM5XXX_MA5_REJECT_START;
                 return false;
             }
-            if (device->clki_hz &&
-                (device->delayed_delta_bytes || device->delayed_delta_ready ||
-                 device->delayed.address_bytes || device->delayed.length_bytes ||
-                 device->delayed.phase != MA5_CURSOR_ADDRESS)) {
-                device->reject = MSM5XXX_MA5_REJECT_RESET_RETENTION;
-                return false;
-            }
+            /* B38 resets the counter and delay accumulator but keeps the
+             * FIFO, delta and packet cursor: a delay not yet admitted counts
+             * from the new zero, an admitted payload must not wait twice. */
+            device->delayed_due = device->delayed_delta_ready &&
+                device->delayed_due != device->delayed_previous_due ?
+                device->delayed_delta : 0;
+            device->delayed_previous_due = 0;
             device->counter_reset = true;
             device->counter_needs_reset = false;
             device->counter = device->counter_latch = 0;
             device->counter_total = 0;
             device->counter_phase = 0;
-            device->delayed_due = device->delayed_previous_due = 0;
         }
         if (device->clki_hz && (value & 1u) && (device->b[4] & 0x80u)) {
             device->reject = MSM5XXX_MA5_REJECT_RESET_RETENTION;

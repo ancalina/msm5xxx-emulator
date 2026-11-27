@@ -1137,8 +1137,8 @@ class TestMA5CAudioCore(unittest.TestCase):
             bytes(&a, 1, incomplete, 1); assert(wr(&a, 38, 1, 0));
             msm5xxx_ma5_device_advance(&a, 10);
             assert(wr(&a, 38, 0, 10));
-            assert(!wr(&a, 38, 2, 10) && a.reject == MSM5XXX_MA5_REJECT_RESET_RETENTION);
-            assert(a.delayed_delta_bytes == 1 && a.counter_needs_reset);
+            assert(wr(&a, 38, 2, 10) && !a.reject);
+            assert(a.delayed_delta_bytes == 1 && !a.counter_needs_reset);
             setup(&a); bytes(&a, 1, incomplete, 1); assert(wr(&a, 38, 1, 0));
             msm5xxx_ma5_device_advance(&a, 10); assert(wr(&a, 38, 0, 10));
             assert(wr(&a, 4, 0x28, 10) && wr(&a, 4, 0, 10) && wr(&a, 38, 2, 10));
@@ -1316,6 +1316,44 @@ class TestMA5CAudioCore(unittest.TestCase):
             subprocess.run([str(binary_path)], check=True,
                            capture_output=True, text=True)
 
+
+    def test_counter_reset_retains_pending_fifo(self):
+        core = Path(__file__).resolve().parents[1] / "native/qemu"
+        harness = r"""
+        #include <assert.h>
+        #include <string.h>
+        #include "msm5xxx-ma5-audio.h"
+        int main(void) {
+            for (unsigned admitted=0; admitted<2; admitted++) {
+                MSM5xxxMA5Device a;
+                assert(msm5xxx_ma5_device_init(&a,1000));
+                assert(msm5xxx_ma5_device_set_clock(&a,19660800));
+                a.backing.index=38; a.counter_reset=true;
+                a.counter_needs_reset=true; a.counter_total=17;
+                a.delayed_head=4; a.delayed_count=9; a.delayed_value[4]=0x8f;
+                a.delayed_delta=25; a.delayed_delta_bytes=1;
+                a.delayed_delta_ready=true; a.delayed.phase=1;
+                a.delayed.address=0xc0; a.delayed.address_bytes=2;
+                a.delayed_due=33; a.delayed_previous_due=admitted ? 33 : 8;
+                MSM5xxxMA5Device before=a;
+                assert(msm5xxx_ma5_device_write(&a,false,2,1000000));
+                assert(!a.reject && !a.counter_total && !a.delayed_previous_due);
+                assert(a.delayed_due==(admitted ? 0 : 25));
+                assert(!memcmp(&a.delayed,&before.delayed,sizeof a.delayed));
+                assert(!memcmp(a.delayed_value,before.delayed_value,sizeof a.delayed_value));
+                assert(a.delayed_count==9 && a.delayed_head==4);
+                assert(a.delayed_delta==25 && a.delayed_delta_bytes==1 && a.delayed_delta_ready);
+            }
+        }
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "reset.c"
+            binary = Path(temporary) / "reset"
+            source.write_text(textwrap.dedent(harness))
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            f"-I{core}", str(source), str(core / "msm5xxx-ma5-audio.c"),
+                            "-o", str(binary)], check=True, capture_output=True)
+            subprocess.run([str(binary)], check=True, capture_output=True)
 
 if __name__ == "__main__":
     unittest.main()
