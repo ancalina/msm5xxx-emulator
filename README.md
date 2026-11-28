@@ -1,4 +1,4 @@
-# MSM5xxx QEMU Emulator 0.1.0
+# MSM5xxx QEMU Emulator 0.2.0
 
 [한국어](README.ko.md)
 
@@ -16,32 +16,40 @@ varies by firmware; a supported chipset does not guarantee a successful boot.
 - Optional virtual network and configurable network time; this is an emulated
   network, not a connection to a real mobile network.
 - Persistent writable device state and a firmware library with per-device settings.
+- Native desktop apps for Windows, macOS and Linux with light and dark themes,
+  Korean and English, and built-in updates.
 
 ## Install and run
 
 Get the package for your platform from [Releases](https://github.com/ancalina/msm5xxx-emulator/releases).
 Import or select your own firmware dump in the library, then select it to start.
+Desktop packages include everything they need; no Python installation is required.
 
-- **Windows x86-64:** Extract the complete archive and double-click `run_windows.bat`.
-  You can also drag a firmware file onto the launcher. The binary is unsigned.
-- **Linux x86-64:** Extract the complete archive and run `./run_linux.sh`.
-- **Intel macOS 15 or later:** Extract the complete archive and open
-  `run_macos.command`. The bundle is ad-hoc signed and not notarized.
+- **Windows 10 (1809) or later, x86-64:** Run `MSM5xxx-win-Setup.exe`. It installs
+  for the current user and adds a Start menu entry. The installer is unsigned: if
+  Windows shows "Windows protected your PC", choose **More info → Run anyway**.
+  Updates are offered in the app. See [Windows](desktop/windows/README.md).
+- **Intel macOS 15 or later:** Open the DMG and drag the app to Applications. The
+  app is not notarized: on first launch, right-click it and choose **Open**, or
+  allow it in **System Settings → Privacy & Security**. Updates are offered in the
+  app. See [macOS](desktop/macos/README.md).
+- **Linux x86-64 (glibc 2.43 or later, such as Ubuntu 26.04):** Make the AppImage
+  executable and run it, or install the `.deb` with your package manager. If FUSE
+  is unavailable, run the AppImage with `APPIMAGE_EXTRACT_AND_RUN=1`. The AppImage
+  updates itself from the app. See [Linux](desktop/linux/README.md).
 - **Android 9 or later, arm64:** Install the APK, open the app, and import a
-  dump using the system file picker.
+  dump using the system file picker. The app checks for updates and installs over
+  earlier versions without losing data.
 - **iOS 15 or later:** Install a suitably signed and provisioned IPA, or install
   the TIPA using TrollStore. Open the app and import a dump. The IPA uses the
   interpreter; the TIPA can use debugger-assisted JIT when available. See the
   [iOS instructions](ios/README.md).
 
-Desktop requires Python 3.10 or newer with Tcl/Tk and may need network access
-on first launch to install Python packages. Linux may need `python3-tk`; macOS
-may need a Tcl/Tk-enabled Python. Keep the desktop launcher, `bin/` and bundled
-libraries together.
-
 Writable NOR and EEPROM state is kept separately for each firmware; the original
-dump remains read-only. Desktop defaults to `~/.msm5xxx-emulator/qemu-state` and
-accepts `--state-dir` to change the state root. Mobile apps use app storage.
+dump remains read-only. Desktop apps keep the library, settings and state in the
+per-user data folder (`%LOCALAPPDATA%\MSM5xxx` on Windows, `Application Support/MSM5xxx`
+on macOS, `~/.local/share/msm5xxx` on Linux); uninstalling keeps it. Mobile apps
+use app storage.
 
 ## Known limits
 

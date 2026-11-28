@@ -1,4 +1,4 @@
-# MSM5xxx QEMU 에뮬레이터 0.1.0
+# MSM5xxx QEMU 에뮬레이터 0.2.0
 
 [English](README.md)
 
@@ -15,32 +15,38 @@ Qualcomm MSM5000, MSM5100, MSM5105, MSM5500 칩셋을 사용하는 피처폰을 
 - 톤 생성기와 지원되는 Yamaha 오디오 하드웨어를 포함한 오디오 에뮬레이션.
 - 선택 가능한 가상 네트워크와 네트워크 시간 설정. 실제 이동통신망에 연결하지는 않습니다.
 - 쓰기 가능한 장치 상태의 저장과 기기별 설정을 제공하는 펌웨어 라이브러리.
+- Windows, macOS, Linux용 네이티브 데스크톱 앱. 라이트/다크 테마, 한국어와 영어,
+  앱 내 업데이트를 지원합니다.
 
 ## 설치와 실행
 
 [Releases](https://github.com/ancalina/msm5xxx-emulator/releases)에서 플랫폼에 맞는
 패키지를 받습니다. 라이브러리에서 직접 덤프한 펌웨어를 가져오거나 선택한 후 실행합니다.
+데스크톱 패키지에는 필요한 구성요소가 모두 들어 있어 Python을 따로 설치하지 않아도 됩니다.
 
-- **Windows x86-64:** 압축을 모두 풀고 `run_windows.bat`를 더블클릭합니다.
-  펌웨어 파일을 실행기에 끌어다 놓을 수도 있습니다. 바이너리는 서명되지 않았습니다.
-- **Linux x86-64:** 압축을 모두 풀고 `./run_linux.sh`를 실행합니다.
-- **Intel macOS 15 이상:** 압축을 모두 풀고 `run_macos.command`를 엽니다.
-  번들은 임시 서명되었으며 공증되지 않았습니다.
+- **Windows 10 (1809) 이상, x86-64:** `MSM5xxx-win-Setup.exe`를 실행합니다. 현재
+  사용자용으로 설치되고 시작 메뉴에 추가됩니다. 설치 파일은 서명되지 않아 "Windows의
+  PC 보호" 창이 뜨면 **추가 정보 → 실행**을 누릅니다. 업데이트는 앱에서 안내합니다.
+  [Windows 안내](desktop/windows/README.md)를 참고하세요.
+- **Intel macOS 15 이상:** DMG를 열고 앱을 응용 프로그램 폴더로 끌어 놓습니다. 앱은
+  공증되지 않았으므로 처음 실행할 때 앱을 우클릭해 **열기**를 선택하거나
+  **시스템 설정 → 개인정보 보호 및 보안**에서 허용합니다. 업데이트는 앱에서 안내합니다.
+  [macOS 안내](desktop/macos/README.md)를 참고하세요.
+- **Linux x86-64 (glibc 2.43 이상, 예: Ubuntu 26.04):** AppImage에 실행 권한을 주고
+  실행하거나 패키지 관리자로 `.deb`를 설치합니다. FUSE가 없으면
+  `APPIMAGE_EXTRACT_AND_RUN=1`로 AppImage를 실행합니다. AppImage는 앱에서 스스로
+  업데이트합니다. [Linux 안내](desktop/linux/README.md)를 참고하세요.
 - **Android 9 이상, arm64:** APK를 설치하고 앱을 열어 시스템 파일 선택기로
-  덤프를 가져옵니다.
+  덤프를 가져옵니다. 앱이 업데이트를 확인하며, 이전 버전 위에 데이터를 유지한 채 설치됩니다.
 - **iOS 15 이상:** 적절하게 서명하고 프로비저닝한 IPA를 설치하거나 TrollStore로
   TIPA를 설치합니다. 앱을 열어 덤프를 가져옵니다. IPA는 인터프리터를 사용하며,
   TIPA는 가능한 경우 디버거를 이용한 JIT를 사용할 수 있습니다.
   [iOS 안내](ios/README.md)를 참고하세요.
 
-데스크톱에는 Tcl/Tk가 포함된 Python 3.10 이상이 필요하며, 처음 실행할 때 Python
-패키지 설치를 위한 네트워크 연결이 필요할 수 있습니다. Linux에는 `python3-tk`,
-macOS에는 Tcl/Tk가 포함된 Python이 필요할 수 있습니다. 데스크톱 실행기와 `bin/`,
-동봉된 라이브러리를 함께 보관하세요.
-
 쓰기 가능한 NOR 및 EEPROM 상태는 펌웨어별로 별도 저장되며 원본 덤프는 읽기
-전용입니다. 데스크톱 기본 위치는 `~/.msm5xxx-emulator/qemu-state`이며
-`--state-dir`로 상태 저장 위치를 바꿀 수 있습니다. 모바일 앱은 앱 저장 공간을 사용합니다.
+전용입니다. 데스크톱 앱은 라이브러리, 설정, 상태를 사용자별 데이터 폴더(Windows
+`%LOCALAPPDATA%\MSM5xxx`, macOS `Application Support/MSM5xxx`, Linux
+`~/.local/share/msm5xxx`)에 보관하며, 제거해도 유지됩니다. 모바일 앱은 앱 저장 공간을 사용합니다.
 
 ## 알려진 제한
 
